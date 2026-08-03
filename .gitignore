@@ -17,6 +17,12 @@ Thumbs.db
 # MCP / herramientas locales
 .playwright-mcp/
 
+# Playwright
+playwright-report/
+test-results/
+.playwright/
+blob-report/
+
 # Graphify — solo versionar reportes y grafo interactivo
 graphify-out/cache/
 graphify-out/.graphify*
