@@ -1,0 +1,9 @@
+{
+  "name": "pci-chatbot",
+  "private": true,
+  "scripts": {
+    "dev:api": "pnpm --filter api run start:dev",
+    "dev:web": "pnpm --filter web run dev",
+    "build": "pnpm -r run build"
+  }
+}

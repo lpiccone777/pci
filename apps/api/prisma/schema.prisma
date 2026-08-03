@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  phone        String?  @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenants       UserTenant[]
+  devices       Device[]
+  conversations Conversation[]
+  tickets       Ticket[]
+  metrics       Metric[]
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users         UserTenant[]
+  roles         Role[]
+  conversations Conversation[]
+  tickets       Ticket[]
+  metrics       Metric[]
+  settings      Setting[]
+  tenantFlows   TenantFlow[]
+}
+
+model Role {
+  id        String   @id @default(cuid())
+  name      String
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  permissions RolePermission[]
+  userTenants UserTenant[]
+
+  @@unique([name, tenantId])
+}
+
+model RolePermission {
+  id        String   @id @default(cuid())
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  resource  String
+  action    String
+  createdAt DateTime @default(now())
+
+  @@unique([roleId, resource, action])
+}
+
+model UserTenant {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@id([userId, tenantId])
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fingerprint String   @unique
+  userAgent   String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Conversation {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  channel       String
+  externalId    String?
+  status        String   @default("active")
+  currentFlowId String?
+  currentNodeId String?
+  flowState     Json?    // Variables del flujo: { problemDescription: "...", ticketId: "944" }
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  messages Message[]
+  metrics  Metric[]
+
+  @@index([userId, tenantId])
+  @@index([status])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderType     String
+  content        String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
+}
+
+model Ticket {
+  id          String   @id @default(cuid())
+  invgateId   String?  @unique
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  subject     String
+  description String?
+  status      String   @default("open")
+  priority    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([userId])
+}
+
+model Setting {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  value     String
+  tenantId  String?
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([key])
+  @@index([tenantId])
+}
+
+model Metric {
+  id             String        @id @default(cuid())
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+  userId         String
+  user           User          @relation(fields: [userId], references: [id])
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  channel        String
+  responseTimeMs Int
+  resolution     String
+  timestamp    DateTime     @default(now())
+  createdAt    DateTime     @default(now())
+
+  @@index([tenantId, timestamp])
+  @@index([userId])
+}
+
+model Flow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  nodes       Json     // ReactFlow nodes JSON
+  edges       Json     // ReactFlow edges JSON
+  isActive    Boolean  @default(true)
+  isDefault   Boolean  @default(false)  // Flujo por defecto si no hay match
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenantFlows TenantFlow[]
+  createdBy   String?  // userId
+
+  @@index([isActive])
+  @@index([isDefault])
+}
+
+model TenantFlow {
+  id       String @id @default(cuid())
+  flowId   String
+  tenantId String
+  flow     Flow   @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([flowId, tenantId])
+  @@index([tenantId])
+  @@index([flowId])
+}
