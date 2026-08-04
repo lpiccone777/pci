@@ -12,7 +12,8 @@ model User {
   email        String   @unique
   phone        String?  @unique
   passwordHash String
-  name         String?
+  firstName    String?
+  lastName     String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -179,6 +180,9 @@ model Flow {
   edges       Json     // ReactFlow edges JSON
   isActive    Boolean  @default(true)
   isDefault   Boolean  @default(false)  // Flujo por defecto si no hay match
+  // Fuente de datos que respalda las respuestas de este flujo. Lista cerrada
+  // (ver FLOW_CONTEXT_OPTIONS en flow-context.ts): 'none' | 'invgate' | 'internal_kb' | 'other'.
+  context     String   @default("none")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   tenantFlows TenantFlow[]
@@ -186,16 +190,24 @@ model Flow {
 
   @@index([isActive])
   @@index([isDefault])
+  @@index([context])
 }
 
 model TenantFlow {
-  id       String @id @default(cuid())
+  id       String  @id @default(cuid())
   flowId   String
   tenantId String
-  flow     Flow   @relation(fields: [flowId], references: [id], onDelete: Cascade)
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // Flujo de inicio PARA ESTE TENANT. Va acá y no en Flow: un mismo flujo puede
+  // estar asignado a varios tenants y ser "de inicio" solo para algunos — por eso
+  // no puede ser un booleano a nivel Flow. La invariante "un tenant tiene como
+  // máximo un flujo de inicio" se aplica en FlowService.applyTenantAssignment,
+  // no acá (Prisma no soporta índices únicos parciales en el schema DSL).
+  isStart  Boolean @default(false)
+  flow     Flow    @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([flowId, tenantId])
   @@index([tenantId])
   @@index([flowId])
+  @@index([isStart])
 }

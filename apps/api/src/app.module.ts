@@ -4,7 +4,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { AppConfigModule } from './config/app-config.module';
-import { TenantInterceptor } from './common/interceptors/tenant.interceptor';
+import { TenantGuard } from './common/guards/tenant.guard';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
@@ -17,6 +17,7 @@ import { ChannelsModule } from './modules/channels/channels.module';
 import { BrokerModule } from './modules/broker/broker.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { FlowModule } from './modules/flow/flow.module';
+import { SettingsModule } from './modules/settings/settings.module';
 
 @Module({
   imports: [
@@ -35,8 +36,9 @@ import { FlowModule } from './modules/flow/flow.module';
     BrokerModule,
     MetricsModule,
     FlowModule,
+    SettingsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, TenantInterceptor],
+  providers: [AppService, TenantGuard],
 })
 export class AppModule {}

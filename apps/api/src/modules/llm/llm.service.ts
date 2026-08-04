@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { AppConfigService } from '../../config/app-config.service';
 import { LlmProviderFactory } from './llm-provider.factory';
 import type { LlmMessage, LlmCompletionOptions } from './llm-provider.interface';
 
@@ -7,7 +7,7 @@ import type { LlmMessage, LlmCompletionOptions } from './llm-provider.interface'
 export class LlmService {
   constructor(
     private readonly factory: LlmProviderFactory,
-    private readonly config: ConfigService,
+    private readonly appConfig: AppConfigService,
   ) {}
 
   async chat(
@@ -17,11 +17,12 @@ export class LlmService {
     // Lazy: provider se instancia aquí, nunca en startup
     const provider = await this.factory.createProvider();
 
-    // Merge: tenant-specific config > env defaults
+    // Merge: config del caller > Setting en BD > env var > default
+    // (AppConfigService resuelve la cascada BD → env → default)
     const defaults: LlmCompletionOptions = {
-      temperature: this.config.get('LLM_TEMPERATURE', 0.7),
-      maxTokens: this.config.get('LLM_MAX_TOKENS', 1024),
-      systemPrompt: this.config.get('LLM_SYSTEM_PROMPT'),
+      temperature: await this.appConfig.getNumber('LLM_TEMPERATURE', 0.7),
+      maxTokens: await this.appConfig.getNumber('LLM_MAX_TOKENS', 1024),
+      systemPrompt: await this.appConfig.get('LLM_SYSTEM_PROMPT'),
     };
 
     const merged: LlmCompletionOptions = {

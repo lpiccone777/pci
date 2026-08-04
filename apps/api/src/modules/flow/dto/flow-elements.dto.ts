@@ -131,6 +131,16 @@ export class FlowEdgeDto {
   @IsString()
   target: string;
 
+  /**
+   * Renderer de la arista en ReactFlow (ej. 'deletable'). Es dato real que hay que
+   * persistir: sin esto la arista vuelve al estilo por defecto y se pierde el botón
+   * de borrar. No confundir con las props transitorias que el front descarta antes
+   * de enviar (`measured`, `selected`, `dragging`).
+   */
+  @IsString()
+  @IsOptional()
+  type?: string;
+
   @IsString()
   @IsOptional()
   sourceHandle?: string;

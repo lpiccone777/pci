@@ -106,12 +106,13 @@ export default function LoginPage() {
               Se envió un código de verificación a tu email. Ingresalo abajo.
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Código OTP (6 dígitos)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Código OTP</label>
               <input
                 type="text"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                maxLength={6}
+                // La longitud es configurable desde /settings (OTP_CODE_LENGTH, 4-8).
+                maxLength={8}
                 className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-center text-lg tracking-widest"
                 required
               />

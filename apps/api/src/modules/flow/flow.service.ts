@@ -7,7 +7,7 @@ export class FlowService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(data: CreateFlowDto, userId?: string) {
-    const { tenantIds, ...flowData } = data;
+    const { tenantIds, isStart, ...flowData } = data;
 
     const flow = await this.prisma.flow.create({
       data: {
@@ -19,13 +19,7 @@ export class FlowService {
     });
 
     if (tenantIds?.length) {
-      await this.prisma.tenantFlow.createMany({
-        data: tenantIds.map((tenantId) => ({
-          flowId: flow.id,
-          tenantId,
-        })),
-        skipDuplicates: true,
-      });
+      await this.applyTenantAssignment(flow.id, tenantIds, !!isStart);
     }
 
     return this.findById(flow.id);
@@ -93,40 +87,57 @@ export class FlowService {
     return { message: 'Flujo eliminado' };
   }
 
-  async assignTenants(flowId: string, tenantIds: string[]) {
-    // Remove existing assignments
-    await this.prisma.tenantFlow.deleteMany({
-      where: { flowId },
-    });
-
-    // Create new assignments
-    if (tenantIds.length) {
-      await this.prisma.tenantFlow.createMany({
-        data: tenantIds.map((tenantId) => ({
-          flowId,
-          tenantId,
-        })),
-        skipDuplicates: true,
-      });
-    }
-
+  async assignTenants(flowId: string, tenantIds: string[], isStart = false) {
+    await this.applyTenantAssignment(flowId, tenantIds, isStart);
     return this.findById(flowId);
   }
 
+  /**
+   * Reemplaza las asignaciones de tenant de un flujo (usado por `create` y
+   * `assignTenants`). Si `isStart` es true, aplica la invariante "un tenant tiene
+   * como máximo un flujo de inicio": desmarca cualquier otro flujo que lo fuera
+   * para alguno de los tenants seleccionados.
+   *
+   * Todo en una transacción: borrar + desmarcar + crear tienen que ser atómicos,
+   * si no un fallo a mitad de camino puede dejar un tenant sin ningún flujo de
+   * inicio (o con dos).
+   */
+  private async applyTenantAssignment(flowId: string, tenantIds: string[], isStart: boolean) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tenantFlow.deleteMany({ where: { flowId } });
+      if (!tenantIds.length) return;
+
+      if (isStart) {
+        await tx.tenantFlow.updateMany({
+          where: { tenantId: { in: tenantIds }, isStart: true },
+          data: { isStart: false },
+        });
+      }
+
+      await tx.tenantFlow.createMany({
+        data: tenantIds.map((tenantId) => ({ flowId, tenantId, isStart })),
+        skipDuplicates: true,
+      });
+    });
+  }
+
   async findActiveFlowForTenant(tenantId: string) {
-    // First try to find a tenant-specific flow
+    // Flujo de inicio explícito para este tenant (TenantFlow.isStart). Reemplaza
+    // el `findFirst({where:{tenantId}})` de antes, que agarraba CUALQUIER flujo
+    // asignado sin ningún orden — ambiguo apenas había más de uno, que es
+    // justamente el caso de uso de tener varios flujos por tenant.
     const tenantFlow = await this.prisma.tenantFlow.findFirst({
-      where: { tenantId },
-      include: {
-        flow: true,
-      },
+      where: { tenantId, isStart: true },
+      include: { flow: true },
     });
 
     if (tenantFlow?.flow?.isActive) {
       return tenantFlow.flow;
     }
 
-    // Fallback to default flow
+    // Legado: sin flujo de inicio explícito para este tenant, cae al default
+    // global (`Flow.isDefault`). Se mantiene por compatibilidad con instalaciones
+    // que todavía no configuraron un flujo de inicio por tenant.
     return this.prisma.flow.findFirst({
       where: { isDefault: true, isActive: true },
     });

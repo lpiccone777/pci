@@ -7,6 +7,29 @@ import { UsersService } from '../users/users.service';
 import { FlowService } from '../flow/flow.service';
 import { LlmMessage } from '../llm/llm-provider.interface';
 
+/**
+ * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
+ * mensaje pasa por RabbitMQ igual que uno real (publish → consume → handleMessage
+ * → publish de la respuesta), pero aislado del tráfico del canal real: no compite
+ * por esa cola ni ensucia sus métricas, y el día que exista un conector real de
+ * WhatsApp escuchando `whatsapp.outgoing`, las respuestas de simulate no se cruzan
+ * con las suyas.
+ */
+const SIMULATE_QUEUE = 'whatsapp.simulate.incoming';
+
+/**
+ * Timeout del request/reply de simulate. Generoso a propósito: OpenCode Go razona
+ * antes de responder y en la práctica tarda unos segundos, pero su propio timeout
+ * interno por llamada HTTP es de 2 minutos (ver OpenCodeGoProvider).
+ */
+const SIMULATE_TIMEOUT_MS = 90_000;
+
+/** Corte de seguridad ante flujos con ciclos entre nodos no interactivos. */
+const MAX_FLOW_STEPS = 25;
+
+/** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
+const MAX_DELAY_SECONDS = 10;
+
 @Injectable()
 export class ConversationsService implements OnModuleInit {
   private readonly logger = new Logger(ConversationsService.name);
@@ -21,26 +44,56 @@ export class ConversationsService implements OnModuleInit {
 
   async onModuleInit() {
     await this.broker.subscribe('whatsapp.incoming', this.handleMessage.bind(this));
-    this.logger.log('Subscribed to whatsapp.incoming');
+    // Mismo handler, misma lógica de negocio: la única diferencia con el canal real
+    // es por qué cola entra el mensaje. Así /simulate ejercita el camino real
+    // completo (RabbitMQ de punta a punta) en vez de llamar al método en proceso.
+    await this.broker.subscribe(SIMULATE_QUEUE, this.handleMessage.bind(this));
+    this.logger.log(`Subscribed to whatsapp.incoming and ${SIMULATE_QUEUE}`);
   }
 
-  async processIncomingMessage(from: string, body: string, tenantId: string) {
-    return this.handleMessage({
-      pattern: 'message.received',
-      data: { from, body },
-      tenantId,
-      timestamp: new Date().toISOString(),
-    });
+  /**
+   * Para /conversations/simulate. Publica el mensaje en `SIMULATE_QUEUE` y espera
+   * —a través del broker, no en memoria— la respuesta que `handleMessage` publica
+   * de vuelta. Simula el funcionamiento real: RabbitMQ de punta a punta, no una
+   * llamada directa que se salte la cola.
+   */
+  async simulateIncomingMessage(from: string, body: string, tenantId: string): Promise<string> {
+    const reply = await this.broker.request(
+      SIMULATE_QUEUE,
+      {
+        pattern: 'message.received',
+        data: { from, body },
+        tenantId,
+        timestamp: new Date().toISOString(),
+      },
+      { timeoutMs: SIMULATE_TIMEOUT_MS },
+    );
+
+    const { body: replyText } = reply.data as { to: string; body: string };
+    return replyText;
   }
 
-  private async handleMessage(msg: BrokerMessage) {
+  /** Devuelve el texto con el que respondió el bot, para que `simulate` pueda mostrarlo. */
+  private async handleMessage(msg: BrokerMessage): Promise<string> {
     const { from, body } = msg.data as { from: string; body: string };
     const tenantId = msg.tenantId!;
 
     this.logger.log(`[${tenantId}] Mensaje de ${from}: ${body.substring(0, 50)}...`);
 
-    // 1. Identificar o crear usuario por teléfono
-    const user = await this.usersService.findOrCreateByPhone(from);
+    // 1. Identificar al usuario por teléfono, consultando el registro de usuarios.
+    // "Conocido" = está registrado en este tenant, con rol (`UserTenant` + `Role`) —
+    // no simplemente "existe un User con este teléfono". Ese chequeo tiene que
+    // hacerse ANTES de crear el placeholder de WhatsApp: si se hiciera después (como
+    // hacía antes el nodo `start`), el usuario siempre iba a existir porque lo
+    // acabábamos de crear nosotros mismos un instante antes, y el número nunca se
+    // detectaba como desconocido.
+    const membership = await this.usersService.findMembershipByPhone(from, tenantId);
+    const user = membership?.user ?? (await this.usersService.findOrCreateByPhone(from));
+    const identity = {
+      isKnown: !!membership,
+      roleId: membership?.role.id ?? null,
+      roleName: membership?.role.name ?? null,
+    };
 
     // 2. Buscar o crear conversación activa
     let conversation = await this.prisma.conversation.findFirst({
@@ -71,7 +124,7 @@ export class ConversationsService implements OnModuleInit {
     // 4. EJECUTAR FLUJO IVR o ORQUESTADOR LLM
     let responseText: string;
 
-    const flowResult = await this.executeFlow(conversation, user, body, tenantId, from);
+    const flowResult = await this.executeFlow(conversation, user, body, tenantId, from, identity);
     if (flowResult) {
       responseText = flowResult;
     } else {
@@ -88,20 +141,41 @@ export class ConversationsService implements OnModuleInit {
       },
     });
 
-    // 7. Publicar respuesta al canal de salida
-    await this.broker.publish('whatsapp.outgoing', {
-      pattern: 'message.send',
-      data: { to: from, body: responseText },
-      tenantId,
-      timestamp: new Date().toISOString(),
-    });
+    // 7. Publicar la respuesta.
+    // Si el mensaje entrante traía `replyTo` (patrón RPC, usado por /simulate), la
+    // respuesta va ahí en vez de a la cola real de salida — así el llamador que
+    // está esperando la recibe, sin mezclarse con el tráfico de WhatsApp real.
+    // Sin `replyTo` (mensajes reales entrando por whatsapp.incoming), se comporta
+    // exactamente igual que antes.
+    //
+    // `assert: false` cuando es una respuesta RPC: esa cola ya la declaró
+    // `ensureReplyConsumer()` como exclusiva, y reafirmarla acá sin esa propiedad
+    // hace que RabbitMQ la rechace (ver el comentario en BrokerService.publish()).
+    await this.broker.publish(
+      msg.replyTo ?? 'whatsapp.outgoing',
+      {
+        pattern: 'message.send',
+        data: { to: from, body: responseText },
+        tenantId,
+        timestamp: new Date().toISOString(),
+        correlationId: msg.correlationId,
+      },
+      { assert: !msg.replyTo },
+    );
 
     this.logger.log(`[${tenantId}] Respuesta enviada a ${from}`);
+
+    return responseText;
   }
 
   /**
    * Ejecuta un flujo IVR para la conversación actual.
    * Retorna la respuesta a enviar al usuario, o null si no hay flujo activo.
+   *
+   * Encadena nodos automáticamente hasta llegar a uno que espere input del usuario
+   * (`menu`, `input`) o al final del flujo. Antes se ejecutaba **un nodo por mensaje
+   * entrante**, así que un flujo `start → message → llm_query` necesitaba tres
+   * mensajes del usuario para llegar a consultar al LLM.
    */
   private async executeFlow(
     conversation: any,
@@ -109,6 +183,7 @@ export class ConversationsService implements OnModuleInit {
     body: string,
     tenantId: string,
     from: string,
+    identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
   ): Promise<string | null> {
     // Buscar flujo activo
     let flowId = conversation.currentFlowId;
@@ -120,69 +195,136 @@ export class ConversationsService implements OnModuleInit {
       flowId = flow.id;
       currentNodeId = this.findStartNodeId(flow.nodes as any[]);
       if (!currentNodeId) return null;
-
-      // Inicializar flujo en la conversación
-      await this.prisma.conversation.update({
-        where: { id: conversation.id },
-        data: { currentFlowId: flowId, currentNodeId, flowState: {} },
-      });
     }
 
-    const flow = await this.flowService.findById(flowId);
-    const nodes = flow.nodes as any[];
-    const edges = flow.edges as any[];
+    let flow = await this.flowService.findById(flowId);
+    let nodes = flow.nodes as any[];
+    let edges = flow.edges as any[];
 
-    // Encontrar nodo actual
-    let node = nodes.find((n) => n.id === currentNodeId);
-    if (!node) {
-      // Nodo no encontrado, resetear flujo
+    let flowState: Record<string, any> = (conversation.flowState as Record<string, any>) || {};
+    const responses: string[] = [];
+    let nodeId: string | null = currentNodeId;
+    let steps = 0;
+
+    while (nodeId && steps < MAX_FLOW_STEPS) {
+      steps++;
+
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) {
+        // Nodo no encontrado (flujo editado bajo los pies): resetear.
+        await this.resetFlow(conversation.id);
+        return responses.length ? responses.join('\n\n') : null;
+      }
+
+      const result = await this.executeNode(
+        node,
+        body,
+        conversation,
+        user,
+        tenantId,
+        from,
+        edges,
+        flowState,
+        identity,
+      );
+
+      if (result.responseText) responses.push(result.responseText);
+      if (result.flowState) flowState = result.flowState;
+
+      // Transición a sub-flujo: cambia el flujo entero, no solo el nodo.
+      if (flowState.__subflow) {
+        const sub = flowState.__subflow;
+        delete flowState.__subflow;
+        flowId = sub.flowId;
+        flow = await this.flowService.findById(flowId);
+        nodes = flow.nodes as any[];
+        edges = flow.edges as any[];
+        nodeId = sub.entryNodeId;
+        continue;
+      }
+
+      // El nodo pide esperar: se acumuló la respuesta y hay que devolver el turno.
+      // Queda parado en sí mismo, así el próximo mensaje lo vuelve a ejecutar.
+      if (result.waitForInput) {
+        await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
+        return responses.length ? responses.join('\n\n') : null;
+      }
+
+      const nextNodeId = this.resolveNextNode(node, edges, result);
+
+      // Un nodo que apunta a sí mismo no es un bucle a ejecutar: es "quedate acá
+      // esperando el próximo mensaje". Sin esto daría MAX_FLOW_STEPS vueltas, y en
+      // un llm_query eso son 25 llamadas al modelo por cada mensaje entrante.
+      if (nextNodeId === node.id) {
+        await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
+        return responses.length ? responses.join('\n\n') : null;
+      }
+
+      // `llm_query` sin salida es un punto final conversacional, no el fin del flujo:
+      // la conversación queda parada ahí y los mensajes siguientes van derecho al
+      // modelo, sin repetir el saludo ni los nodos previos.
+      if (!nextNodeId && node.type === 'llm_query') {
+        await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
+        return responses.length ? responses.join('\n\n') : null;
+      }
+
+      nodeId = nextNodeId;
+    }
+
+    if (steps >= MAX_FLOW_STEPS) {
+      // Ciclo entre nodos no interactivos: cortamos para no colgar la request.
+      this.logger.error(
+        `Flujo ${flowId} superó ${MAX_FLOW_STEPS} pasos sin esperar input. ¿Hay un ciclo?`,
+      );
       await this.resetFlow(conversation.id);
-      return null;
+      responses.push('Se interrumpió el flujo por un problema de configuración.');
+      return responses.join('\n\n');
     }
 
-    // Ejecutar nodo según tipo
-    const result = await this.executeNode(node, body, conversation, user, tenantId, from, edges);
+    // Fin del flujo: se acabaron los nodos.
+    await this.resetFlow(conversation.id);
+    return responses.length ? responses.join('\n\n') : null;
+  }
 
-    // Determinar siguiente nodo
-    let nextNodeId: string | null = null;
-    if (result.nextNodeId) {
-      nextNodeId = result.nextNodeId;
-    } else if (node.type === 'menu' || node.type === 'input' || node.type === 'condition') {
-      // Para nodos interactivos, si no hay next explícito, mantener en el mismo nodo
-      nextNodeId = node.id;
-    } else {
-      // Para nodos no interactivos, avanzar por la primera arista
-      const edge = edges.find((e) => e.source === node.id);
-      nextNodeId = edge?.target ?? null;
-    }
-
-    // Manejar transición a sub-flujo
-    let effectiveFlowId = flowId;
-    let effectiveNextNodeId = nextNodeId;
-    if (result.flowState?.__subflow) {
-      const sub = result.flowState.__subflow;
-      effectiveFlowId = sub.flowId;
-      effectiveNextNodeId = sub.entryNodeId;
-      // Limpiar marca de sub-flujo para evitar loops infinitos
-      delete result.flowState.__subflow;
-    }
-
-    // Actualizar estado de la conversación
+  /** Guarda en qué punto del flujo quedó la conversación. */
+  private async persistFlowPosition(
+    conversationId: string,
+    flowId: string,
+    nodeId: string | null,
+    flowState: Record<string, any>,
+  ) {
     await this.prisma.conversation.update({
-      where: { id: conversation.id },
+      where: { id: conversationId },
       data: {
-        currentFlowId: effectiveFlowId,
-        currentNodeId: effectiveNextNodeId,
-        flowState: result.flowState ? JSON.parse(JSON.stringify(result.flowState)) : conversation.flowState,
+        currentFlowId: flowId,
+        currentNodeId: nodeId,
+        flowState: JSON.parse(JSON.stringify(flowState ?? {})),
       },
     });
+  }
 
-    if (!effectiveNextNodeId) {
-      // Fin del flujo
-      await this.resetFlow(conversation.id);
+  /**
+   * Decide el siguiente nodo. Prioridad:
+   *  1. target explícito devuelto por el nodo (menús, condiciones)
+   *  2. arista que sale del handle correspondiente (`sourceHandle`), que es lo que
+   *     dibuja el editor visual
+   *  3. primera arista que salga del nodo
+   */
+  private resolveNextNode(
+    node: any,
+    edges: any[],
+    result: { nextNodeId?: string; sourceHandle?: string },
+  ): string | null {
+    if (result.nextNodeId) return result.nextNodeId;
+
+    const outgoing = edges.filter((e) => e.source === node.id);
+
+    if (result.sourceHandle) {
+      const byHandle = outgoing.find((e) => e.sourceHandle === result.sourceHandle);
+      if (byHandle) return byHandle.target;
     }
 
-    return result.responseText ?? null;
+    return outgoing[0]?.target ?? null;
   }
 
   private findStartNodeId(nodes: any[]): string | null {
@@ -207,30 +349,51 @@ export class ConversationsService implements OnModuleInit {
     tenantId: string,
     from: string,
     edges: any[],
-  ): Promise<{ responseText?: string; nextNodeId?: string; flowState?: any }> {
+    flowState: Record<string, any>,
+    identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
+  ): Promise<{
+    responseText?: string;
+    nextNodeId?: string;
+    sourceHandle?: string;
+    /** Corta la cadena y devuelve el turno al usuario, parando en este nodo. */
+    waitForInput?: boolean;
+    flowState?: any;
+  }> {
     const type = node.type;
     const data = node.data || {};
-    const flowState = (conversation.flowState as Record<string, any>) || {};
 
     switch (type) {
       case 'start': {
-        // Identificación del usuario por teléfono
-        const phoneUser = await this.usersService.findByPhone(from);
-        const isKnown = !!(phoneUser && (phoneUser.name || phoneUser.email));
-        flowState.isKnownUser = isKnown;
-        flowState.userName = phoneUser?.name || null;
-        flowState.userEmail = phoneUser?.email || null;
+        // `user` e `identity` ya vienen resueltos desde `handleMessage`, contra el
+        // registro de usuarios (UserTenant + Role) — no se vuelve a consultar acá.
+        // Repetir la consulta en este punto era exactamente el bug: para entonces
+        // el usuario ya existía (lo creaba `handleMessage` un paso antes), así que
+        // el número nunca se detectaba como desconocido.
+        const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ');
+        flowState.isKnownUser = identity.isKnown;
+        flowState.userName = fullName || null;
+        flowState.userFirstName = user?.firstName || null;
+        flowState.userLastName = user?.lastName || null;
+        flowState.userEmail = user?.email || null;
         flowState.userPhone = from;
-        flowState.userId = phoneUser?.id || null;
+        flowState.userId = user?.id || null;
+        flowState.userRole = identity.roleName;
+        flowState.userRoleId = identity.roleId;
 
-        const greeting = isKnown
-          ? `¡Hola ${phoneUser?.name || ''}! Bienvenido de nuevo.`
+        const greeting = identity.isKnown
+          ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
           : data.text || '¡Hola! Bienvenido. ¿En qué puedo ayudarte?';
 
-        // Dos salidas: conocido / desconocido
-        const targetNodeId = isKnown ? data.knownTargetNodeId : data.unknownTargetNodeId;
-
-        return { responseText: greeting, nextNodeId: targetNodeId || undefined, flowState };
+        // Dos salidas: conocido / desconocido. El editor visual las dibuja como
+        // aristas desde los handles `known` / `unknown`, así que se enruta por ahí;
+        // `data.*TargetNodeId` queda como fallback para flujos viejos.
+        return {
+          responseText: greeting,
+          nextNodeId:
+            (identity.isKnown ? data.knownTargetNodeId : data.unknownTargetNodeId) || undefined,
+          sourceHandle: identity.isKnown ? 'known' : 'unknown',
+          flowState,
+        };
       }
 
       case 'message': {
@@ -240,26 +403,59 @@ export class ConversationsService implements OnModuleInit {
 
       case 'menu': {
         const options = data.options || [];
-        const selected = options.find((opt: any) =>
-          body.trim() === opt.value || body.trim() === opt.label || body.trim() === String(options.indexOf(opt) + 1),
+
+        // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
+        // encadenar nodos el menú consumiría el mensaje que lo activó.
+        if (flowState.__awaiting !== node.id) {
+          flowState.__awaiting = node.id;
+          const menuText =
+            (data.text ?? '') +
+            '\n' +
+            options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n');
+          return { responseText: menuText.trim(), waitForInput: true, flowState };
+        }
+
+        const selected = options.find(
+          (opt: any) =>
+            body.trim() === opt.value ||
+            body.trim() === opt.label ||
+            body.trim() === String(options.indexOf(opt) + 1),
         );
 
         if (selected) {
-          // Buscar arista con sourceHandle = valor seleccionado
-          const edge = edges.find((e: any) => e.source === node.id && e.sourceHandle === String(selected.value));
-          return { nextNodeId: edge?.target || selected.targetNodeId };
+          delete flowState.__awaiting;
+          // Arista con sourceHandle = valor de la opción elegida
+          const edge = edges.find(
+            (e: any) => e.source === node.id && e.sourceHandle === String(selected.value),
+          );
+          return { nextNodeId: edge?.target || selected.targetNodeId, flowState };
         }
 
-        // No seleccionó opción válida: repetir menú
-        const menuText = data.text + '\n' + options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n');
-        return { responseText: menuText };
+        // Opción inválida: repetir el menú y seguir esperando.
+        const retryText =
+          'Opción no válida.\n' +
+          (data.text ?? '') +
+          '\n' +
+          options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n');
+        return { responseText: retryText.trim(), waitForInput: true, flowState };
       }
 
       case 'input': {
-        // Guardar input en variable
+        // Primera llegada: preguntar y esperar. En la segunda, el body ya es la
+        // respuesta del usuario y recién ahí se guarda y se avanza.
+        if (flowState.__awaiting !== node.id) {
+          flowState.__awaiting = node.id;
+          return {
+            responseText: data.text || 'Por favor, ingresá el dato solicitado.',
+            waitForInput: true,
+            flowState,
+          };
+        }
+
         if (data.variableName) {
           flowState[data.variableName] = body;
         }
+        delete flowState.__awaiting;
         return { flowState };
       }
 
@@ -355,7 +551,9 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'delay': {
-        const seconds = data.seconds || 1;
+        // Acotado: ahora los nodos se encadenan dentro de una sola request HTTP,
+        // así que un delay largo la dejaría colgada.
+        const seconds = Math.min(data.seconds || 1, MAX_DELAY_SECONDS);
         await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
         return {};
       }

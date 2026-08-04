@@ -4,6 +4,10 @@
 **Stack:** NestJS (API) + Next.js (Web) + PostgreSQL + RabbitMQ + Prisma  
 **Fecha:** Agosto 2026
 
+> ⚠️ **Regla del proyecto:** ante *todo* cambio (código, docs, schema, configuración) hay
+> que correr `/graphify . --update` antes de dar la tarea por terminada, y reflejar acá el
+> cambio de estado del hito. Ver [AGENTS.md](../AGENTS.md).
+
 ---
 
 ## Hito 0 - Setup ✅ COMPLETADO
@@ -147,21 +151,224 @@
   5. **Respuesta:** guarda respuesta del asistente en `Message`
   6. **Envío:** publica a `whatsapp.outgoing` vía `BrokerService`
 - [x] `ChannelsService` — wrapper para publicar mensajes a canales
+- [x] **`/conversations/simulate` pasa por RabbitMQ de punta a punta** (pedido 2026-08-04)
+  - Antes llamaba a `handleMessage` en proceso, sin tocar el broker — no simulaba nada
+  - Ahora publica en una cola propia `whatsapp.simulate.incoming` (separada de la real
+    `whatsapp.incoming`, para no mezclar tráfico de prueba con producción) y espera la
+    respuesta vía RabbitMQ, no en memoria
+  - Patrón RPC estándar: `BrokerService.request()` con `correlationId` + una cola de
+    respuesta exclusiva por conexión. `handleMessage` respeta `msg.replyTo` al publicar
+    la respuesta; sin `replyTo` (mensajes reales) se comporta exactamente igual que antes
+  - Timeout de 90s → `504 Gateway Timeout` con el motivo, en vez de colgar la request
+  - **Tres bugs de robustez del broker aparecieron al implementar esto y quedaron
+    arreglados, no son específicos de simulate:**
+    1. `channel.ack()`/`channel.nack()` sobre un canal ya cerrado por el servidor tiran
+       una excepción **sincrónica** que quedaba sin capturar dentro del callback de
+       `consume()` — **tiraba abajo todo el proceso Node**, no solo el mensaje en curso.
+       Ahora `safeAck`/`safeNack` la contienen
+    2. Cola de respuesta anónima (`assertQueue('', ...)`): RabbitMQ nombra estas colas
+       `amq.gen-*`, y `amq.*` es un prefijo reservado del servidor — este broker (y
+       muchos, según su config) rechaza que un cliente declare ahí. Se pasó a nombre
+       propio (`whatsapp.rpc.reply.<uuid>`)
+    3. **El bug que de verdad rompía el request/reply**: `publish()` reafirma toda cola
+       con `{durable: true}` a secas. La cola de respuesta es `exclusive: true`, y
+       reafirmarla sin esa propiedad hace que RabbitMQ la vea como "otra declaración,
+       recurso bloqueado" (405) y cierre el canal — la respuesta nunca llegaba y el
+       request se colgaba hasta el timeout. `publish()` ahora acepta `{ assert: false }`
+       para saltear el re-assert cuando el llamador ya sabe que la cola existe
+  - Verificado con concurrencia real (3 requests en paralelo, sin cruce de respuestas
+    entre `correlationId`s) y multi-turno (misma conversación, memoria de estado)
+- [x] **Herramientas para probar el bot sin WhatsApp**
+  - `POST /conversations/simulate` ahora **devuelve la respuesta del bot** (`reply`).
+    Antes solo confirmaba "Mensaje procesado" y había que ir a mirar la tabla `Message`
+    o los logs: inútil para un endpoint cuyo propósito es probar
+  - `pnpm --filter api chat` — chat interactivo por consola (`apps/api/scripts/chat.mjs`)
+    con comandos `/estado` (flujo y nodo actual + variables), `/reset` y `/salir`.
+    Resuelve solo el tenant si no se le pasa
+- [x] **`llm_query` terminal ya no resetea el flujo**
+  - Un `llm_query` sin aristas de salida se tomaba como fin de flujo, así que **cada
+    mensaje volvía a arrancar desde `start`** y repetía el saludo y los nodos previos
+  - Ahora la conversación queda parada ahí: los mensajes siguientes van derecho al modelo
+  - Un nodo que apunta a sí mismo también se interpreta como "esperá acá" en vez de
+    ejecutarse en bucle — en un `llm_query` eso eran 25 llamadas al modelo por mensaje
 - [x] Endpoint `POST /conversations/simulate` — testing sin RabbitMQ
+  - ⚠️ **Sin guard de autenticación y recibe `tenantId` por body.** Aceptado a propósito
+    mientras el proyecto no sea funcional. **Cerrar antes de exponer el API fuera de la red
+    interna** (agregar `JwtAuthGuard` + tomar el tenant de `@CurrentTenant()`).
 - [x] Flujo completo end-to-end: mensaje → usuario → conversación → LLM/ticket → respuesta
+
+### Configurabilidad general de flujos IVR ✅ COMPLETADO (pedido 2026-08-04)
+- [x] **Campo `context`** — fuente de datos que respalda las respuestas del flujo
+  - Lista cerrada, no texto libre: `none` (default) / `invgate` / `internal_kb` / `other`.
+    Definida una sola vez en `apps/api/src/modules/flow/flow-context.ts`
+    (`FLOW_CONTEXT_OPTIONS`) y duplicada en el dropdown del frontend — son 4 valores
+    fijos, no ameritan un endpoint dedicado (mismo criterio que `nodeTypeList`, que
+    tampoco viene del backend)
+  - Migración manual `20260804160000_add_flow_context`: columna `TEXT NOT NULL
+    DEFAULT 'none'` + índice — los flujos existentes quedan en "genérico" sin que
+    haya que tocarlos
+  - Validado con `@IsIn(FLOW_CONTEXT_VALUES)` en ambos DTOs; un valor fuera de la
+    lista rechaza con 400 y dice cuáles son los válidos
+  - `flow.service.ts` no necesitó cambios: `create`/`update` ya spreadean el resto
+    del DTO (`...flowData` / `...rest`), así que el campo pasa solo
+  - Dropdown en el header del editor, junto a nombre y descripción
+  - Verificado end-to-end: default sin mandarlo, valor explícito, rechazo de valor
+    inválido, y actualización vía `PATCH`
+- [x] **Checkboxes de selección múltiple de tenants**
+  - El backend ya existía (`tenantIds` en `CreateFlowDto`, `POST /flows/:id/assign-tenants`);
+    faltaba la UI. Ahora el editor tiene una barra debajo del header con un checkbox
+    por tenant — "Disponible en: [ ] TenantA [ ] TenantB..."
+  - Caso de uso explícito del usuario: un menú de sucursales puede diferir entre
+    tenants, así que un mismo flujo (o sub-flujo) se puede compartir entre
+    empresas o quedar exclusivo de una, de forma independiente por tenant
+  - `GET /tenants/all` (nuevo): lista **todos** los tenants del sistema, no solo
+    el activo. Gateado con `SystemTenantGuard` — es cross-tenant por naturaleza
+    (elegir a qué empresas asignar algo exige poder verlas todas), mismo criterio
+    que `/settings`. Antes no había forma de listar todos los tenants desde el
+    frontend: `GET /tenants` está scoped a `findMyTenants` (solo el tenant activo)
+    a propósito, por aislamiento — se dejó así, se agregó el endpoint nuevo aparte
+  - `SystemTenantGuard` se movió de `modules/settings/guards/` a
+    `common/guards/`: dejó de ser específico de Settings en cuanto Tenants
+    también lo necesitó. Mensaje de error generalizado ("esta operación" en vez
+    de "la configuración del sistema")
+  - Si el editor no puede ver la lista completa (no está en el tenant de sistema),
+    la barra de checkboxes simplemente no aparece — no es un error bloqueante
+- [x] **"Flujo de inicio" — por tenant, no global**
+  - Aclaración del usuario: NO es el nodo `start` dentro del flujo. Es una
+    propiedad — cada tenant tiene como máximo un flujo de inicio, y es
+    configurable con un checkbox aparte ("Inicio"). Si el flujo tiene varios
+    tenants asignados, marcarlo como inicio lo vuelve el flujo de inicio para
+    *todos* los tenants seleccionados en ese momento
+  - Motivación explícita: poder personalizar el mensaje de bienvenida según
+    fechas u ocasiones (cambiar qué flujo es "el de inicio" sin tocar el flujo
+    de siempre)
+  - **`TenantFlow.isStart`, no `Flow.isStart`** — decisión de modelo deliberada:
+    un mismo flujo puede ser de inicio para el tenant A y no para el B, así que
+    el dato no puede vivir a nivel `Flow`. Distinto del `Flow.isDefault`
+    preexistente, que es un default *global de todo el sistema*
+  - Invariante "un tenant, un flujo de inicio como máximo" se aplica en
+    `FlowService.applyTenantAssignment` (transacción: al marcar un flujo como
+    inicio para unos tenants, desmarca cualquier OTRO flujo que lo fuera para
+    esos mismos tenants — sin tocar su estado en tenants que no estén en la
+    selección actual)
+  - **Esto resuelve, de paso, el bug de ambigüedad que habíamos marcado antes**:
+    `findActiveFlowForTenant` hacía `tenantFlow.findFirst({where:{tenantId}})`
+    sin ningún orden — con varios flujos asignados a un tenant (que es
+    justamente el caso de uso que estos checkboxes habilitan), cuál "ganaba"
+    era impredecible. Ahora filtra explícitamente por `isStart: true`,
+    determinístico por construcción (la invariante garantiza como máximo uno).
+    El viejo `Flow.isDefault` global queda como fallback de compatibilidad si
+    el tenant no tiene ningún flujo de inicio propio configurado
+  - Verificado con dos tenants de prueba: flujo 1 marcado inicio para A y B →
+    flujo 2 marcado inicio solo para A → flujo 1 pierde el inicio en A pero lo
+    conserva en B (verificado en BD, exactamente 1 por tenant) → un mensaje real
+    a un número nuevo en el tenant B activa el flujo correcto (flujo 1)
+
+### Motor de Flujos Conversacionales (IVR) ✅ COMPLETADO
+- [x] Modelo de datos: `Flow`, `TenantFlow`, y campos `currentFlowId` / `currentNodeId` /
+      `flowState` en `Conversation` (migración `add_flow_ivr_tables`)
+- [x] `FlowModule` con CRUD completo (`/flows`), scopeado por tenant y protegido con
+      `@RequirePermission('flows', ...)`
+- [x] Motor de ejecución en `ConversationsService.executeFlow()`
+  - Precedencia: si el tenant tiene un flujo activo, corre el flujo; si no, cae al
+    orquestador LLM
+  - Estado persistido por conversación (`flowState`), con reseteo al terminar el flujo
+- [x] 13 tipos de nodo: `start`, `message`, `menu`, `input`, `condition`, `ticket_create`,
+      `ticket_query`, `transfer_agent`, `llm_query`, `delay`, `variable`, `webhook`, `subflow`
+  - ⏳ `transfer_agent` y `webhook` son stubs: responden texto fijo, no ejecutan la acción
+- [x] Editor visual en Next.js con ReactFlow (`/dashboard/flows` y `/dashboard/flows/[id]`)
+  - Componentes `flow-nodes.tsx` y `flow-edges.tsx`
+- [x] Soporte de sub-flujos (nodo `subflow` con nodo de entrada configurable)
+- [x] **Encadenamiento de nodos no interactivos**
+  - Antes se ejecutaba **un nodo por mensaje entrante**: un flujo
+    `start → message → llm_query` necesitaba tres mensajes del usuario para llegar
+    a consultar al LLM
+  - Ahora `executeFlow` itera hasta llegar a un nodo que pida esperar o al final del
+    flujo, y concatena las respuestas en un solo mensaje de salida
+  - `MAX_FLOW_STEPS = 25` corta ciclos entre nodos no interactivos
+  - `delay` acotado a 10s: encadenando, un delay largo colgaría la request entera
+- [x] **`menu` e `input` con espera en dos fases**
+  - El set estático de "nodos interactivos" no alcanzaba: al encadenar, el nodo
+    consumía el mismo mensaje que lo activó. Ahora cada nodo devuelve `waitForInput`
+  - Primera llegada: muestra el prompt y espera (marca `flowState.__awaiting`)
+  - Segunda: el body ya es la respuesta del usuario → la guarda y avanza
+  - `input` antes quedaba trabado para siempre: capturaba el body pero se quedaba
+    en el mismo nodo sin avanzar nunca
+- [x] **El nodo `start` nunca detectaba un número desconocido** (bug reportado 2026-08-04)
+  - Causa: `handleMessage` creaba el `User` por teléfono **antes** de correr el flujo
+    (paso 1, `findOrCreateByPhone`). Para cuando el nodo `start` preguntaba "¿existe
+    este usuario?", la respuesta siempre era sí — porque lo acababa de crear él mismo
+    un instante antes. La rama `unknown` era, en la práctica, inalcanzable
+  - Se aprovechó para resolver algo más que pedía el usuario: "conocido" ahora
+    significa **registrado en el tenant, con rol** (`UserTenant` + `Role`), no
+    simplemente "ya existe una fila en `User`" — que era cierto para cualquier
+    número que hubiera escrito una sola vez
+  - `UsersService.findMembershipByPhone(phone, tenantId)` — nueva consulta contra el
+    registro real de usuarios, trae el usuario y su rol en ese tenant
+  - `handleMessage` la corre primero; solo cae al `findOrCreateByPhone` (ghost user
+    placeholder) si no hay membresía registrada. El resultado (`user` + `identity`)
+    se enhebra por `executeFlow` → `executeNode`, así el nodo `start` ya no vuelve a
+    consultar nada — usa lo que `handleMessage` ya resolvió
+  - `flowState` ahora expone `userRole` / `userRoleId` además de `isKnownUser`, para
+    que otros nodos (`condition`, por ejemplo) puedan ramificar por rol
+  - Beneficio no buscado: un usuario registrado ahora saluda con su **nombre real**
+    (`firstName`/`lastName` de su alta), no con el placeholder "Usuario WhatsApp"
+  - Verificado con un usuario SuperAdmin real vs. un teléfono nuevo: el registrado
+    saluda por su nombre y trae `userRole: "SuperAdmin"`; el nuevo toma la rama
+    `unknown` del flujo (antes imposible) y no arrastra ningún rol
+- [x] **El nodo `start` enruta por el handle del editor**
+  - El motor leía `data.knownTargetNodeId` / `unknownTargetNodeId`, pero el editor
+    visual dibuja aristas con `sourceHandle: 'known' | 'unknown'`. Al no encontrar
+    target caía en "primera arista que salga del nodo", así que un usuario
+    desconocido podía irse por la rama de conocido según el orden del array
+  - `resolveNextNode` ahora prioriza: target explícito → arista por `sourceHandle` →
+    primera arista. `data.*TargetNodeId` sigue andando para flujos viejos
+  - Verificado con la arista `unknown` puesta primera a propósito: el usuario
+    conocido igual sale por la rama correcta
+- [x] **Guardado del flujo: saneo del payload de ReactFlow**
+  - El `ValidationPipe` global usa `forbidNonWhitelisted: true`, y ReactFlow agrega
+    estado de runtime a los nodos (`measured` con el tamaño calculado, `selected`,
+    `dragging`) que hacía fallar el guardado con 400
+  - El frontend ahora manda solo lo que define el flujo: nodos con
+    `id/type/position/data` y aristas con `id/source/target/type/handles/label`
+  - `FlowEdgeDto.type` **sí** se agregó al DTO: elige el renderer de la arista
+    (`DeletableEdge`). Relajar la validación en vez de declararlo habría hecho que
+    `whitelist: true` lo descartara en silencio y se perdiera el botón de borrar
+  - El `alert` de error ahora muestra el mensaje del backend en vez de "Error al guardar"
+- [x] **Borrado de aristas en el editor**
+  - `DeletableEdge` usaba `setEdges` de `useReactFlow`, que escribe solo en el store
+    interno. Como la página maneja las aristas de forma controlada (`useEdgesState`
+    + `edges={edges}`), el estado del padre no cambiaba y el siguiente render
+    restauraba la arista: parecía que el borrado no hacía nada
+  - Ahora usa `deleteElements`, que genera un change de tipo remove y viaja por
+    `onEdgesChange` — que es lo que actualiza el estado del padre
+  - Se quitó el borrado al hacer click sobre la flecha: un click accidental borraba
+    sin aviso. Queda el botón × al pasar el mouse
+  - `deleteKeyCode={['Backspace','Delete']}` para borrar con teclado lo seleccionado
 
 ---
 
 ## Hito 3 - Multitenant y Menús ⏳ PENDIENTE
 
 ### Aislamiento de datos ✅ COMPLETADO
-- [x] `TenantInterceptor` global
-  - Lee `tenantId` del JWT payload
-  - Valida que el usuario pertenezca al tenant (`UserTenant`)
-  - Inyecta `tenantId` y `userTenant` en `request` para downstream
-- [x] `@CurrentTenant()` decorator
-  - Extrae `tenantId` del request de forma tipada
-  - Usado en todos los controladores CRUD (`roles`, `users`, `tenants`)
+- [x] **El tenant salió del JWT** (refactor)
+  - Antes: el `tenantId` iba en el payload del token y `TenantInterceptor` lo leía de ahí.
+    Consecuencia: cambiar de tenant exigía reemitir el token, y el selector del sidebar
+    (`setActiveTenant`) solo tocaba `localStorage` → **la UI cambiaba de tenant pero el API
+    seguía operando sobre el viejo**
+  - Ahora: el JWT es `{ sub, email }`. El tenant activo viaja por header `X-Tenant-Id`
+    en cada request
+- [x] `TenantGuard` (`src/common/guards/tenant.guard.ts`) reemplaza a `TenantInterceptor`
+  - Es **guard y no interceptor** porque en NestJS los guards corren antes, y `RolesGuard`
+    necesita el tenant ya resuelto
+  - Valida la pertenencia contra `UserTenant` y deja `request.tenantId` / `request.userTenant`
+  - Con un solo tenant el header es opcional; con varios es obligatorio (400 si falta)
+  - Orden fijo en todos los controladores: `@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)`
+- [x] `@CurrentTenant()` lee `request.tenantId` (antes `request.user.tenantId`)
+  - Usado en todos los controladores CRUD (`roles`, `users`, `tenants`, `flows`, `settings`)
+- [x] `apiFetch` del frontend manda el header desde `localStorage`; `setActiveTenant` recarga
+      la vista para que todo se refresque contra el tenant nuevo
+- [x] CORS con `allowedHeaders` explícito, si no el browser bloquea `X-Tenant-Id`
 - [x] Servicios tenant-scoped
   - `RoleService`: todas las operaciones filtran por `tenantId`
   - `UsersService.findAll()`: solo usuarios del tenant activo (via `UserTenant`)
@@ -176,8 +383,23 @@
   - `hasPermission(resource, action)` filtra items de menú
   - Selector de tenant activo si el usuario pertenece a varios
   - Logout con redirección a login
+- [x] **CRUD de usuarios completo** (`/dashboard/users`)
+  - Modelo: `User.name` se partió en `firstName` / `lastName`
+    (migración manual `20260803120000_split_user_name`, escrita a mano para no perder
+    los datos existentes — la autogenerada dropeaba la columna sin copiar nada)
+  - `GET /users` devuelve el rol que cada usuario tiene *en el tenant activo*
+  - `POST /users` con rol **obligatorio**; valida que el rol pertenezca al tenant
+    (si no, se filtrarían permisos entre empresas)
+  - Si el email ya existe en el sistema, agrega la membresía al tenant en vez de fallar:
+    la misma persona puede trabajar en varias empresas
+  - `PATCH /users/:id` edita nombre, apellido, teléfono, rol y contraseña (el email no)
+  - `DELETE /users/:id` da de baja del tenant. Solo borra el registro si el usuario quedó
+    sin tenants **y** sin historial (conversaciones / tickets / métricas); si tiene, lo
+    conserva y lo explica en la respuesta. No podés darte de baja a vos mismo
+  - Frontend con formulario unificado alta/edición, y botones filtrados por permiso
+  - Sin `legajo`: pendiente de definir si aplica siempre
 - [x] Páginas CRUD protegidas por RBAC:
-  - `/dashboard/users` — listado + crear usuarios
+  - `/dashboard/users` — CRUD completo
   - `/dashboard/roles` — listado + crear roles + agregar permisos
   - `/dashboard/tenants` — listado + crear tenants
 - [x] Dashboard home con cards de resumen y permisos del usuario
@@ -187,6 +409,104 @@
 ### Menús dinámicos desde backend ⏳ PENDIENTE
 - [ ] API endpoint: `/menu` que devuelve menús según permisos del rol
 - [ ] Estructura de menú configurable desde backend (no hardcoded)
+
+### Configuración del sistema (`/settings`) ✅ COMPLETADO — backend
+- [x] `SettingsModule` con CRUD sobre la tabla `Setting`
+  - `GET /settings`, `GET /settings/:key`, `POST /settings`, `PATCH /settings/:key`,
+    `DELETE /settings/:key`
+  - `GET /settings` devuelve valor efectivo + `source` (`db` / `env` / `default`)
+  - `DELETE` borra la fila de BD: la clave vuelve a resolverse por env var o default
+- [x] Catálogo de claves permitidas (`settings.catalog.ts`) con tipo, rango, grupo y label
+  - Autenticación y 2FA: `OTP_ENABLED`, `OTP_TTL_SECONDS`, `OTP_CODE_LENGTH`
+  - Dispositivos: `DEVICE_FINGERPRINT_TTL_DAYS`
+  - LLM: `LLM_PROVIDER`, `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_SYSTEM_PROMPT`
+  - Cualquier key fuera del catálogo se rechaza con `400` (nadie inyecta config arbitraria)
+  - Los secrets **no** están en el catálogo: van solo por env var / vault
+- [x] **OTP configurable desde el backoffice**
+  - `OTP_ENABLED` reemplaza al `if (process.env.NODE_ENV === 'development')` que estaba
+    hardcodeado en `AuthService.login()`. Si nunca se fijó valor, `AppConfigService.otpEnabled()`
+    conserva el bypass en desarrollo → comportamiento previo intacto
+  - `OTP_CODE_LENGTH` reemplaza los 6 dígitos hardcodeados de `sendOtp()` (rango 4-8,
+    con clamp defensivo por si viene una env var cruda fuera de rango)
+  - `AppConfigService` suma `getBoolean()`, `otpEnabled()` y `otpCodeLength()`
+- [x] Acceso restringido a superusuario con doble candado
+  - `SystemTenantGuard`: el tenant activo del JWT debe ser el de sistema (`SYSTEM_TENANT_SLUG`)
+  - `@RequirePermission('settings', <action>)`: el seed solo se lo da al rol `SuperAdmin`
+  - El corte es por tenant de sistema, no por nombre de rol → no viola RBAC dinámico
+- [x] `LlmService` ahora lee `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_SYSTEM_PROMPT` vía
+      `AppConfigService` (antes solo miraba env vars, así que los valores de BD no tenían efecto)
+- [x] **Pantalla `/settings`** en Next.js (ruta raíz, no bajo `/dashboard`, pero comparte
+      `Sidebar` + `AuthGuard` vía su propio layout)
+  - Parámetros agrupados por categoría, con input tipado según el catálogo
+    (select para boolean/enum, number con min/max, textarea para el system prompt)
+  - Badge por clave con el origen del valor efectivo: `guardado en BD` / `desde .env` /
+    `valor por defecto`
+  - Botón **Restaurar** (`DELETE`) para borrar el valor de BD y volver a env/default
+  - Modo solo lectura si falta `settings:update`; mensaje explícito si el API responde 403
+  - Ítem "Configuración" en el sidebar visible solo con `settings:read` **y** tenant de
+    sistema activo (`NEXT_PUBLIC_SYSTEM_TENANT_SLUG`)
+- [x] **Configuración completa por proveedor de LLM** (pedido 2026-08-03)
+  - Cada proveedor con su grupo propio: API key, modelo y host donde aplica
+    (`OPENCODEGO_API_URL` era el que faltaba para poder apuntar a un host propio)
+  - `OPENAI_BASE_URL` y `OPENROUTER_BASE_URL` para proxies / endpoints compatibles
+  - `GET /settings/providers/status`: qué proveedor está activo y qué le falta a cada uno.
+    La pantalla avisa *antes* de que falle un mensaje real
+- [x] **Secrets cifrados en reposo** — desviación acotada de la spec §5
+  - `SecretsCipher` (AES-256-GCM) con clave maestra `SETTINGS_ENCRYPTION_KEY`, solo en env
+  - Sin esa variable el backend **rechaza** guardar secrets: no hay fallback a texto plano
+  - Solo escritura: `GET` devuelve enmascarado + `isSet`, nunca el valor
+  - `AppConfigService.get()` descifra transparente para los consumidores
+  - Rotar la clave maestra invalida los secrets guardados (hay que recargarlos)
+  - Invgate sigue siendo solo env var
+- [x] **Dropdown de modelos consultado a cada proveedor** (`LlmModelsService`)
+  - `GET /settings/providers/:provider/models`, con caché en memoria de 5 min y
+    `?refresh=true` para saltearla
+  - OpenAI / OpenRouter por endpoint compatible `{base}/models`;
+    Gemini por `v1beta/models` filtrando los que soportan `generateContent`;
+    Claude por `api.anthropic.com/v1/models` con header `anthropic-version`;
+    **opencode por `{host}/config/providers`** — no es compatible con OpenAI
+  - `requestJson()` valida el `content-type` antes de parsear: las SPAs devuelven HTML
+    con status 200 en rutas inexistentes, y sin ese chequeo el error que veía el usuario
+    era `Unexpected token '<'`. Ahora dice que la URL apunta a una interfaz web
+  - Modelos de opencode como `providerID/modelID` (así los direcciona opencode);
+    verificado contra una instancia real: 394 modelos, 383 tras filtrar, 18 de `opencode-go`
+  - **El catálogo de OpenRouter es público**: se lista sin cargar la key (~340 modelos)
+  - Timeout de 8s y fallback a lista conocida con el motivo del fallo, para que el
+    dropdown nunca quede vacío
+  - Filtra modelos que no sirven para chat (embeddings, whisper, tts, dall-e, moderation)
+  - La UI ofrece "Otro — escribir a mano" y conserva el valor guardado aunque no esté
+    en el catálogo, marcado `(actual)`
+  - Al entrar solo se consulta el proveedor activo; el resto tiene botón "Buscar modelos"
+- [x] **`OpenCodeGoProvider` reimplementado sobre la API de sesiones de opencode** ✅
+  - Antes posteaba a `{host}/chat/completions` asumiendo formato OpenAI: esa ruta no
+    existe en opencode y su SPA devolvía HTML con 200, así que fallaba al parsear
+  - Ahora: `POST /session` → `POST /session/{id}/message` → `DELETE /session/{id}`
+  - Body del mensaje: `{ model: {providerID, modelID}, agent, system, parts:[{type:'text',text}] }`
+  - **Sesión efímera por consulta**, decisión deliberada: `LlmProvider` es una interfaz
+    sin estado. Una sesión por `Conversation` exigiría persistir el `sessionID` (columna
+    nueva) y romper la interfaz para los cinco proveedores. El historial ya viaja en cada
+    llamada, así que el contexto lo administra nuestro orquestador
+  - La respuesta trae partes `step-start` / `reasoning` / `text` / `step-finish`: **solo se
+    usan las de tipo `text`**; `reasoning` es razonamiento interno y no debe llegar al usuario
+  - `OPENCODEGO_AGENT` nuevo, default **`plan`**. El default de opencode es `build`, que
+    ejecuta herramientas sobre la máquina del servidor — inaceptable para un bot que
+    atiende usuarios finales
+  - La API key pasa a ser **opcional** para este proveedor: un `opencode serve` local no
+    autentica. Lo obligatorio es el host
+  - **Limitación:** la API de opencode no expone `temperature` ni `maxTokens`, así que esos
+    settings no tienen efecto acá. El `systemPrompt` sí
+  - Verificado end-to-end contra un servidor real: flujo `start → message → llm_query`
+    respondiendo en un solo mensaje con `opencode-go/kimi-k2.6`
+- [x] **Los providers dejaron de leer configuración por su cuenta**
+  - `LlmProviderFactory` resuelve API key + modelo + baseUrl y los pasa armados
+    (`ResolvedProviderConfig`); antes cada provider leía `ConfigService` (solo env),
+    así que nada de lo cargado por `/settings` tenía efecto
+  - Los providers ya no llevan `@Injectable()`: no los instancia Nest
+  - La factory valida antes de instanciar y devuelve un error claro
+    ("OpenCode Go necesita el host configurado") en vez de fallar dentro del SDK
+- [ ] ⏳ Settings por tenant: hoy imposible porque `Setting.key` es `@unique` global.
+      Requiere migrar a `@@unique([key, tenantId])` y ajustar los `findUnique` de
+      `AppConfigService` y `LlmProviderFactory`
 
 ---
 
@@ -227,13 +547,30 @@
 | Infra | Externa (192.168.0.123) | PostgreSQL + RabbitMQ en servidor dedicado |
 | RBAC | Dinámico (datos, no código) | Roles/permisos creados desde backend, nunca hardcoded |
 | LLM | Provider-agnostic | Business logic nunca llama OpenAI/Gemini/Claude directamente |
-| Secrets | Env vars / BD Setting | Nunca commiteados |
+| Secrets de LLM | BD cifrada + solo escritura | Desvío acotado de spec §5 para configurar proveedores desde el backoffice (2026-08-03) |
+| Secrets de Invgate | Env var únicamente | Sin necesidad de configurarlo desde la UI, se mantiene la regla original |
+| Tenant activo | Header `X-Tenant-Id`, no JWT | Un usuario pertenece a varios tenants; con el tenant en el token, cambiar de empresa exigía reemitirlo |
+| Nombre de usuario | `firstName` + `lastName` | Campos separados, pedido explícito |
+| Baja de usuario | Baja del tenant, no borrado físico | Conversaciones, tickets y métricas lo referencian |
+| Acceso a `/settings` | Tenant de sistema + `settings:*` | Corte por tenant, no por nombre de rol, para no romper RBAC dinámico |
+
+---
+
+## Módulos aún vacíos (stubs)
+
+Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin service ni controller:
+
+| Módulo | Estado real |
+|--------|-------------|
+| `invgate/` | Sin implementar. Los tickets se crean solo en la tabla local `Ticket` |
+| `metrics/` | Sin implementar. La tabla `Metric` existe pero nada la escribe |
+| `devices/` | Vacío — la lógica de fingerprint vive en `auth/device.service.ts` |
 
 ---
 
 ## Próximo paso inmediato
 
-**Hitos 0-3 completados en su totalidad.**
+**Hitos 0-3 completados**, más el motor de flujos IVR y la configuración del sistema.
 
 **Opciones para continuar:**
 
@@ -248,6 +585,22 @@
 **C. Menús dinámicos desde backend**
 1. API endpoint `/menu` que devuelve estructura de menú según permisos
 2. Reemplazar el menú hardcodeado del frontend por este endpoint
+
+**D. Deuda técnica pendiente**
+1. Cerrar `POST /conversations/simulate` antes de exponer el API
+2. `GET /flows/:id` no filtra por tenant (a diferencia de `findAll`)
+3. Búsqueda de tickets con `id: { contains: ... }` en el orquestador LLM: match parcial de
+   substring sobre un cuid, puede traer el ticket equivocado
+4. Implementar los nodos `transfer_agent` y `webhook` (hoy stubs)
+
+**Resuelto (2026-08-04):**
+- ~~`.env.example` traía `DEVICE_FINGERPRINT_TTL_DAYS=30` mientras el default del código y
+  el seed son 90~~ — unificado a 90
+- `pnpm run dev:api` fallaba con `Cannot find module '.../dist/main'`: `tsconfig.build.json`
+  no excluía `prisma/` del build, así que TypeScript calculaba el `rootDir` común entre
+  `src/` y `prisma/` y emitía todo bajo `dist/src/main.js` en vez de `dist/main.js`.
+  `prisma/seed.ts` ya corre aparte vía `ts-node` (`db:seed`), así que se agregó `prisma`
+  al `exclude` de `tsconfig.build.json` sin tocar nada más
 
 ¿Por cuál seguimos?
 

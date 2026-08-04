@@ -4,19 +4,45 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 
-const menuDefinition = [
+// Slug del tenant de sistema: debe coincidir con SYSTEM_TENANT_SLUG del backend.
+const SYSTEM_TENANT_SLUG = process.env.NEXT_PUBLIC_SYSTEM_TENANT_SLUG || 'system';
+
+interface MenuItem {
+  label: string;
+  href: string;
+  resource: string;
+  action: string;
+  /** Solo visible con el tenant de sistema activo (ver SystemTenantGuard en el API). */
+  systemTenantOnly?: boolean;
+}
+
+const menuDefinition: MenuItem[] = [
   { label: 'Dashboard', href: '/dashboard', resource: 'metrics', action: 'read' },
   { label: 'Usuarios', href: '/dashboard/users', resource: 'users', action: 'read' },
   { label: 'Tenants', href: '/dashboard/tenants', resource: 'tenants', action: 'read' },
   { label: 'Roles', href: '/dashboard/roles', resource: 'roles', action: 'read' },
   { label: 'Flujos IVR', href: '/dashboard/flows', resource: 'flows', action: 'read' },
+  {
+    label: 'Configuración',
+    href: '/settings',
+    resource: 'settings',
+    action: 'read',
+    systemTenantOnly: true,
+  },
 ];
 
 export default function Sidebar() {
   const { user, hasPermission, logout, activeTenant, setActiveTenant } = useAuth();
   const pathname = usePathname();
 
-  const visibleMenu = menuDefinition.filter((item) => hasPermission(item.resource, item.action));
+  const activeSlug = user?.tenants?.find((t) => t.tenantId === activeTenant)?.tenant?.slug;
+  const isSystemTenant = activeSlug === SYSTEM_TENANT_SLUG;
+
+  const visibleMenu = menuDefinition.filter(
+    (item) =>
+      hasPermission(item.resource, item.action) &&
+      (!item.systemTenantOnly || isSystemTenant),
+  );
 
   return (
     <aside className="w-64 bg-gray-900 text-white min-h-screen flex flex-col">

@@ -5,11 +5,12 @@ import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
 import { CreatePermissionDto } from './dto/permission.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
+import { TenantGuard } from '../../common/guards/tenant.guard';
 import { RequirePermission } from './decorators/require-permission.decorator';
 import { RolesGuard } from './guards/roles.guard';
 
 @Controller('roles')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 export class RbacController {
   constructor(
     private readonly roleService: RoleService,

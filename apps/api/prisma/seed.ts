@@ -69,7 +69,8 @@ async function main() {
     update: {},
     create: {
       email: DEFAULT_ADMIN_EMAIL,
-      name: 'Administrador',
+      firstName: 'Administrador',
+      lastName: 'PCI',
       passwordHash,
     },
   });

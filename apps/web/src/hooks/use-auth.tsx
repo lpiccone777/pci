@@ -7,7 +7,8 @@ import { apiFetch } from '@/lib/api';
 interface User {
   id: string;
   email: string;
-  name: string | null;
+  firstName: string | null;
+  lastName: string | null;
   tenants: Array<{
     tenantId: string;
     tenant: { id: string; name: string; slug: string };
@@ -19,7 +20,7 @@ interface AuthContextType {
   user: User | null;
   token: string | null;
   isLoading: boolean;
-  login: (email: string, password: string, tenantId?: string) => Promise<{ step: string; message?: string; accessToken?: string }>;
+  login: (email: string, password: string) => Promise<{ step: string; message?: string; accessToken?: string }>;
   verifyOtp: (code: string) => Promise<void>;
   logout: () => void;
   hasPermission: (resource: string, action: string) => boolean;
@@ -62,17 +63,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const login = useCallback(async (email: string, password: string, tenantId?: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     const data = await apiFetch('/auth/login', {
       method: 'POST',
       headers: { 'User-Agent': 'PCI-Web' },
-      body: JSON.stringify({ email, password, tenantId }),
+      body: JSON.stringify({ email, password }),
     });
 
     if (data.step === 'authenticated' && data.accessToken) {
       localStorage.setItem('token', data.accessToken);
       setToken(data.accessToken);
-      await fetchUser(data.accessToken, tenantId);
+      await fetchUser(data.accessToken);
     }
 
     return data;
@@ -104,6 +105,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setActiveTenant = useCallback((id: string) => {
     setActiveTenantState(id);
     localStorage.setItem('activeTenant', id);
+    // Antes esto solo cambiaba el estado local: el tenant iba dentro del JWT, así que
+    // el API seguía operando sobre el tenant viejo. Ahora `apiFetch` manda el header
+    // X-Tenant-Id, así que basta con recargar para que todas las vistas se refresquen
+    // contra el tenant nuevo.
+    window.location.reload();
   }, []);
 
   const hasPermission = useCallback(

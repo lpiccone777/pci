@@ -10,14 +10,15 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { FlowService } from './flow.service';
-import { CreateFlowDto, UpdateFlowDto } from './dto/create-flow.dto';
+import { CreateFlowDto, UpdateFlowDto, AssignTenantsDto } from './dto/create-flow.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../rbac/guards/roles.guard';
 import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
+import { TenantGuard } from '../../common/guards/tenant.guard';
 
 @Controller('flows')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 export class FlowController {
   constructor(private readonly flowService: FlowService) {}
 
@@ -57,11 +58,8 @@ export class FlowController {
 
   @Post(':id/assign-tenants')
   @RequirePermission('flows', 'update')
-  async assignTenants(
-    @Param('id') id: string,
-    @Body('tenantIds') tenantIds: string[],
-  ) {
-    return this.flowService.assignTenants(id, tenantIds);
+  async assignTenants(@Param('id') id: string, @Body() dto: AssignTenantsDto) {
+    return this.flowService.assignTenants(id, dto.tenantIds, !!dto.isStart);
   }
 
   @Post(':id/default')

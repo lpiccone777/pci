@@ -23,11 +23,16 @@ export class RolesGuard implements CanActivate {
 
     if (!user) throw new ForbiddenException('No autenticado');
 
+    // El tenant lo resolvió TenantGuard, que corre antes en la cadena.
+    if (!request.tenantId) {
+      throw new ForbiddenException('Tenant no resuelto: falta TenantGuard en el controlador');
+    }
+
     // Buscar los roles del usuario en el tenant activo
     const userTenants = await this.prisma.userTenant.findMany({
       where: {
         userId: user.userId,
-        tenantId: user.tenantId,
+        tenantId: request.tenantId,
       },
       include: {
         role: {

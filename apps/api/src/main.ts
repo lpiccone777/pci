@@ -1,11 +1,16 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { TenantInterceptor } from './common/interceptors/tenant.interceptor';
+import { TENANT_HEADER } from './common/guards/tenant.guard';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.enableCors({ origin: true, credentials: true });
+  app.enableCors({
+    origin: true,
+    credentials: true,
+    // Sin esto el browser bloquea el header con el que viaja el tenant activo.
+    allowedHeaders: ['Content-Type', 'Authorization', TENANT_HEADER],
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -14,8 +19,8 @@ async function bootstrap() {
     }),
   );
 
-  const tenantInterceptor = app.get(TenantInterceptor);
-  app.useGlobalInterceptors(tenantInterceptor);
+  // El tenant se resuelve con TenantGuard a nivel controlador, no con un
+  // interceptor global: los guards corren antes, y RolesGuard lo necesita resuelto.
 
   await app.listen(process.env.PORT ?? 3000);
 }

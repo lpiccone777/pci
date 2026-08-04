@@ -119,36 +119,45 @@ cd apps/web && pnpm dev            # Next.js en http://localhost:3001
 ```
 pci-chatbot/
 ├── apps/
-│   ├── api/                    # Backend — NestJS
+│   ├── api/                        # Backend — NestJS
 │   │   ├── prisma/
-│   │   │   ├── schema.prisma   # Modelo de datos
-│   │   │   └── seed.ts         # Datos iniciales
+│   │   │   ├── schema.prisma       # Modelo de datos
+│   │   │   ├── migrations/         # Migraciones aplicadas
+│   │   │   └── seed.ts             # Datos iniciales (tenant, SuperAdmin, settings)
 │   │   ├── src/
-│   │   │   ├── auth/           # Autenticación, 2FA, JWT
-│   │   │   ├── users/          # Gestión de usuarios
-│   │   │   ├── tenants/        # Multitenant
-│   │   │   ├── roles/          # RBAC dinámico
-│   │   │   ├── conversations/  # Conversaciones y mensajes
-│   │   │   ├── tickets/        # Integración Invgate
-│   │   │   ├── llm/            # Capa de abstracción LLM
-│   │   │   ├── channels/       # Conectores de canal (WhatsApp)
-│   │   │   ├── broker/         # RabbitMQ (productores/consumidores)
-│   │   │   ├── devices/        # Fingerprint de dispositivos
-│   │   │   ├── metrics/        # Auditoría y métricas
-│   │   │   └── flows/          # Flujos conversacionales (ReactFlow)
+│   │   │   ├── common/             # Interceptor de tenant, decorators compartidos
+│   │   │   ├── config/             # AppConfigService (cascada BD → env → default)
+│   │   │   ├── prisma/             # PrismaService/PrismaModule (global)
+│   │   │   └── modules/
+│   │   │       ├── auth/           # Registro, login, OTP 2FA, JWT, fingerprint
+│   │   │       ├── users/          # Gestión de usuarios
+│   │   │       ├── tenants/        # Multitenant
+│   │   │       ├── rbac/           # Roles, permisos, guard y decorator
+│   │   │       ├── settings/       # Configuración del sistema (solo superusuario)
+│   │   │       ├── conversations/  # Orquestador: motor IVR + fallback LLM
+│   │   │       ├── flow/           # CRUD de flujos conversacionales (ReactFlow)
+│   │   │       ├── llm/            # Capa de abstracción LLM + 5 providers
+│   │   │       ├── channels/       # Conectores de canal (WhatsApp)
+│   │   │       ├── broker/         # RabbitMQ (productores/consumidores)
+│   │   │       ├── devices/        # ⏳ stub — el fingerprint hoy vive en auth/
+│   │   │       ├── invgate/        # ⏳ stub — integración pendiente
+│   │   │       └── metrics/        # ⏳ stub — auditoría pendiente
 │   │   └── .env
-│   └── web/                    # Frontend — Next.js
+│   └── web/                        # Frontend — Next.js
 │       ├── src/
-│       │   ├── app/            # App Router (páginas)
-│       │   ├── components/     # Componentes React
-│       │   └── hooks/          # Custom hooks
+│       │   ├── app/                # App Router (login, dashboard, flows, roles, settings…)
+│       │   ├── components/         # Sidebar, auth guard, nodos/aristas de ReactFlow
+│       │   ├── hooks/              # useAuth / AuthProvider
+│       │   └── lib/                # Cliente HTTP con inyección de JWT
 │       └── .env
 ├── docs/
-│   └── chatbot.md              # Especificación completa del proyecto
-├── graphify-out/               # Grafo de conocimiento del codebase
-├── package.json                # Scripts del monorepo
-├── pnpm-workspace.yaml         # Configuración de workspaces
-└── .env.example                # Variables de entorno de ejemplo
+│   ├── chatbot.md                  # Especificación completa del proyecto
+│   └── plan-de-trabajo.md          # Estado por hito (documento vivo)
+├── graphify-out/                   # Grafo de conocimiento del codebase
+├── AGENTS.md                       # Convenciones y constraints para agentes
+├── package.json                    # Scripts del monorepo
+├── pnpm-workspace.yaml             # Configuración de workspaces
+└── .env.example                    # Variables de entorno de ejemplo
 ```
 
 ---
@@ -205,6 +214,16 @@ El sistema gestiona las siguientes entidades clave (ver `apps/api/prisma/schema.
 ### Multitenant
 Todo dato está aislado por `tenantId`. Cada query a base de datos debe incluir el filtro de tenant. Un usuario puede pertenecer a múltiples tenants.
 
+El **tenant activo viaja por el header `X-Tenant-Id`**, no dentro del JWT. El token identifica a la persona (`{ sub, email }`) y nada más; `TenantGuard` valida en cada request que el usuario pertenezca al tenant pedido. Así, cambiar de empresa en el selector del sidebar no requiere volver a loguearse.
+
+Los controladores que manejan datos por tenant usan siempre esta cadena, en este orden:
+
+```ts
+@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
+```
+
+`TenantGuard` es un guard y no un interceptor porque en NestJS los guards corren primero, y `RolesGuard` necesita el tenant ya resuelto. Si el usuario pertenece a un solo tenant el header es opcional; con varios es obligatorio.
+
 ### RBAC dinámico
 Los roles y permisos se crean desde el backend, no están hardcodeados. El frontend construye menús y botones en función del array de permisos del rol del usuario.
 
@@ -218,7 +237,207 @@ El core no conoce detalles de WhatsApp. Toda comunicación con canales externos 
 Las operaciones de ticket usan un **usuario técnico** con credenciales API, nunca las credenciales del usuario final.
 
 ### Secrets
-Las API keys de LLM e Invgate solo se configuran mediante variables de entorno. No se commitean nunca.
+Las API keys de LLM e Invgate solo se configuran mediante variables de entorno. No se commitean nunca, y **nunca** se guardan en la tabla `Setting` ni se exponen por `/settings`.
+
+---
+
+## 👥 Gestión de usuarios (`/dashboard/users`)
+
+CRUD completo sobre los usuarios del **tenant activo**.
+
+| Método | Ruta | Permiso | Notas |
+|--------|------|---------|-------|
+| `GET` | `/users` | `users:read` | Usuarios del tenant activo, con el rol que tienen *en ese* tenant |
+| `GET` | `/users/:id` | `users:read` | |
+| `POST` | `/users` | `users:create` | `email`, `firstName`, `lastName`, `password`, `roleId` (obligatorios) y `phone` (opcional) |
+| `PATCH` | `/users/:id` | `users:update` | Cambia nombre, apellido, teléfono, rol o contraseña. El email no se edita |
+| `DELETE` | `/users/:id` | `users:delete` | Da de baja del tenant |
+
+**Nombre y apellido son campos separados** (`firstName` / `lastName`). La migración `20260803120000_split_user_name` partió la columna `name` preservando los datos existentes.
+
+**El rol es obligatorio.** Todo usuario entra al tenant con un rol asignado (`UserTenant.roleId`), y el backend valida que el rol pertenezca al tenant activo — si no, se podrían filtrar permisos entre empresas. Si el tenant todavía no tiene roles, la pantalla avisa y bloquea el alta.
+
+**El alta es siempre en el tenant activo.** El `tenantId` sale de `@CurrentTenant()`, nunca del body. Para sumar a alguien a otra empresa, cambiás de tenant en el sidebar y lo das de alta ahí. Si el email ya existe en el sistema, en vez de fallar se agrega la membresía al tenant nuevo reutilizando la persona.
+
+**La baja no es un borrado físico** salvo que el usuario quede sin ningún tenant y sin historial. Sus conversaciones, tickets y métricas lo referencian, y borrarlas rompería la auditoría. En ese caso la respuesta explica por qué se conservó el registro. Tampoco podés darte de baja a vos mismo.
+
+---
+
+## 💬 Probar el bot sin WhatsApp
+
+### Chat interactivo por consola
+
+```bash
+pnpm dev:api                  # en una terminal
+pnpm --filter api chat        # en otra
+```
+
+Escribís y te contesta, igual que si fuera WhatsApp. Resuelve solo el tenant y el teléfono de prueba.
+
+| Comando | Qué hace |
+|---------|----------|
+| `/estado` | Muestra en qué flujo y nodo quedó la conversación, y las variables del `flowState` |
+| `/reset` | Cierra la conversación: la próxima arranca desde el inicio del flujo |
+| `/salir` | Termina |
+
+Opciones: `pnpm --filter api chat -- --tenant <id> --from +5491100000001 --api http://localhost:3001`
+
+### Un solo mensaje, por HTTP
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:3001/conversations/simulate" -Method Post `
+  -ContentType "application/json" -Body (@{
+    from     = "+5491100000001"
+    body     = "hola, no puedo entrar al sistema"
+    tenantId = "<id-del-tenant>"
+  } | ConvertTo-Json)
+```
+
+`POST /conversations/simulate` **devuelve la respuesta del bot** en el campo `reply`. A diferencia de una llamada directa, el mensaje pasa por **RabbitMQ de punta a punta**: publica en una cola propia (`whatsapp.simulate.incoming`, separada de la real `whatsapp.incoming`) y espera —a través del broker, no en memoria— la respuesta que el mismo `ConversationsService.handleMessage` publica de vuelta. Es la simulación real, no un atajo.
+
+Internamente usa el patrón RPC estándar de RabbitMQ: `correlationId` + una cola de respuesta exclusiva de esa conexión (`BrokerService.request()` en `broker.service.ts`). Si no llega respuesta en 90 segundos, el endpoint devuelve `504 Gateway Timeout` con el motivo.
+
+> El endpoint no tiene autenticación. Está bien mientras el proyecto no sea funcional, pero **hay que cerrarlo antes de exponer el API** (ver deuda técnica en el plan de trabajo).
+
+### Qué esperar
+
+Si el tenant tiene un flujo IVR activo, manda el flujo; si no, responde el orquestador LLM. Con `/estado` ves cuál de los dos está actuando: `flujo: (ninguno)` significa que contesta el LLM directamente.
+
+---
+
+## ⚙️ Configuración del sistema (`/settings`)
+
+Parámetros que se pueden cambiar **sin redeploy**, guardados en la tabla `Setting`. El valor efectivo se resuelve en cascada: **BD → variable de entorno → default del catálogo**.
+
+### Autenticación y 2FA
+
+| Clave | Tipo | Default | Qué controla |
+|-------|------|---------|--------------|
+| `OTP_ENABLED` | booleano | `true` | Si está desactivado, el login emite el JWT sin pedir OTP |
+| `OTP_TTL_SECONDS` | número (60–3600) | `300` | Validez del código OTP |
+| `OTP_CODE_LENGTH` | número (4–8) | `6` | Cantidad de dígitos del código |
+
+> Si `OTP_ENABLED` nunca se fijó (ni en BD ni en `.env`), en `NODE_ENV=development` queda **desactivado**. Antes esto era un `if (process.env.NODE_ENV === 'development')` hardcodeado en `AuthService`; ahora es un parámetro explícito y conmutable desde la UI.
+
+### Dispositivos
+
+| Clave | Tipo | Default | Qué controla |
+|-------|------|---------|--------------|
+| `DEVICE_FINGERPRINT_TTL_DAYS` | número (1–365) | `90` | Días antes de volver a pedir 2FA |
+
+### LLM — general
+
+| Clave | Tipo | Default | Qué controla |
+|-------|------|---------|--------------|
+| `LLM_PROVIDER` | enum | `openai` | Proveedor activo: `openai`, `gemini`, `claude`, `openrouter`, `opencodego` |
+| `LLM_TEMPERATURE` | número (0–2) | `0.7` | Temperature de las completions |
+| `LLM_MAX_TOKENS` | número | `1024` | Máximo de tokens de respuesta |
+| `LLM_SYSTEM_PROMPT` | texto | — | System prompt por defecto |
+
+### LLM — configuración por proveedor
+
+Cada proveedor tiene su propio grupo en la pantalla, con su API key, su modelo y —donde aplica— su host:
+
+| Proveedor | Claves |
+|-----------|--------|
+| OpenAI | `OPENAI_API_KEY` 🔒, `OPENAI_MODEL`, `OPENAI_BASE_URL` (opcional, para proxies) |
+| Gemini | `GEMINI_API_KEY` 🔒, `GEMINI_MODEL` |
+| Claude | `ANTHROPIC_API_KEY` 🔒, `ANTHROPIC_MODEL` |
+| OpenRouter | `OPENROUTER_API_KEY` 🔒, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL` |
+| OpenCode Go | `OPENCODEGO_API_URL` (host), `OPENCODEGO_API_KEY` 🔒, `OPENCODEGO_MODEL` |
+
+`GET /settings/providers/status` devuelve qué proveedor está activo y a cuáles les falta configuración. La pantalla lo usa para avisarte *antes* de que falle un mensaje real: si elegís `opencodego` sin cargar el host, te lo dice ahí mismo.
+
+### Selección de modelo
+
+El campo **Modelo** es un dropdown que se llena consultando la API del propio proveedor:
+
+`GET /settings/providers/:provider/models` (agregá `?refresh=true` para saltear la caché de 5 minutos)
+
+| Proveedor | Endpoint consultado | Necesita la key cargada |
+|-----------|--------------------|--------------------------|
+| OpenAI | `{base}/models` | sí |
+| OpenRouter | `{base}/models` | **no** — el catálogo es público (~340 modelos) |
+| Gemini | `v1beta/models` | sí — filtra los que soportan `generateContent` |
+| Claude | `api.anthropic.com/v1/models` | sí |
+| OpenCode Go | `{host}/config/providers` | no |
+
+Si la consulta falla —falta la key, timeout, host mal configurado, API no compatible— **el dropdown no queda vacío**: cae a una lista conocida y muestra en amarillo por qué no pudo consultar. Se filtran los modelos que no sirven para chat (embeddings, whisper, tts, dall-e, moderation).
+
+> **opencode no es compatible con OpenAI.** No expone `/models`, y su interfaz web responde **HTML con status 200** a cualquier ruta desconocida — por eso un `fetch` ingenuo parece exitoso y recién falla al parsear. El catálogo real está en `GET {host}/config/providers`, con la forma `{ providers: [{ id, models: { "<modelId>": {...} } }] }`. Devolvemos los modelos como `providerID/modelID` porque opencode los direcciona por ese par y un mismo modelo puede venir de varios proveedores configurados en esa instancia.
+>
+> Por eso `requestJson()` valida el `content-type` antes de parsear: sin eso el usuario veía `Unexpected token '<'`, que no dice nada. Ahora dice que la URL apunta a una interfaz web y no a la API.
+
+### OpenCode Go: cómo funciona el provider
+
+opencode trabaja con **sesiones**, no con completions sueltas. Cada consulta hace:
+
+```
+POST   /session                    → crea la sesión
+POST   /session/{id}/message       → { model: {providerID, modelID}, agent, system, parts: [{type:'text', text}] }
+DELETE /session/{id}               → limpia
+```
+
+**Sesión efímera por consulta, a propósito.** `LlmProvider` es una interfaz sin estado: recibe el historial completo y devuelve texto. Mantener una sesión de opencode por `Conversation` obligaría a persistir el `sessionID` y a romper esa interfaz para todos los proveedores. Como igual mandamos el historial en cada llamada, el contexto no se pierde: lo administra nuestro orquestador.
+
+La respuesta trae partes de varios tipos (`step-start`, `reasoning`, `text`, `step-finish`). **Solo se usan las de tipo `text`** — `reasoning` es el razonamiento interno del modelo y no debe llegarle al usuario.
+
+> ⚠️ **El agent importa por seguridad.** El default de opencode es `build`, que *ejecuta herramientas* sobre la máquina donde corre el servidor. Para un bot que atiende usuarios finales eso es un riesgo, así que `OPENCODEGO_AGENT` viene con default **`plan`**, que no permite edición. Los agents disponibles se listan con `GET {host}/agent`.
+
+> ⚠️ **`temperature` y `maxTokens` no aplican.** La API de mensajes de opencode no los expone, así que esos parámetros de `/settings` no tienen efecto con este proveedor. El `systemPrompt` sí se respeta.
+
+opencode es un asistente de programación: si el system prompt no establece una persona clara, sus respuestas van a sonar a asistente de código. Con un system prompt de soporte bien escrito responde como corresponde — verificado contra los agents `build`, `general` y `plan`.
+
+La opción **"Otro — escribir a mano"** del dropdown permite poner un modelo que no esté en la lista, y si el valor guardado no aparece en el catálogo se agrega igual como opción marcada `(actual)`, para no perderlo nunca. Al guardar una API key o un host, la lista se refresca sola.
+
+Al entrar a la pantalla solo se consultan los modelos del **proveedor activo**: consultar los cinco sería una ráfaga de llamadas externas para configurar uno solo. Los demás tienen un botón **Buscar modelos**.
+
+### 🔒 Manejo de las API keys
+
+Las claves marcadas con 🔒 son **secrets** y tienen tratamiento especial:
+
+- Se guardan **cifradas** en la BD con AES-256-GCM. La clave maestra es `SETTINGS_ENCRYPTION_KEY` y vive **solo** en `apps/api/.env`.
+- Son de **solo escritura**: `GET /settings` nunca devuelve el valor, solo un enmascarado (`sk-•••••abcd`) y `isSet: true`. Por eso el campo aparece vacío en la pantalla aunque haya una key cargada — escribir algo la reemplaza, dejarlo vacío no la toca.
+- **Sin `SETTINGS_ENCRYPTION_KEY` el backend rechaza guardarlas.** Preferimos fallar antes que dejar una API key legible en la base. Generala así:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+> ⚠️ Si rotás `SETTINGS_ENCRYPTION_KEY`, los secrets ya guardados dejan de poder descifrarse (el tag GCM no valida) y hay que volver a cargarlos.
+
+Esto es una desviación deliberada de la spec §5, que pedía las API keys solo en env vars o vault. Se aceptó para poder configurar los proveedores desde el backoffice, acotando el riesgo con cifrado en reposo y campos de solo escritura. Las credenciales de **Invgate siguen siendo solo env var**.
+
+El catálogo vive en `apps/api/src/modules/settings/settings.catalog.ts`. Cualquier clave fuera del catálogo se rechaza con `400`.
+
+### Pantalla de configuración
+
+La UI está en **`/settings`** (ruta raíz, fuera de `/dashboard`, aunque comparte el sidebar). Muestra los parámetros agrupados, con un badge por clave indicando de dónde sale el valor efectivo —`guardado en BD`, `desde .env` o `valor por defecto`— y un botón **Restaurar** que borra la fila de BD para que la clave vuelva a resolverse por env o default.
+
+El ítem "Configuración" del sidebar solo aparece si el usuario tiene `settings:read` **y** su tenant activo es el de sistema (`NEXT_PUBLIC_SYSTEM_TENANT_SLUG`, que debe coincidir con `SYSTEM_TENANT_SLUG` del backend).
+
+### Endpoints
+
+| Método | Ruta | Permiso |
+|--------|------|---------|
+| `GET` | `/settings` | `settings:read` |
+| `GET` | `/settings/:key` | `settings:read` |
+| `POST` | `/settings` | `settings:create` |
+| `PATCH` | `/settings/:key` | `settings:update` |
+| `DELETE` | `/settings/:key` | `settings:delete` — borra la fila de BD; la clave vuelve a env/default |
+
+`GET /settings` devuelve, por cada clave, el valor efectivo y su `source` (`db` / `env` / `default`), para que el backoffice muestre qué está realmente sobrescrito.
+
+### Acceso: solo superusuario
+
+Doble candado, ambos obligatorios:
+
+1. **`SystemTenantGuard`** — el tenant activo del JWT debe ser el tenant de sistema (`SYSTEM_TENANT_SLUG`, default `system`, creado por el seed).
+2. **`@RequirePermission('settings', <action>)`** — el seed asigna los permisos `settings:*` únicamente al rol `SuperAdmin`.
+
+El primer candado es el que importa: como `Setting.key` es único a nivel global, un cambio afecta a todos los tenants. Sin él, cualquier admin de tenant con `roles:create` + `permissions:create` podría auto-asignarse `settings:update` y tocar la configuración de todos. El corte es por tenant de sistema y no por nombre de rol, para no violar el constraint de RBAC dinámico.
+
+> **Limitación conocida:** `Setting.key` es `@unique` global en el schema, así que hoy los settings son globales aunque el modelo tenga columna `tenantId`. Para settings por tenant hay que migrar a `@@unique([key, tenantId])` y ajustar los `findUnique` de `AppConfigService` y `LlmProviderFactory`.
 
 ---
 
@@ -247,12 +466,40 @@ Ejecuta siempre `npx prisma generate` desde `apps/api` después de cualquier cam
 
 ---
 
+## 🕸️ Grafo de conocimiento
+
+El repo mantiene un grafo navegable del codebase en `graphify-out/`:
+
+- `graph.html` — visualización interactiva, se abre en cualquier navegador
+- `GRAPH_REPORT.md` — reporte de comunidades y auditoría
+- `graph.json` — datos crudos, listos para GraphRAG
+
+Para preguntarle algo al grafo en vez de leer el código a mano:
+
+```bash
+graphify query "¿cómo se procesa un mensaje entrante de WhatsApp?"
+```
+
+### ⚠️ Ante todo cambio, actualizá el grafo
+
+**Todo cambio en el repo — código, docs, schema o configuración — obliga a actualizar el grafo antes de dar la tarea por terminada:**
+
+```bash
+/graphify . --update
+```
+
+Es incremental: solo re-extrae lo que cambió, y si los cambios son puramente de código no consume tokens de LLM (extracción AST). Un grafo desactualizado es peor que no tener grafo, porque quien lo consulte después va a razonar sobre un proyecto que ya no existe.
+
+---
+
 ## 🤝 Contribución
 
 1. Crea una rama desde `main`: `git checkout -b feature/nombre-feature`
-2. Realiza tus cambios siguiendo las convenciones del proyecto.
+2. Realiza tus cambios siguiendo las convenciones del proyecto (ver [AGENTS.md](./AGENTS.md)).
 3. Asegúrate de que `pnpm lint` y `pnpm test` pasen en la app correspondiente.
-4. Abre un Pull Request con descripción clara del cambio.
+4. Actualiza `docs/plan-de-trabajo.md` si cambió el estado de algún hito.
+5. **Actualiza el grafo:** `/graphify . --update`
+6. Abre un Pull Request con descripción clara del cambio.
 
 ---
 

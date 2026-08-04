@@ -35,7 +35,7 @@ export const DeletableEdge = memo((props: EdgeProps) => {
     markerStart,
   } = props;
 
-  const { setEdges } = useReactFlow();
+  const { deleteElements } = useReactFlow();
   const [hovered, setHovered] = useState(false);
 
   const [edgePath, labelX, labelY] = getSmoothStepPath({
@@ -47,13 +47,26 @@ export const DeletableEdge = memo((props: EdgeProps) => {
     targetPosition,
   });
 
+  /**
+   * Usa `deleteElements` y NO `setEdges` de useReactFlow.
+   *
+   * El editor maneja las aristas de forma controlada (`useEdgesState` en la página y
+   * `edges={edges}` como prop). `setEdges` escribe solo en el store interno de
+   * ReactFlow: el estado del padre queda intacto y en el siguiente render la prop
+   * vuelve a pisar el store, así que la arista "borrada" reaparece.
+   *
+   * `deleteElements` genera un change de tipo remove que viaja por `onEdgesChange`,
+   * que es lo que actualiza el estado del padre de verdad.
+   */
   const handleDelete = useCallback(() => {
-    setEdges((eds) => eds.filter((edge) => edge.id !== id));
-  }, [id, setEdges]);
+    void deleteElements({ edges: [{ id }] });
+  }, [id, deleteElements]);
 
   return (
     <>
-      {/* Invisible wider path for easier hover / click */}
+      {/* Zona invisible más ancha, para que sea fácil pasar el mouse por encima.
+          No borra al hacer click: un click accidental sobre la flecha borrándola
+          sin aviso es un mal default. Para borrar, el botón × o la tecla Supr. */}
       <path
         d={edgePath}
         fill="none"
@@ -62,11 +75,6 @@ export const DeletableEdge = memo((props: EdgeProps) => {
         className="react-flow__edge-interaction"
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        onClick={(e) => {
-          e.stopPropagation();
-          handleDelete();
-        }}
-        style={{ cursor: 'pointer' }}
       />
       {/* Visible edge */}
       <BaseEdge

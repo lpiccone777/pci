@@ -1,18 +1,24 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { LlmProvider, LlmMessage, LlmCompletionOptions } from '../llm-provider.interface';
+import type {
+  LlmProvider,
+  LlmMessage,
+  LlmCompletionOptions,
+  ResolvedProviderConfig,
+} from '../llm-provider.interface';
 
-@Injectable()
+// Sin @Injectable(): no lo instancia Nest, lo construye LlmProviderFactory
+// pasándole la config ya resuelta.
 export class ClaudeProvider implements LlmProvider {
   private readonly client: Anthropic;
   private readonly defaultModel: string;
 
-  constructor(private readonly config: ConfigService) {
+  // La config llega resuelta desde LlmProviderFactory (BD → env → default).
+  constructor(config: ResolvedProviderConfig) {
     this.client = new Anthropic({
-      apiKey: this.config.get('ANTHROPIC_API_KEY', ''),
+      apiKey: config.apiKey,
+      ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
     });
-    this.defaultModel = this.config.get('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022');
+    this.defaultModel = config.model;
   }
 
   async generateCompletion(

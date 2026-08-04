@@ -16,14 +16,15 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: { sub: string; email: string; tenantId?: string }) {
+  // El JWT identifica a la persona y nada más. El tenant activo NO va acá:
+  // lo resuelve TenantGuard por request, desde el header X-Tenant-Id.
+  async validate(payload: { sub: string; email: string }) {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
     });
     if (!user) {
       throw new UnauthorizedException();
     }
-    // Inyectar tenantId del JWT en el request para downstream
-    return { userId: user.id, email: user.email, tenantId: payload.tenantId };
+    return { userId: user.id, email: user.email };
   }
 }

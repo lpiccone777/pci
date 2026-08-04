@@ -1,19 +1,24 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
-import { LlmProvider, LlmMessage, LlmCompletionOptions } from '../llm-provider.interface';
+import type {
+  LlmProvider,
+  LlmMessage,
+  LlmCompletionOptions,
+  ResolvedProviderConfig,
+} from '../llm-provider.interface';
 
-@Injectable()
+// Sin @Injectable(): no lo instancia Nest, lo construye LlmProviderFactory
+// pasándole la config ya resuelta.
 export class OpenRouterProvider implements LlmProvider {
   private readonly client: OpenAI;
   private readonly defaultModel: string;
 
-  constructor(private readonly config: ConfigService) {
+  // La config llega resuelta desde LlmProviderFactory (BD → env → default).
+  constructor(config: ResolvedProviderConfig) {
     this.client = new OpenAI({
-      apiKey: this.config.getOrThrow('OPENROUTER_API_KEY'),
-      baseURL: 'https://openrouter.ai/api/v1',
+      apiKey: config.apiKey,
+      baseURL: config.baseUrl || 'https://openrouter.ai/api/v1',
     });
-    this.defaultModel = this.config.get('OPENROUTER_MODEL', 'openai/gpt-4o-mini');
+    this.defaultModel = config.model;
   }
 
   async generateCompletion(

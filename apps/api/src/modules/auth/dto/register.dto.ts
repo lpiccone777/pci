@@ -10,7 +10,11 @@ export class RegisterDto {
 
   @IsOptional()
   @IsString()
-  name?: string;
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
 
   @IsOptional()
   @IsString()

@@ -36,6 +36,12 @@ import {
 } from '@/components/flow-nodes';
 import { DeletableEdge } from '@/components/flow-edges';
 
+interface TenantOption {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 const customNodeTypes = {
   start: StartNode,
   message: MessageNode,
@@ -55,6 +61,16 @@ const customNodeTypes = {
 const customEdgeTypes = {
   default: DeletableEdge,
 };
+
+// Misma lista que apps/api/src/modules/flow/flow-context.ts (FLOW_CONTEXT_OPTIONS).
+// Son 4 valores fijos, así que se duplica acá en vez de exponer un endpoint solo
+// para esto — igual que nodeTypeList, más abajo, no viene del backend.
+const contextOptions = [
+  { value: 'none', label: 'Ninguna / genérico' },
+  { value: 'invgate', label: 'Invgate (tickets)' },
+  { value: 'internal_kb', label: 'Base de conocimiento interna' },
+  { value: 'other', label: 'Otro' },
+];
 
 const nodeTypeList = [
   { type: 'start', label: 'Inicio', color: '#10b981' },
@@ -81,11 +97,20 @@ function FlowEditorInner() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [flowName, setFlowName] = useState('Nuevo Flujo');
   const [flowDescription, setFlowDescription] = useState('');
+  const [flowContext, setFlowContext] = useState('none');
+  const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
+  const [selectedTenantIds, setSelectedTenantIds] = useState<string[]>([]);
+  const [isStartFlow, setIsStartFlow] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const { screenToFlowPosition } = useReactFlow();
 
   useEffect(() => {
+    // Lista completa de tenants para los checkboxes. Requiere estar en el tenant
+    // de sistema (SystemTenantGuard) — si no, queda vacía y los checkboxes no
+    // aparecen: no tiene sentido asignar un flujo a tenants que no se pueden ver.
+    loadTenants();
+
     if (!isNew) {
       loadFlow();
     } else {
@@ -102,11 +127,27 @@ function FlowEditorInner() {
     }
   }, []);
 
+  async function loadTenants() {
+    try {
+      const data = await apiFetch('/tenants/all');
+      setAllTenants(data);
+    } catch {
+      // Sin acceso (no es el tenant de sistema) o sin permiso: los checkboxes
+      // simplemente no se muestran, no es un error que deba interrumpir la carga
+      // del editor.
+      setAllTenants([]);
+    }
+  }
+
   async function loadFlow() {
     try {
       const flow = await apiFetch(`/flows/${id}`);
       setFlowName(flow.name);
       setFlowDescription(flow.description || '');
+      setFlowContext(flow.context || 'none');
+      const tenantFlows = flow.tenantFlows || [];
+      setSelectedTenantIds(tenantFlows.map((tf: any) => tf.tenant.id));
+      setIsStartFlow(tenantFlows.some((tf: any) => tf.isStart));
       setNodes(flow.nodes || []);
       setEdges(
         (flow.edges || []).map((e: any) => ({
@@ -120,6 +161,12 @@ function FlowEditorInner() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function toggleTenant(tenantId: string) {
+    setSelectedTenantIds((prev) =>
+      prev.includes(tenantId) ? prev.filter((id) => id !== tenantId) : [...prev, tenantId],
+    );
   }
 
   const onConnect = useCallback(
@@ -209,14 +256,36 @@ function FlowEditorInner() {
       const payload = {
         name: flowName,
         description: flowDescription,
-        nodes,
-        edges,
+        context: flowContext,
+        // Solo lo que define el flujo. ReactFlow agrega estado de runtime a nodos y
+        // aristas (`measured` con el tamaño calculado, `selected`, `dragging`) que no
+        // es parte del flujo y que el ValidationPipe del backend rechaza.
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          type: n.type,
+          position: n.position,
+          data: n.data,
+        })),
+        edges: edges.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          // `type` sí se persiste: elige el renderer de la arista (DeletableEdge).
+          ...(e.type ? { type: e.type } : {}),
+          ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}),
+          ...(e.targetHandle ? { targetHandle: e.targetHandle } : {}),
+          ...(e.label ? { label: e.label } : {}),
+        })),
       };
 
       if (isNew) {
         const created = await apiFetch('/flows', {
           method: 'POST',
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            ...payload,
+            tenantIds: selectedTenantIds,
+            isStart: isStartFlow,
+          }),
         });
         router.replace(`/dashboard/flows/${created.id}`);
       } else {
@@ -224,11 +293,18 @@ function FlowEditorInner() {
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
+        // La asignación a tenants es un endpoint aparte del resto de los campos
+        // del flujo (igual que ya era antes de agregar los checkboxes).
+        await apiFetch(`/flows/${id}/assign-tenants`, {
+          method: 'POST',
+          body: JSON.stringify({ tenantIds: selectedTenantIds, isStart: isStartFlow }),
+        });
         alert('Flujo guardado');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving flow:', err);
-      alert('Error al guardar');
+      // Mostrar el motivo real: el backend explica qué campo rechazó.
+      alert(`Error al guardar: ${err?.message ?? 'error desconocido'}`);
     } finally {
       setSaving(false);
     }
@@ -261,6 +337,18 @@ function FlowEditorInner() {
             className="text-gray-600 border rounded px-2 py-1 text-sm"
             placeholder="Descripción"
           />
+          <select
+            value={flowContext}
+            onChange={(e) => setFlowContext(e.target.value)}
+            className="text-gray-600 border rounded px-2 py-1 text-sm"
+            title="Fuente de datos que respalda las respuestas de este flujo"
+          >
+            {contextOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
         <button
           onClick={saveFlow}
@@ -270,6 +358,42 @@ function FlowEditorInner() {
           {saving ? 'Guardando...' : 'Guardar'}
         </button>
       </div>
+
+      {/* Asignación a tenants: en qué empresas está disponible este flujo, y si
+          es el flujo de inicio para ellas. Solo se muestra si se pudo cargar la
+          lista completa de tenants (requiere tenant de sistema, ver loadTenants). */}
+      {allTenants.length > 0 && (
+        <div className="bg-gray-50 border-b px-4 py-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-gray-500 font-medium">Disponible en:</span>
+            {allTenants.map((t) => (
+              <label key={t.id} className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedTenantIds.includes(t.id)}
+                  onChange={() => toggleTenant(t.id)}
+                />
+                {t.name}
+              </label>
+            ))}
+          </div>
+
+          <label
+            className="flex items-center gap-1 cursor-pointer border-l pl-4"
+            title="Cada tenant tiene como máximo un flujo de inicio. Si otro flujo ya lo era para alguno de los tenants marcados arriba, se lo desmarca al guardar."
+          >
+            <input
+              type="checkbox"
+              checked={isStartFlow}
+              disabled={selectedTenantIds.length === 0}
+              onChange={(e) => setIsStartFlow(e.target.checked)}
+            />
+            <span className={selectedTenantIds.length === 0 ? 'text-gray-400' : ''}>
+              Inicio {selectedTenantIds.length === 0 && '(elegí un tenant primero)'}
+            </span>
+          </label>
+        </div>
+      )}
 
       <div className="flex-1 flex">
         {/* Sidebar - Node Types */}
@@ -308,6 +432,8 @@ function FlowEditorInner() {
             nodeTypes={customNodeTypes}
             edgeTypes={customEdgeTypes}
             defaultEdgeOptions={{ type: 'default' }}
+            // Además del botón × al pasar el mouse: seleccionar y borrar con teclado.
+            deleteKeyCode={['Backspace', 'Delete']}
             fitView
           >
             <Background />

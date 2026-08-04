@@ -5,8 +5,9 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class TenantsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Todos los tenants del sistema. Cross-tenant a propósito: ver SystemTenantGuard. */
   async findAll() {
-    return this.prisma.tenant.findMany();
+    return this.prisma.tenant.findMany({ orderBy: { name: 'asc' } });
   }
 
   async findMyTenants(tenantId: string) {

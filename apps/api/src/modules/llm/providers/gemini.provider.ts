@@ -1,18 +1,21 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { LlmProvider, LlmMessage, LlmCompletionOptions } from '../llm-provider.interface';
+import type {
+  LlmProvider,
+  LlmMessage,
+  LlmCompletionOptions,
+  ResolvedProviderConfig,
+} from '../llm-provider.interface';
 
-@Injectable()
+// Sin @Injectable(): no lo instancia Nest, lo construye LlmProviderFactory
+// pasándole la config ya resuelta.
 export class GeminiProvider implements LlmProvider {
   private readonly client: GoogleGenerativeAI;
   private readonly defaultModel: string;
 
-  constructor(private readonly config: ConfigService) {
-    this.client = new GoogleGenerativeAI(
-      this.config.get('GEMINI_API_KEY', ''),
-    );
-    this.defaultModel = this.config.get('GEMINI_MODEL', 'gemini-1.5-flash');
+  // La config llega resuelta desde LlmProviderFactory (BD → env → default).
+  constructor(config: ResolvedProviderConfig) {
+    this.client = new GoogleGenerativeAI(config.apiKey);
+    this.defaultModel = config.model;
   }
 
   async generateCompletion(

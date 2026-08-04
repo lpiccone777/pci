@@ -12,7 +12,6 @@ interface OtpEntry {
   code: string;
   expiresAt: Date;
   userId: string;
-  tenantId?: string;
 }
 
 @Injectable()
@@ -41,7 +40,8 @@ export class AuthService {
       data: {
         email: dto.email,
         passwordHash,
-        name: dto.name,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
         phone: dto.phone,
       },
     });
@@ -64,9 +64,10 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    // En desarrollo: bypass de OTP/fingerprint
-    if (process.env.NODE_ENV === 'development') {
-      return await this.buildTokens(user, dto.tenantId);
+    // 2FA configurable desde /settings (`OTP_ENABLED`). Si nunca se fijó valor,
+    // AppConfigService lo deja desactivado en NODE_ENV=development.
+    if (!(await this.config.otpEnabled())) {
+      return await this.buildTokens(user);
     }
 
     // Validar fingerprint
@@ -79,7 +80,7 @@ export class AuthService {
 
     if (hasDevices && !fingerprintValid) {
       // Dispositivo nuevo de usuario existente → requiere OTP
-      await this.sendOtp(user, dto.tenantId);
+      await this.sendOtp(user);
       return {
         step: 'otp_required',
         message: 'Se envió un código de verificación a tu email',
@@ -91,7 +92,7 @@ export class AuthService {
       await this.deviceService.createFingerprint(user.id, user.phone, userAgent);
     }
 
-    return await this.buildTokens(user, dto.tenantId);
+    return await this.buildTokens(user);
   }
 
   async verifyOtp(code: string, userAgent: string) {
@@ -115,22 +116,21 @@ export class AuthService {
     await this.deviceService.createFingerprint(user.id, user.phone, userAgent);
 
     this.otpStore.delete(code);
-    return await this.buildTokens(user, entry.tenantId);
+    return await this.buildTokens(user);
   }
 
-  private async sendOtp(
-    user: { id: string; email: string },
-    tenantId?: string,
-  ) {
+  private async sendOtp(user: { id: string; email: string }) {
     const ttlSeconds = await this.config.otpTtlSeconds();
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const length = await this.config.otpCodeLength();
+    // Código numérico de `length` dígitos, sin ceros a la izquierda.
+    const min = 10 ** (length - 1);
+    const code = Math.floor(min + Math.random() * (min * 9)).toString();
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
     this.otpStore.set(code, {
       code,
       expiresAt,
       userId: user.id,
-      tenantId,
     });
 
     await this.emailService.send({
@@ -163,17 +163,13 @@ export class AuthService {
     return result;
   }
 
-  private async buildTokens(user: { id: string; email: string }, tenantId?: string) {
-    let effectiveTenantId = tenantId;
-    if (!effectiveTenantId) {
-      const firstTenant = await this.prisma.userTenant.findFirst({
-        where: { userId: user.id },
-        orderBy: { createdAt: 'asc' },
-      });
-      effectiveTenantId = firstTenant?.tenantId;
-    }
-
-    const payload = { sub: user.id, email: user.email, tenantId: effectiveTenantId };
+  /**
+   * El token identifica a la persona, no a la persona-en-un-tenant. El tenant
+   * activo viaja por header `X-Tenant-Id` en cada request y lo valida TenantGuard.
+   * Así, cambiar de tenant no exige reemitir el token.
+   */
+  private async buildTokens(user: { id: string; email: string }) {
+    const payload = { sub: user.id, email: user.email };
     const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
     const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
 
