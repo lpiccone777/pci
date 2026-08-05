@@ -64,9 +64,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const login = useCallback(async (email: string, password: string) => {
+    // No seteamos User-Agent a mano: el browser manda el suyo, que es el que necesita
+    // el fingerprint de dispositivo. Fijarlo lo rompía (todos los navegadores del mismo
+    // usuario daban un fingerprint idéntico) y además el preflight CORS lo rechazaba.
     const data = await apiFetch('/auth/login', {
       method: 'POST',
-      headers: { 'User-Agent': 'PCI-Web' },
       body: JSON.stringify({ email, password }),
     });
 
@@ -80,9 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const verifyOtp = useCallback(async (code: string) => {
+    // Mismo criterio que en login: el User-Agent lo pone el browser.
     const data = await apiFetch('/auth/verify-otp', {
       method: 'POST',
-      headers: { 'User-Agent': 'PCI-Web' },
       body: JSON.stringify({ code }),
     });
 
