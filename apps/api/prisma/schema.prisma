@@ -21,7 +21,8 @@ model User {
   devices           Device[]
   deviceValidations DeviceValidation[]
   conversations     Conversation[]
-  tickets           Ticket[]
+  tickets           Ticket[]         @relation("TicketReporter")
+  assignedTickets   Ticket[]         @relation("TicketAssignee")
   metrics           Metric[]
 }
 
@@ -142,21 +143,27 @@ model Message {
 }
 
 model Ticket {
-  id          String   @id @default(cuid())
-  invgateId   String?  @unique
-  userId      String
-  user        User     @relation(fields: [userId], references: [id])
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  subject     String
-  description String?
-  status      String   @default("open")
-  priority    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(cuid())
+  invgateId    String?  @unique
+  userId       String
+  user         User     @relation("TicketReporter", fields: [userId], references: [id])
+  // Colaborador asignado por el nodo `transfer_agent` (round robin sobre
+  // `data.assignees`). Null si el ticket no vino de una transferencia, o si
+  // el método "ticket" no estaba tildado.
+  assignedToId String?
+  assignedTo   User?    @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  subject      String
+  description  String?
+  status       String   @default("open")
+  priority     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([tenantId, status])
   @@index([userId])
+  @@index([assignedToId])
 }
 
 model Setting {
@@ -205,10 +212,25 @@ model Flow {
   updatedAt   DateTime @updatedAt
   tenantFlows TenantFlow[]
   createdBy   String?  // userId
+  roundRobins FlowNodeRoundRobin[]
 
   @@index([isActive])
   @@index([isDefault])
   @@index([context])
+}
+
+// Estado del round robin de un nodo `transfer_agent`: a quién le tocó la
+// última vez, para repartir ordenadamente entre `data.assignees` sin
+// importar cuántas conversaciones distintas pasen por el nodo.
+model FlowNodeRoundRobin {
+  id        String   @id @default(cuid())
+  flowId    String
+  flow      Flow     @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  nodeId    String
+  lastIndex Int      @default(-1)
+  updatedAt DateTime @updatedAt
+
+  @@unique([flowId, nodeId])
 }
 
 model TenantFlow {

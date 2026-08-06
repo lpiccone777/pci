@@ -304,6 +304,7 @@ export class ConversationsService implements OnModuleInit {
         edges,
         flowState,
         identity,
+        flowId,
       );
 
       // Actualizar flowState ANTES de interpolar: si este mismo nodo acaba de
@@ -836,6 +837,100 @@ export class ConversationsService implements OnModuleInit {
     return Math.floor(min + Math.random() * (min * 9)).toString();
   }
 
+  /**
+   * Nodo `transfer_agent`: transfiere la gestión a un humano.
+   *
+   * - `data.methods` (subconjunto de 'email' | 'ticket' | 'phone' — 'phone'
+   *   reservado, sin implementar) define qué se ejecuta.
+   * - `data.assignees` rota por round robin: a quién le tocó la última vez
+   *   se guarda en `FlowNodeRoundRobin`, compartido entre TODAS las
+   *   conversaciones que pasen por este nodo (no un contador por charla).
+   * - `data.watchers`/`data.collaborators` se notifican (si el método
+   *   'email' está tildado) pero nunca reciben la asignación del ticket.
+   */
+  private async executeTransferAgentNode(
+    node: any,
+    data: any,
+    user: any,
+    tenantId: string,
+    body: string,
+    flowState: Record<string, any>,
+    flowId: string,
+  ): Promise<NodeExecutionResult> {
+    const methods: string[] = Array.isArray(data.methods) ? data.methods : [];
+    const assigneeIds: string[] = Array.isArray(data.assignees) ? data.assignees : [];
+    const watcherIds: string[] = Array.isArray(data.watchers) ? data.watchers : [];
+    const collaboratorIds: string[] = Array.isArray(data.collaborators) ? data.collaborators : [];
+
+    const assignee = assigneeIds.length
+      ? await this.pickNextAssignee(flowId, node.id, assigneeIds)
+      : null;
+
+    if (methods.includes('ticket') && assignee) {
+      const ticket = await this.prisma.ticket.create({
+        data: {
+          userId: user.id,
+          tenantId,
+          assignedToId: assignee.id,
+          subject: (flowState.subject || body).substring(0, 100),
+          description: [data.message, flowState.description || body].filter(Boolean).join('\n\n'),
+          priority: flowState.priority || 'medium',
+        },
+      });
+      flowState.lastTicketId = ticket.id;
+    }
+
+    if (methods.includes('email')) {
+      const notifyIds = Array.from(
+        new Set([assignee?.id, ...watcherIds, ...collaboratorIds].filter(Boolean)),
+      ) as string[];
+      const recipients = notifyIds.length
+        ? await this.prisma.user.findMany({ where: { id: { in: notifyIds } } })
+        : [];
+      const userName =
+        [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.phone || 'Un usuario';
+      const assigneeName = assignee
+        ? [assignee.firstName, assignee.lastName].filter(Boolean).join(' ') || assignee.email
+        : null;
+
+      for (const recipient of recipients) {
+        await this.emailService.send({
+          to: recipient.email,
+          subject: `Transferencia de conversación — ${userName}`,
+          text:
+            `${userName} (${user?.phone || 'sin teléfono'}) fue transferido a soporte humano.\n\n` +
+            (data.message ? `Nota: ${data.message}\n\n` : '') +
+            `Último mensaje: "${body}"\n\n` +
+            (assigneeName ? `Asignado a: ${assigneeName}\n` : 'Sin colaborador asignado.\n') +
+            (flowState.lastTicketId ? `Ticket: #${flowState.lastTicketId}\n` : ''),
+        });
+      }
+    }
+
+    // `data.message` es una nota interna para el agente (va al mail y al ticket, arriba),
+    // no un texto para el chat: si el flujo necesita avisarle algo al usuario acá, se
+    // pone un nodo `message` antes de este. Sin responseText, sigue a la próxima arista.
+    return { flowState };
+  }
+
+  /** Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en FlowNodeRoundRobin. */
+  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[]) {
+    const state = await this.prisma.flowNodeRoundRobin.upsert({
+      where: { flowId_nodeId: { flowId, nodeId } },
+      update: {},
+      create: { flowId, nodeId, lastIndex: -1 },
+    });
+
+    const nextIndex = (state.lastIndex + 1) % assigneeIds.length;
+    await this.prisma.flowNodeRoundRobin.update({
+      where: { flowId_nodeId: { flowId, nodeId } },
+      data: { lastIndex: nextIndex },
+    });
+
+    const nextUserId = assigneeIds[nextIndex];
+    return this.prisma.user.findUnique({ where: { id: nextUserId } });
+  }
+
   private async executeNode(
     node: any,
     body: string,
@@ -846,6 +941,7 @@ export class ConversationsService implements OnModuleInit {
     edges: any[],
     flowState: Record<string, any>,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
+    flowId: string,
   ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
@@ -1076,12 +1172,8 @@ export class ConversationsService implements OnModuleInit {
         return { responseText: 'No encontré el ticket solicitado.' };
       }
 
-      case 'transfer_agent': {
-        // TODO: Implementar cola de agentes humanos
-        return {
-          responseText: data.message || 'Te estoy transfiriendo con un agente humano. Por favor espera...',
-        };
-      }
+      case 'transfer_agent':
+        return this.executeTransferAgentNode(node, data, user, tenantId, body, flowState, flowId);
 
       case 'llm_query': {
         const recentMessages = await this.prisma.message.findMany({

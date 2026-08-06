@@ -44,6 +44,13 @@ interface TenantOption {
   slug: string;
 }
 
+interface UserOption {
+  id: string;
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+}
+
 const customNodeTypes = {
   start: StartNode,
   message: MessageNode,
@@ -105,6 +112,7 @@ function FlowEditorInner() {
   const [flowDescription, setFlowDescription] = useState('');
   const [flowContext, setFlowContext] = useState('none');
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
+  const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [selectedTenantIds, setSelectedTenantIds] = useState<string[]>([]);
   const [isStartFlow, setIsStartFlow] = useState(false);
   const [loading, setLoading] = useState(!isNew);
@@ -116,6 +124,7 @@ function FlowEditorInner() {
     // de sistema (SystemTenantGuard) — si no, queda vacía y los checkboxes no
     // aparecen: no tiene sentido asignar un flujo a tenants que no se pueden ver.
     loadTenants();
+    loadUsers();
 
     if (!isNew) {
       loadFlow();
@@ -142,6 +151,17 @@ function FlowEditorInner() {
       // simplemente no se muestran, no es un error que deba interrumpir la carga
       // del editor.
       setAllTenants([]);
+    }
+  }
+
+  async function loadUsers() {
+    try {
+      const data = await apiFetch('/users');
+      setAllUsers(data);
+    } catch {
+      // Sin permiso `users:read` en el tenant actual: los selectores de
+      // colaboradores/observadores del nodo transfer_agent quedan vacíos.
+      setAllUsers([]);
     }
   }
 
@@ -232,7 +252,13 @@ function FlowEditorInner() {
       case 'ticket_query':
         return { ticketIdVariable: '' };
       case 'transfer_agent':
-        return { message: 'Transfiriendo a agente...' };
+        return {
+          message: '',
+          methods: [],
+          assignees: [],
+          watchers: [],
+          collaborators: [],
+        };
       case 'llm_query':
         return { systemPrompt: '', contextMessages: 10 };
       case 'delay':
@@ -459,6 +485,7 @@ function FlowEditorInner() {
             <NodeProperties
               node={selectedNode}
               onUpdate={updateNodeData}
+              users={allUsers}
             />
             <button
               onClick={() => {
@@ -479,7 +506,15 @@ function FlowEditorInner() {
   );
 }
 
-function NodeProperties({ node, onUpdate }: { node: Node; onUpdate: (key: string, value: any) => void }) {
+function NodeProperties({
+  node,
+  onUpdate,
+  users,
+}: {
+  node: Node;
+  onUpdate: (key: string, value: any) => void;
+  users: UserOption[];
+}) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
 
@@ -875,6 +910,211 @@ function NodeProperties({ node, onUpdate }: { node: Node; onUpdate: (key: string
           </div>
         </>
       )}
+
+      {type === 'transfer_agent' && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1">Nota interna (mail / ticket)</label>
+            <p className="text-xs text-gray-400 mb-1">
+              No se muestra en el chat — se agrega al mail y a la descripción del ticket para el agente.
+            </p>
+            <textarea
+              value={data.message || ''}
+              onChange={(e) => onUpdate('message', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+              placeholder="Ej: usuario reincidente, ya intentó restablecer la contraseña dos veces"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Método de transferencia</label>
+            <div className="space-y-1">
+              {[
+                { value: 'email', label: 'Mail' },
+                { value: 'ticket', label: 'Ticket' },
+                { value: 'phone', label: 'Teléfono (próximamente)', disabled: true },
+              ].map((m) => (
+                <label
+                  key={m.value}
+                  className={`flex items-center gap-2 text-sm ${m.disabled ? 'text-gray-400' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={m.disabled}
+                    checked={(data.methods || []).includes(m.value)}
+                    onChange={(e) => {
+                      const current: string[] = data.methods || [];
+                      onUpdate(
+                        'methods',
+                        e.target.checked ? [...current, m.value] : current.filter((v) => v !== m.value),
+                      );
+                    }}
+                  />
+                  {m.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-sm font-medium">Asignados (orden = round robin)</label>
+              <button
+                type="button"
+                onClick={() => onUpdate('assignees', [...(data.assignees || []), ''])}
+                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200"
+              >
+                + Agregar
+              </button>
+            </div>
+            <div className="space-y-2">
+              {(data.assignees || []).map((userId: string, idx: number) => (
+                <div key={idx} className="border rounded p-2 bg-gray-50">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-xs font-medium text-gray-500">#{idx + 1}</span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => {
+                          const current = [...(data.assignees || [])];
+                          [current[idx - 1], current[idx]] = [current[idx], current[idx - 1]];
+                          onUpdate('assignees', current);
+                        }}
+                        className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === (data.assignees || []).length - 1}
+                        onClick={() => {
+                          const current = [...(data.assignees || [])];
+                          [current[idx + 1], current[idx]] = [current[idx], current[idx + 1]];
+                          onUpdate('assignees', current);
+                        }}
+                        className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const current = data.assignees || [];
+                          onUpdate('assignees', current.filter((_: any, i: number) => i !== idx));
+                        }}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        × Quitar
+                      </button>
+                    </div>
+                  </div>
+                  <select
+                    value={userId}
+                    onChange={(e) => {
+                      const current = [...(data.assignees || [])];
+                      current[idx] = e.target.value;
+                      onUpdate('assignees', current);
+                    }}
+                    className="w-full border rounded px-2 py-1 text-sm"
+                  >
+                    <option value="">Seleccionar usuario...</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {userLabel(u)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+              {(data.assignees || []).length === 0 && (
+                <p className="text-xs text-gray-400 italic text-center py-2">
+                  Sin asignados. Hacé clic en "+ Agregar".
+                </p>
+              )}
+            </div>
+          </div>
+
+          <UserPickerList
+            label="Observadores"
+            values={data.watchers || []}
+            users={users}
+            onChange={(next) => onUpdate('watchers', next)}
+          />
+
+          <UserPickerList
+            label="Colaboradores de la tarea"
+            values={data.collaborators || []}
+            users={users}
+            onChange={(next) => onUpdate('collaborators', next)}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+function userLabel(u: UserOption) {
+  const name = [u.firstName, u.lastName].filter(Boolean).join(' ');
+  return name ? `${name} (${u.email})` : u.email;
+}
+
+function UserPickerList({
+  label,
+  values,
+  users,
+  onChange,
+}: {
+  label: string;
+  values: string[];
+  users: UserOption[];
+  onChange: (next: string[]) => void;
+}) {
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-1">
+        <label className="block text-sm font-medium">{label}</label>
+        <button
+          type="button"
+          onClick={() => onChange([...values, ''])}
+          className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200"
+        >
+          + Agregar
+        </button>
+      </div>
+      <div className="space-y-2">
+        {values.map((userId, idx) => (
+          <div key={idx} className="flex gap-1">
+            <select
+              value={userId}
+              onChange={(e) => {
+                const next = [...values];
+                next[idx] = e.target.value;
+                onChange(next);
+              }}
+              className="flex-1 border rounded px-2 py-1 text-sm"
+            >
+              <option value="">Seleccionar usuario...</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {userLabel(u)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => onChange(values.filter((_, i) => i !== idx))}
+              className="text-xs text-red-500 hover:text-red-700 px-1"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        {values.length === 0 && (
+          <p className="text-xs text-gray-400 italic text-center py-2">Sin elementos. Hacé clic en "+ Agregar".</p>
+        )}
+      </div>
     </div>
   );
 }

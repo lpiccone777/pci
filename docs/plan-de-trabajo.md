@@ -705,11 +705,15 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 2. `GET /flows/:id` no filtra por tenant (a diferencia de `findAll`)
 3. Búsqueda de tickets con `id: { contains: ... }` en el orquestador LLM: match parcial de
    substring sobre un cuid, puede traer el ticket equivocado
-4. Implementar los nodos `transfer_agent` y `webhook` (hoy stubs)
+4. Implementar el nodo `webhook` (hoy stub)
 5. Webhook de WhatsApp sin verificar `X-Hub-Signature-256` (App Secret de Meta) — cualquiera
    que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`
 6. `WHATSAPP_TENANT_ID` es un solo valor global: un número de WhatsApp = un tenant, hasta
    que existan settings por tenant
+7. Sin rate limit de solicitudes de teléfonos desconocidos (no registrados en el tenant):
+   hoy `handleMessage` crea un `User`/`Conversation` nuevo por cada mensaje entrante sin
+   límite — un número desconocido puede spamear el flujo (y disparar llamadas a LLM/email/
+   ticket) sin ninguna contención
 
 **E. Audio (STT/TTS) — pedido explícitamente para después**
 1. `WHATSAPP_TENANT_ID` (recepción) y `WhatsAppService` (envío) solo manejan `type: text`
