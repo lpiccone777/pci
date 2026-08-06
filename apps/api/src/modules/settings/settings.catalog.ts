@@ -19,6 +19,7 @@ export const LLM_PROVIDERS = [
   'claude',
   'openrouter',
   'opencodego',
+  'minimax',
 ] as const;
 export type LlmProviderName = (typeof LLM_PROVIDERS)[number];
 
@@ -31,7 +32,10 @@ export type SettingGroup =
   | 'LLM: Gemini'
   | 'LLM: Claude'
   | 'LLM: OpenRouter'
-  | 'LLM: OpenCode Go';
+  | 'LLM: OpenCode Go'
+  | 'LLM: MiniMax'
+  | 'Mensajería: WhatsApp'
+  | 'Mensajería: Email';
 
 export interface SettingDefinition {
   key: string;
@@ -132,7 +136,7 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     label: 'Proveedor activo',
     defaultValue: 'openai',
     description: 'Lo lee LlmProviderFactory en cada request, sin reiniciar el backend.',
-    allowedValues: ['openai', 'gemini', 'claude', 'openrouter', 'opencodego'],
+    allowedValues: ['openai', 'gemini', 'claude', 'openrouter', 'opencodego', 'minimax'],
   },
   {
     key: 'LLM_TEMPERATURE',
@@ -324,6 +328,157 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'servidor: peligroso para un bot que atiende usuarios finales. Por eso acá el ' +
       'default es `plan`, que no permite edición. Ver GET /agent en tu servidor.',
   },
+
+  // --- MiniMax ---
+  {
+    key: 'MINIMAX_API_KEY',
+    type: 'string',
+    group: 'LLM: MiniMax',
+    label: 'API key',
+    defaultValue: '',
+    secret: true,
+    provider: 'minimax',
+    description:
+      'Se guarda cifrada. Misma key para el chat (OpenAI-compatible, /v1/chat/completions) y ' +
+      'para T2A (texto a voz) cuando se implemente esa parte — MiniMax usa un único Bearer ' +
+      'token para ambas APIs.',
+  },
+  {
+    key: 'MINIMAX_MODEL',
+    type: 'string',
+    group: 'LLM: MiniMax',
+    label: 'Modelo',
+    defaultValue: 'MiniMax-M2.5',
+    provider: 'minimax',
+    placeholder: 'MiniMax-M2.5',
+    description:
+      'Identificador del modelo de chat de MiniMax (ej. MiniMax-M3, MiniMax-M2.5). No es el ' +
+      'modelo de voz (T2A) — ese es un namespace de modelos distinto (speech-*).',
+  },
+  {
+    key: 'MINIMAX_BASE_URL',
+    type: 'string',
+    group: 'LLM: MiniMax',
+    label: 'Base URL (opcional)',
+    defaultValue: '',
+    provider: 'minimax',
+    placeholder: 'https://api.minimax.io/v1',
+    description: 'Vacío = endpoint global oficial. Cambiar solo para un proxy o la región de China.',
+  },
+
+  // --- Mensajería: WhatsApp ---
+  {
+    key: 'WHATSAPP_API_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Access Token',
+    defaultValue: '',
+    secret: true,
+    placeholder: 'EAAO...',
+    description:
+      'Token de acceso de la API de WhatsApp Business (Meta for Developers > WhatsApp > ' +
+      'API Setup). Se guarda cifrado.',
+  },
+  {
+    key: 'WHATSAPP_PHONE_NUMBER_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Phone Number ID',
+    defaultValue: '',
+    placeholder: '1162819126925337',
+    description: 'ID numérico del número de WhatsApp Business emisor (no el número en sí).',
+  },
+  {
+    key: 'WHATSAPP_API_VERSION',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Versión de la Graph API',
+    defaultValue: 'v26.0',
+    placeholder: 'v26.0',
+    description:
+      'Versión de la Graph API de Meta usada para el endpoint /messages. Actualizar cuando ' +
+      'Meta deprecia versiones viejas.',
+  },
+  {
+    key: 'WHATSAPP_WEBHOOK_VERIFY_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Verify Token del webhook',
+    defaultValue: '',
+    secret: true,
+    description:
+      'Token propio (lo elegís vos, cualquier string) que Meta reenvía al verificar la ' +
+      'suscripción del webhook (GET /webhooks/whatsapp). Tiene que coincidir con el que ' +
+      'configures en Meta for Developers > WhatsApp > Configuration.',
+  },
+  {
+    key: 'WHATSAPP_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número de WhatsApp. ' +
+      'Limitación temporal: como los settings todavía son globales (no por tenant), un ' +
+      'solo número de WhatsApp sirve a un solo tenant. Sin definir, usa el tenant más ' +
+      'antiguo del sistema.',
+  },
+
+  // --- Mensajería: Email ---
+  {
+    key: 'EMAIL_SMTP_HOST',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Host SMTP',
+    defaultValue: '',
+    placeholder: 'smtp.sendgrid.net',
+    description: 'Sin configurar, los emails (ej. códigos OTP) quedan solo logueados en consola.',
+  },
+  {
+    key: 'EMAIL_SMTP_PORT',
+    type: 'number',
+    group: 'Mensajería: Email',
+    label: 'Puerto SMTP',
+    defaultValue: '587',
+    min: 1,
+    max: 65535,
+    description: '587 (STARTTLS) o 465 (TLS implícito, requiere "Conexión segura" activada).',
+  },
+  {
+    key: 'EMAIL_SMTP_SECURE',
+    type: 'boolean',
+    group: 'Mensajería: Email',
+    label: 'Conexión segura (TLS implícito)',
+    defaultValue: 'false',
+    description: 'Activar solo si el puerto es 465. Con 587/STARTTLS dejar desactivado.',
+  },
+  {
+    key: 'EMAIL_SMTP_USER',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Usuario SMTP',
+    defaultValue: '',
+    description: 'Suele ser el email de la cuenta o un API user (ej. "apikey" en SendGrid).',
+  },
+  {
+    key: 'EMAIL_SMTP_PASS',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Contraseña / API key SMTP',
+    defaultValue: '',
+    secret: true,
+    description: 'Se guarda cifrada.',
+  },
+  {
+    key: 'EMAIL_FROM',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Remitente',
+    defaultValue: '',
+    placeholder: '"Plataforma Conversacional Inteligente Soporte" <soporte@tuempresa.com>',
+    description: 'Se usa como remitente en los emails salientes (ej. el código OTP).',
+  },
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -336,6 +491,9 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'LLM: Claude',
   'LLM: OpenRouter',
   'LLM: OpenCode Go',
+  'LLM: MiniMax',
+  'Mensajería: WhatsApp',
+  'Mensajería: Email',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));

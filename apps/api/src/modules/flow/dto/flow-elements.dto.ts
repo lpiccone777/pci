@@ -104,6 +104,27 @@ export class FlowNodeDataDto {
   @IsString()
   @IsOptional()
   flowName?: string;
+
+  // --- Nodo transfer_agent ---
+  /** Subconjunto de 'email' | 'ticket' | 'phone' (multiselección; 'phone' reservado, sin implementar). */
+  @IsArray()
+  @IsOptional()
+  methods?: string[];
+
+  /** userId de cada colaborador, en el orden en que rotan por round robin. */
+  @IsArray()
+  @IsOptional()
+  assignees?: string[];
+
+  /** userId de cada observador (se notifican, no se les asigna nada). */
+  @IsArray()
+  @IsOptional()
+  watchers?: string[];
+
+  /** userId de cada colaborador de la tarea (involucrados, tampoco asignados). */
+  @IsArray()
+  @IsOptional()
+  collaborators?: string[];
 }
 
 export class FlowNodeDto {

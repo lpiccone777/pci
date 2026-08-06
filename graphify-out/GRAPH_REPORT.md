@@ -1,367 +1,367 @@
-# Graph Report - .  (2026-08-04)
+# Graph Report - .  (2026-08-06)
 
 ## Corpus Check
-- 1 files · ~42,124 words
+- 5 files · ~51,407 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1069 nodes · 2200 edges · 79 communities (66 shown, 13 thin omitted)
-- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 175 edges (avg confidence: 0.85)
-- Token cost: 0 input · 74,825 output
+- 1166 nodes · 2449 edges · 78 communities (65 shown, 13 thin omitted)
+- Extraction: 92% EXTRACTED · 7% INFERRED · 0% AMBIGUOUS · INFERRED: 183 edges (avg confidence: 0.85)
+- Token cost: 8,200 input · 11,500 output
 
 ## Community Hubs (Navigation)
-- [[_COMMUNITY_Docs LLM, OpenCode y Content-Type|Docs: LLM, OpenCode y Content-Type]]
-- [[_COMMUNITY_Autenticacion Controller y Guards|Autenticacion: Controller y Guards]]
-- [[_COMMUNITY_Docs Indice, Spec y Regla del Grafo|Docs: Indice, Spec y Regla del Grafo]]
-- [[_COMMUNITY_Docs Secrets, OTP e Invgate|Docs: Secrets, OTP e Invgate]]
-- [[_COMMUNITY_Panel Admin Next.js|Panel Admin Next.js]]
-- [[_COMMUNITY_Docs Spec, 2FA e Invgate|Docs: Spec, 2FA e Invgate]]
-- [[_COMMUNITY_Identidad Conocido y ExecuteNode|Identidad "Conocido" y ExecuteNode]]
-- [[_COMMUNITY_Modulos NestJS|Modulos NestJS]]
-- [[_COMMUNITY_Settings DTOs y Provider Factory|Settings: DTOs y Provider Factory]]
-- [[_COMMUNITY_BrokerService|BrokerService]]
-- [[_COMMUNITY_Editor Visual de Flujos Aristas|Editor Visual de Flujos: Aristas]]
-- [[_COMMUNITY_DTOs de Flujos IVR|DTOs de Flujos IVR]]
-- [[_COMMUNITY_Dependencias Web|Dependencias Web]]
-- [[_COMMUNITY_RBAC Dinamico y AuthMe|RBAC Dinamico y AuthMe]]
-- [[_COMMUNITY_DevDependencies API|DevDependencies API]]
-- [[_COMMUNITY_TypeScript Config API|TypeScript Config API]]
-- [[_COMMUNITY_Docs Deuda Tecnica y Orquestador|Docs: Deuda Tecnica y Orquestador]]
-- [[_COMMUNITY_RBAC CurrentTenant y SystemTenantGuard|RBAC: CurrentTenant y SystemTenantGuard]]
-- [[_COMMUNITY_Docs Spec, Indice y Desacople|Docs: Spec, Indice y Desacople]]
-- [[_COMMUNITY_TypeScript Config Web|TypeScript Config Web]]
-- [[_COMMUNITY_Dependencias API|Dependencias API]]
-- [[_COMMUNITY_Docs apiFetch, CORS y Baja de Usuario|Docs: apiFetch, CORS y Baja de Usuario]]
-- [[_COMMUNITY_Docs OTP y AppConfigService|Docs: OTP y AppConfigService]]
-- [[_COMMUNITY_Docs Idioma, Spec y SecretsCipher|Docs: Idioma, Spec y SecretsCipher]]
-- [[_COMMUNITY_Docs Desacople de Canales|Docs: Desacople de Canales]]
-- [[_COMMUNITY_Docs RBAC y Doble Candado|Docs: RBAC y Doble Candado]]
-- [[_COMMUNITY_Scripts API|Scripts API]]
-- [[_COMMUNITY_Docs Bugs del Broker RPC|Docs: Bugs del Broker RPC]]
-- [[_COMMUNITY_Docs Multitenant y Resolucion del Tenant|Docs: Multitenant y Resolucion del Tenant]]
-- [[_COMMUNITY_RBAC Guards y JwtAuthGuard|RBAC: Guards y JwtAuthGuard]]
-- [[_COMMUNITY_ChannelsService y ConversationsService|ChannelsService y ConversationsService]]
-- [[_COMMUNITY_Docs Editor de Flujos y Nodo Start|Docs: Editor de Flujos y Nodo Start]]
-- [[_COMMUNITY_Script de Chat Interactivo|Script de Chat Interactivo]]
-- [[_COMMUNITY_Docs Flujo de Inicio por Tenant (nuevo)|Docs: Flujo de Inicio por Tenant (nuevo)]]
-- [[_COMMUNITY_Auth EmailService y Device|Auth: EmailService y Device]]
-- [[_COMMUNITY_Docs Invgate y Editor de Flujos|Docs: Invgate y Editor de Flujos]]
-- [[_COMMUNITY_Metadata package API|Metadata package API]]
-- [[_COMMUNITY_Config Jest API|Config Jest API]]
-- [[_COMMUNITY_Docs AppConfigService y Monorepo|Docs: AppConfigService y Monorepo]]
-- [[_COMMUNITY_TenantGuard|TenantGuard]]
-- [[_COMMUNITY_Docs Decisiones y Migracion|Docs: Decisiones y Migracion]]
-- [[_COMMUNITY_Docs Invgate Pendiente|Docs: Invgate Pendiente]]
-- [[_COMMUNITY_Scripts del Monorepo|Scripts del Monorepo]]
-- [[_COMMUNITY_Config Jest E2E|Config Jest E2E]]
-- [[_COMMUNITY_Nest CLI Config|Nest CLI Config]]
-- [[_COMMUNITY_Docs 2FA, Fingerprint y Hito 1|Docs: 2FA, Fingerprint y Hito 1]]
-- [[_COMMUNITY_TSConfig Build API|TSConfig Build API]]
-- [[_COMMUNITY_Home Page Web|Home Page Web]]
-- [[_COMMUNITY_PostCSS Config|PostCSS Config]]
-- [[_COMMUNITY_Docs Convencion Backend|Docs: Convencion Backend]]
-- [[_COMMUNITY_Docs Modelo de Datos Inicial|Docs: Modelo de Datos Inicial]]
-- [[_COMMUNITY_Docs Convencion de Idioma|Docs: Convencion de Idioma]]
-- [[_COMMUNITY_Docs API Client|Docs: API Client]]
-- [[_COMMUNITY_Docs LlmProvider Interface|Docs: LlmProvider Interface]]
-- [[_COMMUNITY_Docs Entidad Message|Docs: Entidad Message]]
-- [[_COMMUNITY_Docs Entidad Setting|Docs: Entidad Setting]]
-- [[_COMMUNITY_Docs Usuario Tecnico Invgate|Docs: Usuario Tecnico Invgate]]
-- [[_COMMUNITY_Docs OTP Email|Docs: OTP Email]]
-- [[_COMMUNITY_Docs OTP SMS|Docs: OTP SMS]]
-- [[_COMMUNITY_Config pnpm Workspace|Config pnpm Workspace]]
-- [[_COMMUNITY_Next.js Config|Next.js Config]]
-- [[_COMMUNITY_Next.js Env Types|Next.js Env Types]]
-- [[_COMMUNITY_Config TS y Permisos Claude Code|Config TS y Permisos Claude Code]]
-- [[_COMMUNITY_Canal WhatsApp (ChannelsService)|Canal WhatsApp (ChannelsService)]]
-- [[_COMMUNITY_Config de Build TypeScript|Config de Build TypeScript]]
-- [[_COMMUNITY_Fingerprint de Dispositivo|Fingerprint de Dispositivo]]
-- [[_COMMUNITY_Página de Inicio (Web)|Página de Inicio (Web)]]
-- [[_COMMUNITY_Config PostCSS|Config PostCSS]]
-- [[_COMMUNITY_Convención de Módulos Backend|Convención de Módulos Backend]]
-- [[_COMMUNITY_Modelo de Datos Inicial|Modelo de Datos Inicial]]
-- [[_COMMUNITY_Convención de Idioma (Español)|Convención de Idioma (Español)]]
-- [[_COMMUNITY_Cliente API (Frontend)|Cliente API (Frontend)]]
-- [[_COMMUNITY_Interfaz LlmProvider|Interfaz LlmProvider]]
-- [[_COMMUNITY_Entidad Message|Entidad Message]]
+- [[_COMMUNITY_AppConfigService y Auth (SMTPJWT)|AppConfigService y Auth (SMTP/JWT)]]
+- [[_COMMUNITY_Módulos NestJS raíz (AppUsersTenants)|Módulos NestJS raíz (App/Users/Tenants)]]
+- [[_COMMUNITY_Motor de flujos ejecución y WhatsApp|Motor de flujos: ejecución y WhatsApp]]
+- [[_COMMUNITY_SettingsModule y SecretsCipher|SettingsModule y SecretsCipher]]
+- [[_COMMUNITY_Frontend AuthContext y API client|Frontend: AuthContext y API client]]
+- [[_COMMUNITY_Spec original y modelo de datos inicial|Spec original y modelo de datos inicial]]
+- [[_COMMUNITY_Editor visual de flujos (nodos)|Editor visual de flujos (nodos)]]
+- [[_COMMUNITY_SettingsService y catálogo|SettingsService y catálogo]]
+- [[_COMMUNITY_LlmProviderFactory y AppConfigService (auth)|LlmProviderFactory y AppConfigService (auth)]]
+- [[_COMMUNITY_FlowController y DTOs de Flow|FlowController y DTOs de Flow]]
+- [[_COMMUNITY_RBAC roles y permisos|RBAC: roles y permisos]]
+- [[_COMMUNITY_LlmModelsService (dropdown de modelos)|LlmModelsService (dropdown de modelos)]]
+- [[_COMMUNITY_Dependencias npm (frontend)|Dependencias npm (frontend)]]
+- [[_COMMUNITY_Dependencias ESLint (dev)|Dependencias ESLint (dev)]]
+- [[_COMMUNITY_Proveedores LLM (OpenClaudeGeminiRouter)|Proveedores LLM (Open/Claude/Gemini/Router)]]
+- [[_COMMUNITY_tsconfig del backend|tsconfig del backend]]
+- [[_COMMUNITY_Motor de flujos IVR y RBAC|Motor de flujos IVR y RBAC]]
+- [[_COMMUNITY_Webhook de WhatsApp|Webhook de WhatsApp]]
+- [[_COMMUNITY_BrokerModule y decisión RabbitMQ|BrokerModule y decisión RabbitMQ]]
+- [[_COMMUNITY_AGENTS.md e infraestructura|AGENTS.md e infraestructura]]
+- [[_COMMUNITY_Setup inicial del proyecto (Hito 0)|Setup inicial del proyecto (Hito 0)]]
+- [[_COMMUNITY_Dependencias npm (backend)|Dependencias npm (backend)]]
+- [[_COMMUNITY_tsconfig raíz|tsconfig raíz]]
+- [[_COMMUNITY_ConversationsService orquestador y Ticket|ConversationsService orquestador y Ticket]]
+- [[_COMMUNITY_Capa de abstracción LLM|Capa de abstracción LLM]]
+- [[_COMMUNITY_BrokerService y conector WhatsApp|BrokerService y conector WhatsApp]]
+- [[_COMMUNITY_Motor de flujos encadenamiento de nodos|Motor de flujos: encadenamiento de nodos]]
+- [[_COMMUNITY_Multitenant CurrentTenant y gestión usuarios|Multitenant: CurrentTenant y gestión usuarios]]
+- [[_COMMUNITY_SystemTenantGuard (tenants)|SystemTenantGuard (tenants)]]
+- [[_COMMUNITY_Scripts npm raíz|Scripts npm raíz]]
+- [[_COMMUNITY_BrokerService (RabbitMQ, implementación)|BrokerService (RabbitMQ, implementación)]]
+- [[_COMMUNITY_Modelo UserTenant y reconocimiento de usuario|Modelo User/Tenant y reconocimiento de usuario]]
+- [[_COMMUNITY_RBAC dinámico y panel admin|RBAC dinámico y panel admin]]
+- [[_COMMUNITY_OpenCodeGoProvider|OpenCodeGoProvider]]
+- [[_COMMUNITY_Pantalla settings del frontend|Pantalla /settings del frontend]]
+- [[_COMMUNITY_Hito 2 - Lógica de negocio|Hito 2 - Lógica de negocio]]
+- [[_COMMUNITY_Deuda técnica pendiente|Deuda técnica pendiente]]
+- [[_COMMUNITY_Plan de trabajo (documento vivo)|Plan de trabajo (documento vivo)]]
+- [[_COMMUNITY_Hito 4 - Auditoría y módulos vacíos|Hito 4 - Auditoría y módulos vacíos]]
+- [[_COMMUNITY_Editor visual de flujos DTOs y saneo|Editor visual de flujos: DTOs y saneo]]
+- [[_COMMUNITY_Decisiones técnicas archivadas|Decisiones técnicas archivadas]]
+- [[_COMMUNITY_Regla actualizar el grafo (graphify)|Regla: actualizar el grafo (graphify)]]
+- [[_COMMUNITY_Hito 1 - Core de seguridad|Hito 1 - Core de seguridad]]
+- [[_COMMUNITY_Catálogo de settings y endpoints|Catálogo de settings y endpoints]]
+- [[_COMMUNITY_CRUD de usuarios y Metric|CRUD de usuarios y Metric]]
+- [[_COMMUNITY_TenantGuard y resolución de tenant|TenantGuard y resolución de tenant]]
+- [[_COMMUNITY_Estado del repo e infraestructura externa|Estado del repo e infraestructura externa]]
+- [[_COMMUNITY_Spec del proyecto e Invgate pendiente|Spec del proyecto e Invgate pendiente]]
+- [[_COMMUNITY_Panel Admin AuthContext y RBAC dinámico|Panel Admin: AuthContext y RBAC dinámico]]
+- [[_COMMUNITY_package.json raíz (metadata)|package.json raíz (metadata)]]
+- [[_COMMUNITY_Config de Jest (tests)|Config de Jest (tests)]]
+- [[_COMMUNITY_TenantGuard (multitenant, Hito 3)|TenantGuard (multitenant, Hito 3)]]
+- [[_COMMUNITY_Infraestructura externa y stack NestJS|Infraestructura externa y stack NestJS]]
+- [[_COMMUNITY_MiniMax (audio STTTTS)|MiniMax (audio STT/TTS)]]
+- [[_COMMUNITY_package.json backend (scripts)|package.json backend (scripts)]]
+- [[_COMMUNITY_Config Jest e2e|Config Jest e2e]]
+- [[_COMMUNITY_nest-cli.json|nest-cli.json]]
+- [[_COMMUNITY_Convenciones monorepo (CORS, workspaces)|Convenciones monorepo (CORS, workspaces)]]
+- [[_COMMUNITY_Migración split firstNamelastName|Migración split firstName/lastName]]
+- [[_COMMUNITY_LlmProvider interface y EmailService|LlmProvider interface y EmailService]]
+- [[_COMMUNITY_LlmModelsService validación de content-type|LlmModelsService: validación de content-type]]
+- [[_COMMUNITY_tsconfig.build.json y permisos locales|tsconfig.build.json y permisos locales]]
+- [[_COMMUNITY_TenantFlow.isStart y flujo por defecto|TenantFlow.isStart y flujo por defecto]]
+- [[_COMMUNITY_tsconfig.build.json (excludes)|tsconfig.build.json (excludes)]]
+- [[_COMMUNITY_postcss.config.mjs|postcss.config.mjs]]
+- [[_COMMUNITY_Convención de nomenclatura backend|Convención de nomenclatura backend]]
+- [[_COMMUNITY_Modelo de datos inicial (entidades)|Modelo de datos inicial (entidades)]]
+- [[_COMMUNITY_Convención de idioma español|Convención de idioma: español]]
+- [[_COMMUNITY_API client libapi.ts|API client lib/api.ts]]
+- [[_COMMUNITY_Message entity|Message entity]]
+- [[_COMMUNITY_Setting entity|Setting entity]]
+- [[_COMMUNITY_Usuario técnico de Invgate|Usuario técnico de Invgate]]
+- [[_COMMUNITY_OTP 2FA por email|OTP 2FA por email]]
+- [[_COMMUNITY_OTP 2FA por SMS (futuro)|OTP 2FA por SMS (futuro)]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `AppConfigService` - 38 edges
-2. `ConversationsService.executeNode` - 36 edges
-3. `ConversationsService (orquestador core)` - 35 edges
-4. `LlmProviderFactory` - 33 edges
-5. `OpenCodeGoProvider` - 30 edges
-6. `SettingsService` - 27 edges
-7. `SettingsModule (CRUD sobre la tabla Setting)` - 26 edges
-8. `AGENTS.md — convenciones y constraints para agentes` - 26 edges
-9. `Hito 3 - Multitenant y Menús` - 26 edges
-10. `Deuda técnica pendiente` - 25 edges
+1. `ConversationsService.executeNode` - 54 edges
+2. `AppConfigService` - 38 edges
+3. `LlmProviderFactory` - 35 edges
+4. `ConversationsService (orquestador core)` - 35 edges
+5. `OpenCodeGoProvider` - 31 edges
+6. `SettingsModule (CRUD sobre la tabla Setting)` - 29 edges
+7. `Deuda técnica pendiente` - 28 edges
+8. `Plan de Trabajo (documento vivo)` - 27 edges
+9. `SettingsService` - 27 edges
+10. `BrokerService (RabbitMQ, colas persistentes, reconexión)` - 26 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `opencode no es compatible con OpenAI` --semantically_similar_to--> `POST /conversations/simulate sin guard de autenticación`  [AMBIGUOUS] [semantically similar]
+  README.md → docs/plan-de-trabajo.md
 - `WhatsApp Business API` --semantically_similar_to--> `Conector WhatsApp`  [INFERRED] [semantically similar]
   AGENTS.md → docs/chatbot.md
+- `LLM abstraction layer` --semantically_similar_to--> `Capa de abstraccion LLM`  [INFERRED] [semantically similar]
+  AGENTS.md → README.md
 - `Limitación conocida: Setting.key es @unique global` --semantically_similar_to--> `Limitación: settings globales por Setting.key @unique`  [INFERRED] [semantically similar]
   AGENTS.md → README.md
-- `Regla del proyecto: /graphify . --update en el plan` --semantically_similar_to--> `Ante todo cambio, actualizá el grafo (README)`  [INFERRED] [semantically similar]
-  docs/plan-de-trabajo.md → README.md
 - `settings.catalog.ts (catalogo de claves permitidas)` --semantically_similar_to--> `Motor de flujos conversacionales IVR (executeFlow)`  [INFERRED] [semantically similar]
   AGENTS.md → docs/plan-de-trabajo.md
-- `Autenticacion y OTP 2FA por email` --semantically_similar_to--> `Constraint: abstracción LLM vía LlmService`  [INFERRED] [semantically similar]
-  docs/plan-de-trabajo.md → AGENTS.md
 
 ## Import Cycles
 - None detected.
 
 ## Hyperedges (group relationships)
-- **Bugs de robustez del broker resueltos al implementar /conversations/simulate por RPC** — docs_plan_de_trabajo_conversations_simulate_rpc, docs_plan_de_trabajo_broker_safeack_safenack, docs_plan_de_trabajo_broker_reply_queue_naming, docs_plan_de_trabajo_broker_publish_assert_false [EXTRACTED 1.00]
-- **Patrón de flujo de inicio por tenant (TenantFlow.isStart)** — docs_plan_de_trabajo_tenant_flow_isstart, docs_plan_de_trabajo_apply_tenant_assignment, docs_plan_de_trabajo_find_active_flow_bug_fix, docs_plan_de_trabajo_flow_engine [EXTRACTED 1.00]
-- **Deuda técnica resuelta el 2026-08-04 (TTL fingerprint + build tsconfig)** — docs_plan_de_trabajo_device_fingerprint_ttl_unification, docs_plan_de_trabajo_tsconfig_build_prisma_exclude_fix, docs_plan_de_trabajo_seed_ts [INFERRED 0.85]
+- **Herramientas para probar el bot sin WhatsApp** — docs_plan_de_trabajo_conversations_simulate, docs_plan_de_trabajo_chat_mjs, docs_plan_de_trabajo_conversationsservice [EXTRACTED 1.00]
+- **Invariante del flujo de inicio por tenant** — docs_plan_de_trabajo_tenantflow_isstart, docs_plan_de_trabajo_applytenantassignment, docs_plan_de_trabajo_findactiveflowfortenant, docs_plan_de_trabajo_flow_isdefault [EXTRACTED 1.00]
+- **Interpretación semántica y cancelación coloquial en menu/input** — docs_plan_de_trabajo_interpretmenuchoice, docs_plan_de_trabajo_lookslikecancelattempt, docs_plan_de_trabajo_confirmcancelintent, docs_plan_de_trabajo_llmfallback [EXTRACTED 1.00]
 
-## Communities (79 total, 13 thin omitted)
+## Communities (78 total, 13 thin omitted)
 
-### Community 0 - "Docs: LLM, OpenCode y Content-Type"
-Cohesion: 0.07
-Nodes (55): Abstracción LLM (LlmService, provider-agnostic), requestJson() valida content-type antes de parsear, Constraint: abstracción LLM vía LlmService, Constraint de abstraccion LLM: la logica de negocio nunca llama al SDK del proveedor, LlmProviderFactory / ResolvedProviderConfig, OpenCodeGoProvider (API de sesiones de opencode), Sesión efímera por consulta en OpenCode Go, OPENCODEGO_AGENT (default plan) (+47 more)
+### Community 0 - "AppConfigService y Auth (SMTP/JWT)"
+Cohesion: 0.06
+Nodes (22): OTP_ENABLED, apps/api package.json, AppConfigService, AuthModule, OtpEntry, EmailMessage, AuthModule, Device (modelo, fingerprint) (+14 more)
 
-### Community 1 - "Autenticacion: Controller y Guards"
-Cohesion: 0.05
-Nodes (13): UpdateSettingDto, UpsertSettingDto, FALLBACK_MODELS, SystemTenantGuard, FALLBACK_MODELS, ModelListResult, NON_CHAT_PATTERNS, LlmModule (+5 more)
+### Community 1 - "Módulos NestJS raíz (App/Users/Tenants)"
+Cohesion: 0.06
+Nodes (8): CreateUserDto, UpdateUserDto, LlmModule, Cadena de guards JwtAuthGuard, TenantGuard, RolesGuard, TenantGuard, SettingsModule, SettingsModule, USER_SELECT
 
-### Community 2 - "Docs: Indice, Spec y Regla del Grafo"
-Cohesion: 0.07
-Nodes (26): AuthGuard(), menuDefinition, MenuItem, Sidebar(), DashboardPage(), Flow, AuthContext, AuthProvider() (+18 more)
-
-### Community 3 - "Docs: Secrets, OTP e Invgate"
+### Community 2 - "Motor de flujos: ejecución y WhatsApp"
 Cohesion: 0.08
-Nodes (10): BrokerMessage, MessageHandler, PendingRequest, ChannelsService, ConversationsService.executeNode, publish({assert:false}) (bug: reassert de cola exclusive), Cola de respuesta con nombre propio (whatsapp.rpc.reply.<uuid>), safeAck/safeNack (bug: excepción sincrónica en canal cerrado) (+2 more)
+Nodes (9): BrokerMessage, NodeExecutionResult, ConversationsService.executeNode, publish({assert:false}) (bug: reassert de cola exclusive), Cola de respuesta con nombre propio (whatsapp.rpc.reply.<uuid>), safeAck/safeNack (bug: excepción sincrónica en canal cerrado), /conversations/simulate vía RabbitMQ RPC, Settings por tenant (pendiente) (+1 more)
 
-### Community 4 - "Panel Admin Next.js"
+### Community 3 - "SettingsModule y SecretsCipher"
 Cohesion: 0.08
-Nodes (17): "Conocido" en el motor de flujos, executeNode (case 'start'), findOrCreateByPhone, ConversationsService.handleMessage, Split de User.name en firstName/lastName, prisma/seed.ts (seed idempotente), Modelo Tenant, Modelo User (+9 more)
+Nodes (43): Invgate vía usuario técnico de API, LlmModelsService (dropdown de modelos por proveedor), Secrets cifrados en la tabla Setting (desviación de spec §5), Constraint de secrets: nunca commiteados ni devueltos en texto plano, Constraint: secrets solo por env vars / vault, SecretsCipher AES-256-GCM (src/config/secrets.cipher.ts), Limitacion: Setting.key es @unique global (settings no son por tenant), Tabla Setting (+35 more)
 
-### Community 5 - "Docs: Spec, 2FA e Invgate"
-Cohesion: 0.10
-Nodes (21): DeletableEdge, ConditionNode, DelayNode, InputNode, LlmQueryNode, MenuNode, MessageNode, nodeColors (+13 more)
+### Community 4 - "Frontend: AuthContext y API client"
+Cohesion: 0.09
+Nodes (22): AuthGuard(), menuDefinition, MenuItem, Sidebar(), DashboardPage(), Flow, AuthContext, AuthProvider() (+14 more)
 
-### Community 6 - "Identidad "Conocido" y ExecuteNode"
+### Community 5 - "Spec original y modelo de datos inicial"
+Cohesion: 0.08
+Nodes (35): apps/api/README.md, NestJS framework, 2FA Mail/SMS, API de Invgate, docs/chatbot.md, Fingerprint de dispositivo, Módulo de Métricas y Auditoría, Módulo Multitenant (+27 more)
+
+### Community 6 - "Editor visual de flujos (nodos)"
+Cohesion: 0.09
+Nodes (24): DeletableEdge, ConditionNode, DelayNode, DeviceValidationNode, EndNode, InputNode, LlmQueryNode, MenuNode (+16 more)
+
+### Community 7 - "SettingsService y catálogo"
+Cohesion: 0.11
+Nodes (19): ProviderName, prisma, Setting (tabla), settings.catalog.ts, ModelList, ProviderStatus, Setting, SettingsPage() (+11 more)
+
+### Community 8 - "LlmProviderFactory y AppConfigService (auth)"
+Cohesion: 0.14
+Nodes (28): Device fingerprint v1 (telefono + User-Agent), Constraint: abstracción LLM vía LlmService, OTP_ENABLED (reemplazo del bypass hardcodeado de desarrollo), AppConfigService (cascada BD -> env -> default), AppConfigService, Autenticacion y OTP 2FA por email, AuthModule (registro, login, JWT), Fingerprint de dispositivo (tabla Device con expiresAt) (+20 more)
+
+### Community 9 - "FlowController y DTOs de Flow"
 Cohesion: 0.12
 Nodes (6): AssignTenantsDto, UpdateFlowDto, FlowNodeDataDto, FlowNodeDto, FLOW_CONTEXT_OPTIONS, FLOW_CONTEXT_VALUES
 
-### Community 7 - "Modulos NestJS"
+### Community 10 - "RBAC: roles y permisos"
 Cohesion: 0.13
-Nodes (5): CreatePermissionDto, CreateRoleDto, UpdateRoleDto, RolePermission (modelo), RoleService
+Nodes (4): CreatePermissionDto, CreateRoleDto, UpdateRoleDto, RoleService
 
-### Community 8 - "Settings: DTOs y Provider Factory"
+### Community 11 - "LlmModelsService (dropdown de modelos)"
+Cohesion: 0.17
+Nodes (7): UpdateSettingDto, UpsertSettingDto, FALLBACK_MODELS, LlmModelsService, ModelListResult, NON_CHAT_PATTERNS, LlmModelsService
+
+### Community 12 - "Dependencias npm (frontend)"
 Cohesion: 0.08
 Nodes (23): dependencies, next, react, react-dom, @xyflow/react, devDependencies, eslint, @tailwindcss/postcss (+15 more)
 
-### Community 9 - "BrokerService"
+### Community 13 - "Dependencias ESLint (dev)"
 Cohesion: 0.08
-Nodes (24): devDependencies, eslint, eslint-config-prettier, @eslint/eslintrc, @eslint/js, eslint-plugin-prettier, globals, @nestjs/cli (+16 more)
+Nodes (25): devDependencies, eslint, eslint-config-prettier, @eslint/eslintrc, @eslint/js, eslint-plugin-prettier, globals, @nestjs/cli (+17 more)
 
-### Community 10 - "Editor Visual de Flujos: Aristas"
+### Community 14 - "Proveedores LLM (Open/Claude/Gemini/Router)"
+Cohesion: 0.24
+Nodes (15): ClaudeProvider, LlmProvider (contrato provider-agnostic), LlmProviderFactory, LlmProvider (interfaz provider-agnostic), LlmService (5 proveedores), LlmModelsService (catálogo de modelos), LlmProvider interface (contrato provider-agnostic), OpenCodeGoProvider (+7 more)
+
+### Community 15 - "tsconfig del backend"
 Cohesion: 0.09
 Nodes (22): compilerOptions, allowSyntheticDefaultImports, baseUrl, declaration, emitDecoratorMetadata, esModuleInterop, experimentalDecorators, forceConsistentCasingInFileNames (+14 more)
 
-### Community 11 - "DTOs de Flujos IVR"
-Cohesion: 0.13
-Nodes (23): Deuda técnica pendiente, FlowService.applyTenantAssignment, findActiveFlowForTenant: ambigüedad resuelta con isStart, flow-context.ts (FLOW_CONTEXT_OPTIONS), Campo context (flujo IVR), Modelo Flow / TenantFlow, Motor de flujos conversacionales IVR (executeFlow), Modelo Flow (+15 more)
+### Community 16 - "Motor de flujos IVR y RBAC"
+Cohesion: 0.12
+Nodes (23): chat.mjs (chat interactivo por consola), confirmCancelIntent, flow-context.ts (FLOW_CONTEXT_OPTIONS), Campo context (flujo IVR), Modelo Flow / TenantFlow, Modelo Flow, FlowModule (CRUD /flows), flow-nodes.tsx (+15 more)
 
-### Community 12 - "Dependencias Web"
+### Community 17 - "Webhook de WhatsApp"
+Cohesion: 0.10
+Nodes (11): Verificación de firma del webhook de WhatsApp (pendiente), API, args, c, FROM, resolveTenant(), rl, tenantId (+3 more)
+
+### Community 18 - "BrokerModule y decisión RabbitMQ"
 Cohesion: 0.11
-Nodes (21): apps/api/README.md, NestJS framework, 2FA Mail/SMS, docs/chatbot.md, NestJS backend, Next.js frontend, Orquestador NestJS, PostgreSQL (+13 more)
+Nodes (18): Constraint: desacople de canales por broker, Decisión cerrada: RabbitMQ como broker, Desacople de canales vía broker, ChannelsService, BrokerMessage (pattern, data, tenantId, timestamp), BrokerModule / BrokerService (RabbitMQ via amqplib), Cola whatsapp.incoming, Cola whatsapp.outgoing (+10 more)
 
-### Community 13 - "RBAC Dinamico y AuthMe"
-Cohesion: 0.21
-Nodes (11): ProviderName, BY_KEY, findSettingDefinition(), SettingDefinition, SettingGroup, SETTINGS_GROUP_ORDER, SettingType, validateSettingValue() (+3 more)
+### Community 19 - "AGENTS.md e infraestructura"
+Cohesion: 0.12
+Nodes (20): AGENTS.md — convenciones y constraints para agentes, Regla: actualizar el grafo ante todo cambio, Broker: RabbitMQ elegido sobre LavinMQ, graphify-out/ (grafo de conocimiento del codebase), Invgate (usuario técnico dedicado), Monorepo pnpm workspaces, RabbitMQ (broker elegido), Secrets (manejo de credenciales) (+12 more)
 
-### Community 14 - "DevDependencies API"
+### Community 20 - "Setup inicial del proyecto (Hito 0)"
+Cohesion: 0.16
+Nodes (20): Nomenclatura backend src/modules/<dominio>/, Grafo de conocimiento graphify (graphify-out/), Monorepo pnpm workspaces (apps/api + apps/web), Prisma como ORM, Decisión cerrada: Prisma como ORM, Monorepo pnpm apps/api + apps/web, Hito 0 - Setup (completado), Seed idempotente (tenant Sistema PCI, SuperAdmin, settings) (+12 more)
+
+### Community 21 - "Dependencias npm (backend)"
+Cohesion: 0.10
+Nodes (20): dependencies, amqplib, @anthropic-ai/sdk, bcrypt, class-transformer, class-validator, @google/generative-ai, @nestjs/common (+12 more)
+
+### Community 22 - "tsconfig raíz"
 Cohesion: 0.10
 Nodes (19): compilerOptions, allowJs, esModuleInterop, incremental, isolatedModules, jsx, lib, module (+11 more)
 
-### Community 15 - "TypeScript Config API"
-Cohesion: 0.19
-Nodes (19): Device fingerprint v1 (telefono + User-Agent), OTP_ENABLED (reemplazo del bypass hardcodeado de desarrollo), Limitacion: Setting.key es @unique global, AppConfigService (cascada BD -> env -> default), AppConfigService, Autenticacion y OTP 2FA por email, Fingerprint de dispositivo (tabla Device con expiresAt), devices/ (módulo vacío) (+11 more)
+### Community 23 - "ConversationsService orquestador y Ticket"
+Cohesion: 0.18
+Nodes (19): Bug: colas anónimas amq.gen-*, BrokerService.request() — patrón RPC, BrokerService.request, ensureReplyConsumer, Bug: publish() y cola exclusive (405 RESOURCE_LOCKED), safeAck / safeNack, BrokerService.publish, ConversationsService (orquestador core) (+11 more)
 
-### Community 16 - "Docs: Deuda Tecnica y Orquestador"
-Cohesion: 0.14
-Nodes (19): Politica Invgate: usuario tecnico dedicado, Invgate vía usuario técnico de API, Secrets cifrados en la tabla Setting (desviación de spec §5), Especificación completa del proyecto (chatbot.md), Hito 4 - Auditoria y Metricas (pendiente), Integración Invgate pendiente (falta de credenciales), Auditoria y metricas - pendiente, Módulos aún vacíos (invgate, metrics, devices) (+11 more)
-
-### Community 17 - "RBAC: CurrentTenant y SystemTenantGuard"
-Cohesion: 0.11
-Nodes (19): dependencies, amqplib, @anthropic-ai/sdk, bcrypt, class-transformer, class-validator, @google/generative-ai, @nestjs/common (+11 more)
-
-### Community 18 - "Docs: Spec, Indice y Desacople"
-Cohesion: 0.15
-Nodes (18): Constraint: desacople de canales por broker, Constraint de desacople de canales: todo I/O de canal por el broker, Decisión cerrada: RabbitMQ como broker, Decision de broker: RabbitMQ (elegido sobre LavinMQ), BrokerModule, Conector WhatsApp, BrokerMessage, BrokerService (RabbitMQ, colas persistentes, reconexión) (+10 more)
-
-### Community 19 - "TypeScript Config Web"
+### Community 24 - "Capa de abstracción LLM"
 Cohesion: 0.16
-Nodes (15): apps/api (NestJS 11), apps/web (Next.js 16 + React 19 + Tailwind 4), docs/plan-de-trabajo.md, Infraestructura externa (192.168.0.123), LlmModule, Monorepo pnpm workspaces, NestJS 11 (API), Next.js 16 + React 19 (Web) (+7 more)
+Nodes (18): requestJson() valida content-type antes de parsear, Constraint de abstraccion LLM: la logica de negocio nunca llama al SDK del proveedor, LlmProviderFactory / ResolvedProviderConfig, OpenCodeGoProvider (API de sesiones de opencode), OPENCODEGO_AGENT (default plan), OpenCode Go provider (OpenCodeGoProvider), ORM: Prisma, Filtrado de partes: solo tipo text, nunca reasoning (+10 more)
 
-### Community 20 - "Dependencias API"
-Cohesion: 0.19
-Nodes (16): @CurrentTenant() decorator, Constraint: aislamiento multitenant por Tenant ID, Resolución del tenant (X-Tenant-Id), Limitación: Setting.key único global, TenantGuard (src/common/guards/tenant.guard.ts), apiFetch (lib/api.ts), @CurrentTenant(), CurrentTenant (+8 more)
+### Community 25 - "BrokerService y conector WhatsApp"
+Cohesion: 0.16
+Nodes (17): Constraint de desacople de canales: todo I/O de canal por el broker, Constraint Invgate: operaciones con usuario tecnico de API, Decision de broker: RabbitMQ (elegido sobre LavinMQ), BrokerModule, apps/api/scripts/chat.mjs, POST /conversations/simulate, Conector WhatsApp, Patrón RPC de BrokerService.request() (+9 more)
 
-### Community 22 - "Docs: OTP y AppConfigService"
-Cohesion: 0.17
-Nodes (15): AGENTS.md — convenciones y constraints para agentes, Regla: actualizar el grafo ante todo cambio, graphify-out/ (grafo de conocimiento del codebase), Invgate (usuario técnico dedicado), Secrets (manejo de credenciales), AGENTS.md — convenciones y constraints para agentes, chatbot.md (spec original), Plan de Trabajo (documento vivo) (+7 more)
+### Community 26 - "Motor de flujos: encadenamiento de nodos"
+Cohesion: 0.13
+Nodes (17): Sesión efímera por consulta en OpenCode Go, FlowService.applyTenantAssignment, ConversationsService - orquestador core de mensajes, Encadenamiento de nodos no interactivos (MAX_FLOW_STEPS), menu e input con espera en dos fases (waitForInput), findActiveFlowForTenant: ambigüedad resuelta con isStart, findActiveFlowForTenant, Flow.isDefault (+9 more)
 
-### Community 23 - "Docs: Idioma, Spec y SecretsCipher"
-Cohesion: 0.22
-Nodes (9): OTP_ENABLED, Configuración del sistema (/settings, tabla Setting), AppConfigService, DEVICE_FINGERPRINT_TTL_DAYS, Cascada de configuración BD → env → default (AppConfigService), SecretsCipher (AES-256-GCM), Setting (tabla), SETTINGS_ENCRYPTION_KEY (+1 more)
+### Community 27 - "Multitenant: CurrentTenant y gestión usuarios"
+Cohesion: 0.18
+Nodes (16): @CurrentTenant() decorator, Constraint multitenant: aislamiento obligatorio por Tenant ID, Resolución del tenant (X-Tenant-Id), Limitación: Setting.key único global, TenantGuard (src/common/guards/tenant.guard.ts), Resolución del tenant vía header X-Tenant-Id (no en el JWT), Tenant activo por header X-Tenant-Id, apiFetch (lib/api.ts) (+8 more)
 
-### Community 24 - "Docs: Desacople de Canales"
-Cohesion: 0.21
-Nodes (15): Limitacion: Setting.key es @unique global (settings no son por tenant), Tabla Setting, settings.catalog.ts (catalogo de claves permitidas), Configuracion del sistema (/settings) con cascada BD -> env -> default, SystemTenantGuard (doble candado de superusuario), CreateFlowDto (tenantIds), TenantsService.findMyTenants, LLM_PROVIDER (setting) (+7 more)
-
-### Community 25 - "Docs: RBAC y Doble Candado"
+### Community 29 - "Scripts npm raíz"
 Cohesion: 0.13
 Nodes (15): scripts, build, chat, db:seed, format, lint, start, start:debug (+7 more)
 
-### Community 27 - "Scripts API"
-Cohesion: 0.17
-Nodes (15): GET /auth/me, Autenticación y 2FA por OTP email, Fingerprint de dispositivo (tabla Device, TTL configurable), @RequirePermission(resource, action), Modelo Role, Modelo RolePermission, RoleService (CRUD de roles y permisos), RolesGuard (+7 more)
+### Community 31 - "Modelo User/Tenant y reconocimiento de usuario"
+Cohesion: 0.15
+Nodes (14): "Conocido" en el motor de flujos, executeNode (case 'start'), findOrCreateByPhone, ConversationsService.handleMessage, Split de User.name en firstName/lastName, prisma/seed.ts (seed idempotente), Modelo Tenant, Modelo User (+6 more)
 
-### Community 28 - "Docs: Bugs del Broker RPC"
-Cohesion: 0.20
-Nodes (14): Decision cerrada: device fingerprint v1 = telefono + User-Agent, Doble candado de acceso a /settings (tenant de sistema + permiso), Limitación conocida: Setting.key es @unique global, Decisión cerrada: Prisma como ORM, @RequirePermission(resource, action), Doble candado de acceso a /settings (SystemTenantGuard + RequirePermission), Tabla de decisiones tecnicas archivadas, Configuración del sistema /settings (backend completado) (+6 more)
-
-### Community 29 - "Docs: Multitenant y Resolucion del Tenant"
-Cohesion: 0.19
-Nodes (14): ConversationsService (orquestador core), BrokerMessage (pattern, data, tenantId, timestamp), BrokerModule / BrokerService (RabbitMQ via amqplib), pnpm --filter api chat (apps/api/scripts/chat.mjs), Cola whatsapp.incoming, Cola whatsapp.outgoing, Modelo Conversation, flowState / currentFlowId / currentNodeId (+6 more)
-
-### Community 30 - "RBAC: Guards y JwtAuthGuard"
-Cohesion: 0.22
-Nodes (13): Bug: colas anónimas amq.gen-*, BrokerService.request() — patrón RPC, BrokerService.request, ensureReplyConsumer, Bug: publish() y cola exclusive (405 RESOURCE_LOCKED), safeAck / safeNack, BrokerService.publish, apps/api/scripts/chat.mjs (+5 more)
-
-### Community 31 - "ChannelsService y ConversationsService"
-Cohesion: 0.18
-Nodes (13): Desacople de canales vía broker, AGENTS.md, Desacople de canales, Email como canal de entrada, Tabla Metric, Módulo metrics/ (stub), Plan de Trabajo - Chatbot de Soporte Omnicanal con IA, Regla del proyecto: /graphify . --update en el plan (+5 more)
-
-### Community 32 - "Docs: Editor de Flujos y Nodo Start"
-Cohesion: 0.21
-Nodes (11): EmailMessage, AuthModule, Device (modelo, fingerprint), auth/device.service.ts, devices/ (módulo stub), Módulo devices/ (stub), EmailService (abstracción provider-agnostic), EmailService (+3 more)
-
-### Community 33 - "Script de Chat Interactivo"
-Cohesion: 0.24
-Nodes (13): DeletableEdge, flow-edges.tsx, flow-nodes.tsx, FlowEdgeDto.type, Nodo start, Editor visual de flujos con ReactFlow (/dashboard/flows), Saneo del payload de ReactFlow al guardar, ValidationPipe global (whitelist, forbidNonWhitelisted, transform) (+5 more)
-
-### Community 34 - "Docs: Flujo de Inicio por Tenant (nuevo)"
-Cohesion: 0.24
-Nodes (9): Constraint: RBAC dinámico (datos, no código), Constraint RBAC dinamico: roles y permisos son datos, no codigo, Constraint: Invgate con usuario técnico de API, PermissionMetadata, Panel Admin Next.js, RBAC dinámico implementado (RolesGuard + RequirePermission), RBAC dinamico: RolesGuard, @RequirePermission y GET /auth/me, Convenciones importantes del proyecto (README) (+1 more)
-
-### Community 35 - "Auth: EmailService y Device"
-Cohesion: 0.20
-Nodes (12): Convención de idioma: español, Grafo de conocimiento graphify (graphify-out/), Monorepo pnpm workspaces (apps/api + apps/web), Prisma como ORM, Monorepo pnpm apps/api + apps/web, Backend apps/api (NestJS 11 + Prisma + PostgreSQL), Modelo de datos principal (Users, Tenants, Roles, Devices, Conversations, Tickets, Metrics, Flows, Settings), Modelo de datos (schema.prisma) (+4 more)
-
-### Community 36 - "Docs: Invgate y Editor de Flujos"
+### Community 32 - "RBAC dinámico y panel admin"
 Cohesion: 0.23
-Nodes (12): Constraint: Invgate vía usuario técnico dedicado, BrokerModule / BrokerService sobre RabbitMQ, Capa de abstracción LLM con 5 proveedores, Editor visual de flujos con ReactFlow, invgate/ (módulo vacío), Módulo invgate/ (stub), Motor de flujos conversacionales IVR (13 tipos de nodo), Orquestador core de conversaciones (ConversationsService) (+4 more)
+Nodes (11): Constraint: RBAC dinámico (datos, no código), Doble candado de acceso a /settings (tenant de sistema + permiso), Constraint RBAC dinamico: roles y permisos son datos, no codigo, @RequirePermission(resource, action), PermissionMetadata, Aislamiento de datos por tenant (TenantInterceptor + @CurrentTenant), Panel Admin Next.js, RBAC dinámico implementado (RolesGuard + RequirePermission) (+3 more)
 
-### Community 37 - "Metadata package API"
-Cohesion: 0.21
-Nodes (12): ORM: Prisma, Constraint de secrets: nunca commiteados ni devueltos en texto plano, Constraint: secrets solo por env vars / vault, SecretsCipher AES-256-GCM (src/config/secrets.cipher.ts), SETTINGS_ENCRYPTION_KEY (clave maestra, solo en entorno), Decisiones técnicas archivadas (tabla), Secrets cifrados en reposo (desviación acotada de spec §5), Variables de entorno (.env.example) (+4 more)
+### Community 33 - "OpenCodeGoProvider"
+Cohesion: 0.32
+Nodes (6): OpenCode Go: particularidades del proveedor, OpenCodeGoProvider, OpenCodeGoProvider, OpenCodeMessageResponse, OpenCodePart, OpenCodeSession
 
-### Community 38 - "Config Jest API"
-Cohesion: 0.17
-Nodes (6): API, args, c, FROM, rl, tenantId
-
-### Community 39 - "Docs: AppConfigService y Monorepo"
-Cohesion: 0.18
-Nodes (11): Constraint multitenant: aislamiento obligatorio por Tenant ID, Resolución del tenant vía header X-Tenant-Id (no en el JWT), Tenant activo por header X-Tenant-Id, Migración manual 20260803120000_split_user_name, Tenant activo vía header X-Tenant-Id, no JWT, Servicios tenant-scoped (RoleService, UsersService, TenantsService), apiFetch (lib/api.ts) — cliente HTTP con JWT y X-Tenant-Id, apiFetch: cliente HTTP que inyecta JWT y X-Tenant-Id (+3 more)
-
-### Community 40 - "TenantGuard"
-Cohesion: 0.29
-Nodes (11): Constraint: RBAC dinámico (roles y permisos como datos), Módulo de Menús Dinámicos, GET /auth/me endpoint, AuthContext / useAuth, AuthModule (registro, login, JWT), Hito 1 - Core de Seguridad (en progreso), Menús dinámicos desde backend (endpoint /menu, pendiente), Panel Admin Next.js (AuthContext, sidebar dinamico, CRUDs) (+3 more)
-
-### Community 41 - "Docs: Decisiones y Migracion"
-Cohesion: 0.18
-Nodes (11): API de Invgate, Módulo de Métricas y Auditoría, Módulo Multitenant, Conversation entity, Metric entity, Tenant entity, Ticket entity, User entity (+3 more)
-
-### Community 42 - "Docs: Invgate Pendiente"
-Cohesion: 0.27
-Nodes (10): LlmModelsService (dropdown de modelos por proveedor), Resolución de settings en cascada (BD → env → default), LlmModelsService (dropdown de modelos), Catálogo de settings (settings.catalog.ts), SettingsModule (Hito 3, backend completado), Pantalla /settings (Next.js), Configuracion por proveedor de LLM (5 proveedores), Dropdown de modelos consultado al proveedor (+2 more)
-
-### Community 43 - "Scripts del Monorepo"
+### Community 34 - "Pantalla /settings del frontend"
 Cohesion: 0.24
-Nodes (10): Baja de usuario = baja del tenant, Metric (auditoría), metrics/ (módulo vacío), Aislamiento multitenant, TenantGuard, TenantInterceptor (obsoleto), CRUD de usuarios, UserTenant (membresía usuario-tenant) (+2 more)
+Nodes (10): Abstracción LLM (LlmService, provider-agnostic), LLM Externo multi-proveedor, Catálogo de settings (settings.catalog.ts), Pantalla /settings (Next.js), ALIASES, LlmProviderFactory, PROVIDER_KEYS, LlmProviderFactory (+2 more)
 
-### Community 44 - "Config Jest E2E"
-Cohesion: 0.36
-Nodes (8): apiFetch del frontend (lib/api.ts), Cadena de guards @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard), Orden fijo de guards: JwtAuthGuard, TenantGuard, RolesGuard, JwtAuthGuard, Resolución del tenant por header X-Tenant-Id, TenantGuard (valida pertenencia contra UserTenant), Refactor: el tenant salio del JWT (TenantGuard reemplaza a TenantInterceptor), Convencion multitenant del README (X-Tenant-Id + cadena de guards)
+### Community 35 - "Hito 2 - Lógica de negocio"
+Cohesion: 0.21
+Nodes (13): Constraint: Invgate vía usuario técnico dedicado, BrokerModule / BrokerService sobre RabbitMQ, Capa de abstracción LLM con 5 proveedores, invgate/ (módulo vacío), Módulo invgate/ (stub), Decisión: Secrets de Invgate solo env var, Motor de flujos conversacionales IVR (13 tipos de nodo), Orquestador core de conversaciones (ConversationsService) (+5 more)
 
-### Community 45 - "Nest CLI Config"
+### Community 36 - "Deuda técnica pendiente"
+Cohesion: 0.19
+Nodes (13): Constraint: aislamiento multitenant por Tenant ID, Deuda técnica pendiente, POST /conversations/simulate (deuda de seguridad aceptada), Editor visual de flujos con ReactFlow, Motor de flujos conversacionales IVR (executeFlow), 13 tipos de nodo de flujo (start, menu, ticket_create, llm_query…), Nodo transfer_agent (stub), Nodo webhook (stub) (+5 more)
+
+### Community 37 - "Plan de trabajo (documento vivo)"
+Cohesion: 0.22
+Nodes (13): ConversationsService.cancelInteraction, ConversationsService.confirmCancelIntent, ConversationsService.executeFlow, ConversationsService.executeNode, ConversationsService.handleMessage, ConversationsService.interpretMenuChoice, flowState.__llmFallback sentinel, ConversationsService.looksLikeCancelAttempt (+5 more)
+
+### Community 38 - "Hito 4 - Auditoría y módulos vacíos"
+Cohesion: 0.18
+Nodes (12): Convención de nomenclatura de módulos backend, Hito 4 - Auditoria y Metricas (pendiente), Tabla Metric, Auditoría y Métricas, Módulo metrics/ (stub), Auditoria y metricas - pendiente, Módulos aún vacíos (invgate, metrics, devices), Modulos vacios / stubs (invgate, metrics, devices) (+4 more)
+
+### Community 39 - "Editor visual de flujos: DTOs y saneo"
+Cohesion: 0.27
+Nodes (12): DeletableEdge, flow-edges.tsx, FlowEdgeDto.type, Nodo start, Editor visual de flujos con ReactFlow (/dashboard/flows), Saneo del payload de ReactFlow al guardar, ValidationPipe global (whitelist, forbidNonWhitelisted, transform), ValidationPipe global (+4 more)
+
+### Community 40 - "Decisiones técnicas archivadas"
+Cohesion: 0.21
+Nodes (12): Modelo RolePermission, RolesGuard, Rol SuperAdmin (44 permisos CRUD), Decisiones técnicas archivadas, apiFetch (lib/api.ts) — cliente HTTP con JWT y X-Tenant-Id, apiFetch: cliente HTTP que inyecta JWT y X-Tenant-Id, Frontend apps/web (Next.js 16 + React 19 + Tailwind 4), Multitenant por tenantId (+4 more)
+
+### Community 41 - "Regla: actualizar el grafo (graphify)"
+Cohesion: 0.27
+Nodes (11): Checklist de cierre de tarea (build, plan, graphify, commit), Checklist de cierre de tarea, Grafo de conocimiento graphify del codebase, Regla obligatoria: actualizar el grafo ante todo cambio, graphify (CLI de grafo de conocimiento), AGENTS.md, Plan de Trabajo - Chatbot de Soporte Omnicanal con IA, Regla del proyecto: /graphify . --update en el plan (+3 more)
+
+### Community 42 - "Hito 1 - Core de seguridad"
+Cohesion: 0.22
+Nodes (11): Decision cerrada: device fingerprint v1 = telefono + User-Agent, GET /auth/me, Autenticación y 2FA por OTP email, Fingerprint de dispositivo (tabla Device, TTL configurable), Hito 1 - Core de Seguridad (en progreso), Decisión: RBAC dinámico, Modelo Role, RolesGuard + @RequirePermission (+3 more)
+
+### Community 43 - "Catálogo de settings y endpoints"
+Cohesion: 0.22
+Nodes (11): Limitación conocida: Setting.key es @unique global, Doble candado de acceso a /settings (SystemTenantGuard + RequirePermission), Configuración del sistema /settings (backend completado), Cascada de configuración BD → env → default (AppConfigService), Cascada de resolución de configuración: BD → env var → default, Endpoints REST de /settings, Limitación: settings globales por Setting.key @unique, Proveedores LLM configurables (openai, gemini, claude, openrouter, opencodego) (+3 more)
+
+### Community 44 - "CRUD de usuarios y Metric"
+Cohesion: 0.22
+Nodes (11): Baja de usuario = baja del tenant, Decisión: Baja de usuario (no borrado físico), Metric (auditoría), metrics/ (módulo vacío), Aislamiento multitenant, User.name → firstName/lastName, CRUD de usuarios, UserTenant (membresía usuario-tenant) (+3 more)
+
+### Community 45 - "TenantGuard y resolución de tenant"
+Cohesion: 0.33
+Nodes (9): apiFetch del frontend (lib/api.ts), Cadena de guards @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard), Orden fijo de guards: JwtAuthGuard, TenantGuard, RolesGuard, JwtAuthGuard, Resolución del tenant por header X-Tenant-Id, TenantGuard (valida pertenencia contra UserTenant), Refactor: el tenant salio del JWT (TenantGuard reemplaza a TenantInterceptor), Refactor: el tenant salio del JWT (+1 more)
+
+### Community 46 - "Estado del repo e infraestructura externa"
 Cohesion: 0.22
 Nodes (9): docs/chatbot.md (spec original), Infra externa PostgreSQL/RabbitMQ (192.168.0.123), Estado del repo, apps/api (NestJS + Prisma + PostgreSQL), graphify-out/graph.html, graphify-out/GRAPH_REPORT.md, graphify-out/ (grafo de conocimiento), docs/plan-de-trabajo.md (+1 more)
 
-### Community 46 - "Docs: 2FA, Fingerprint y Hito 1"
-Cohesion: 0.33
-Nodes (9): Checklist de cierre de tarea (build, plan, graphify, commit), Checklist de cierre de tarea, Grafo de conocimiento graphify del codebase, Regla obligatoria: actualizar el grafo ante todo cambio, graphify (CLI de grafo de conocimiento), Hito 0 - Setup (completado), Flujo de contribucion (rama, lint/test, plan, grafo, PR), Regla del README: actualizar el grafo ante todo cambio (+1 more)
+### Community 47 - "Spec del proyecto e Invgate pendiente"
+Cohesion: 0.25
+Nodes (9): Convención de idioma: español, Politica Invgate: usuario tecnico dedicado, Constraint: Invgate con usuario técnico de API, Especificación completa del proyecto (chatbot.md), Integración Invgate pendiente (falta de credenciales), Invgate con usuario técnico dedicado, Secrets cifrados en reposo (AES-256-GCM), Secrets cifrados AES-256-GCM en BD (+1 more)
 
-### Community 47 - "TSConfig Build API"
+### Community 48 - "Panel Admin: AuthContext y RBAC dinámico"
+Cohesion: 0.39
+Nodes (9): Constraint: RBAC dinámico (roles y permisos como datos), Módulo de Menús Dinámicos, GET /auth/me endpoint, AuthContext / useAuth, Hito 1 — Core de Seguridad (auth, OTP 2FA, RBAC), Menús dinámicos desde backend (endpoint /menu, pendiente), Panel Admin Next.js (AuthContext, sidebar dinamico, CRUDs), Sidebar dinámico (+1 more)
+
+### Community 49 - "package.json raíz (metadata)"
 Cohesion: 0.22
 Nodes (8): author, description, license, name, prisma, seed, private, version
 
-### Community 48 - "Home Page Web"
+### Community 50 - "Config de Jest (tests)"
 Cohesion: 0.22
 Nodes (9): jest, collectCoverageFrom, coverageDirectory, moduleFileExtensions, rootDir, testEnvironment, testRegex, transform (+1 more)
 
-### Community 49 - "PostCSS Config"
-Cohesion: 0.32
-Nodes (8): apiFetch (frontend), CORS con allowedHeaders explícito, Hito 3 - Multitenant y Menus, JwtAuthGuard / JWT Strategy, TenantGuard (src/common/guards/tenant.guard.ts), TenantInterceptor global y @CurrentTenant(), Tenant activo por header X-Tenant-Id, Header X-Tenant-Id
+### Community 51 - "TenantGuard (multitenant, Hito 3)"
+Cohesion: 0.31
+Nodes (9): @CurrentTenant(), Hito 3 - Multitenant y Menus, JwtAuthGuard / JWT Strategy, Menús dinámicos desde backend (pendiente), TenantGuard (src/common/guards/tenant.guard.ts), TenantInterceptor global y @CurrentTenant(), TenantGuard, TenantInterceptor (obsoleto) (+1 more)
 
-### Community 50 - "Docs: Convencion Backend"
-Cohesion: 0.32
-Nodes (6): @CurrentTenant(), Refactor: el tenant salio del JWT, Multitenant por tenantId, TenantGuard y header X-Tenant-Id, TenantGuard, Tenant activo por header X-Tenant-Id
-
-### Community 51 - "Docs: Modelo de Datos Inicial"
-Cohesion: 0.29
-Nodes (7): Broker: RabbitMQ elegido sobre LavinMQ, Monorepo pnpm workspaces, RabbitMQ (broker elegido), apps/api (NestJS 11 + Prisma 5.22 + PostgreSQL), apps/web (Next.js 16 + React 19 + Tailwind 4), PostgreSQL (192.168.0.123), LavinMQ
-
-### Community 52 - "Docs: Convencion de Idioma"
+### Community 52 - "Infraestructura externa y stack NestJS"
 Cohesion: 0.33
-Nodes (7): Convención de nomenclatura de módulos backend, Nomenclatura backend src/modules/<dominio>/, apps/api - Backend NestJS + Prisma + PostgreSQL, apps/web - Frontend Next.js + React + Tailwind, Estructura del proyecto pci-chatbot, Modelo de datos principal (schema.prisma), Monorepo pnpm workspaces (apps/api + apps/web)
+Nodes (7): Soporte Omnicanal con IA, Infraestructura externa (192.168.0.123), NestJS 11 (API), Next.js 16 + React 19 (Web), PCI Chatbot, PostgreSQL (192.168.0.123), RabbitMQ (192.168.0.123)
 
-### Community 53 - "Docs: API Client"
-Cohesion: 0.29
-Nodes (7): chat.mjs (chat interactivo por consola), Encadenamiento de nodos no interactivos (MAX_FLOW_STEPS), Nodo delay (acotado a 10s), Nodo subflow, waitForInput (espera en dos fases de menu e input), ConversationsService.executeFlow, MAX_FLOW_STEPS = 25
+### Community 53 - "MiniMax (audio STT/TTS)"
+Cohesion: 0.33
+Nodes (4): Audio (STT/TTS, pendiente), Rationale: MiniMax shares one credential for chat + T2A, LlmProviderFactory.createProvider, MiniMax settings group (MINIMAX_API_KEY/MODEL/BASE_URL)
 
-### Community 54 - "Docs: LlmProvider Interface"
+### Community 54 - "package.json backend (scripts)"
 Cohesion: 0.29
 Nodes (6): name, private, scripts, build, dev:api, dev:web
 
-### Community 55 - "Docs: Entidad Message"
+### Community 55 - "Config Jest e2e"
 Cohesion: 0.29
 Nodes (6): moduleFileExtensions, rootDir, testEnvironment, testRegex, transform, ^.+\\.(t|j)s$
 
-### Community 56 - "Docs: Entidad Setting"
+### Community 56 - "nest-cli.json"
 Cohesion: 0.33
 Nodes (5): collection, compilerOptions, deleteOutDir, $schema, sourceRoot
 
-### Community 57 - "Docs: Usuario Tecnico Invgate"
+### Community 57 - "Convenciones monorepo (CORS, workspaces)"
+Cohesion: 0.33
+Nodes (6): apiFetch (frontend), apps/api (NestJS 11), apps/web (Next.js 16 + React 19 + Tailwind 4), CORS con allowedHeaders explícito, Monorepo pnpm workspaces, Tenant activo por header X-Tenant-Id
+
+### Community 58 - "Migración split firstName/lastName"
 Cohesion: 0.40
-Nodes (6): Bug: pnpm run dev:api falla con Cannot find module dist/main, Unificación DEVICE_FINGERPRINT_TTL_DAYS de 30 a 90 en .env.example, .env.example, seed.ts (seed idempotente), apps/api/tsconfig.build.json, Fix: excluir prisma/ en tsconfig.build.json (rootDir compartido)
+Nodes (6): Tabla de decisiones tecnicas archivadas, Migración 20260803120000_split_user_name, Rol obligatorio y validado contra el tenant activo, Migracion 20260803120000_split_user_name (firstName / lastName), Baja de usuario = baja del tenant, no borrado físico, Gestión de usuarios del tenant activo (/dashboard/users)
 
-### Community 58 - "Docs: OTP Email"
-Cohesion: 0.50
-Nodes (5): findActiveFlowForTenant, Flow.isDefault, FlowService.applyTenantAssignment, TenantFlow.isStart, Modelo TenantFlow
+### Community 59 - "LlmProvider interface y EmailService"
+Cohesion: 0.40
+Nodes (6): docs/plan-de-trabajo.md, EmailService / StubEmailService, LlmModule, LlmProvider (interface), Principio provider-agnostic, LLM abstraction layer
 
-### Community 59 - "Docs: OTP SMS"
+### Community 60 - "LlmModelsService: validación de content-type"
+Cohesion: 0.33
+Nodes (6): LlmModelsService (dropdown de modelos), opencode trabaja con sesiones, no completions, requestJson() — validación de content-type, Dropdown de modelos consultado al proveedor, opencode no es compatible con OpenAI, requestJson() valida content-type antes de parsear
+
+### Community 61 - "tsconfig.build.json y permisos locales"
 Cohesion: 0.40
 Nodes (4): API TypeScript Build Config (tsconfig.build.json), API Base TypeScript Config (tsconfig.json), permissions, allow
 
-### Community 60 - "Config pnpm Workspace"
-Cohesion: 0.50
-Nodes (4): Constraint Invgate: operaciones con usuario tecnico de API, Hito 2 - Logica de Negocio (en progreso), Integracion Invgate - pendiente, Modulos vacios / stubs (invgate, metrics, devices)
-
-### Community 61 - "Next.js Config"
-Cohesion: 0.50
-Nodes (4): opencode trabaja con sesiones, no completions, POST /conversations/simulate sin guard de autenticación, opencode no es compatible con OpenAI, requestJson() valida content-type antes de parsear
-
-### Community 63 - "Config TS y Permisos Claude Code"
-Cohesion: 1.00
-Nodes (3): Fingerprint de dispositivo, Device entity, Device fingerprint v1 = phone + User-Agent only
+### Community 62 - "TenantFlow.isStart y flujo por defecto"
+Cohesion: 0.67
+Nodes (4): findActiveFlowForTenant, Flow.isDefault, FlowService.applyTenantAssignment, TenantFlow.isStart
 
 ## Ambiguous Edges - Review These
 - `Constraint: secrets solo por env vars / vault` → `Convencion (desactualizada): secrets solo por env var`  [AMBIGUOUS]
@@ -378,7 +378,7 @@ Nodes (3): Fingerprint de dispositivo, Device entity, Device fingerprint v1 = ph
   README.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **274 isolated node(s):** `$schema`, `collection`, `sourceRoot`, `deleteOutDir`, `name` (+269 more)
+- **280 isolated node(s):** `$schema`, `collection`, `sourceRoot`, `deleteOutDir`, `name` (+275 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **13 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -397,5 +397,5 @@ _Questions this graph is uniquely positioned to answer:_
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
 - **What is the exact relationship between `Baja de usuario sin borrado físico` and `Hito 4 - Auditoría y Métricas`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `ConversationsService.executeNode` connect `Docs: Secrets, OTP e Invgate` to `Docs: LLM, OpenCode y Content-Type`, `Autenticacion: Controller y Guards`, `Panel Admin Next.js`, `Docs: Invgate y Editor de Flujos`, `Identidad "Conocido" y ExecuteNode`, `DTOs de Flujos IVR`, `Dependencias Web`, `Docs: Spec, Indice y Desacople`, `TypeScript Config Web`, `Docs: API Client`, `Docs: OpenCode y Chat Script`?**
-  _High betweenness centrality (0.084) - this node is a cross-community bridge._
+- **Why does `SettingsPage()` connect `SettingsService y catálogo` to `LlmModelsService (dropdown de modelos)`?**
+  _High betweenness centrality (0.104) - this node is a cross-community bridge._

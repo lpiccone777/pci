@@ -16,6 +16,8 @@ const nodeColors: Record<string, string> = {
   delay: '#6b7280',
   variable: '#84cc16',
   webhook: '#f97316',
+  end: '#991b1b',
+  device_validation: '#0ea5e9',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -31,6 +33,8 @@ const nodeLabels: Record<string, string> = {
   delay: 'Delay',
   variable: 'Variable',
   webhook: 'Webhook',
+  end: 'Fin',
+  device_validation: 'Validar Dispositivo',
 };
 
 function BaseNode({ id, data, type, children }: any) {
@@ -287,6 +291,14 @@ export const VariableNode = memo(({ id, data }: any) => (
   </BaseNode>
 ));
 
+export const DeviceValidationNode = memo(({ id, data }: any) => (
+  <BaseNode id={id} data={data} type="device_validation">
+    <div className="mt-1 text-[10px] text-gray-400">
+      Fingerprint teléfono+email. Transparente si ya está validado.
+    </div>
+  </BaseNode>
+));
+
 export const WebhookNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="webhook">
     {data?.url && (
@@ -297,6 +309,36 @@ export const WebhookNode = memo(({ id, data }: any) => (
     )}
   </BaseNode>
 ));
+
+export const EndNode = memo(({ id, data }: any) => {
+  const color = nodeColors.end;
+  const text = data?.text || '';
+
+  return (
+    <div
+      className="rounded-lg shadow-md border-2 bg-white"
+      style={{ borderColor: color, minWidth: 180, maxWidth: 240 }}
+    >
+      <div
+        className="text-white text-xs font-semibold px-2 py-1 rounded-t-md flex items-center gap-1"
+        style={{ backgroundColor: color }}
+      >
+        <div className="w-2 h-2 rounded-full bg-white/80" />
+        {nodeLabels.end}
+      </div>
+      <div className="p-2 text-sm text-gray-700">
+        {text ? (
+          <p className="line-clamp-3 text-xs">{text}</p>
+        ) : (
+          <p className="text-gray-400 text-xs italic">Sin mensaje de cierre</p>
+        )}
+        <p className="mt-1 text-[10px] text-gray-400">Cierra la charla (retomable)</p>
+      </div>
+      {/* Sin handle de salida: es un nodo terminal. */}
+      <Handle type="target" position={Position.Top} style={{ background: color }} />
+    </div>
+  );
+});
 
 export const SubflowNode = memo(({ id, data }: any) => (
   <div

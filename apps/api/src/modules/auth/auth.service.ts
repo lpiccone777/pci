@@ -139,7 +139,7 @@ export class AuthService {
 
     await this.emailService.send({
       to: user.email,
-      subject: 'Código de verificación - PCI Chatbot',
+      subject: 'Código de verificación - Plataforma Conversacional Inteligente Chatbot',
       text: `Tu código de verificación es: ${code}. Válido por ${ttlSeconds} segundos.`,
     });
   }

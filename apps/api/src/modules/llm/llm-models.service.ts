@@ -23,6 +23,7 @@ const FALLBACK_MODELS: Record<string, string[]> = {
   // opencode expone modelos según lo que tenga configurado *esa* instancia, así que
   // cualquier lista fija sería inventada. Vacío → la UI cae al campo de texto libre.
   opencodego: [],
+  minimax: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2.1', 'MiniMax-M2'],
 };
 
 /**
@@ -92,6 +93,13 @@ export class LlmModelsService {
             (await this.appConfig.get('OPENROUTER_BASE_URL')) || 'https://openrouter.ai/api/v1',
             await this.appConfig.get('OPENROUTER_API_KEY'),
             { keyOptional: true },
+          );
+
+        case 'minimax':
+          return await this.fromOpenAiCompatible(
+            provider,
+            (await this.appConfig.get('MINIMAX_BASE_URL')) || 'https://api.minimax.io/v1',
+            await this.appConfig.get('MINIMAX_API_KEY'),
           );
 
         case 'opencodego': {

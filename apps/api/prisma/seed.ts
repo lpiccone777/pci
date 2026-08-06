@@ -24,7 +24,7 @@ async function main() {
     where: { slug: SYSTEM_TENANT_SLUG },
     update: {},
     create: {
-      name: 'Sistema PCI',
+      name: 'Sistema Plataforma Conversacional Inteligente',
       slug: SYSTEM_TENANT_SLUG,
     },
   });
@@ -79,7 +79,7 @@ async function main() {
     create: {
       email: DEFAULT_ADMIN_EMAIL,
       firstName: 'Administrador',
-      lastName: 'PCI',
+      lastName: 'Plataforma Conversacional Inteligente',
       passwordHash,
     },
   });

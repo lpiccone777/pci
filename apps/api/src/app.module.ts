@@ -19,6 +19,7 @@ import { BrokerModule } from './modules/broker/broker.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { FlowModule } from './modules/flow/flow.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     MetricsModule,
     FlowModule,
     SettingsModule,
+    WhatsAppModule,
   ],
   controllers: [AppController],
   providers: [AppService, TenantGuard],
