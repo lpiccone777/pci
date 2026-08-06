@@ -30,10 +30,21 @@ export class CreateUserDto {
   @IsNotEmpty({ message: 'El rol es obligatorio' })
   roleId: string;
 
+  /** Opcional: el área agrupa para auditoría y métricas, no habilita nada. */
+  @IsOptional()
+  @IsString()
+  areaId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  /** Opcional: identificador de la persona en Invgate. Hoy se carga a mano. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
 }
 
 export class UpdateUserDto {
@@ -54,11 +65,28 @@ export class UpdateUserDto {
   @MaxLength(30)
   phone?: string;
 
+  /**
+   * Identificador en Invgate. Cadena vacía lo deja sin identificador; que la clave no
+   * venga significa "no lo toques" — mismo criterio que el teléfono.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
+
   /** Cambiar el rol del usuario dentro del tenant activo. */
   @IsOptional()
   @IsString()
   @IsNotEmpty()
   roleId?: string;
+
+  /**
+   * Área del usuario dentro del tenant activo. Cadena vacía o `null` lo dejan sin área;
+   * que la clave no venga significa "no la toques". Por eso no lleva `@IsNotEmpty()`.
+   */
+  @IsOptional()
+  @IsString()
+  areaId?: string | null;
 
   /** Opcional: si viene, se resetea la contraseña. */
   @IsOptional()
