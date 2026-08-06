@@ -6,6 +6,7 @@ import { GeminiProvider } from './providers/gemini.provider';
 import { ClaudeProvider } from './providers/claude.provider';
 import { OpenRouterProvider } from './providers/openrouter.provider';
 import { OpenCodeGoProvider } from './providers/opencodego.provider';
+import { MiniMaxProvider } from './providers/minimax.provider';
 
 /** Claves de configuración de cada proveedor y sus defaults. */
 const PROVIDER_KEYS = {
@@ -14,6 +15,7 @@ const PROVIDER_KEYS = {
   claude: { apiKey: 'ANTHROPIC_API_KEY', model: 'ANTHROPIC_MODEL', baseUrl: null, defaultModel: 'claude-3-5-sonnet-20241022' },
   openrouter: { apiKey: 'OPENROUTER_API_KEY', model: 'OPENROUTER_MODEL', baseUrl: 'OPENROUTER_BASE_URL', defaultModel: 'openai/gpt-4o-mini' },
   opencodego: { apiKey: 'OPENCODEGO_API_KEY', model: 'OPENCODEGO_MODEL', baseUrl: 'OPENCODEGO_API_URL', defaultModel: 'opencode-go-1' },
+  minimax: { apiKey: 'MINIMAX_API_KEY', model: 'MINIMAX_MODEL', baseUrl: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.5' },
 } as const;
 
 type ProviderName = keyof typeof PROVIDER_KEYS;
@@ -29,6 +31,7 @@ const ALIASES: Record<string, ProviderName> = {
   opencodego: 'opencodego',
   opencode: 'opencodego',
   'opencode-go': 'opencodego',
+  minimax: 'minimax',
 };
 
 @Injectable()
@@ -60,6 +63,8 @@ export class LlmProviderFactory {
         return new OpenRouterProvider(config);
       case 'opencodego':
         return new OpenCodeGoProvider(config);
+      case 'minimax':
+        return new MiniMaxProvider(config);
     }
   }
 

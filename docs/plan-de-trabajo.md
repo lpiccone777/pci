@@ -105,7 +105,7 @@
   - Tipado fuerte: `BrokerMessage` con `pattern`, `data`, `tenantId`, `timestamp`
 - [x] Desacople de canales: el core publica/consume por el broker, nunca depende de WhatsApp
 
-### Capa de Abstracción LLM ✅ COMPLETADO (5 proveedores)
+### Capa de Abstracción LLM ✅ COMPLETADO (6 proveedores)
 - [x] Implementar `OpenAiProvider` (primera implementación concreta de `LlmProvider`)
   - Usa SDK de OpenAI pero SOLO dentro del provider (business logic nunca lo toca)
   - Configurable: `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o-mini`)
@@ -122,12 +122,22 @@
   - Provider genérico con `fetch` HTTP
   - Requiere `OPENCODEGO_API_URL` y `OPENCODEGO_API_KEY`
   - Formato compatible con OpenAI Chat Completions (ajustable cuando se defina la API real)
+- [x] **Implementar `MiniMaxProvider`** (pedido 2026-08-05)
+  - MiniMax expone `/v1/chat/completions` compatible con el formato de OpenAI
+    ([doc oficial](https://platform.minimax.io/docs/api-reference/text-openai-api)), así que
+    reutiliza el SDK de OpenAI apuntando a `baseURL: https://api.minimax.io/v1` — mismo
+    patrón que `OpenRouterProvider`, sin código nuevo de parsing
+  - Modelo default `MiniMax-M2.5`; catálogo conocido para el dropdown de `/settings`:
+    `MiniMax-M3` (1M de contexto), `M2.7`, `M2.5`, `M2.1`, `M2`
+  - `MINIMAX_API_KEY` queda documentada como compartida a futuro con la API de audio de
+    MiniMax (T2A) — ver "Audio (STT/TTS)" en Próximos pasos. Por ahora **solo texto**:
+    no hay ningún código de síntesis/transcripción todavía, a propósito
 - [x] `LlmService` provider-agnostic
   - Merge de config: tenant-specific > env vars > defaults
   - Inyecta `systemPrompt` automáticamente si no está en los mensajes
 - [x] **Selector dinámico de proveedor** (`LlmProviderFactory`)
   - Lee `LLM_PROVIDER` de BD (Setting) primero, fallback a env var
-  - Soporta: `openai`, `gemini`, `claude`, `openrouter`, `opencodego`
+  - Soporta: `openai`, `gemini`, `claude`, `openrouter`, `opencodego`, `minimax`
   - Default: OpenAI si el proveedor es desconocido
 
 ### Integración Invgate ⏳ PENDIENTE
@@ -345,6 +355,83 @@
   - Se quitó el borrado al hacer click sobre la flecha: un click accidental borraba
     sin aviso. Queda el botón × al pasar el mouse
   - `deleteKeyCode={['Backspace','Delete']}` para borrar con teclado lo seleccionado
+- [x] **`menu`/`input` menos estrictos: interpretación semántica y cancelación coloquial**
+      (pedido 2026-08-05)
+  - Antes, si la respuesta no matcheaba literal (número/label/value), `menu` repetía
+    "Opción no válida" en loop. El usuario pidió: evaluar lo que dice el usuario, no
+    solo comparar texto exacto, y poder cancelar la gestión en curso en lenguaje coloquial
+  - `interpretMenuChoice()`: cuando no hay match literal, se le pregunta al LLM (clasificador
+    de una sola llamada, `temperature: 0`) si el mensaje corresponde a alguna opción en
+    lenguaje natural (ej. "se me rompió la impresora" → opción de soporte técnico) o si es
+    una cancelación ("dejalo", "mejor no"). Solo se gasta esta llamada cuando el match
+    literal ya falló — cero costo extra en el camino feliz
+  - `input`: filtro barato por palabras clave (`looksLikeCancelAttempt`) antes de aceptar
+    cualquier texto como el dato pedido; solo si hay sospecha de cancelación se confirma
+    con el LLM (`confirmCancelIntent`). Así una respuesta normal (email, nombre) no paga
+    ninguna llamada extra
+  - Nuevo campo `cancelFlow` en el resultado de `executeNode`, manejado en `executeFlow`:
+    termina el flujo igual que un fin normal (mismo `resetFlow`), sin seguir ninguna arista
+    del nodo donde el usuario estaba parado
+  - **Si el mensaje no matchea ninguna opción NI es cancelación**, en vez de insistir con
+    el menú, el LLM toma la conversación (reutiliza `orchestratorLlm`, el mismo que ya
+    atiende mensajes fuera de flujo) para entender el problema y recopilar datos.
+    `flowState.__llmFallback = node.id` hace que los próximos mensajes de esa conversación
+    ya no vuelvan a evaluar contra las opciones — quedan en conversación libre, igual que
+    el patrón ya existente de `llm_query` terminal. Por ahora solo conversa y junta
+    contexto: no genera ticket ni busca en una base de conocimiento (pendiente de que se
+    definan las fuentes de conocimiento)
+  - Ambas llamadas al LLM son best-effort: si el proveedor falla, no cancela ni fuerza un
+    match — cae al comportamiento anterior antes que arriesgar una ruta equivocada
+  - Verificado en vivo contra un servidor real (`opencodego`): lenguaje natural mapeado
+    correctamente a una opción, cancelación coloquial confirmada (conversación reseteada
+    en BD), y texto sin sentido sigue repitiendo el menú sin forzar un match falso
+
+### Conector real de WhatsApp y Email ✅ COMPLETADO (pedido 2026-08-05)
+- [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
+  - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
+    `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el
+    aire. `WhatsAppService.onModuleInit()` la suscribe y llama a
+    `graph.facebook.com/{version}/{phoneNumberId}/messages`
+  - Solo `type: "text"` — funciona dentro de la ventana de 24hs desde el último mensaje
+    del usuario (política de Meta). Mensajes iniciados por el negocio fuera de esa
+    ventana necesitan un `template` aprobado, no soportado todavía
+  - Probado contra credenciales reales de sandbox: la llamada a la Graph API funciona
+    (confirmado pegándole directo, sin pasar por la cola); el intento de entrega falló
+    por `(#131030) Recipient phone number not in allowed list` — restricción normal del
+    modo sandbox de Meta (hay que agregar el número de prueba a mano en
+    Meta for Developers), no un bug del código
+- [x] **`WhatsAppWebhookController` — recepción real**
+  - `GET /webhooks/whatsapp`: handshake de verificación de Meta. Compara
+    `hub.verify_token` contra `WHATSAPP_WEBHOOK_VERIFY_TOKEN` y devuelve `hub.challenge`.
+    Sin `JwtAuthGuard` a propósito — Meta no manda ningún token nuestro, la prueba de
+    identidad es conocer el verify token
+  - `POST /webhooks/whatsapp`: recibe el payload real de Meta, extrae `messages[].text.body`
+    y publica a `whatsapp.incoming` con el mismo shape que ya esperaba `handleMessage`.
+    Mensajes que no son `type: text` (audio, imagen, stickers) se loguean y se descartan
+    — no hay pipeline de audio todavía (ver Próximos pasos)
+  - Verificado de punta a punta con un túnel de ngrok expuesto unos minutos: el handshake
+    respondió 200 con el challenge correcto
+  - ⚠️ **Sin verificación de firma** (`X-Hub-Signature-256` con el App Secret de Meta):
+    hoy cualquiera que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`.
+    Mismo tipo de deuda que `/conversations/simulate` sin guard — cerrar antes de exponerlo
+    fuera de una prueba acotada
+  - ⚠️ **Un solo tenant por número de WhatsApp**: el webhook resuelve el tenant destino por
+    el nuevo setting `WHATSAPP_TENANT_ID` (o el tenant más antiguo si no está definido) —
+    limitación directa de que los settings todavía son globales, no por tenant (ver el
+    pendiente en "Configuración del sistema")
+- [x] **Email real por SMTP** — reemplaza `StubEmailService` (que solo logueaba en consola)
+  - `SmtpEmailService` usa `nodemailer`, resuelve host/puerto/usuario/contraseña/remitente
+    vía `AppConfigService` **en cada envío** (no una vez al arrancar), así un cambio desde
+    `/settings` aplica sin reiniciar el backend — mismo criterio que el resto de la config
+  - Sin `EMAIL_SMTP_HOST` configurado, cae al mismo comportamiento que el viejo stub
+    (loguea en consola): no rompe los entornos de desarrollo que nunca configuraron SMTP
+  - `StubEmailService` se borró — quedaba redundante, el fallback ya está en el service real
+- [x] **Nuevas secciones en `/settings`**: "Mensajería: WhatsApp" (`WHATSAPP_API_TOKEN` secret,
+      `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+      secret, `WHATSAPP_TENANT_ID`) y "Mensajería: Email" (`EMAIL_SMTP_HOST/PORT/SECURE/
+      USER/PASS`, `EMAIL_FROM`) — mismo patrón cifrado/cascada BD→env→default que las
+      claves de LLM. Los tokens quedaron cargados en BD durante las pruebas, cifrados con
+      `SecretsCipher`
 
 ---
 
@@ -506,7 +593,28 @@
     ("OpenCode Go necesita el host configurado") en vez de fallar dentro del SDK
 - [ ] ⏳ Settings por tenant: hoy imposible porque `Setting.key` es `@unique` global.
       Requiere migrar a `@@unique([key, tenantId])` y ajustar los `findUnique` de
-      `AppConfigService` y `LlmProviderFactory`
+      `AppConfigService` y `LlmProviderFactory`. Se vuelve más urgente con WhatsApp real:
+      hoy un solo número de WhatsApp solo puede servir a un tenant (`WHATSAPP_TENANT_ID`)
+- [x] **Pestañas en `/settings`** (pedido 2026-08-05) — la página se había vuelto
+      interminable: 5 proveedores de LLM + Mensajería apilados verticalmente en una sola
+      columna
+  - Tablist accesible (WAI-ARIA APG): `role="tablist"/"tab"/"tabpanel"`, `aria-selected`,
+    `aria-controls`, roving `tabindex`, navegación con flechas ←→ y Home/End con
+    activación automática. Un solo panel montado a la vez, no los 10 grupos ocultos con CSS
+  - Cada pestaña muestra un punto de estado (azul = proveedor activo, ámbar = configuración
+    incompleta) sin necesidad de entrar
+  - Todo el resto de la lógica (modelos por proveedor, secrets enmascarados, restaurar/
+    borrar, cascada BD→env→default) quedó intacta — solo cambió el contenedor de layout
+  - Verificado en el browser real: las 10 pestañas, navegación por teclado, y que el
+    scroll horizontal a 400px de ancho ya era un problema preexistente del layout del
+    sidebar (confirmado en `/dashboard/users`, no introducido acá) — fuera de alcance
+- [x] **Bug: el dropdown de modelos "solo funcionaba" en el proveedor activo**
+  - Al entrar a la página se precargaba la lista de modelos solo del proveedor activo
+    (para no hacer una ráfaga de 5 llamadas externas); el resto mostraba un campo de
+    texto plano hasta tocar "Buscar modelos" a mano — de un vistazo parecía roto en
+    todos los proveedores menos ese
+  - Ahora cambiar de pestaña dispara la carga de modelos de ese proveedor automáticamente
+    (una vez, cacheada) — el dropdown aparece solo en cualquier pestaña de LLM
 
 ---
 
@@ -524,7 +632,9 @@
 ## Hito 5 - Go Live ⏳ PENDIENTE
 
 ### Canales adicionales
-- [ ] WhatsApp Business API: webhooks y envío de mensajes
+- [x] ~~WhatsApp Business API: webhooks y envío de mensajes~~ — implementado 2026-08-05,
+      ver "Conector real de WhatsApp y Email" en el Hito 2. Falta cerrar la firma del
+      webhook y verificar el número en la allow-list del sandbox antes de ir a producción
 - [ ] Web chat (widget embebible)
 - [ ] Email como canal de entrada
 
@@ -553,6 +663,9 @@
 | Nombre de usuario | `firstName` + `lastName` | Campos separados, pedido explícito |
 | Baja de usuario | Baja del tenant, no borrado físico | Conversaciones, tickets y métricas lo referencian |
 | Acceso a `/settings` | Tenant de sistema + `settings:*` | Corte por tenant, no por nombre de rol, para no romper RBAC dinámico |
+| Envío saliente de WhatsApp | Solo `type: text` | Ventana de 24hs de Meta; mensajes fuera de ventana necesitan `template` aprobado, no implementado (2026-08-05) |
+| Menú sin match en flujos IVR | LLM conversa y recopila datos, no repite el menú | Pedido explícito del usuario; decide autoservicio/ticket cuando existan fuentes de conocimiento definidas (2026-08-05) |
+| Credencial de MiniMax | Una sola key para chat y audio (T2A) | MiniMax usa el mismo Bearer token para ambas APIs — no hace falta duplicar el setting (2026-08-05) |
 
 ---
 
@@ -570,7 +683,8 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 
 ## Próximo paso inmediato
 
-**Hitos 0-3 completados**, más el motor de flujos IVR y la configuración del sistema.
+**Hitos 0-3 completados**, más el motor de flujos IVR, la configuración del sistema
+(con pestañas), y un conector real de WhatsApp + Email (probado contra sandbox de Meta).
 
 **Opciones para continuar:**
 
@@ -592,6 +706,20 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 3. Búsqueda de tickets con `id: { contains: ... }` en el orquestador LLM: match parcial de
    substring sobre un cuid, puede traer el ticket equivocado
 4. Implementar los nodos `transfer_agent` y `webhook` (hoy stubs)
+5. Webhook de WhatsApp sin verificar `X-Hub-Signature-256` (App Secret de Meta) — cualquiera
+   que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`
+6. `WHATSAPP_TENANT_ID` es un solo valor global: un número de WhatsApp = un tenant, hasta
+   que existan settings por tenant
+
+**E. Audio (STT/TTS) — pedido explícitamente para después**
+1. `WHATSAPP_TENANT_ID` (recepción) y `WhatsAppService` (envío) solo manejan `type: text`
+   hoy — hace falta extender el webhook para descargar audio de la Media API de Meta y
+   `WhatsAppService` para subir y mandar `type: audio`
+2. La interfaz `LlmProvider` es puramente texto (`generateCompletion(): Promise<string>`) —
+   no tiene lugar para devolver audio; STT/TTS necesitan su propia interfaz, no una extensión
+3. MiniMax T2A (`POST /v1/t2a_v2`) ya tiene la credencial cargada (`MINIMAX_API_KEY`, ver
+   "Capa de Abstracción LLM") — devuelve el audio en hex o una URL de 24hs, no hay
+   proveedor de transcripción (STT) todavía identificado
 
 **Resuelto (2026-08-04):**
 - ~~`.env.example` traía `DEVICE_FINGERPRINT_TTL_DAYS=30` mientras el default del código y
@@ -601,6 +729,12 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
   `src/` y `prisma/` y emitía todo bajo `dist/src/main.js` en vez de `dist/main.js`.
   `prisma/seed.ts` ya corre aparte vía `ts-node` (`db:seed`), así que se agregó `prisma`
   al `exclude` de `tsconfig.build.json` sin tocar nada más
+
+**Resuelto (2026-08-05):**
+- ~~`menu` insistía "Opción no válida" en loop~~ — interpretación semántica vía LLM +
+  fallback a conversación libre cuando no matchea nada
+- ~~El dropdown de modelos "solo funcionaba" en OpenCode Go~~ — era el único proveedor
+  precargado al entrar; ahora cualquier pestaña carga sus modelos sola
 
 ¿Por cuál seguimos?
 

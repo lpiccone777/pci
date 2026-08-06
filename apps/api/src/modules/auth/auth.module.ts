@@ -8,7 +8,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { DeviceService } from './device.service';
 import { EmailService } from './email.service';
-import { StubEmailService } from './stub-email.service';
+import { SmtpEmailService } from './smtp-email.service';
 
 @Module({
   imports: [
@@ -27,8 +27,8 @@ import { StubEmailService } from './stub-email.service';
     JwtStrategy,
     JwtAuthGuard,
     DeviceService,
-    { provide: EmailService, useClass: StubEmailService },
+    { provide: EmailService, useClass: SmtpEmailService },
   ],
-  exports: [JwtAuthGuard, AuthService],
+  exports: [JwtAuthGuard, AuthService, EmailService],
 })
 export class AuthModule {}

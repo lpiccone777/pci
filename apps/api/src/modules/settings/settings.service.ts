@@ -134,6 +134,7 @@ export class SettingsService {
       // opencode corre como servidor propio, normalmente local y sin auth:
       // lo indispensable es el host.
       opencodego: ['OPENCODEGO_API_URL'],
+      minimax: ['MINIMAX_API_KEY'],
     };
 
     const byKey = new Map(all.map((s) => [s.key, s]));

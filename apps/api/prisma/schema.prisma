@@ -17,11 +17,12 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenants       UserTenant[]
-  devices       Device[]
-  conversations Conversation[]
-  tickets       Ticket[]
-  metrics       Metric[]
+  tenants           UserTenant[]
+  devices           Device[]
+  deviceValidations DeviceValidation[]
+  conversations     Conversation[]
+  tickets           Ticket[]
+  metrics           Metric[]
 }
 
 model Tenant {
@@ -90,6 +91,22 @@ model Device {
   @@index([userId])
 }
 
+// Dispositivo (número de WhatsApp) validado por el nodo `device_validation` del
+// motor de flujos. Fingerprint = hash(teléfono + email), distinto del Device de
+// arriba (que es para el login web y usa teléfono + User-Agent del browser).
+model DeviceValidation {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phone       String
+  email       String
+  fingerprint String   @unique
+  verifiedAt  DateTime @default(now())
+  expiresAt   DateTime
+
+  @@index([userId])
+}
+
 model Conversation {
   id            String   @id @default(cuid())
   userId        String
@@ -98,7 +115,8 @@ model Conversation {
   tenant        Tenant   @relation(fields: [tenantId], references: [id])
   channel       String
   externalId    String?
-  status        String   @default("active")
+  status        String   @default("active") // "active" | "closed"
+  closedAt      DateTime? // Cuándo se cerró; habilita reanudarla dentro de la ventana de resume.
   currentFlowId String?
   currentNodeId String?
   flowState     Json?    // Variables del flujo: { problemDescription: "...", ticketId: "944" }

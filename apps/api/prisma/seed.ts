@@ -12,7 +12,7 @@ async function main() {
     where: { slug: 'system' },
     update: {},
     create: {
-      name: 'Sistema PCI',
+      name: 'Sistema Plataforma Conversacional Inteligente',
       slug: 'system',
     },
   });
@@ -70,7 +70,7 @@ async function main() {
     create: {
       email: DEFAULT_ADMIN_EMAIL,
       firstName: 'Administrador',
-      lastName: 'PCI',
+      lastName: 'Plataforma Conversacional Inteligente',
       passwordHash,
     },
   });

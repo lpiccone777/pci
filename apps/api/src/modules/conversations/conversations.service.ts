@@ -6,6 +6,10 @@ import { BrokerService, BrokerMessage } from '../broker/broker.service';
 import { UsersService } from '../users/users.service';
 import { FlowService } from '../flow/flow.service';
 import { LlmMessage } from '../llm/llm-provider.interface';
+import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
+import { AppConfigService } from '../../config/app-config.service';
+import { EmailService } from '../auth/email.service';
+import { createHash } from 'crypto';
 
 /**
  * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
@@ -27,8 +31,30 @@ const SIMULATE_TIMEOUT_MS = 90_000;
 /** Corte de seguridad ante flujos con ciclos entre nodos no interactivos. */
 const MAX_FLOW_STEPS = 25;
 
+/**
+ * Ventana para retomar una charla cerrada (nodo `end`, cancelación del usuario o
+ * fin del flujo) como la misma Conversation en vez de abrir una nueva. Pasada la
+ * ventana, el próximo mensaje del usuario arranca una charla nueva.
+ */
+const RESUME_WINDOW_MS = 12 * 60 * 60 * 1000;
+
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
+
+interface NodeExecutionResult {
+  responseText?: string;
+  nextNodeId?: string;
+  sourceHandle?: string;
+  /** Corta la cadena y devuelve el turno al usuario, parando en este nodo. */
+  waitForInput?: boolean;
+  /** El usuario canceló la gestión en curso: termina el flujo, no sigue ninguna arista. */
+  cancelFlow?: boolean;
+  /** Nodo `end`: cierre explícito y deliberado de la charla. */
+  endConversation?: boolean;
+  /** Botones o lista de WhatsApp para un `menu`, en vez del texto numerado. */
+  interactive?: WhatsAppInteractive;
+  flowState?: any;
+}
 
 @Injectable()
 export class ConversationsService implements OnModuleInit {
@@ -40,6 +66,8 @@ export class ConversationsService implements OnModuleInit {
     private readonly broker: BrokerService,
     private readonly usersService: UsersService,
     private readonly flowService: FlowService,
+    private readonly appConfig: AppConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   async onModuleInit() {
@@ -95,21 +123,40 @@ export class ConversationsService implements OnModuleInit {
       roleName: membership?.role.name ?? null,
     };
 
-    // 2. Buscar o crear conversación activa
+    // 2. Buscar conversación activa, retomar una cerrada reciente, o crear una nueva
     let conversation = await this.prisma.conversation.findFirst({
       where: { userId: user.id, tenantId, channel: 'whatsapp', status: 'active' },
       orderBy: { createdAt: 'desc' },
     });
 
     if (!conversation) {
-      conversation = await this.prisma.conversation.create({
-        data: {
+      // La última charla cerrada (nodo `end`, cancelación o fin de flujo) sigue
+      // dentro de la ventana de reanudación: se reabre la misma Conversation —
+      // mismo id, mismo historial de Message— en vez de perder el contexto.
+      const resumable = await this.prisma.conversation.findFirst({
+        where: {
           userId: user.id,
           tenantId,
           channel: 'whatsapp',
-          externalId: from,
+          status: 'closed',
+          closedAt: { gte: new Date(Date.now() - RESUME_WINDOW_MS) },
         },
+        orderBy: { closedAt: 'desc' },
       });
+
+      conversation = resumable
+        ? await this.prisma.conversation.update({
+            where: { id: resumable.id },
+            data: { status: 'active', closedAt: null },
+          })
+        : await this.prisma.conversation.create({
+            data: {
+              userId: user.id,
+              tenantId,
+              channel: 'whatsapp',
+              externalId: from,
+            },
+          });
     }
 
     // 3. Guardar mensaje del usuario
@@ -121,12 +168,42 @@ export class ConversationsService implements OnModuleInit {
       },
     });
 
+    // 3.5 ¿Quiere cerrar/reiniciar la charla? Corre en cualquier punto de la
+    // conversación (parado en un nodo, en el fallback libre del LLM, o sin
+    // flujo activo) — a diferencia del "cancelar" de un nodo `input`, que solo
+    // corta el dato puntual que se estaba pidiendo.
+    if (this.looksLikeCancelAttempt(body) && (await this.confirmEndChatIntent(body))) {
+      await this.closeConversation(conversation.id);
+      const closingText = 'Listo, cerré la charla. Escribime cuando necesites algo más.';
+
+      await this.prisma.message.create({
+        data: { conversationId: conversation.id, senderType: 'assistant', content: closingText },
+      });
+
+      await this.broker.publish(
+        msg.replyTo ?? 'whatsapp.outgoing',
+        {
+          pattern: 'message.send',
+          data: { to: from, body: closingText },
+          tenantId,
+          timestamp: new Date().toISOString(),
+          correlationId: msg.correlationId,
+        },
+        { assert: !msg.replyTo },
+      );
+
+      this.logger.log(`[${tenantId}] Charla cerrada a pedido de ${from}`);
+      return closingText;
+    }
+
     // 4. EJECUTAR FLUJO IVR o ORQUESTADOR LLM
     let responseText: string;
+    let interactive: WhatsAppInteractive | undefined;
 
     const flowResult = await this.executeFlow(conversation, user, body, tenantId, from, identity);
     if (flowResult) {
-      responseText = flowResult;
+      responseText = flowResult.text;
+      interactive = flowResult.interactive;
     } else {
       // Fallback: orquestador LLM para mensajes fuera de flujo
       responseText = await this.orchestratorLlm(conversation, body, tenantId);
@@ -155,7 +232,7 @@ export class ConversationsService implements OnModuleInit {
       msg.replyTo ?? 'whatsapp.outgoing',
       {
         pattern: 'message.send',
-        data: { to: from, body: responseText },
+        data: { to: from, body: responseText, interactive },
         tenantId,
         timestamp: new Date().toISOString(),
         correlationId: msg.correlationId,
@@ -184,7 +261,7 @@ export class ConversationsService implements OnModuleInit {
     tenantId: string,
     from: string,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
-  ): Promise<string | null> {
+  ): Promise<{ text: string; interactive?: WhatsAppInteractive } | null> {
     // Buscar flujo activo
     let flowId = conversation.currentFlowId;
     let currentNodeId = conversation.currentNodeId;
@@ -203,6 +280,7 @@ export class ConversationsService implements OnModuleInit {
 
     let flowState: Record<string, any> = (conversation.flowState as Record<string, any>) || {};
     const responses: string[] = [];
+    let interactive: WhatsAppInteractive | undefined;
     let nodeId: string | null = currentNodeId;
     let steps = 0;
 
@@ -213,7 +291,7 @@ export class ConversationsService implements OnModuleInit {
       if (!node) {
         // Nodo no encontrado (flujo editado bajo los pies): resetear.
         await this.resetFlow(conversation.id);
-        return responses.length ? responses.join('\n\n') : null;
+        return this.toFlowResult(responses, interactive);
       }
 
       const result = await this.executeNode(
@@ -228,8 +306,36 @@ export class ConversationsService implements OnModuleInit {
         identity,
       );
 
-      if (result.responseText) responses.push(result.responseText);
+      // Actualizar flowState ANTES de interpolar: si este mismo nodo acaba de
+      // setear una variable (ej. `start` con userName), el mensaje que devuelve
+      // ya tiene que poder usarla.
       if (result.flowState) flowState = result.flowState;
+      if (result.responseText) responses.push(this.interpolate(result.responseText, flowState));
+      if (result.interactive) {
+        interactive = this.interpolateInteractive(result.interactive, flowState);
+        // WhatsApp solo admite un texto junto a los botones/lista: si antes de
+        // este nodo se acumuló texto (saludo, mensajes previos encadenados),
+        // tiene que ir todo junto en el body real — si no, se pierde apenas el
+        // mensaje final resulta interactivo (justo lo que pasaba antes).
+        interactive = { ...interactive, body: responses.join('\n\n') || interactive.body };
+      }
+
+      // Nodo `end`: cierre explícito y deliberado de la charla, retomable dentro
+      // de RESUME_WINDOW_MS (ver búsqueda de conversación en `handleMessage`).
+      if (result.endConversation) {
+        await this.closeConversation(conversation.id);
+        return this.toFlowResult(responses, interactive);
+      }
+
+      // El usuario canceló la gestión en curso (colloquial, detectado por LLM en
+      // `menu`/`input`): termina el flujo igual que si hubiera llegado a su fin,
+      // no sigue ninguna arista del nodo donde se quedó parado. Se cierra la
+      // charla (retomable) en vez de solo resetear el flujo: si no, `status`
+      // nunca deja de ser `active` y la conversación queda abierta para siempre.
+      if (result.cancelFlow) {
+        await this.closeConversation(conversation.id);
+        return this.toFlowResult(responses, interactive);
+      }
 
       // Transición a sub-flujo: cambia el flujo entero, no solo el nodo.
       if (flowState.__subflow) {
@@ -247,7 +353,7 @@ export class ConversationsService implements OnModuleInit {
       // Queda parado en sí mismo, así el próximo mensaje lo vuelve a ejecutar.
       if (result.waitForInput) {
         await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
-        return responses.length ? responses.join('\n\n') : null;
+        return this.toFlowResult(responses, interactive);
       }
 
       const nextNodeId = this.resolveNextNode(node, edges, result);
@@ -257,7 +363,7 @@ export class ConversationsService implements OnModuleInit {
       // un llm_query eso son 25 llamadas al modelo por cada mensaje entrante.
       if (nextNodeId === node.id) {
         await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
-        return responses.length ? responses.join('\n\n') : null;
+        return this.toFlowResult(responses, interactive);
       }
 
       // `llm_query` sin salida es un punto final conversacional, no el fin del flujo:
@@ -265,7 +371,7 @@ export class ConversationsService implements OnModuleInit {
       // modelo, sin repetir el saludo ni los nodos previos.
       if (!nextNodeId && node.type === 'llm_query') {
         await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
-        return responses.length ? responses.join('\n\n') : null;
+        return this.toFlowResult(responses, interactive);
       }
 
       nodeId = nextNodeId;
@@ -278,12 +384,21 @@ export class ConversationsService implements OnModuleInit {
       );
       await this.resetFlow(conversation.id);
       responses.push('Se interrumpió el flujo por un problema de configuración.');
-      return responses.join('\n\n');
+      return { text: responses.join('\n\n') };
     }
 
-    // Fin del flujo: se acabaron los nodos.
-    await this.resetFlow(conversation.id);
-    return responses.length ? responses.join('\n\n') : null;
+    // Fin del flujo: se acabaron los nodos. Sin un nodo `end` explícito, esto
+    // igual cierra la charla (retomable) — antes quedaba `active` para siempre.
+    await this.closeConversation(conversation.id);
+    return this.toFlowResult(responses, interactive);
+  }
+
+  /** Junta las respuestas acumuladas de `executeFlow` en el resultado final, o `null` si no hubo ninguna. */
+  private toFlowResult(
+    responses: string[],
+    interactive?: WhatsAppInteractive,
+  ): { text: string; interactive?: WhatsAppInteractive } | null {
+    return responses.length ? { text: responses.join('\n\n'), interactive } : null;
   }
 
   /** Guarda en qué punto del flujo quedó la conversación. */
@@ -327,6 +442,249 @@ export class ConversationsService implements OnModuleInit {
     return outgoing[0]?.target ?? null;
   }
 
+  /** Palabras que activan el chequeo (por LLM) de si un `input` es en realidad un pedido de cancelación. */
+  private static readonly CANCEL_HINT_WORDS = [
+    'cancel',
+    'olvid',
+    'dejalo',
+    'déjalo',
+    'dejemoslo',
+    'dejémoslo',
+    'mejor no',
+    'no quiero',
+    'no importa',
+    'da igual',
+    'nada',
+    'chau',
+    'salir',
+    'volver',
+    'basta',
+    'no sigas',
+    'no sigo',
+    'no continu',
+    'ya no',
+    'despues',
+    'después',
+    // Raíces en vez de la palabra completa: así matchean también las formas
+    // conjugadas ("cerremos", "termina", "reiniciemos") que un `.includes()`
+    // con el infinitivo se perdía.
+    'cerr',
+    'termin',
+    'reinici',
+    'adios',
+    'adiós',
+    'hasta luego',
+    'nos vemos',
+  ];
+
+  private looksLikeCancelAttempt(body: string): boolean {
+    const normalized = body.trim().toLowerCase();
+    if (!normalized) return false;
+    return ConversationsService.CANCEL_HINT_WORDS.some((w) => normalized.includes(w));
+  }
+
+  /** Corta el nodo actual y termina el flujo, como si hubiera llegado a su fin normalmente. */
+  private cancelInteraction(flowState: Record<string, any>): {
+    responseText: string;
+    flowState: any;
+    cancelFlow: true;
+  } {
+    delete flowState.__awaiting;
+    return {
+      responseText: 'Listo, cancelé la gestión. Decime si necesitás otra cosa.',
+      flowState,
+      cancelFlow: true,
+    };
+  }
+
+  /**
+   * Le pregunta al LLM si un mensaje que ya activó `looksLikeCancelAttempt` es
+   * un pedido de cerrar o reiniciar la charla entera (despedida, "cerrá esto",
+   * "quiero reiniciar"), a diferencia de `confirmCancelIntent` que evalúa si es
+   * una cancelación del dato puntual que pedía un nodo `input`. Ante cualquier
+   * error del proveedor, no cierra — mejor seguir la charla de más que cortarla
+   * de golpe por una falla transitoria del LLM.
+   */
+  private async confirmEndChatIntent(body: string): Promise<boolean> {
+    try {
+      const raw = await this.llmService.chat(
+        [
+          {
+            role: 'system',
+            content:
+              'Sos un clasificador de intención para un chatbot de soporte. Respondé EXCLUSIVAMENTE con ' +
+              'la palabra CERRAR si el mensaje del usuario pide terminar, cerrar o reiniciar la charla ' +
+              'completa (despedidas como "chau", "gracias, eso es todo", o pedidos explícitos como "cerrá ' +
+              'la charla", "quiero reiniciar", "terminemos acá"), o con la palabra SEGUIR si el mensaje es ' +
+              'cualquier otra cosa (una pregunta, un dato que se le pidió, o parte normal de la charla en ' +
+              'curso). Una sola palabra, sin nada más.',
+          },
+          { role: 'user', content: `Mensaje del usuario: "${body}"` },
+        ],
+        { temperature: 0, maxTokens: 10 },
+      );
+      return raw.trim().toUpperCase().startsWith('CERRAR');
+    } catch (err) {
+      this.logger.warn(`No se pudo evaluar intención de cierre de charla: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Le pregunta al LLM si un mensaje que ya activó `looksLikeCancelAttempt` es
+   * realmente una cancelación o una respuesta válida al dato pedido. Ante
+   * cualquier error del proveedor, no cancela — el peor caso es que el `input`
+   * guarde un texto raro, no que se pierda una gestión en curso por una falla
+   * transitoria del LLM.
+   */
+  private async confirmCancelIntent(body: string, question: string | undefined): Promise<boolean> {
+    try {
+      const raw = await this.llmService.chat(
+        [
+          {
+            role: 'system',
+            content:
+              'Sos un clasificador de intención para un chatbot de soporte. El bot le pidió un dato al ' +
+              'usuario y esa es la pregunta pendiente. Respondé EXCLUSIVAMENTE con la palabra CANCELAR ' +
+              'si el mensaje del usuario indica que quiere abandonar, cancelar o no continuar con lo que ' +
+              'se le pidió (en cualquier forma coloquial: "dejalo", "mejor no", "no quiero seguir", "da ' +
+              'igual", etc.), o con la palabra CONTINUAR si el mensaje es simplemente su respuesta al ' +
+              'dato pedido (aunque no sepas si es correcta). Una sola palabra, sin nada más.',
+          },
+          {
+            role: 'user',
+            content: `Se le pidió: "${question || 'un dato'}"\nMensaje del usuario: "${body}"`,
+          },
+        ],
+        { temperature: 0, maxTokens: 10 },
+      );
+      return raw.trim().toUpperCase().startsWith('CANCEL');
+    } catch (err) {
+      this.logger.warn(`No se pudo evaluar intención de cancelación: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Interpreta una respuesta de menú que no matcheó literalmente ninguna opción:
+   * puede ser una cancelación coloquial, o el usuario describiendo en lenguaje
+   * natural lo que quiere sin usar el texto exacto de la opción. Ante cualquier
+   * error del proveedor, no matchea nada — cae al mensaje de "no entendí" en
+   * vez de arriesgar una ruta equivocada.
+   */
+  private async interpretMenuChoice(
+    body: string,
+    options: any[],
+  ): Promise<{ cancel: boolean; optionValue?: string }> {
+    if (!options.length) return { cancel: false };
+
+    const listado = options
+      .map((opt: any) => `- ${opt.label} (valor: ${opt.value})`)
+      .join('\n');
+
+    try {
+      const raw = await this.llmService.chat(
+        [
+          {
+            role: 'system',
+            content:
+              'Sos un clasificador de intención para un menú de opciones de un chatbot de soporte. Te ' +
+              'paso las opciones disponibles y un mensaje del usuario que no coincidió literalmente con ' +
+              'ninguna. Respondé EXCLUSIVAMENTE con una de estas tres cosas, sin texto adicional:\n' +
+              '- el "valor" exacto (tal cual aparece entre paréntesis) de la opción, si el mensaje del ' +
+              'usuario se corresponde claramente con esa opción aunque no la haya escrito literal (ej: ' +
+              '"se me rompió la impresora" corresponde a una opción de soporte técnico)\n' +
+              '- CANCELAR, si el usuario quiere abandonar o cancelar la gestión actual, en cualquier ' +
+              'forma coloquial ("dejalo", "mejor no", "no quiero seguir", etc.)\n' +
+              '- NINGUNA, si el mensaje no se corresponde con ninguna opción ni es una cancelación',
+          },
+          {
+            role: 'user',
+            content: `Opciones:\n${listado}\n\nMensaje del usuario: "${body}"`,
+          },
+        ],
+        { temperature: 0, maxTokens: 20 },
+      );
+
+      const answer = raw.trim();
+      if (answer.toUpperCase().startsWith('CANCEL')) return { cancel: true };
+      const matched = options.find((opt: any) => String(opt.value) === answer);
+      return matched ? { cancel: false, optionValue: String(matched.value) } : { cancel: false };
+    } catch (err) {
+      this.logger.warn(`No se pudo interpretar la opción de menú: ${(err as Error).message}`);
+      return { cancel: false };
+    }
+  }
+
+  /**
+   * Arma botones (≤3 opciones) o una lista (≤10) para un nodo `menu`, cuando la
+   * cantidad de opciones lo permite — WhatsApp no soporta más de 10 filas en un
+   * mensaje interactivo. Con más opciones (o ninguna), se sigue usando el texto
+   * numerado de siempre.
+   */
+  private buildMenuInteractive(headerText: string | undefined, options: any[]): WhatsAppInteractive | undefined {
+    if (!options.length || options.length > 10) return undefined;
+    const body = (headerText ?? '').trim() || 'Elegí una opción:';
+
+    if (options.length <= 3) {
+      return {
+        type: 'button',
+        body,
+        buttons: options.map((opt: any) => ({
+          id: String(opt.value),
+          title: String(opt.label).slice(0, 20),
+        })),
+      };
+    }
+
+    return {
+      type: 'list',
+      body,
+      buttonText: 'Elegir opción',
+      rows: options.map((opt: any) => ({
+        id: String(opt.value),
+        title: String(opt.label).slice(0, 24),
+      })),
+    };
+  }
+
+  /**
+   * Reemplaza `{{variable}}` por `flowState[variable]` en el texto de un nodo
+   * (ej. `Hola {{userName}}`, con `userName` seteado por el nodo `start`). Si la
+   * variable no existe en `flowState`, deja el placeholder tal cual — mejor que
+   * un mensaje incompleto en silencio, así se nota el typo en el flujo.
+   */
+  private interpolate(text: string, flowState: Record<string, any>): string {
+    return text.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g, (placeholder, key) => {
+      const value = flowState[key];
+      return value === undefined || value === null ? placeholder : String(value);
+    });
+  }
+
+  /** Mismo reemplazo de `{{variable}}` que `interpolate`, aplicado a un mensaje interactivo (botones/lista). */
+  private interpolateInteractive(
+    interactive: WhatsAppInteractive,
+    flowState: Record<string, any>,
+  ): WhatsAppInteractive {
+    if (interactive.type === 'button') {
+      return {
+        ...interactive,
+        body: this.interpolate(interactive.body, flowState),
+        buttons: interactive.buttons.map((b) => ({ ...b, title: this.interpolate(b.title, flowState) })),
+      };
+    }
+    return {
+      ...interactive,
+      body: this.interpolate(interactive.body, flowState),
+      buttonText: this.interpolate(interactive.buttonText, flowState),
+      rows: interactive.rows.map((r) => ({
+        ...r,
+        title: this.interpolate(r.title, flowState),
+        description: r.description ? this.interpolate(r.description, flowState) : r.description,
+      })),
+    };
+  }
+
   private findStartNodeId(nodes: any[]): string | null {
     // Buscar nodo de tipo 'start' o el primer nodo sin aristas entrantes
     const startNode = nodes.find((n) => n.type === 'start');
@@ -341,6 +699,143 @@ export class ConversationsService implements OnModuleInit {
     });
   }
 
+  /** Cierra la charla (nodo `end`, cancelación del usuario o fin del flujo). Queda retomable dentro de RESUME_WINDOW_MS. */
+  private async closeConversation(conversationId: string) {
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        status: 'closed',
+        closedAt: new Date(),
+        currentFlowId: null,
+        currentNodeId: null,
+        flowState: Prisma.JsonNull,
+      },
+    });
+  }
+
+  /**
+   * Nodo `device_validation`: valida que este número de WhatsApp + el email del
+   * usuario ya pasaron por un código de verificación, dentro de la vigencia
+   * definida por `DEVICE_FINGERPRINT_TTL_DAYS`.
+   *
+   * - Dispositivo ya validado y vigente → nodo transparente, sigue de largo sin
+   *   mensaje ni espera (como `variable` o `delay`).
+   * - No validado o vencido → avisa que mandó un código al email registrado y
+   *   queda esperando que el usuario lo escriba.
+   */
+  private async executeDeviceValidationNode(
+    node: any,
+    body: string,
+    user: any,
+    from: string,
+    flowState: Record<string, any>,
+    customText: string | undefined,
+  ): Promise<NodeExecutionResult> {
+    const email: string | undefined = user?.email;
+
+    // Sin email real no hay a dónde mandar el código — el email autogenerado
+    // para usuarios que solo existen por WhatsApp (ver UsersService) no sirve.
+    if (!email || email.endsWith('@local.pci')) {
+      return {
+        responseText:
+          'No podemos validar este dispositivo porque no tenés un email registrado. ' +
+          'Contactate con soporte para que te lo carguen.',
+        endConversation: true,
+      };
+    }
+
+    const fingerprint = this.computeDeviceFingerprint(from, email);
+
+    // Primera llegada a este nodo (no esperando código todavía): revisar si ya
+    // hay un dispositivo validado y vigente para este teléfono + email.
+    if (flowState.__awaiting !== node.id) {
+      const existing = await this.prisma.deviceValidation.findUnique({ where: { fingerprint } });
+      const isValid = !!existing && existing.userId === user.id && existing.expiresAt > new Date();
+
+      if (isValid) {
+        return {}; // Transparente: no hay nada que decir, sigue al próximo nodo.
+      }
+
+      return this.sendDeviceValidationCode(node.id, email, fingerprint, flowState, customText);
+    }
+
+    // Esperando el código: ¿venció mientras tanto? Mandamos uno nuevo en vez de
+    // dejar al usuario tipeando un código que ya no sirve.
+    const expiresAt = flowState.__deviceValidationExpiresAt;
+    if (!expiresAt || Date.now() > expiresAt) {
+      return this.sendDeviceValidationCode(node.id, email, fingerprint, flowState, customText, true);
+    }
+
+    if (body.trim() !== flowState.__deviceValidationCode) {
+      return {
+        responseText: 'Ese código no es correcto. Fijate bien y volvé a escribirlo.',
+        waitForInput: true,
+        flowState,
+      };
+    }
+
+    // Código correcto: registrar el dispositivo como validado por
+    // DEVICE_FINGERPRINT_TTL_DAYS y limpiar el estado transitorio del nodo.
+    delete flowState.__awaiting;
+    delete flowState.__deviceValidationCode;
+    delete flowState.__deviceValidationExpiresAt;
+
+    const ttlDays = await this.appConfig.deviceFingerprintTtlDays();
+    const expiresAtNew = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
+
+    await this.prisma.deviceValidation.upsert({
+      where: { fingerprint },
+      update: { userId: user.id, phone: from, email, expiresAt: expiresAtNew },
+      create: { userId: user.id, phone: from, email, fingerprint, expiresAt: expiresAtNew },
+    });
+
+    return { flowState };
+  }
+
+  /** Genera y manda un código nuevo, y deja el nodo esperando que lo escriban. */
+  private async sendDeviceValidationCode(
+    nodeId: string,
+    email: string,
+    fingerprint: string,
+    flowState: Record<string, any>,
+    customText: string | undefined,
+    isRenewal = false,
+  ): Promise<NodeExecutionResult> {
+    const ttlSeconds = await this.appConfig.otpTtlSeconds();
+    const code = await this.generateOtpCode();
+
+    flowState.__awaiting = nodeId;
+    flowState.__deviceValidationCode = code;
+    flowState.__deviceValidationExpiresAt = Date.now() + ttlSeconds * 1000;
+
+    await this.emailService.send({
+      to: email,
+      subject: 'Código de validación de dispositivo - Plataforma Conversacional Inteligente',
+      text: `Tu código de validación es: ${code}. Válido por ${Math.round(ttlSeconds / 60)} minutos.`,
+    });
+
+    const message =
+      customText?.trim() || `Te mandamos un código de validación a ${email}. Escribime el código para continuar.`;
+
+    return {
+      responseText: (isRenewal ? 'Ese código venció, te mandamos uno nuevo. ' : '') + message,
+      waitForInput: true,
+      flowState,
+    };
+  }
+
+  /** hash(teléfono + email) — identifica el dispositivo sin guardar el email en claro dos veces. */
+  private computeDeviceFingerprint(phone: string, email: string): string {
+    return createHash('sha256').update(`${phone}:${email.toLowerCase()}`).digest('hex');
+  }
+
+  /** Código numérico de `OTP_CODE_LENGTH` dígitos, mismo esquema que `AuthService.sendOtp`. */
+  private async generateOtpCode(): Promise<string> {
+    const length = await this.appConfig.otpCodeLength();
+    const min = 10 ** (length - 1);
+    return Math.floor(min + Math.random() * (min * 9)).toString();
+  }
+
   private async executeNode(
     node: any,
     body: string,
@@ -351,14 +846,7 @@ export class ConversationsService implements OnModuleInit {
     edges: any[],
     flowState: Record<string, any>,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
-  ): Promise<{
-    responseText?: string;
-    nextNodeId?: string;
-    sourceHandle?: string;
-    /** Corta la cadena y devuelve el turno al usuario, parando en este nodo. */
-    waitForInput?: boolean;
-    flowState?: any;
-  }> {
+  ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
 
@@ -401,18 +889,47 @@ export class ConversationsService implements OnModuleInit {
         return { responseText: data.text };
       }
 
+      case 'end': {
+        return {
+          responseText: data.text || undefined,
+          endConversation: true,
+        };
+      }
+
+      case 'device_validation':
+        return this.executeDeviceValidationNode(node, body, user, from, flowState, data.text);
+
       case 'menu': {
         const options = data.options || [];
+
+        // Ya se derivó a conversación libre con el LLM (el mensaje anterior no
+        // encajaba en ninguna opción ni era una cancelación): sigue atendiendo
+        // con el historial completo, sin volver a evaluar contra las opciones.
+        // Por ahora solo recopila datos del problema — cuando estén definidas
+        // las fuentes de conocimiento, acá se decide autoservicio vs. generar
+        // un ticket con lo recopilado.
+        if (flowState.__llmFallback === node.id) {
+          const responseText = await this.orchestratorLlm(conversation, body, tenantId);
+          return { responseText, waitForInput: true, flowState };
+        }
 
         // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
         // encadenar nodos el menú consumiría el mensaje que lo activó.
         if (flowState.__awaiting !== node.id) {
           flowState.__awaiting = node.id;
-          const menuText =
-            (data.text ?? '') +
-            '\n' +
-            options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n');
-          return { responseText: menuText.trim(), waitForInput: true, flowState };
+          const interactive = this.buildMenuInteractive(data.text, options);
+          // Si hay interactivo, `responseText` tiene que ser SOLO el header (sin
+          // la lista numerada): las opciones ya se ven en los botones/lista, y
+          // ese mismo texto es el que `executeFlow` termina mandando como body
+          // del mensaje interactivo real — listarlas dos veces sería redundante.
+          const responseText = interactive
+            ? (data.text ?? '').trim() || 'Elegí una opción:'
+            : (
+                (data.text ?? '') +
+                '\n' +
+                options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
+              ).trim();
+          return { responseText, interactive, waitForInput: true, flowState };
         }
 
         const selected = options.find(
@@ -431,13 +948,37 @@ export class ConversationsService implements OnModuleInit {
           return { nextNodeId: edge?.target || selected.targetNodeId, flowState };
         }
 
-        // Opción inválida: repetir el menú y seguir esperando.
-        const retryText =
-          'Opción no válida.\n' +
-          (data.text ?? '') +
-          '\n' +
-          options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n');
-        return { responseText: retryText.trim(), waitForInput: true, flowState };
+        // No hubo match literal: el usuario puede haber contestado en lenguaje
+        // natural ("se me rompió la impresora" en vez de tocar "2"), o puede
+        // querer cancelar la gestión ("dejalo", "mejor no"). Se interpreta con
+        // el LLM antes de asumir que es una opción inválida — solo se gasta esta
+        // llamada acá, nunca en el camino feliz de un match literal.
+        const interpretation = await this.interpretMenuChoice(body, options);
+
+        if (interpretation.cancel) {
+          return this.cancelInteraction(flowState);
+        }
+
+        const matched = interpretation.optionValue
+          ? options.find((opt: any) => String(opt.value) === interpretation.optionValue)
+          : undefined;
+
+        if (matched) {
+          delete flowState.__awaiting;
+          const edge = edges.find(
+            (e: any) => e.source === node.id && e.sourceHandle === String(matched.value),
+          );
+          return { nextNodeId: edge?.target || matched.targetNodeId, flowState };
+        }
+
+        // Ni opción ni cancelación: en vez de insistir con el menú, el LLM toma
+        // la conversación para entender el problema del usuario y recopilar
+        // datos. Queda en este modo para los próximos mensajes (ver el chequeo
+        // de `__llmFallback` al principio del case).
+        delete flowState.__awaiting;
+        flowState.__llmFallback = node.id;
+        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId);
+        return { responseText: fallbackResponse, waitForInput: true, flowState };
       }
 
       case 'input': {
@@ -450,6 +991,19 @@ export class ConversationsService implements OnModuleInit {
             waitForInput: true,
             flowState,
           };
+        }
+
+        // Antes de guardar el texto como el dato pedido, se descarta que en
+        // realidad sea un intento de cancelar ("dejalo", "mejor no", "cancelá
+        // esto"). El filtro por palabras clave es a propósito barato y solo
+        // dispara la llamada al LLM (que sí entiende matices) cuando hay una
+        // sospecha real — así una respuesta normal (email, nombre, etc.) no
+        // paga ese costo.
+        if (this.looksLikeCancelAttempt(body)) {
+          const wantsToCancel = await this.confirmCancelIntent(body, data.text);
+          if (wantsToCancel) {
+            return this.cancelInteraction(flowState);
+          }
         }
 
         if (data.variableName) {

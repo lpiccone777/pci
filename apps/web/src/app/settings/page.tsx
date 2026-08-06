@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
 
@@ -66,6 +66,8 @@ export default function SettingsPage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [models, setModels] = useState<Record<string, ModelList>>({});
   const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const canUpdate = hasPermission('settings', 'update');
   const canDelete = hasPermission('settings', 'delete');
@@ -116,6 +118,20 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    // Al entrar a una pestaña de proveedor, consultamos sus modelos en el momento
+    // en vez de esperar a que el usuario toque "Buscar modelos" a mano. Antes solo
+    // pasaba esto con el proveedor activo (precargado arriba): el resto mostraba
+    // un campo de texto plano hasta el click manual, y de un vistazo parecía que
+    // el dropdown "solo funcionaba" en el proveedor activo.
+    if (!activeGroup) return;
+    const provider = settings.find((s) => s.group === activeGroup && s.provider)?.provider;
+    if (provider && !models[provider]) {
+      loadModels(provider);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGroup]);
+
   async function save(s: Setting) {
     setBusyKey(s.key);
     setNotice('');
@@ -157,6 +173,41 @@ export default function SettingsPage() {
     } finally {
       setBusyKey(null);
     }
+  }
+
+  // El API devuelve las claves en orden de catálogo, ya agrupadas.
+  const groups = useMemo(() => {
+    const gs: string[] = [];
+    for (const s of settings) if (!gs.includes(s.group)) gs.push(s.group);
+    return gs;
+  }, [settings]);
+
+  // Pestaña por defecto: la primera del catálogo, y si la que estaba activa
+  // desaparece (ej. filtro/permiso distinto tras un reload) cae a la primera.
+  useEffect(() => {
+    if (groups.length && (!activeGroup || !groups.includes(activeGroup))) {
+      setActiveGroup(groups[0]);
+    }
+  }, [groups, activeGroup]);
+
+  /**
+   * Navegación por teclado del tablist (WAI-ARIA APG, "automatic activation"):
+   * flechas mueven el foco Y activan el panel al toque, Home/End van a los
+   * extremos. El resto de las teclas (Tab, Enter/Space en el botón) las maneja
+   * el browser solo.
+   */
+  function handleTabKeyDown(e: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex: number | null = null;
+    if (e.key === 'ArrowRight') nextIndex = (index + 1) % groups.length;
+    else if (e.key === 'ArrowLeft') nextIndex = (index - 1 + groups.length) % groups.length;
+    else if (e.key === 'Home') nextIndex = 0;
+    else if (e.key === 'End') nextIndex = groups.length - 1;
+    else return;
+
+    e.preventDefault();
+    const nextGroup = groups[nextIndex];
+    setActiveGroup(nextGroup);
+    tabRefs.current[nextGroup]?.focus();
   }
 
   if (loading) return <p className="text-gray-500">Cargando configuración...</p>;
@@ -203,11 +254,11 @@ export default function SettingsPage() {
     );
   }
 
-  // El API devuelve las claves en orden de catálogo, ya agrupadas.
-  const groups: string[] = [];
-  for (const s of settings) if (!groups.includes(s.group)) groups.push(s.group);
-
   const activeProvider = status?.providers.find((p) => p.active);
+
+  const activeGroupSettings = activeGroup ? settings.filter((s) => s.group === activeGroup) : [];
+  const activeGroupProvider = activeGroupSettings.find((s) => s.provider)?.provider;
+  const activePanelStatus = status?.providers.find((p) => p.provider === activeGroupProvider);
 
   return (
     <div className="max-w-4xl">
@@ -253,31 +304,84 @@ export default function SettingsPage() {
         </p>
       )}
 
-      {groups.map((group) => {
-        const groupSettings = settings.filter((s) => s.group === group);
-        const groupProvider = groupSettings.find((s) => s.provider)?.provider;
-        const pStatus = status?.providers.find((p) => p.provider === groupProvider);
+      {/* Tabs: una por grupo del catálogo. Patrón WAI-ARIA APG (tablist con
+          activación automática por flecha) — ver handleTabKeyDown más arriba. */}
+      <div
+        role="tablist"
+        aria-label="Secciones de configuración"
+        className="flex flex-wrap gap-1 border-b border-gray-200 mb-6"
+      >
+        {groups.map((group, index) => {
+          const groupProvider = settings.find((s) => s.group === group && s.provider)?.provider;
+          const pStatus = status?.providers.find((p) => p.provider === groupProvider);
+          const selected = group === activeGroup;
 
-        return (
-        <section key={group} className="mb-8">
+          return (
+            <button
+              key={group}
+              ref={(el) => {
+                tabRefs.current[group] = el;
+              }}
+              type="button"
+              role="tab"
+              id={`tab-${group}`}
+              aria-selected={selected}
+              aria-controls={`panel-${group}`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActiveGroup(group)}
+              onKeyDown={(e) => handleTabKeyDown(e, index)}
+              className={`flex items-center gap-1.5 px-3 py-2 -mb-px text-sm font-medium rounded-t border-b-2 whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                selected
+                  ? 'border-blue-600 text-blue-700 bg-blue-50'
+                  : 'border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50'
+              }`}
+            >
+              {group}
+              {pStatus?.active && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"
+                  title="Proveedor activo"
+                  aria-hidden="true"
+                />
+              )}
+              {pStatus && !pStatus.ready && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"
+                  title="Configuración incompleta"
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeGroup && (
+        <section
+          key={activeGroup}
+          role="tabpanel"
+          id={`panel-${activeGroup}`}
+          aria-labelledby={`tab-${activeGroup}`}
+          tabIndex={0}
+        >
           <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-lg font-semibold text-gray-700">{group}</h2>
-            {pStatus?.active && (
+            <h2 className="text-lg font-semibold text-gray-700">{activeGroup}</h2>
+            {activePanelStatus?.active && (
               <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">activo</span>
             )}
-            {pStatus && (
+            {activePanelStatus && (
               <span
                 className={`text-xs px-2 py-0.5 rounded ${
-                  pStatus.ready ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                  activePanelStatus.ready ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
                 }`}
               >
-                {pStatus.ready ? 'configurado' : 'incompleto'}
+                {activePanelStatus.ready ? 'configurado' : 'incompleto'}
               </span>
             )}
           </div>
 
           <div className="space-y-4">
-            {groupSettings
+            {activeGroupSettings
               .map((s) => {
                 const draft = drafts[s.key] ?? '';
                 // En secrets el input arranca vacío y "vacío" = no cambiar nada.
@@ -481,8 +585,7 @@ export default function SettingsPage() {
               })}
           </div>
         </section>
-        );
-      })}
+      )}
     </div>
   );
 }

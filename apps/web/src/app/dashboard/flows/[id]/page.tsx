@@ -33,6 +33,8 @@ import {
   VariableNode,
   WebhookNode,
   SubflowNode,
+  EndNode,
+  DeviceValidationNode,
 } from '@/components/flow-nodes';
 import { DeletableEdge } from '@/components/flow-edges';
 
@@ -56,6 +58,8 @@ const customNodeTypes = {
   variable: VariableNode,
   webhook: WebhookNode,
   subflow: SubflowNode,
+  end: EndNode,
+  device_validation: DeviceValidationNode,
 };
 
 const customEdgeTypes = {
@@ -86,6 +90,8 @@ const nodeTypeList = [
   { type: 'variable', label: 'Variable', color: '#84cc16' },
   { type: 'webhook', label: 'Webhook', color: '#f97316' },
   { type: 'subflow', label: 'Sub-flujo', color: '#06b6d4' },
+  { type: 'end', label: 'Fin', color: '#991b1b' },
+  { type: 'device_validation', label: 'Validar Dispositivo', color: '#0ea5e9' },
 ];
 
 function FlowEditorInner() {
@@ -235,6 +241,9 @@ function FlowEditorInner() {
         return { action: 'set', name: '', value: '' };
       case 'webhook':
         return { url: '', method: 'POST' };
+      case 'end':
+      case 'device_validation':
+        return { text: '' };
       default:
         return {};
     }
@@ -519,6 +528,43 @@ function NodeProperties({ node, onUpdate }: { node: Node; onUpdate: (key: string
             className="w-full border rounded p-2 text-sm"
             rows={3}
           />
+        </div>
+      )}
+
+      {type === 'end' && (
+        <div>
+          <label className="block text-sm font-medium mb-1">Mensaje de cierre</label>
+          <textarea
+            value={data.text || ''}
+            onChange={(e) => onUpdate('text', e.target.value)}
+            className="w-full border rounded p-2 text-sm"
+            rows={3}
+            placeholder="Listo, ¡gracias por contactarnos!"
+          />
+          <p className="mt-1 text-xs text-gray-400">
+            Cierra la charla. Se puede retomar dentro de 12hs; después de eso, el próximo mensaje
+            abre una charla nueva.
+          </p>
+        </div>
+      )}
+
+      {type === 'device_validation' && (
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Mensaje al pedir el código (opcional)
+          </label>
+          <textarea
+            value={data.text || ''}
+            onChange={(e) => onUpdate('text', e.target.value)}
+            className="w-full border rounded p-2 text-sm"
+            rows={3}
+            placeholder="Te mandamos un código de validación a tu email. Escribime el código para continuar."
+          />
+          <p className="mt-1 text-xs text-gray-400">
+            Valida el dispositivo (teléfono + email del usuario) con un código por mail. Si ya
+            está validado y vigente (según DEVICE_FINGERPRINT_TTL_DAYS), el nodo no interrumpe la
+            charla — sigue directo al siguiente nodo.
+          </p>
         </div>
       )}
 
