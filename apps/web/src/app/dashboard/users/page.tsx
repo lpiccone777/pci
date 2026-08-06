@@ -9,14 +9,21 @@ interface RoleOption {
   name: string;
 }
 
+interface AreaOption {
+  id: string;
+  name: string;
+}
+
 interface UserData {
   id: string;
   email: string;
   firstName: string | null;
   lastName: string | null;
   phone: string | null;
+  invgateUserId: string | null;
   createdAt: string;
   role: RoleOption | null;
+  area: AreaOption | null;
 }
 
 const EMPTY_FORM = {
@@ -25,13 +32,16 @@ const EMPTY_FORM = {
   lastName: '',
   password: '',
   phone: '',
+  invgateUserId: '',
   roleId: '',
+  areaId: '',
 };
 
 export default function UsersPage() {
   const { hasPermission, user: currentUser } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
+  const [areas, setAreas] = useState<AreaOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -43,15 +53,20 @@ export default function UsersPage() {
   const canUpdate = hasPermission('users', 'update');
   const canDelete = hasPermission('users', 'delete');
   const canReadRoles = hasPermission('roles', 'read');
+  const canReadAreas = hasPermission('areas', 'read');
 
   async function load() {
     try {
-      const [userData, roleData] = await Promise.all([
+      // El área es opcional, así que sin permiso para verlas la pantalla sigue andando:
+      // simplemente no aparece el selector.
+      const [userData, roleData, areaData] = await Promise.all([
         apiFetch('/users'),
         canReadRoles ? apiFetch('/roles') : Promise.resolve([]),
+        canReadAreas ? apiFetch('/areas') : Promise.resolve([]),
       ]);
       setUsers(userData);
       setRoles(roleData.map((r: any) => ({ id: r.id, name: r.name })));
+      setAreas(areaData.map((a: any) => ({ id: a.id, name: a.name })));
       setError('');
     } catch (err: any) {
       setError(err.message);
@@ -73,7 +88,9 @@ export default function UsersPage() {
       lastName: u.lastName ?? '',
       password: '',
       phone: u.phone ?? '',
+      invgateUserId: u.invgateUserId ?? '',
       roleId: u.role?.id ?? '',
+      areaId: u.area?.id ?? '',
     });
     setNotice('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -94,10 +111,14 @@ export default function UsersPage() {
           firstName: form.firstName,
           lastName: form.lastName,
           phone: form.phone,
+          invgateUserId: form.invgateUserId,
           roleId: form.roleId,
         };
         // La contraseña solo viaja si se completó: vacío significa "no la cambies".
         if (form.password) payload.password = form.password;
+        // Sin permiso para ver áreas no hay selector, y mandar el campo vacío le borraría
+        // el área al usuario sin que nadie lo haya pedido.
+        if (canReadAreas) payload.areaId = form.areaId;
 
         await apiFetch(`/users/${editingId}`, {
           method: 'PATCH',
@@ -148,10 +169,23 @@ export default function UsersPage() {
       {error && <p className="text-red-500 mb-4">{error}</p>}
       {notice && <p className="text-green-600 mb-4">{notice}</p>}
 
+      {/* La lista de roles queda vacía por dos motivos distintos —la empresa no tiene
+          ninguno, o esta persona no puede verlos— y cada uno se resuelve de otra forma.
+          Con un solo mensaje, a quien le falta el permiso se le decía que no hay roles
+          (falso) y se lo mandaba a una pantalla a la que tampoco puede entrar. */}
       {roles.length === 0 && canCreate && (
         <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4 text-sm">
-          No hay roles en este tenant. El rol es obligatorio, así que creá uno en{' '}
-          <strong>Roles</strong> antes de dar de alta usuarios.
+          {canReadRoles ? (
+            <>
+              No hay roles en este tenant. El rol es obligatorio, así que creá uno en{' '}
+              <strong>Roles</strong> antes de dar de alta usuarios.
+            </>
+          ) : (
+            <>
+              No tenés permiso para ver los roles, y el rol es obligatorio para dar de alta
+              un usuario. Pedile a un administrador que te habilite <strong>ver roles</strong>.
+            </>
+          )}
         </p>
       )}
 
@@ -212,6 +246,28 @@ export default function UsersPage() {
                 ))}
               </select>
             </div>
+            {canReadAreas && (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Área</label>
+                <select
+                  value={form.areaId}
+                  onChange={(e) => setForm({ ...form, areaId: e.target.value })}
+                  className="border px-3 py-2 rounded w-full"
+                >
+                  <option value="">Sin área</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+                {areas.length === 0 && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    Todavía no hay áreas en esta empresa.
+                  </p>
+                )}
+              </div>
+            )}
             <div>
               <label className="block text-xs text-gray-500 mb-1">Teléfono</label>
               <input
@@ -219,6 +275,15 @@ export default function UsersPage() {
                 value={form.phone}
                 onChange={(e) => setForm({ ...form, phone: e.target.value })}
                 className="border px-3 py-2 rounded w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">ID de Invgate</label>
+              <input
+                value={form.invgateUserId}
+                onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
+                className="border px-3 py-2 rounded w-full"
+                maxLength={64}
               />
             </div>
             <div>
@@ -266,7 +331,9 @@ export default function UsersPage() {
               <th className="text-left px-4 py-2">Apellido</th>
               <th className="text-left px-4 py-2">Email</th>
               <th className="text-left px-4 py-2">Rol</th>
+              <th className="text-left px-4 py-2">Área</th>
               <th className="text-left px-4 py-2">Teléfono</th>
+              <th className="text-left px-4 py-2">ID Invgate</th>
               <th className="text-left px-4 py-2">Creado</th>
               {(canUpdate || canDelete) && <th className="px-4 py-2"></th>}
             </tr>
@@ -274,7 +341,7 @@ export default function UsersPage() {
           <tbody>
             {users.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
+                <td colSpan={9} className="px-4 py-6 text-center text-gray-400">
                   No hay usuarios en este tenant.
                 </td>
               </tr>
@@ -293,7 +360,9 @@ export default function UsersPage() {
                     '-'
                   )}
                 </td>
+                <td className="px-4 py-2 text-gray-600">{u.area?.name || '-'}</td>
                 <td className="px-4 py-2">{u.phone || '-'}</td>
+                <td className="px-4 py-2 text-gray-600">{u.invgateUserId || '-'}</td>
                 <td className="px-4 py-2">{new Date(u.createdAt).toLocaleDateString()}</td>
                 {(canUpdate || canDelete) && (
                   <td className="px-4 py-2 text-right whitespace-nowrap">

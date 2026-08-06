@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, createContext, useContext, ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, createContext, useContext, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
+import { ALL_TENANTS_CACHE_KEY, SYSTEM_TENANT_SLUG } from '@/lib/system-tenant';
 
 interface User {
   id: string;
@@ -26,6 +27,8 @@ interface AuthContextType {
   hasPermission: (resource: string, action: string) => boolean;
   activeTenant: string | null;
   setActiveTenant: (id: string) => void;
+  /** Pertenece a la empresa de sistema: puede pararse en cualquier otra empresa. */
+  isSystemUser: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -64,9 +67,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const login = useCallback(async (email: string, password: string) => {
+    // No seteamos User-Agent a mano: el browser manda el suyo, que es el que necesita
+    // el fingerprint de dispositivo. Fijarlo lo rompía (todos los navegadores del mismo
+    // usuario daban un fingerprint idéntico) y además el preflight CORS lo rechazaba.
     const data = await apiFetch('/auth/login', {
       method: 'POST',
-      headers: { 'User-Agent': 'PCI-Web' },
       body: JSON.stringify({ email, password }),
     });
 
@@ -80,9 +85,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const verifyOtp = useCallback(async (code: string) => {
+    // Mismo criterio que en login: el User-Agent lo pone el browser.
     const data = await apiFetch('/auth/verify-otp', {
       method: 'POST',
-      headers: { 'User-Agent': 'PCI-Web' },
       body: JSON.stringify({ code }),
     });
 
@@ -96,6 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     localStorage.removeItem('token');
     localStorage.removeItem('activeTenant');
+    localStorage.removeItem(ALL_TENANTS_CACHE_KEY);
     setToken(null);
     setUser(null);
     setActiveTenantState(null);
@@ -112,20 +118,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.reload();
   }, []);
 
+  const isSystemUser = useMemo(
+    () => !!user?.tenants?.some((t) => t.tenant.slug === SYSTEM_TENANT_SLUG),
+    [user],
+  );
+
+  /**
+   * El vínculo con el que se resuelven los permisos.
+   *
+   * Normalmente es el de la empresa activa. Cuando el superusuario del sistema está parado
+   * en una empresa de la que no es miembro no hay vínculo con ella, así que manda el rol
+   * que tiene en la empresa de sistema — el mismo criterio que aplica `RolesGuard` en el
+   * backend. Sin este respaldo, cambiar de empresa dejaría el menú vacío y todos los
+   * botones escondidos, aunque el API los siga aceptando.
+   */
+  const activeMembership = useMemo(() => {
+    if (!user || !activeTenant) return null;
+    return (
+      user.tenants?.find((t) => t.tenantId === activeTenant) ??
+      user.tenants?.find((t) => t.tenant.slug === SYSTEM_TENANT_SLUG) ??
+      null
+    );
+  }, [user, activeTenant]);
+
   const hasPermission = useCallback(
-    (resource: string, action: string) => {
-      if (!user || !activeTenant) return false;
-      const tenant = user.tenants?.find((t) => t.tenantId === activeTenant);
-      return tenant?.role?.permissions?.some(
+    (resource: string, action: string) =>
+      activeMembership?.role?.permissions?.some(
         (p) => p.resource === resource && p.action === action,
-      ) ?? false;
-    },
-    [user, activeTenant],
+      ) ?? false,
+    [activeMembership],
   );
 
   return (
     <AuthContext.Provider
-      value={{ user, token, isLoading, login, verifyOtp, logout, hasPermission, activeTenant, setActiveTenant }}
+      value={{ user, token, isLoading, login, verifyOtp, logout, hasPermission, activeTenant, setActiveTenant, isSystemUser }}
     >
       {children}
     </AuthContext.Provider>

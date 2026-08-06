@@ -1,157 +1,975 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
 
-interface RoleData {
+interface CatalogEntry {
+  key: string;
+  label: string;
+}
+
+interface Catalog {
+  resources: CatalogEntry[];
+  actions: CatalogEntry[];
+  total: number;
+}
+
+interface RolePermissionData {
+  id: string;
+  resource: string;
+  action: string;
+}
+
+interface RoleRow {
   id: string;
   name: string;
-  permissions: Array<{ id: string; resource: string; action: string }>;
+  permissions: RolePermissionData[];
+  /** Cuántos usuarios tienen el rol. Bloquea el borrado. */
+  userCount: number;
+  /** Solo los permisos del catálogo: es lo que muestra la matriz. */
+  permissionCount: number;
+  /**
+   * El superusuario del sistema: tiene todos los permisos de forma permanente y el backend
+   * rechaza modificarlo, renombrarlo o eliminarlo. Se muestra en modo consulta.
+   */
+  isProtected: boolean;
+}
+
+interface RoleUser {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+}
+
+type Feedback = { kind: 'ok' | 'error'; text: string };
+
+const permKey = (resource: string, action: string) => `${resource}:${action}`;
+
+function splitKey(key: string) {
+  const [resource, action] = key.split(':');
+  return { resource, action };
+}
+
+/** "1 usuario tiene este rol." / "6 usuarios tienen este rol." */
+function usersPhrase(count: number) {
+  if (count === 0) return 'Ningún usuario tiene este rol.';
+  return count === 1 ? '1 usuario tiene este rol.' : `${count} usuarios tienen este rol.`;
 }
 
 export default function RolesPage() {
-  const { hasPermission, activeTenant } = useAuth();
-  const [roles, setRoles] = useState<RoleData[]>([]);
+  const { hasPermission, user, activeTenant } = useAuth();
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [newRole, setNewRole] = useState('');
-  const [permForm, setPermForm] = useState({ roleId: '', resource: '', action: '' });
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  async function load() {
+  /** null = cerrado · { role: null } = alta · { role } = edición. */
+  const [editing, setEditing] = useState<{ role: RoleRow | null } | null>(null);
+  const [viewingUsers, setViewingUsers] = useState<RoleRow | null>(null);
+
+  const canCreate = hasPermission('roles', 'create');
+  const canUpdateRole = hasPermission('roles', 'update');
+  const canDelete = hasPermission('roles', 'delete');
+  const canUpdatePerms = hasPermission('permissions', 'update');
+  const canEditSomething = canUpdateRole || canUpdatePerms;
+
+  /**
+   * El rol del usuario en el tenant activo. Sirve para avisarle cuando está por editar
+   * su propio rol: quitarse `roles:update` tiene efecto inmediato y lo deja afuera de
+   * esta pantalla.
+   */
+  const ownRoleId = useMemo(() => {
+    if (!user || !activeTenant) return null;
+    return user.tenants?.find((t) => t.tenantId === activeTenant)?.role?.id ?? null;
+  }, [user, activeTenant]);
+
+  const load = useCallback(async () => {
     try {
-      const data = await apiFetch('/roles');
-      setRoles(data);
+      const [catalogData, roleData] = await Promise.all([
+        apiFetch('/roles/catalog'),
+        apiFetch('/roles'),
+      ]);
+      setCatalog(catalogData);
+      setRoles(roleData);
     } catch (err: any) {
-      setError(err.message);
+      setFeedback({ kind: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
-  async function createRole(e: React.FormEvent) {
-    e.preventDefault();
+  function openModal(role: RoleRow | null) {
+    setFeedback(null);
+    setDeletingId(null);
+    setEditing({ role });
+  }
+
+  function openUsers(role: RoleRow) {
+    setFeedback(null);
+    setDeletingId(null);
+    setViewingUsers(role);
+  }
+
+  /** El botón gris de un rol que no se puede borrar: responde al clic y explica por qué. */
+  function explainBlockedDelete(role: RoleRow) {
+    setDeletingId(null);
+    setFeedback({
+      kind: 'error',
+      text: role.isProtected
+        ? `${role.name} es el rol de superusuario del sistema: no se puede eliminar.`
+        : `No se puede eliminar ${role.name}: ${role.userCount} ` +
+          (role.userCount === 1
+            ? 'usuario lo tiene asignado.'
+            : 'usuarios lo tienen asignado.') +
+          ' Reasignalos a otro rol desde Usuarios y volvé a intentar.',
+    });
+  }
+
+  async function confirmDelete(role: RoleRow) {
+    setBusy(true);
     try {
-      await apiFetch('/roles', {
-        method: 'POST',
-        body: JSON.stringify({ name: newRole }),
-      });
-      setNewRole('');
-      load();
+      const res = await apiFetch(`/roles/${role.id}`, { method: 'DELETE' });
+      setFeedback({ kind: 'ok', text: res?.message || `Rol ${role.name} eliminado.` });
+      setDeletingId(null);
+      await load();
     } catch (err: any) {
-      setError(err.message);
+      setFeedback({ kind: 'error', text: err.message });
+    } finally {
+      setBusy(false);
     }
   }
 
-  async function addPermission(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      await apiFetch(`/roles/${permForm.roleId}/permissions`, {
-        method: 'POST',
-        body: JSON.stringify({ resource: permForm.resource, action: permForm.action }),
-      });
-      setPermForm({ roleId: '', resource: '', action: '' });
-      load();
-    } catch (err: any) {
-      setError(err.message);
-    }
+  async function afterSave(message: Feedback) {
+    setEditing(null);
+    setFeedback(message);
+    await load();
   }
 
   if (loading) return <p className="text-gray-500">Cargando...</p>;
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6 text-gray-800">Roles</h1>
-      {error && <p className="text-red-500 mb-4">{error}</p>}
-
-      {hasPermission('roles', 'create') && (
-        <form onSubmit={createRole} className="bg-white p-4 rounded shadow mb-6 flex gap-3 items-end">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Nuevo rol</label>
-            <input
-              value={newRole}
-              onChange={(e) => setNewRole(e.target.value)}
-              className="w-full border px-3 py-2 rounded"
-              placeholder="Nombre del rol"
-              required
-            />
-          </div>
-          <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-            Crear
+      <div className="flex items-center justify-between gap-4 mb-6">
+        <h1 className="text-2xl font-bold text-gray-800">Roles</h1>
+        {canCreate && (
+          <button
+            onClick={() => openModal(null)}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 whitespace-nowrap"
+          >
+            Nuevo rol
           </button>
-        </form>
+        )}
+      </div>
+
+      {feedback && (
+        <p
+          className={`mb-4 ${feedback.kind === 'ok' ? 'text-green-600' : 'text-red-500'}`}
+        >
+          {feedback.text}
+        </p>
       )}
 
-      {hasPermission('permissions', 'create') && (
-        <form onSubmit={addPermission} className="bg-white p-4 rounded shadow mb-6 space-y-3">
-          <h2 className="font-semibold text-gray-700">Agregar permiso</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <select
-              value={permForm.roleId}
-              onChange={(e) => setPermForm({ ...permForm, roleId: e.target.value })}
-              className="border px-3 py-2 rounded"
-              required
-            >
-              <option value="">Seleccionar rol</option>
-              {roles.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-            <input
-              placeholder="Recurso (ej: users)"
-              value={permForm.resource}
-              onChange={(e) => setPermForm({ ...permForm, resource: e.target.value })}
-              className="border px-3 py-2 rounded"
-              required
-            />
-            <input
-              placeholder="Acción (ej: create)"
-              value={permForm.action}
-              onChange={(e) => setPermForm({ ...permForm, action: e.target.value })}
-              className="border px-3 py-2 rounded"
-              required
-            />
-          </div>
-          <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
-            Agregar permiso
-          </button>
-        </form>
+      {roles.length === 0 && canCreate && (
+        <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4 text-sm">
+          Todavía no hay roles en esta empresa. Creá el primero para poder dar de alta
+          usuarios.
+        </p>
       )}
 
       <div className="bg-white rounded shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
             <tr>
-              <th className="text-left px-4 py-2">Rol</th>
-              <th className="text-left px-4 py-2">Permisos</th>
+              <th className="text-left px-4 py-2 font-semibold">Rol</th>
+              <th className="text-right px-4 py-2 font-semibold whitespace-nowrap">
+                Usuarios
+              </th>
+              <th className="text-right px-4 py-2 font-semibold whitespace-nowrap">
+                Permisos
+              </th>
+              <th className="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {roles.map((r) => (
-              <tr key={r.id} className="border-t">
-                <td className="px-4 py-2 font-medium">{r.name}</td>
-                <td className="px-4 py-2">
-                  <div className="flex flex-wrap gap-1">
-                    {r.permissions.map((p) => (
-                      <span
-                        key={p.id}
-                        className="inline-block bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs"
-                      >
-                        {p.resource}:{p.action}
-                      </span>
-                    ))}
-                  </div>
+            {roles.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-4 py-6 text-center text-gray-400">
+                  <p className="mb-3">Todavía no hay roles en esta empresa.</p>
+                  {canCreate && (
+                    <button
+                      onClick={() => openModal(null)}
+                      className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                    >
+                      Crear el primero
+                    </button>
+                  )}
                 </td>
               </tr>
-            ))}
+            )}
+
+            {roles.map((role) =>
+              deletingId === role.id ? (
+                <tr key={role.id} className="border-t bg-red-50">
+                  <td colSpan={4} className="px-4 py-2">
+                    <div className="flex gap-2 items-center flex-wrap">
+                      <span className="text-red-700 mr-1">
+                        ¿Eliminar el rol <b>{role.name}</b>? Esta acción no se puede
+                        deshacer.
+                      </span>
+                      <button
+                        onClick={() => confirmDelete(role)}
+                        disabled={busy}
+                        className="bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 disabled:bg-gray-300"
+                      >
+                        {busy ? 'Eliminando...' : 'Sí, eliminar'}
+                      </button>
+                      <button
+                        onClick={() => setDeletingId(null)}
+                        disabled={busy}
+                        className="text-gray-600 px-3 py-1.5 rounded hover:bg-gray-100"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={role.id} className="border-t hover:bg-gray-50">
+                  <td className="px-4 py-2">
+                    <span className="font-medium">{role.name}</span>
+                    {role.isProtected && (
+                      <span
+                        title="Superusuario del sistema: tiene todos los permisos de forma permanente y no se puede modificar"
+                        className="ml-2 align-middle text-[11px] uppercase tracking-wider text-gray-500 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5"
+                      >
+                        Rol del sistema
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {/* El número ES el acceso a la lista: el dato y la forma de abrirlo
+                        son la misma cosa, así que no lleva un botón "Ver" aparte. */}
+                    <button
+                      onClick={() => openUsers(role)}
+                      title={`Ver los usuarios con el rol ${role.name}`}
+                      className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
+                    >
+                      {role.userCount}
+                    </button>
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {role.permissionCount === 0 ? (
+                      <span
+                        className="text-amber-700"
+                        title="Este rol no habilita nada todavía"
+                      >
+                        sin permisos
+                      </span>
+                    ) : (
+                      <span className="text-gray-600 tabular-nums">
+                        {role.permissionCount}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right whitespace-nowrap">
+                    {/* El botón va siempre: sin permisos de edición la ventana se abre en
+                        modo consulta, que es la única forma de ver qué habilita un rol.
+                        La etiqueta dice de antemano lo que se va a poder hacer adentro. */}
+                    <button
+                      onClick={() => openModal(role)}
+                      className="text-blue-600 hover:text-blue-800 px-2"
+                    >
+                      {role.isProtected || !canEditSomething ? 'Ver' : 'Editar'}
+                    </button>
+                    {canDelete &&
+                      (role.userCount === 0 && !role.isProtected ? (
+                        <button
+                          onClick={() => {
+                            setFeedback(null);
+                            setDeletingId(role.id);
+                          }}
+                          className="text-red-600 hover:text-red-800 px-2"
+                        >
+                          Borrar
+                        </button>
+                      ) : (
+                        // aria-disabled y no disabled: con `disabled` de verdad, quien
+                        // navega por teclado ni siquiera lo encuentra, y en pantalla
+                        // táctil no hay hover que muestre el motivo.
+                        <button
+                          onClick={() => explainBlockedDelete(role)}
+                          aria-disabled="true"
+                          title={
+                            role.isProtected
+                              ? 'No se puede eliminar: es el rol de superusuario del sistema'
+                              : `No se puede eliminar: tiene ${role.userCount} ${
+                                  role.userCount === 1
+                                    ? 'usuario asignado'
+                                    : 'usuarios asignados'
+                                }`
+                          }
+                          className="text-gray-400 hover:text-gray-500 cursor-not-allowed px-2"
+                        >
+                          Borrar
+                        </button>
+                      ))}
+                  </td>
+                </tr>
+              ),
+            )}
           </tbody>
         </table>
+      </div>
+
+      {editing && catalog && (
+        <RoleModal
+          role={editing.role}
+          catalog={catalog}
+          // El rol del sistema anula cualquier permiso de edición: el backend lo rechaza
+          // igual, y dejar la matriz activa sería prometer algo que va a fallar al guardar.
+          canEditName={
+            !editing.role?.isProtected && (editing.role ? canUpdateRole : canCreate)
+          }
+          canEditPerms={canUpdatePerms && !editing.role?.isProtected}
+          isProtected={!!editing.role?.isProtected}
+          isOwnRole={!!editing.role && editing.role.id === ownRoleId}
+          otherNames={roles
+            .filter((r) => r.id !== editing.role?.id)
+            .map((r) => r.name)}
+          onClose={() => setEditing(null)}
+          onSaved={afterSave}
+        />
+      )}
+
+      {viewingUsers && (
+        <UsersModal role={viewingUsers} onClose={() => setViewingUsers(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Ventana de rol: un solo formulario para crear y para editar         */
+/* ------------------------------------------------------------------ */
+
+function RoleModal({
+  role,
+  catalog,
+  canEditName,
+  canEditPerms,
+  isProtected,
+  isOwnRole,
+  otherNames,
+  onClose,
+  onSaved,
+}: {
+  role: RoleRow | null;
+  catalog: Catalog;
+  canEditName: boolean;
+  canEditPerms: boolean;
+  isProtected: boolean;
+  isOwnRole: boolean;
+  otherNames: string[];
+  onClose: () => void;
+  onSaved: (message: Feedback) => void;
+}) {
+  const allKeys = useMemo(
+    () =>
+      catalog.resources.flatMap((r) =>
+        catalog.actions.map((a) => permKey(r.key, a.key)),
+      ),
+    [catalog],
+  );
+
+  /** Solo los permisos del catálogo. Los cargados a mano fuera de catálogo no se
+      muestran ni se tocan: el PUT del backend los deja donde están. */
+  const basePerms = useMemo(() => {
+    const known = new Set(allKeys);
+    return new Set(
+      (role?.permissions ?? [])
+        .map((p) => permKey(p.resource, p.action))
+        .filter((k) => known.has(k)),
+    );
+  }, [role, allKeys]);
+
+  const baseName = role?.name ?? '';
+
+  const [name, setName] = useState(baseName);
+  const [perms, setPerms] = useState<Set<string>>(() => new Set(basePerms));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const nameRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+    nameRef.current?.select();
+  }, []);
+
+  const permsChanged = allKeys.some((k) => perms.has(k) !== basePerms.has(k));
+  const changeCount =
+    allKeys.filter((k) => perms.has(k) !== basePerms.has(k)).length +
+    (name.trim() !== baseName ? 1 : 0);
+
+  const requestClose = useCallback(() => {
+    if (saving) return;
+    if (changeCount > 0 && !confirm('Tenés cambios sin guardar. ¿Descartarlos?')) return;
+    onClose();
+  }, [saving, changeCount, onClose]);
+
+  // Escape se escucha en document y no en el div: si el foco quedó fuera del modal
+  // —por un clic en el fondo, por ejemplo— el evento nunca burbujearía hasta acá.
+  useEffect(() => {
+    function onEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        requestClose();
+      }
+    }
+    document.addEventListener('keydown', onEscape);
+    return () => document.removeEventListener('keydown', onEscape);
+  }, [requestClose]);
+
+  /** Ver es condición para las demás acciones del mismo recurso. */
+  function normalize(next: Set<string>, resource: string) {
+    const needsRead = catalog.actions.some(
+      (a) => a.key !== 'read' && next.has(permKey(resource, a.key)),
+    );
+    if (needsRead) next.add(permKey(resource, 'read'));
+  }
+
+  function toggle(resource: string, action: string, on: boolean) {
+    const next = new Set(perms);
+    const key = permKey(resource, action);
+    if (on) next.add(key);
+    else next.delete(key);
+    normalize(next, resource);
+    setPerms(next);
+  }
+
+  function toggleRow(resource: string) {
+    const next = new Set(perms);
+    const full = catalog.actions.every((a) => next.has(permKey(resource, a.key)));
+    catalog.actions.forEach((a) => {
+      if (full) next.delete(permKey(resource, a.key));
+      else next.add(permKey(resource, a.key));
+    });
+    setPerms(next);
+  }
+
+  function toggleCol(action: string) {
+    const next = new Set(perms);
+    const full = catalog.resources.every((r) => next.has(permKey(r.key, action)));
+    catalog.resources.forEach((r) => {
+      if (full) next.delete(permKey(r.key, action));
+      else next.add(permKey(r.key, action));
+      normalize(next, r.key);
+    });
+    setPerms(next);
+  }
+
+  function toggleAll() {
+    setPerms(perms.size === allKeys.length ? new Set() : new Set(allKeys));
+  }
+
+  async function save() {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('El rol necesita un nombre.');
+      nameRef.current?.focus();
+      return;
+    }
+    if (otherNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
+      setError(`Ya existe un rol llamado ${trimmed} en esta empresa.`);
+      nameRef.current?.focus();
+      return;
+    }
+
+    setSaving(true);
+    setError('');
+
+    // Nombre y permisos son dos llamadas porque exigen permisos distintos: roles:* para
+    // el rol, permissions:update para la matriz. Van en orden y solo las necesarias.
+    try {
+      let roleId = role?.id;
+      let justCreated = false;
+
+      if (!role) {
+        const created = await apiFetch('/roles', {
+          method: 'POST',
+          body: JSON.stringify({ name: trimmed }),
+        });
+        roleId = created.id;
+        justCreated = true;
+      } else if (trimmed !== baseName) {
+        await apiFetch(`/roles/${role.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name: trimmed }),
+        });
+      }
+
+      if (permsChanged && canEditPerms) {
+        const payload = [...perms].map(splitKey);
+        try {
+          await apiFetch(`/roles/${roleId}/permissions`, {
+            method: 'PUT',
+            body: JSON.stringify({ permissions: payload }),
+          });
+        } catch (permErr: any) {
+          if (justCreated) {
+            // El rol ya existe: cerrar informando el estado real, en vez de dejar la
+            // ventana abierta sugiriendo que no se guardó nada.
+            onSaved({
+              kind: 'error',
+              text: `El rol ${trimmed} se creó, pero sus permisos no se guardaron: ${permErr.message} Editalo para reintentar.`,
+            });
+            return;
+          }
+          throw permErr;
+        }
+      }
+
+      const total = perms.size;
+      if (justCreated) {
+        onSaved({
+          kind: 'ok',
+          text:
+            total === 0
+              ? `Rol ${trimmed} creado, todavía sin permisos.`
+              : `Rol ${trimmed} creado con ${total} permisos.`,
+        });
+      } else {
+        const renamed = trimmed !== baseName;
+        onSaved({
+          kind: 'ok',
+          text:
+            `Rol ${trimmed} guardado` +
+            (renamed ? ' — nombre actualizado, ' : ' — ') +
+            `${total} permisos activos.`,
+        });
+      }
+    } catch (err: any) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  /** Mantiene el foco adentro del modal mientras esté abierto. */
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key !== 'Tab' || !dialogRef.current) return;
+    const focusables = dialogRef.current.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled)',
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  /**
+   * No hay nada para editar: ni el nombre ni la matriz.
+   *
+   * Cubre dos casos que en pantalla se ven igual — el rol del sistema, que llega con las
+   * dos banderas en `false`, y quien abre la ventana con permiso de solo lectura sobre
+   * roles. Antes solo se contemplaba el primero, así que el segundo no tenía forma de
+   * llegar hasta acá.
+   */
+  const readOnly = !canEditName && !canEditPerms;
+
+  const saveDisabled = saving || (role !== null && changeCount === 0);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-gray-900/55"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) requestClose();
+      }}
+      onKeyDown={onKeyDown}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="role-modal-title"
+    >
+      <div
+        ref={dialogRef}
+        className="bg-white rounded-md shadow-2xl w-full max-w-[720px] max-h-full flex flex-col text-gray-900"
+      >
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
+          <div className="flex-1 min-w-0">
+            <h2 id="role-modal-title" className="text-lg font-semibold text-gray-800 mb-3">
+              {readOnly
+                ? isProtected
+                  ? 'Rol del sistema'
+                  : 'Ver rol'
+                : role
+                  ? 'Editar rol'
+                  : 'Nuevo rol'}
+            </h2>
+            <label htmlFor="role-name" className="block text-xs text-gray-500 mb-1">
+              Nombre del rol *
+            </label>
+            <input
+              id="role-name"
+              ref={nameRef}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  save();
+                }
+              }}
+              disabled={!canEditName || saving}
+              autoComplete="off"
+              placeholder="Ej: Supervisor"
+              className="w-full max-w-[340px] border border-gray-200 px-3 py-2 rounded disabled:bg-gray-100"
+            />
+            <p className="mt-2 text-xs text-gray-500">
+              {role
+                ? usersPhrase(role.userCount)
+                : 'Marcá abajo qué va a poder hacer quien tenga este rol.'}
+            </p>
+          </div>
+          <button
+            onClick={requestClose}
+            aria-label="Cerrar"
+            className="text-xl leading-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded px-2 py-1"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          {isProtected && (
+            <p className="text-gray-700 bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-3 text-sm">
+              Rol de superusuario del sistema. Tiene todos los permisos de forma permanente:
+              no se puede modificar, renombrar ni eliminar. Los permisos que se agreguen al
+              sistema más adelante también los va a tener, sin que haya que hacer nada.
+            </p>
+          )}
+          {/* En modo consulta el aviso no aplica: no hay forma de quitarse nada. */}
+          {isOwnRole && !readOnly && (
+            <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3 text-sm">
+              Este es tu rol. Si te quitás el permiso de modificar roles vas a perder el
+              acceso a esta pantalla.
+            </p>
+          )}
+          {!canEditPerms && !isProtected && (
+            <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3 text-sm">
+              No tenés permiso para modificar permisos. La matriz se muestra como consulta.
+            </p>
+          )}
+
+          <div className="flex items-baseline justify-between gap-3 mb-3">
+            <h3 className="text-sm font-semibold text-gray-700">Permisos</h3>
+            <span className="text-xs text-gray-500 tabular-nums">
+              {perms.size} de {catalog.total} permisos activos
+              {perms.size === catalog.total ? ' · acceso total' : ''}
+            </span>
+          </div>
+
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="text-left px-2 py-1.5 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-gray-200">
+                  Recurso
+                </th>
+                {catalog.actions.map((a) => (
+                  <th
+                    key={a.key}
+                    className="px-2 py-1.5 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-gray-200"
+                  >
+                    <button
+                      onClick={() => toggleCol(a.key)}
+                      disabled={!canEditPerms}
+                      className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
+                    >
+                      {a.label}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th className="text-left px-2 py-1.5 font-semibold text-gray-800 border-b border-gray-300 whitespace-nowrap">
+                  <button
+                    onClick={toggleAll}
+                    disabled={!canEditPerms}
+                    className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
+                  >
+                    Todos los recursos
+                  </button>
+                </th>
+                {catalog.actions.map((a) => {
+                  const full = catalog.resources.every((r) =>
+                    perms.has(permKey(r.key, a.key)),
+                  );
+                  return (
+                    <td
+                      key={a.key}
+                      className="text-center px-2 py-1.5 border-b border-gray-300"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={full}
+                        onChange={() => toggleCol(a.key)}
+                        disabled={!canEditPerms}
+                        aria-label={`Toda la columna ${a.label}`}
+                        className="w-4 h-4 accent-blue-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+                      />
+                    </td>
+                  );
+                })}
+              </tr>
+
+              {catalog.resources.map((r) => (
+                <tr key={r.key} className="hover:bg-gray-50">
+                  <th className="text-left px-2 py-1.5 font-normal text-gray-700 border-b border-gray-100 whitespace-nowrap">
+                    <button
+                      onClick={() => toggleRow(r.key)}
+                      disabled={!canEditPerms}
+                      className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
+                    >
+                      {r.label}
+                    </button>
+                  </th>
+                  {catalog.actions.map((a) => {
+                    const key = permKey(r.key, a.key);
+                    const on = perms.has(key);
+                    const changed = on !== basePerms.has(key);
+                    // `read` queda bloqueada mientras la fila tenga otra acción activa:
+                    // sin poder ver la pantalla, modificar no sirve de nada.
+                    const forced =
+                      a.key === 'read' &&
+                      catalog.actions.some(
+                        (x) => x.key !== 'read' && perms.has(permKey(r.key, x.key)),
+                      );
+                    return (
+                      <td
+                        key={a.key}
+                        className={`text-center px-2 py-1.5 border-b border-gray-100 ${
+                          changed ? 'bg-blue-50' : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={(e) => toggle(r.key, a.key, e.target.checked)}
+                          disabled={forced || !canEditPerms}
+                          aria-label={`${a.label} ${r.label}`}
+                          title={
+                            forced
+                              ? 'Necesario para las demás acciones de esta fila'
+                              : undefined
+                          }
+                          className="w-4 h-4 accent-blue-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {error && (
+          <p className="px-5 py-2 text-sm text-red-600 bg-red-50 border-t border-red-200">
+            {error}
+          </p>
+        )}
+
+        <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center gap-3 rounded-b-md">
+          <span
+            className={`flex-1 text-[13px] ${
+              changeCount > 0
+                ? 'text-blue-700 font-medium'
+                : perms.size === 0
+                  ? 'text-amber-700'
+                  : 'text-gray-500'
+            }`}
+          >
+            {readOnly
+              ? ''
+              : changeCount > 0
+                ? changeCount === 1
+                  ? '1 cambio sin guardar'
+                  : `${changeCount} cambios sin guardar`
+                : perms.size === 0
+                  ? 'Sin permisos: quien tenga este rol no va a poder hacer nada.'
+                  : 'Sin cambios.'}
+          </span>
+          {/* Cuando no hay nada que guardar —rol del sistema o permiso de solo lectura—
+              el botón no va: uno permanentemente gris solo invita a probar por qué no
+              anda. Y el que queda deja de ser "Cancelar", porque no hay nada que cancelar. */}
+          <button
+            onClick={requestClose}
+            disabled={saving}
+            className={
+              readOnly
+                ? 'bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700'
+                : 'text-gray-600 px-4 py-2 rounded hover:bg-gray-100'
+            }
+          >
+            {readOnly ? 'Cerrar' : 'Cancelar'}
+          </button>
+          {!readOnly && (
+            <button
+              onClick={save}
+              disabled={saveDisabled}
+              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
+            >
+              {saving ? 'Guardando...' : 'Guardar'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Ventana de usuarios del rol                                         */
+/* ------------------------------------------------------------------ */
+
+function UsersModal({ role, onClose }: { role: RoleRow; onClose: () => void }) {
+  const router = useRouter();
+  const [people, setPeople] = useState<RoleUser[] | null>(null);
+  const [error, setError] = useState('');
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+    apiFetch(`/roles/${role.id}/users`)
+      .then(setPeople)
+      .catch((err: any) => setError(err.message));
+  }, [role.id]);
+
+  useEffect(() => {
+    function onEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    }
+    document.addEventListener('keydown', onEscape);
+    return () => document.removeEventListener('keydown', onEscape);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-gray-900/55"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onClose();
+        }
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="users-modal-title"
+    >
+      <div className="bg-white rounded-md shadow-2xl w-full max-w-[520px] max-h-full flex flex-col text-gray-900">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
+          <div className="flex-1 min-w-0">
+            <h2 id="users-modal-title" className="text-lg font-semibold text-gray-800">
+              Usuarios con el rol {role.name}
+            </h2>
+            <p className="mt-2 text-xs text-gray-500">
+              {role.userCount === 0
+                ? 'Ningún usuario tiene este rol.'
+                : role.userCount === 1
+                  ? '1 usuario'
+                  : `${role.userCount} usuarios`}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Cerrar"
+            className="text-xl leading-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded px-2 py-1"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          {error && <p className="text-red-500 text-sm">{error}</p>}
+
+          {!error && people === null && <p className="text-gray-500 text-sm">Cargando...</p>}
+
+          {!error && people !== null && people.length === 0 && (
+            <p className="py-6 text-center text-sm text-gray-400">
+              Nadie tiene este rol todavía.
+              <br />
+              Por eso se puede eliminar sin dejar a nadie sin acceso.
+            </p>
+          )}
+
+          {!error && people !== null && people.length > 0 && (
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr>
+                  <th className="text-left px-2 py-1.5 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-gray-200">
+                    Nombre
+                  </th>
+                  <th className="text-left px-2 py-1.5 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-gray-200">
+                    Email
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {people.map((p) => (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-2 py-1.5 border-b border-gray-100">
+                      {[p.firstName, p.lastName].filter(Boolean).join(' ') || '-'}
+                    </td>
+                    <td className="px-2 py-1.5 border-b border-gray-100 text-gray-500">
+                      {p.email}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center gap-3 rounded-b-md">
+          <span className="flex-1 text-[13px] text-gray-500">
+            {people && people.length > 0 ? 'El rol se cambia desde cada usuario.' : ''}
+          </span>
+          <button
+            onClick={() => router.push('/dashboard/users')}
+            className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100 whitespace-nowrap"
+          >
+            Ir a Usuarios
+          </button>
+          <button
+            ref={closeRef}
+            onClick={onClose}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+          >
+            Cerrar
+          </button>
+        </div>
       </div>
     </div>
   );

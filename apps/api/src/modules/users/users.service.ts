@@ -15,6 +15,7 @@ const USER_SELECT = {
   firstName: true,
   lastName: true,
   phone: true,
+  invgateUserId: true,
   createdAt: true,
 } as const;
 
@@ -24,13 +25,14 @@ export class UsersService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Usuarios del tenant activo, con el rol que tienen *en ese* tenant. */
+  /** Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant. */
   async findAll(tenantId: string) {
     const memberships = await this.prisma.userTenant.findMany({
       where: { tenantId },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -38,6 +40,7 @@ export class UsersService {
     return memberships.map((m) => ({
       ...m.user,
       role: m.role,
+      area: m.area,
       joinedAt: m.createdAt,
     }));
   }
@@ -48,6 +51,7 @@ export class UsersService {
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
       },
     });
 
@@ -55,11 +59,19 @@ export class UsersService {
       throw new NotFoundException('El usuario no existe en este tenant');
     }
 
-    return { ...membership.user, role: membership.role, joinedAt: membership.createdAt };
+    return {
+      ...membership.user,
+      role: membership.role,
+      area: membership.area,
+      joinedAt: membership.createdAt,
+    };
   }
 
   async create(tenantId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
+
+    const areaId = dto.areaId || null;
+    if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
@@ -74,13 +86,28 @@ export class UsersService {
       }
 
       await this.prisma.userTenant.create({
-        data: { userId: existing.id, tenantId, roleId: dto.roleId },
+        data: { userId: existing.id, tenantId, roleId: dto.roleId, areaId },
       });
+
+      // El identificador de Invgate es de la persona, no de la membresía, y quien la
+      // suma acá puede ser el primero en conocerlo. Si el usuario todavía no lo tiene,
+      // lo guardamos; si ya lo tiene, no lo pisamos: dar de alta a alguien en un tenant
+      // no es motivo para cambiarle un dato que otro cargó. Sin esto, el campo se
+      // completaba en el formulario y se perdía en silencio.
+      if (dto.invgateUserId && !existing.invgateUserId) {
+        await this.assertInvgateUserIdAvailable(dto.invgateUserId, existing.id);
+        await this.prisma.user.update({
+          where: { id: existing.id },
+          data: { invgateUserId: dto.invgateUserId },
+        });
+      }
+
       this.logger.log(`Usuario existente ${existing.email} agregado al tenant ${tenantId}`);
       return this.findOne(tenantId, existing.id);
     }
 
     if (dto.phone) await this.assertPhoneAvailable(dto.phone);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId);
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -90,9 +117,10 @@ export class UsersService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         phone: dto.phone || null,
+        invgateUserId: dto.invgateUserId || null,
         passwordHash,
         tenants: {
-          create: { tenantId, roleId: dto.roleId },
+          create: { tenantId, roleId: dto.roleId, areaId },
         },
       },
     });
@@ -104,20 +132,40 @@ export class UsersService {
   async update(tenantId: string, userId: string, dto: UpdateUserDto) {
     await this.findOne(tenantId, userId); // valida pertenencia al tenant
 
+    // Rol y área viven los dos en la membresía, así que se actualizan de una sola vez.
+    const membership: { roleId?: string; areaId?: string | null } = {};
+
     if (dto.roleId) {
       await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
+      membership.roleId = dto.roleId;
+    }
+
+    // Vacío o `null` dejan al usuario sin área; que la clave no venga es "no la toques".
+    if (dto.areaId !== undefined) {
+      const areaId = dto.areaId || null;
+      if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
+      membership.areaId = areaId;
+    }
+
+    if (Object.keys(membership).length > 0) {
       await this.prisma.userTenant.update({
         where: { userId_tenantId: { userId, tenantId } },
-        data: { roleId: dto.roleId },
+        data: membership,
       });
     }
 
     if (dto.phone) await this.assertPhoneAvailable(dto.phone, userId);
+    if (dto.invgateUserId) {
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, userId);
+    }
 
     const data: Record<string, unknown> = {};
     if (dto.firstName !== undefined) data.firstName = dto.firstName;
     if (dto.lastName !== undefined) data.lastName = dto.lastName;
     if (dto.phone !== undefined) data.phone = dto.phone || null;
+    if (dto.invgateUserId !== undefined) {
+      data.invgateUserId = dto.invgateUserId || null;
+    }
     if (dto.password) data.passwordHash = await bcrypt.hash(dto.password, 10);
 
     if (Object.keys(data).length > 0) {
@@ -226,10 +274,30 @@ export class UsersService {
     }
   }
 
+  /** Mismo criterio que el rol: un área de otra empresa no se puede asignar acá. */
+  private async assertAreaBelongsToTenant(tenantId: string, areaId: string) {
+    const area = await this.prisma.area.findFirst({ where: { id: areaId, tenantId } });
+    if (!area) {
+      throw new BadRequestException('El área no existe o no pertenece a este tenant');
+    }
+  }
+
   private async assertPhoneAvailable(phone: string, exceptUserId?: string) {
     const owner = await this.prisma.user.findUnique({ where: { phone } });
     if (owner && owner.id !== exceptUserId) {
       throw new ConflictException('Ya existe un usuario con ese teléfono');
+    }
+  }
+
+  /**
+   * El identificador de Invgate es único en el sistema. Se valida acá y no solo con la
+   * constraint de la base para devolver un 409 con un mensaje entendible en vez del
+   * error crudo de Prisma.
+   */
+  private async assertInvgateUserIdAvailable(invgateUserId: string, exceptUserId?: string) {
+    const owner = await this.prisma.user.findUnique({ where: { invgateUserId } });
+    if (owner && owner.id !== exceptUserId) {
+      throw new ConflictException('Ya existe un usuario con ese identificador de Invgate');
     }
   }
 }
