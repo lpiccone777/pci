@@ -15,6 +15,7 @@ const USER_SELECT = {
   firstName: true,
   lastName: true,
   phone: true,
+  invgateUserId: true,
   createdAt: true,
 } as const;
 
@@ -87,11 +88,26 @@ export class UsersService {
       await this.prisma.userTenant.create({
         data: { userId: existing.id, tenantId, roleId: dto.roleId, areaId },
       });
+
+      // El identificador de Invgate es de la persona, no de la membresía, y quien la
+      // suma acá puede ser el primero en conocerlo. Si el usuario todavía no lo tiene,
+      // lo guardamos; si ya lo tiene, no lo pisamos: dar de alta a alguien en un tenant
+      // no es motivo para cambiarle un dato que otro cargó. Sin esto, el campo se
+      // completaba en el formulario y se perdía en silencio.
+      if (dto.invgateUserId && !existing.invgateUserId) {
+        await this.assertInvgateUserIdAvailable(dto.invgateUserId, existing.id);
+        await this.prisma.user.update({
+          where: { id: existing.id },
+          data: { invgateUserId: dto.invgateUserId },
+        });
+      }
+
       this.logger.log(`Usuario existente ${existing.email} agregado al tenant ${tenantId}`);
       return this.findOne(tenantId, existing.id);
     }
 
     if (dto.phone) await this.assertPhoneAvailable(dto.phone);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId);
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -101,6 +117,7 @@ export class UsersService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         phone: dto.phone || null,
+        invgateUserId: dto.invgateUserId || null,
         passwordHash,
         tenants: {
           create: { tenantId, roleId: dto.roleId, areaId },
@@ -138,11 +155,17 @@ export class UsersService {
     }
 
     if (dto.phone) await this.assertPhoneAvailable(dto.phone, userId);
+    if (dto.invgateUserId) {
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, userId);
+    }
 
     const data: Record<string, unknown> = {};
     if (dto.firstName !== undefined) data.firstName = dto.firstName;
     if (dto.lastName !== undefined) data.lastName = dto.lastName;
     if (dto.phone !== undefined) data.phone = dto.phone || null;
+    if (dto.invgateUserId !== undefined) {
+      data.invgateUserId = dto.invgateUserId || null;
+    }
     if (dto.password) data.passwordHash = await bcrypt.hash(dto.password, 10);
 
     if (Object.keys(data).length > 0) {
@@ -263,6 +286,18 @@ export class UsersService {
     const owner = await this.prisma.user.findUnique({ where: { phone } });
     if (owner && owner.id !== exceptUserId) {
       throw new ConflictException('Ya existe un usuario con ese teléfono');
+    }
+  }
+
+  /**
+   * El identificador de Invgate es único en el sistema. Se valida acá y no solo con la
+   * constraint de la base para devolver un 409 con un mensaje entendible en vez del
+   * error crudo de Prisma.
+   */
+  private async assertInvgateUserIdAvailable(invgateUserId: string, exceptUserId?: string) {
+    const owner = await this.prisma.user.findUnique({ where: { invgateUserId } });
+    if (owner && owner.id !== exceptUserId) {
+      throw new ConflictException('Ya existe un usuario con ese identificador de Invgate');
     }
   }
 }

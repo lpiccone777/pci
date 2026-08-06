@@ -20,6 +20,7 @@ interface UserData {
   firstName: string | null;
   lastName: string | null;
   phone: string | null;
+  invgateUserId: string | null;
   createdAt: string;
   role: RoleOption | null;
   area: AreaOption | null;
@@ -31,6 +32,7 @@ const EMPTY_FORM = {
   lastName: '',
   password: '',
   phone: '',
+  invgateUserId: '',
   roleId: '',
   areaId: '',
 };
@@ -86,6 +88,7 @@ export default function UsersPage() {
       lastName: u.lastName ?? '',
       password: '',
       phone: u.phone ?? '',
+      invgateUserId: u.invgateUserId ?? '',
       roleId: u.role?.id ?? '',
       areaId: u.area?.id ?? '',
     });
@@ -108,6 +111,7 @@ export default function UsersPage() {
           firstName: form.firstName,
           lastName: form.lastName,
           phone: form.phone,
+          invgateUserId: form.invgateUserId,
           roleId: form.roleId,
         };
         // La contraseña solo viaja si se completó: vacío significa "no la cambies".
@@ -274,6 +278,15 @@ export default function UsersPage() {
               />
             </div>
             <div>
+              <label className="block text-xs text-gray-500 mb-1">ID de Invgate</label>
+              <input
+                value={form.invgateUserId}
+                onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
+                className="border px-3 py-2 rounded w-full"
+                maxLength={64}
+              />
+            </div>
+            <div>
               <label className="block text-xs text-gray-500 mb-1">
                 {editingId ? 'Nueva contraseña' : 'Contraseña *'}
               </label>
@@ -320,6 +333,7 @@ export default function UsersPage() {
               <th className="text-left px-4 py-2">Rol</th>
               <th className="text-left px-4 py-2">Área</th>
               <th className="text-left px-4 py-2">Teléfono</th>
+              <th className="text-left px-4 py-2">ID Invgate</th>
               <th className="text-left px-4 py-2">Creado</th>
               {(canUpdate || canDelete) && <th className="px-4 py-2"></th>}
             </tr>
@@ -327,7 +341,7 @@ export default function UsersPage() {
           <tbody>
             {users.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-gray-400">
+                <td colSpan={9} className="px-4 py-6 text-center text-gray-400">
                   No hay usuarios en este tenant.
                 </td>
               </tr>
@@ -348,6 +362,7 @@ export default function UsersPage() {
                 </td>
                 <td className="px-4 py-2 text-gray-600">{u.area?.name || '-'}</td>
                 <td className="px-4 py-2">{u.phone || '-'}</td>
+                <td className="px-4 py-2 text-gray-600">{u.invgateUserId || '-'}</td>
                 <td className="px-4 py-2">{new Date(u.createdAt).toLocaleDateString()}</td>
                 {(canUpdate || canDelete) && (
                   <td className="px-4 py-2 text-right whitespace-nowrap">

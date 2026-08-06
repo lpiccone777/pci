@@ -39,6 +39,12 @@ export class CreateUserDto {
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  /** Opcional: identificador de la persona en Invgate. Hoy se carga a mano. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
 }
 
 export class UpdateUserDto {
@@ -58,6 +64,15 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  /**
+   * Identificador en Invgate. Cadena vacía lo deja sin identificador; que la clave no
+   * venga significa "no lo toques" — mismo criterio que el teléfono.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
 
   /** Cambiar el rol del usuario dentro del tenant activo. */
   @IsOptional()
