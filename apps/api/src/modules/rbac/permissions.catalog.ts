@@ -30,18 +30,19 @@ export interface PermissionAction {
 }
 
 /**
- * Los 12 recursos del sistema.
+ * Los 13 recursos del sistema.
  *
- * Hoy solo `users`, `tenants`, `roles`, `permissions`, `settings` y `flows` protegen
- * alguna operación con `@RequirePermission`. El resto se declara igual: son los módulos
- * que todavía no se protegieron, y tener el permiso disponible antes evita tener que
- * repartirlo a mano el día que se protejan.
+ * Hoy solo `users`, `tenants`, `roles`, `permissions`, `areas`, `settings` y `flows`
+ * protegen alguna operación con `@RequirePermission`. El resto se declara igual: son los
+ * módulos que todavía no se protegieron, y tener el permiso disponible antes evita tener
+ * que repartirlo a mano el día que se protejan.
  *
  * El orden es el que se ve en la matriz.
  */
 export const PERMISSION_RESOURCES: readonly PermissionResource[] = [
   { key: 'users', label: 'Usuarios' },
   { key: 'tenants', label: 'Empresas' },
+  { key: 'areas', label: 'Áreas' },
   { key: 'roles', label: 'Roles' },
   { key: 'permissions', label: 'Permisos' },
   { key: 'devices', label: 'Dispositivos' },
@@ -62,7 +63,7 @@ export const PERMISSION_ACTIONS: readonly PermissionAction[] = [
   { key: 'delete', label: 'Eliminar' },
 ] as const;
 
-/** Cantidad de permisos asignables: 12 recursos × 4 acciones = 48. */
+/** Cantidad de permisos asignables: 13 recursos × 4 acciones = 52. */
 export const PERMISSION_TOTAL = PERMISSION_RESOURCES.length * PERMISSION_ACTIONS.length;
 
 /** Un par recurso-acción, que es todo lo que hace falta para decidir si algo se permite. */

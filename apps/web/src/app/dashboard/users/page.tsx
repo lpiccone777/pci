@@ -9,6 +9,11 @@ interface RoleOption {
   name: string;
 }
 
+interface AreaOption {
+  id: string;
+  name: string;
+}
+
 interface UserData {
   id: string;
   email: string;
@@ -17,6 +22,7 @@ interface UserData {
   phone: string | null;
   createdAt: string;
   role: RoleOption | null;
+  area: AreaOption | null;
 }
 
 const EMPTY_FORM = {
@@ -26,12 +32,14 @@ const EMPTY_FORM = {
   password: '',
   phone: '',
   roleId: '',
+  areaId: '',
 };
 
 export default function UsersPage() {
   const { hasPermission, user: currentUser } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
+  const [areas, setAreas] = useState<AreaOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -43,15 +51,20 @@ export default function UsersPage() {
   const canUpdate = hasPermission('users', 'update');
   const canDelete = hasPermission('users', 'delete');
   const canReadRoles = hasPermission('roles', 'read');
+  const canReadAreas = hasPermission('areas', 'read');
 
   async function load() {
     try {
-      const [userData, roleData] = await Promise.all([
+      // El área es opcional, así que sin permiso para verlas la pantalla sigue andando:
+      // simplemente no aparece el selector.
+      const [userData, roleData, areaData] = await Promise.all([
         apiFetch('/users'),
         canReadRoles ? apiFetch('/roles') : Promise.resolve([]),
+        canReadAreas ? apiFetch('/areas') : Promise.resolve([]),
       ]);
       setUsers(userData);
       setRoles(roleData.map((r: any) => ({ id: r.id, name: r.name })));
+      setAreas(areaData.map((a: any) => ({ id: a.id, name: a.name })));
       setError('');
     } catch (err: any) {
       setError(err.message);
@@ -74,6 +87,7 @@ export default function UsersPage() {
       password: '',
       phone: u.phone ?? '',
       roleId: u.role?.id ?? '',
+      areaId: u.area?.id ?? '',
     });
     setNotice('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -98,6 +112,9 @@ export default function UsersPage() {
         };
         // La contraseña solo viaja si se completó: vacío significa "no la cambies".
         if (form.password) payload.password = form.password;
+        // Sin permiso para ver áreas no hay selector, y mandar el campo vacío le borraría
+        // el área al usuario sin que nadie lo haya pedido.
+        if (canReadAreas) payload.areaId = form.areaId;
 
         await apiFetch(`/users/${editingId}`, {
           method: 'PATCH',
@@ -225,6 +242,28 @@ export default function UsersPage() {
                 ))}
               </select>
             </div>
+            {canReadAreas && (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Área</label>
+                <select
+                  value={form.areaId}
+                  onChange={(e) => setForm({ ...form, areaId: e.target.value })}
+                  className="border px-3 py-2 rounded w-full"
+                >
+                  <option value="">Sin área</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+                {areas.length === 0 && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    Todavía no hay áreas en esta empresa.
+                  </p>
+                )}
+              </div>
+            )}
             <div>
               <label className="block text-xs text-gray-500 mb-1">Teléfono</label>
               <input
@@ -279,6 +318,7 @@ export default function UsersPage() {
               <th className="text-left px-4 py-2">Apellido</th>
               <th className="text-left px-4 py-2">Email</th>
               <th className="text-left px-4 py-2">Rol</th>
+              <th className="text-left px-4 py-2">Área</th>
               <th className="text-left px-4 py-2">Teléfono</th>
               <th className="text-left px-4 py-2">Creado</th>
               {(canUpdate || canDelete) && <th className="px-4 py-2"></th>}
@@ -287,7 +327,7 @@ export default function UsersPage() {
           <tbody>
             {users.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
+                <td colSpan={8} className="px-4 py-6 text-center text-gray-400">
                   No hay usuarios en este tenant.
                 </td>
               </tr>
@@ -306,6 +346,7 @@ export default function UsersPage() {
                     '-'
                   )}
                 </td>
+                <td className="px-4 py-2 text-gray-600">{u.area?.name || '-'}</td>
                 <td className="px-4 py-2">{u.phone || '-'}</td>
                 <td className="px-4 py-2">{new Date(u.createdAt).toLocaleDateString()}</td>
                 {(canUpdate || canDelete) && (

@@ -33,11 +33,29 @@ model Tenant {
 
   users         UserTenant[]
   roles         Role[]
+  areas         Area[]
   conversations Conversation[]
   tickets       Ticket[]
   metrics       Metric[]
   settings      Setting[]
   tenantFlows   TenantFlow[]
+}
+
+/// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
+/// Es solo para agrupar — auditoría y métricas. El motor de flujos IVR decide por rol,
+/// nunca por área.
+model Area {
+  id        String   @id @default(cuid())
+  name      String
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userTenants UserTenant[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
 }
 
 model Role {
@@ -72,9 +90,19 @@ model UserTenant {
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   roleId    String
   role      Role     @relation(fields: [roleId], references: [id])
+  // El área va acá y no en User: la clave primaria de esta tabla ya es
+  // (userId, tenantId), así que "un usuario pertenece como máximo a un área por
+  // empresa" queda garantizado por la estructura, sin validarlo a mano. La misma
+  // persona puede estar en Soporte en una empresa y en Ventas en otra.
+  // Opcional a propósito: un usuario puede no tener área asignada.
+  // `Restrict` respalda en la base la regla que aplica AreasService.remove: un área
+  // con gente asignada no se borra.
+  areaId    String?
+  area      Area?    @relation(fields: [areaId], references: [id], onDelete: Restrict)
   createdAt DateTime @default(now())
 
   @@id([userId, tenantId])
+  @@index([areaId])
 }
 
 model Device {

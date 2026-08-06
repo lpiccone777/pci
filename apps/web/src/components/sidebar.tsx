@@ -25,6 +25,7 @@ const menuDefinition: MenuItem[] = [
   { label: 'Dashboard', href: '/dashboard', resource: 'metrics', action: 'read' },
   { label: 'Usuarios', href: '/dashboard/users', resource: 'users', action: 'read' },
   { label: 'Tenants', href: '/dashboard/tenants', resource: 'tenants', action: 'read' },
+  { label: 'Áreas', href: '/dashboard/areas', resource: 'areas', action: 'read' },
   { label: 'Roles', href: '/dashboard/roles', resource: 'roles', action: 'read' },
   { label: 'Flujos IVR', href: '/dashboard/flows', resource: 'flows', action: 'read' },
   {

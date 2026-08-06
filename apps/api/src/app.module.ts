@@ -8,6 +8,7 @@ import { TenantGuard } from './common/guards/tenant.guard';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
+import { AreasModule } from './modules/areas/areas.module';
 import { RbacModule } from './modules/rbac/rbac.module';
 import { DevicesModule } from './modules/devices/devices.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
@@ -27,6 +28,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     AuthModule,
     UsersModule,
     TenantsModule,
+    AreasModule,
     RbacModule,
     DevicesModule,
     ConversationsModule,

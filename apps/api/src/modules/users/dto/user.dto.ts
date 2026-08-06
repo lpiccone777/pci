@@ -30,6 +30,11 @@ export class CreateUserDto {
   @IsNotEmpty({ message: 'El rol es obligatorio' })
   roleId: string;
 
+  /** Opcional: el área agrupa para auditoría y métricas, no habilita nada. */
+  @IsOptional()
+  @IsString()
+  areaId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(30)
@@ -59,6 +64,14 @@ export class UpdateUserDto {
   @IsString()
   @IsNotEmpty()
   roleId?: string;
+
+  /**
+   * Área del usuario dentro del tenant activo. Cadena vacía o `null` lo dejan sin área;
+   * que la clave no venga significa "no la toques". Por eso no lleva `@IsNotEmpty()`.
+   */
+  @IsOptional()
+  @IsString()
+  areaId?: string | null;
 
   /** Opcional: si viene, se resetea la contraseña. */
   @IsOptional()

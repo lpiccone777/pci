@@ -24,13 +24,14 @@ export class UsersService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Usuarios del tenant activo, con el rol que tienen *en ese* tenant. */
+  /** Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant. */
   async findAll(tenantId: string) {
     const memberships = await this.prisma.userTenant.findMany({
       where: { tenantId },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -38,6 +39,7 @@ export class UsersService {
     return memberships.map((m) => ({
       ...m.user,
       role: m.role,
+      area: m.area,
       joinedAt: m.createdAt,
     }));
   }
@@ -48,6 +50,7 @@ export class UsersService {
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
       },
     });
 
@@ -55,11 +58,19 @@ export class UsersService {
       throw new NotFoundException('El usuario no existe en este tenant');
     }
 
-    return { ...membership.user, role: membership.role, joinedAt: membership.createdAt };
+    return {
+      ...membership.user,
+      role: membership.role,
+      area: membership.area,
+      joinedAt: membership.createdAt,
+    };
   }
 
   async create(tenantId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
+
+    const areaId = dto.areaId || null;
+    if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
@@ -74,7 +85,7 @@ export class UsersService {
       }
 
       await this.prisma.userTenant.create({
-        data: { userId: existing.id, tenantId, roleId: dto.roleId },
+        data: { userId: existing.id, tenantId, roleId: dto.roleId, areaId },
       });
       this.logger.log(`Usuario existente ${existing.email} agregado al tenant ${tenantId}`);
       return this.findOne(tenantId, existing.id);
@@ -92,7 +103,7 @@ export class UsersService {
         phone: dto.phone || null,
         passwordHash,
         tenants: {
-          create: { tenantId, roleId: dto.roleId },
+          create: { tenantId, roleId: dto.roleId, areaId },
         },
       },
     });
@@ -104,11 +115,25 @@ export class UsersService {
   async update(tenantId: string, userId: string, dto: UpdateUserDto) {
     await this.findOne(tenantId, userId); // valida pertenencia al tenant
 
+    // Rol y área viven los dos en la membresía, así que se actualizan de una sola vez.
+    const membership: { roleId?: string; areaId?: string | null } = {};
+
     if (dto.roleId) {
       await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
+      membership.roleId = dto.roleId;
+    }
+
+    // Vacío o `null` dejan al usuario sin área; que la clave no venga es "no la toques".
+    if (dto.areaId !== undefined) {
+      const areaId = dto.areaId || null;
+      if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
+      membership.areaId = areaId;
+    }
+
+    if (Object.keys(membership).length > 0) {
       await this.prisma.userTenant.update({
         where: { userId_tenantId: { userId, tenantId } },
-        data: { roleId: dto.roleId },
+        data: membership,
       });
     }
 
@@ -223,6 +248,14 @@ export class UsersService {
     const role = await this.prisma.role.findFirst({ where: { id: roleId, tenantId } });
     if (!role) {
       throw new BadRequestException('El rol no existe o no pertenece a este tenant');
+    }
+  }
+
+  /** Mismo criterio que el rol: un área de otra empresa no se puede asignar acá. */
+  private async assertAreaBelongsToTenant(tenantId: string, areaId: string) {
+    const area = await this.prisma.area.findFirst({ where: { id: areaId, tenantId } });
+    if (!area) {
+      throw new BadRequestException('El área no existe o no pertenece a este tenant');
     }
   }
 
