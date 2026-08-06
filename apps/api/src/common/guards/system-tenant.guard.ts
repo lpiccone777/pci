@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { systemTenantSlug } from '../system-tenant';
 
 /**
  * Restringe el acceso a los usuarios cuyo tenant activo es el tenant de sistema
@@ -38,7 +39,7 @@ export class SystemTenantGuard implements CanActivate {
     if (!user) throw new ForbiddenException('No autenticado');
     if (!request.tenantId) throw new ForbiddenException('No se especificó un tenant');
 
-    const systemSlug = this.config.get<string>('SYSTEM_TENANT_SLUG', 'system');
+    const systemSlug = systemTenantSlug(this.config);
 
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: request.tenantId },

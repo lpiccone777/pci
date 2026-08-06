@@ -1,7 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AppConfigService } from '../../config/app-config.service';
+import { systemTenantSlug } from '../../common/system-tenant';
+import { effectivePermissions } from '../rbac/protected-role';
 import { EmailService } from './email.service';
 import { DeviceService } from './device.service';
 import { RegisterDto } from './dto/register.dto';
@@ -25,6 +28,7 @@ export class AuthService {
     private readonly config: AppConfigService,
     private readonly emailService: EmailService,
     private readonly deviceService: DeviceService,
+    private readonly configService: ConfigService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -160,7 +164,27 @@ export class AuthService {
     if (!user) throw new UnauthorizedException('Usuario no encontrado');
 
     const { passwordHash, ...result } = user;
-    return result;
+
+    // De acá salen el menú y los botones del frontend, así que el superusuario tiene que
+    // recibir el catálogo completo: si informáramos solo sus filas guardadas, un permiso
+    // agregado después del último seed no le aparecería en pantalla aunque el API se lo
+    // acepte igual.
+    const slug = systemTenantSlug(this.configService);
+    return {
+      ...result,
+      tenants: result.tenants.map((ut) => ({
+        ...ut,
+        role: {
+          ...ut.role,
+          permissions: effectivePermissions(
+            ut.role.name,
+            ut.tenant.slug,
+            slug,
+            ut.role.permissions,
+          ),
+        },
+      })),
+    };
   }
 
   /**

@@ -148,10 +148,23 @@ export default function UsersPage() {
       {error && <p className="text-red-500 mb-4">{error}</p>}
       {notice && <p className="text-green-600 mb-4">{notice}</p>}
 
+      {/* La lista de roles queda vacía por dos motivos distintos —la empresa no tiene
+          ninguno, o esta persona no puede verlos— y cada uno se resuelve de otra forma.
+          Con un solo mensaje, a quien le falta el permiso se le decía que no hay roles
+          (falso) y se lo mandaba a una pantalla a la que tampoco puede entrar. */}
       {roles.length === 0 && canCreate && (
         <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4 text-sm">
-          No hay roles en este tenant. El rol es obligatorio, así que creá uno en{' '}
-          <strong>Roles</strong> antes de dar de alta usuarios.
+          {canReadRoles ? (
+            <>
+              No hay roles en este tenant. El rol es obligatorio, así que creá uno en{' '}
+              <strong>Roles</strong> antes de dar de alta usuarios.
+            </>
+          ) : (
+            <>
+              No tenés permiso para ver los roles, y el rol es obligatorio para dar de alta
+              un usuario. Pedile a un administrador que te habilite <strong>ver roles</strong>.
+            </>
+          )}
         </p>
       )}
 
