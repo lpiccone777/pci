@@ -41,6 +41,11 @@ model Tenant {
   slug      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  // Baja lógica: una empresa dada de baja conserva su fila (y sus datos) pero deja de
+  // listarse. Es el primer softdelete del sistema — la baja de usuario, en cambio, borra
+  // la membresía (UserTenant). No se libera el slug, que es @unique global: una empresa
+  // dada de baja lo sigue ocupando. La restauración quedó fuera de alcance por ahora.
+  deletedAt DateTime?
 
   users         UserTenant[]
   roles         Role[]

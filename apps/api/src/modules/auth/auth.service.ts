@@ -149,6 +149,9 @@ export class AuthService {
       where: { id: userId },
       include: {
         tenants: {
+          // Baja real: una empresa dada de baja no se informa en la sesión, así desaparece
+          // del selector del sidebar. La membresía sigue en la base, pero acá no viaja.
+          where: { tenant: { deletedAt: null } },
           include: {
             tenant: true,
             role: {

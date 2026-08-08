@@ -61,8 +61,11 @@ export class TenantGuard implements CanActivate {
 
     if (!user) throw new ForbiddenException('No autenticado');
 
+    // Baja real: las membresías contra una empresa dada de baja no cuentan. El usuario no la
+    // ve en el selector (`/auth/me` la filtra igual) ni puede operar en ella; si era su única
+    // empresa, queda sin tenant activo hasta que se lo reasigne.
     const memberships = await this.prisma.userTenant.findMany({
-      where: { userId: user.userId },
+      where: { userId: user.userId, tenant: { deletedAt: null } },
       orderBy: { createdAt: 'asc' },
     });
 
@@ -127,9 +130,12 @@ export class TenantGuard implements CanActivate {
     // cada consulta devolvería vacío y parecería una empresa existente pero sin datos.
     const exists = await this.prisma.tenant.findUnique({
       where: { id: requestedTenantId },
-      select: { id: true },
+      select: { id: true, deletedAt: true },
     });
-    if (!exists) throw new NotFoundException('La empresa indicada no existe');
+    // Una empresa dada de baja se trata como inexistente: ni el superusuario opera en ella.
+    if (!exists || exists.deletedAt) {
+      throw new NotFoundException('La empresa indicada no existe');
+    }
 
     return systemMembership;
   }

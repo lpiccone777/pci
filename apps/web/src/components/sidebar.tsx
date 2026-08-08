@@ -24,7 +24,16 @@ interface MenuItem {
 const menuDefinition: MenuItem[] = [
   { label: 'Dashboard', href: '/dashboard', resource: 'metrics', action: 'read' },
   { label: 'Usuarios', href: '/dashboard/users', resource: 'users', action: 'read' },
-  { label: 'Tenants', href: '/dashboard/tenants', resource: 'tenants', action: 'read' },
+  {
+    label: 'Tenants',
+    href: '/dashboard/tenants',
+    resource: 'tenants',
+    action: 'read',
+    // La pantalla lista desde `/tenants/all`, que solo responde parado en la empresa de
+    // sistema. Sin esta marca, un rol no-sistema con `tenants:read` veía la opción y caía
+    // en un 403 al entrar.
+    systemTenantOnly: true,
+  },
   { label: 'Áreas', href: '/dashboard/areas', resource: 'areas', action: 'read' },
   { label: 'Roles', href: '/dashboard/roles', resource: 'roles', action: 'read' },
   { label: 'Flujos IVR', href: '/dashboard/flows', resource: 'flows', action: 'read' },
