@@ -299,7 +299,9 @@ export class ConversationsService implements OnModuleInit {
     let currentNodeId = conversation.currentNodeId;
 
     if (!flowId) {
-      const flow = await this.flowService.findActiveFlowForTenant(tenantId);
+      // El flujo de inicio se elige por (empresa + rol del usuario): `identity.roleId`
+      // ya viene resuelto desde handleMessage contra el registro real de usuarios.
+      const flow = await this.flowService.findActiveFlowForTenant(tenantId, identity.roleId);
       if (!flow) return null;
       flowId = flow.id;
       currentNodeId = this.findStartNodeId(flow.nodes as any[]);

@@ -3,6 +3,21 @@ import { Type } from 'class-transformer';
 import { FlowNodeDto, FlowEdgeDto } from './flow-elements.dto';
 import { FLOW_CONTEXT_VALUES } from '../flow-context';
 
+/**
+ * Asignación de un flujo a una empresa, con los roles que lo reciben ahí.
+ * `roleIds` vacío o ausente = el flujo queda asignado a la empresa pero no lo
+ * recibe ningún usuario (el candado de recepción es por rol).
+ */
+export class TenantAssignmentDto {
+  @IsString()
+  tenantId: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  roleIds?: string[];
+}
+
 export class CreateFlowDto {
   @IsString()
   name: string;
@@ -34,14 +49,21 @@ export class CreateFlowDto {
   @IsOptional()
   context?: string;
 
+  /**
+   * En qué empresas está disponible el flujo y, dentro de cada una, qué roles lo
+   * reciben. Reemplaza al viejo `tenantIds: string[]`: ahora la asignación lleva
+   * roles. Ausente = el flujo nace sin empresas asignadas.
+   */
   @IsArray()
-  @IsString({ each: true })
+  @ValidateNested({ each: true })
+  @Type(() => TenantAssignmentDto)
   @IsOptional()
-  tenantIds?: string[];
+  assignments?: TenantAssignmentDto[];
 
   /**
-   * Flujo de inicio para los tenants de `tenantIds`. Un tenant tiene como máximo
-   * un flujo de inicio: si ya tenía otro, `FlowService` lo desmarca solo.
+   * Flujo de inicio para los pares (empresa + rol) de `assignments`. La invariante
+   * es "un flujo de inicio por (empresa + rol)": si otro flujo ya era el inicio
+   * para alguno de esos pares, `FlowService` se lo saca al guardar.
    */
   @IsBoolean()
   @IsOptional()
@@ -51,8 +73,9 @@ export class CreateFlowDto {
 /** Body de POST /flows/:id/assign-tenants. */
 export class AssignTenantsDto {
   @IsArray()
-  @IsString({ each: true })
-  tenantIds: string[];
+  @ValidateNested({ each: true })
+  @Type(() => TenantAssignmentDto)
+  assignments: TenantAssignmentDto[];
 
   /** Ver CreateFlowDto.isStart. */
   @IsBoolean()
