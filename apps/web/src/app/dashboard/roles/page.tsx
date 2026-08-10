@@ -68,8 +68,14 @@ export default function RolesPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  /** null = cerrado · { role: null } = alta · { role } = edición. */
-  const [editing, setEditing] = useState<{ role: RoleRow | null } | null>(null);
+  /**
+   * null = cerrado. `mode` distingue abrir para ver (clic en la fila, arranca en solo
+   * lectura) de abrir para editar (botón Editar / alta). `role: null` = alta.
+   */
+  const [editing, setEditing] = useState<{
+    role: RoleRow | null;
+    mode: 'view' | 'edit';
+  } | null>(null);
   const [viewingUsers, setViewingUsers] = useState<RoleRow | null>(null);
 
   const canCreate = hasPermission('roles', 'create');
@@ -107,10 +113,10 @@ export default function RolesPage() {
     load();
   }, [load]);
 
-  function openModal(role: RoleRow | null) {
+  function openModal(role: RoleRow | null, mode: 'view' | 'edit') {
     setFeedback(null);
     setDeletingId(null);
-    setEditing({ role });
+    setEditing({ role, mode });
   }
 
   function openUsers(role: RoleRow) {
@@ -162,7 +168,7 @@ export default function RolesPage() {
         <h1 className="text-2xl font-bold text-gray-800">Roles</h1>
         {canCreate && (
           <button
-            onClick={() => openModal(null)}
+            onClick={() => openModal(null, 'edit')}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 whitespace-nowrap"
           >
             Nuevo rol
@@ -206,7 +212,7 @@ export default function RolesPage() {
                   <p className="mb-3">Todavía no hay roles en esta empresa.</p>
                   {canCreate && (
                     <button
-                      onClick={() => openModal(null)}
+                      onClick={() => openModal(null, 'edit')}
                       className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
                     >
                       Crear el primero
@@ -243,7 +249,12 @@ export default function RolesPage() {
                   </td>
                 </tr>
               ) : (
-                <tr key={role.id} className="border-t hover:bg-gray-50">
+                <tr
+                  key={role.id}
+                  onClick={() => openModal(role, 'view')}
+                  className="border-t hover:bg-gray-50 cursor-pointer"
+                  title="Ver detalle"
+                >
                   <td className="px-4 py-2">
                     <span className="font-medium">{role.name}</span>
                     {role.isProtected && (
@@ -257,9 +268,13 @@ export default function RolesPage() {
                   </td>
                   <td className="px-4 py-2 text-right">
                     {/* El número ES el acceso a la lista: el dato y la forma de abrirlo
-                        son la misma cosa, así que no lleva un botón "Ver" aparte. */}
+                        son la misma cosa, así que no lleva un botón aparte. stopPropagation
+                        para que abrir la lista no dispare también el detalle de la fila. */}
                     <button
-                      onClick={() => openUsers(role)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openUsers(role);
+                      }}
                       title={`Ver los usuarios con el rol ${role.name}`}
                       className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
                     >
@@ -280,48 +295,65 @@ export default function RolesPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-2 text-right whitespace-nowrap">
-                    {/* El botón va siempre: sin permisos de edición la ventana se abre en
-                        modo consulta, que es la única forma de ver qué habilita un rol.
-                        La etiqueta dice de antemano lo que se va a poder hacer adentro. */}
-                    <button
-                      onClick={() => openModal(role)}
-                      className="text-blue-600 hover:text-blue-800 px-2"
+                  <td className="px-4 text-right whitespace-nowrap">
+                    {/* Fuera de la zona que abre el detalle va SOLO el grupo de botones. El
+                        stopPropagation vive en este contenedor, que se lleva el padding vertical
+                        (py-2) para ocupar el alto completo de la fila. El botón "Editar" solo
+                        aparece para quien puede editar y no es el rol de sistema; los demás ven
+                        el rol clickeando la fila. title="" evita heredar el tooltip del <tr>. */}
+                    <span
+                      className="inline-block align-middle py-2 pl-0.5 cursor-default"
+                      onClick={(e) => e.stopPropagation()}
+                      title=""
                     >
-                      {role.isProtected || !canEditSomething ? 'Ver' : 'Editar'}
-                    </button>
-                    {canDelete &&
-                      (role.userCount === 0 && !role.isProtected ? (
+                      {canEditSomething && !role.isProtected && (
                         <button
-                          onClick={() => {
-                            setFeedback(null);
-                            setDeletingId(role.id);
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openModal(role, 'edit');
                           }}
-                          className="text-red-600 hover:text-red-800 px-2"
+                          className="text-blue-600 hover:text-blue-800 px-2"
                         >
-                          Borrar
+                          Editar
                         </button>
-                      ) : (
-                        // aria-disabled y no disabled: con `disabled` de verdad, quien
-                        // navega por teclado ni siquiera lo encuentra, y en pantalla
-                        // táctil no hay hover que muestre el motivo.
-                        <button
-                          onClick={() => explainBlockedDelete(role)}
-                          aria-disabled="true"
-                          title={
-                            role.isProtected
-                              ? 'No se puede eliminar: es el rol de superusuario del sistema'
-                              : `No se puede eliminar: tiene ${role.userCount} ${
-                                  role.userCount === 1
-                                    ? 'usuario asignado'
-                                    : 'usuarios asignados'
-                                }`
-                          }
-                          className="text-gray-400 hover:text-gray-500 cursor-not-allowed px-2"
-                        >
-                          Borrar
-                        </button>
-                      ))}
+                      )}
+                      {canDelete &&
+                        (role.userCount === 0 && !role.isProtected ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFeedback(null);
+                              setDeletingId(role.id);
+                            }}
+                            className="text-red-600 hover:text-red-800 px-2"
+                          >
+                            Borrar
+                          </button>
+                        ) : (
+                          // aria-disabled y no disabled: con `disabled` de verdad, quien
+                          // navega por teclado ni siquiera lo encuentra, y en pantalla
+                          // táctil no hay hover que muestre el motivo.
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              explainBlockedDelete(role);
+                            }}
+                            aria-disabled="true"
+                            title={
+                              role.isProtected
+                                ? 'No se puede eliminar: es el rol de superusuario del sistema'
+                                : `No se puede eliminar: tiene ${role.userCount} ${
+                                    role.userCount === 1
+                                      ? 'usuario asignado'
+                                      : 'usuarios asignados'
+                                  }`
+                            }
+                            className="text-gray-400 hover:text-gray-500 cursor-not-allowed px-2"
+                          >
+                            Borrar
+                          </button>
+                        ))}
+                    </span>
                   </td>
                 </tr>
               ),
@@ -334,6 +366,7 @@ export default function RolesPage() {
         <RoleModal
           role={editing.role}
           catalog={catalog}
+          initialEdit={editing.mode === 'edit'}
           // El rol del sistema anula cualquier permiso de edición: el backend lo rechaza
           // igual, y dejar la matriz activa sería prometer algo que va a fallar al guardar.
           canEditName={
@@ -364,6 +397,7 @@ export default function RolesPage() {
 function RoleModal({
   role,
   catalog,
+  initialEdit,
   canEditName,
   canEditPerms,
   isProtected,
@@ -374,6 +408,7 @@ function RoleModal({
 }: {
   role: RoleRow | null;
   catalog: Catalog;
+  initialEdit: boolean;
   canEditName: boolean;
   canEditPerms: boolean;
   isProtected: boolean;
@@ -407,6 +442,7 @@ function RoleModal({
   const [perms, setPerms] = useState<Set<string>>(() => new Set(basePerms));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [editMode, setEditMode] = useState(initialEdit);
 
   const nameRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -583,14 +619,17 @@ function RoleModal({
   }
 
   /**
-   * No hay nada para editar: ni el nombre ni la matriz.
+   * `editMode` distingue ver de editar. La ventana se abre en modo consulta al clickear la
+   * fila (`initialEdit=false`) y directo en edición desde el botón Editar o el alta
+   * (`initialEdit=true`). El botón "Editar" del pie pasa de una a otra.
    *
-   * Cubre dos casos que en pantalla se ven igual — el rol del sistema, que llega con las
-   * dos banderas en `false`, y quien abre la ventana con permiso de solo lectura sobre
-   * roles. Antes solo se contemplaba el primero, así que el segundo no tenía forma de
-   * llegar hasta acá.
+   * Los permisos reales siguen mandando: un rol de sistema o quien solo puede leer nunca
+   * habilita los campos —de hecho a esos el botón "Editar" ni les aparece—. `nameEditable`
+   * y `permsEditable` combinan permiso y modo; `canEditAnything` resume si hay algo editable.
    */
-  const readOnly = !canEditName && !canEditPerms;
+  const canEditAnything = canEditName || canEditPerms;
+  const nameEditable = canEditName && editMode;
+  const permsEditable = canEditPerms && editMode;
 
   const saveDisabled = saving || (role !== null && changeCount === 0);
 
@@ -612,13 +651,13 @@ function RoleModal({
         <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
           <div className="flex-1 min-w-0">
             <h2 id="role-modal-title" className="text-lg font-semibold text-gray-800 mb-3">
-              {readOnly
-                ? isProtected
-                  ? 'Rol del sistema'
-                  : 'Ver rol'
-                : role
+              {role === null
+                ? 'Nuevo rol'
+                : editMode
                   ? 'Editar rol'
-                  : 'Nuevo rol'}
+                  : isProtected
+                    ? 'Rol del sistema'
+                    : role.name}
             </h2>
             <label htmlFor="role-name" className="block text-xs text-gray-500 mb-1">
               Nombre del rol *
@@ -634,7 +673,7 @@ function RoleModal({
                   save();
                 }
               }}
-              disabled={!canEditName || saving}
+              disabled={!nameEditable || saving}
               autoComplete="off"
               placeholder="Ej: Supervisor"
               className="w-full max-w-[340px] border border-gray-200 px-3 py-2 rounded disabled:bg-gray-100"
@@ -663,13 +702,13 @@ function RoleModal({
             </p>
           )}
           {/* En modo consulta el aviso no aplica: no hay forma de quitarse nada. */}
-          {isOwnRole && !readOnly && (
+          {isOwnRole && editMode && (
             <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3 text-sm">
               Este es tu rol. Si te quitás el permiso de modificar roles vas a perder el
               acceso a esta pantalla.
             </p>
           )}
-          {!canEditPerms && !isProtected && (
+          {editMode && !canEditPerms && !isProtected && (
             <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3 text-sm">
               No tenés permiso para modificar permisos. La matriz se muestra como consulta.
             </p>
@@ -696,7 +735,7 @@ function RoleModal({
                   >
                     <button
                       onClick={() => toggleCol(a.key)}
-                      disabled={!canEditPerms}
+                      disabled={!permsEditable}
                       className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
                     >
                       {a.label}
@@ -710,7 +749,7 @@ function RoleModal({
                 <th className="text-left px-2 py-1.5 font-semibold text-gray-800 border-b border-gray-300 whitespace-nowrap">
                   <button
                     onClick={toggleAll}
-                    disabled={!canEditPerms}
+                    disabled={!permsEditable}
                     className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
                   >
                     Todos los recursos
@@ -729,7 +768,7 @@ function RoleModal({
                         type="checkbox"
                         checked={full}
                         onChange={() => toggleCol(a.key)}
-                        disabled={!canEditPerms}
+                        disabled={!permsEditable}
                         aria-label={`Toda la columna ${a.label}`}
                         className="w-4 h-4 accent-blue-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
                       />
@@ -743,7 +782,7 @@ function RoleModal({
                   <th className="text-left px-2 py-1.5 font-normal text-gray-700 border-b border-gray-100 whitespace-nowrap">
                     <button
                       onClick={() => toggleRow(r.key)}
-                      disabled={!canEditPerms}
+                      disabled={!permsEditable}
                       className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
                     >
                       {r.label}
@@ -771,7 +810,7 @@ function RoleModal({
                           type="checkbox"
                           checked={on}
                           onChange={(e) => toggle(r.key, a.key, e.target.checked)}
-                          disabled={forced || !canEditPerms}
+                          disabled={forced || !permsEditable}
                           aria-label={`${a.label} ${r.label}`}
                           title={
                             forced
@@ -798,14 +837,16 @@ function RoleModal({
         <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center gap-3 rounded-b-md">
           <span
             className={`flex-1 text-[13px] ${
-              changeCount > 0
-                ? 'text-blue-700 font-medium'
-                : perms.size === 0
-                  ? 'text-amber-700'
-                  : 'text-gray-500'
+              !editMode
+                ? 'text-gray-500'
+                : changeCount > 0
+                  ? 'text-blue-700 font-medium'
+                  : perms.size === 0
+                    ? 'text-amber-700'
+                    : 'text-gray-500'
             }`}
           >
-            {readOnly
+            {!editMode
               ? ''
               : changeCount > 0
                 ? changeCount === 1
@@ -815,28 +856,44 @@ function RoleModal({
                   ? 'Sin permisos: quien tenga este rol no va a poder hacer nada.'
                   : 'Sin cambios.'}
           </span>
-          {/* Cuando no hay nada que guardar —rol del sistema o permiso de solo lectura—
-              el botón no va: uno permanentemente gris solo invita a probar por qué no
-              anda. Y el que queda deja de ser "Cancelar", porque no hay nada que cancelar. */}
-          <button
-            onClick={requestClose}
-            disabled={saving}
-            className={
-              readOnly
-                ? 'bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700'
-                : 'text-gray-600 px-4 py-2 rounded hover:bg-gray-100'
-            }
-          >
-            {readOnly ? 'Cerrar' : 'Cancelar'}
-          </button>
-          {!readOnly && (
-            <button
-              onClick={save}
-              disabled={saveDisabled}
-              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
-            >
-              {saving ? 'Guardando...' : 'Guardar'}
-            </button>
+          {editMode ? (
+            <>
+              {/* En edición el botón secundario cancela; el primario guarda. */}
+              <button
+                onClick={requestClose}
+                disabled={saving}
+                className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={save}
+                disabled={saveDisabled}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
+              >
+                {saving ? 'Guardando...' : 'Guardar'}
+              </button>
+            </>
+          ) : (
+            <>
+              {/* En consulta, "Editar" pasa a modo edición —solo si hay algo para editar—;
+                  el rol de sistema y quien solo puede leer se quedan sin él. */}
+              {canEditAnything && (
+                <button
+                  onClick={() => setEditMode(true)}
+                  className="text-blue-600 px-4 py-2 rounded hover:bg-blue-50 whitespace-nowrap"
+                >
+                  Editar
+                </button>
+              )}
+              <button
+                onClick={requestClose}
+                disabled={saving}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+              >
+                Cerrar
+              </button>
+            </>
           )}
         </div>
       </div>
