@@ -470,7 +470,12 @@ function FlowEditorInner() {
   if (loading) return <div className="p-6">Cargando...</div>;
 
   return (
-    <div className="h-screen flex flex-col">
+    // `-m-6` cancela el padding de 24px que el layout del dashboard (main con p-6)
+    // pone alrededor: así el editor va borde a borde y ocupa exactamente el alto de
+    // la ventana. Sin esto, h-screen (100vh) + ese padding se pasan del viewport y
+    // aparece scroll, que además cortaba los controles de zoom de abajo del canvas.
+    // overflow-hidden asegura que nada del propio editor genere scroll de página.
+    <div className="-m-6 h-screen flex flex-col overflow-hidden">
       {/* Header */}
       <div className="bg-white border-b p-4 flex justify-between items-center">
         <div className="flex gap-4 items-center">
