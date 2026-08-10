@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { TenantsService } from './tenants.service';
@@ -37,8 +38,8 @@ export class TenantsController {
   @Get('all')
   @UseGuards(SystemTenantGuard)
   @RequirePermission('tenants', 'read')
-  async findAllTenants() {
-    return this.tenantsService.findAll();
+  async findAllTenants(@Query('includeDeleted') includeDeleted?: string) {
+    return this.tenantsService.findAll(includeDeleted === 'true');
   }
 
   @Post()
@@ -60,5 +61,18 @@ export class TenantsController {
   @RequirePermission('tenants', 'delete')
   async remove(@Param('id') id: string) {
     return this.tenantsService.remove(id);
+  }
+
+  /**
+   * Reactivar (revertir la baja lógica). Va con `tenants:update`, no con una acción propia:
+   * el catálogo RBAC es un producto cartesiano cerrado de 4 acciones y no existe `restore`;
+   * reactivar es, conceptualmente, volver a poner activa la empresa —una modificación de su
+   * estado—, así que reusa el permiso de edición.
+   */
+  @Post(':id/restore')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('tenants', 'update')
+  async restore(@Param('id') id: string) {
+    return this.tenantsService.restore(id);
   }
 }

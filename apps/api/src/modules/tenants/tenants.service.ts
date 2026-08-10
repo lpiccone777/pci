@@ -53,14 +53,17 @@ export class TenantsService {
   }
 
   /**
-   * Todas las empresas activas del sistema. Cross-tenant a propósito: ver SystemTenantGuard.
+   * Empresas del sistema. Cross-tenant a propósito: ver SystemTenantGuard.
    *
-   * Filtra las dadas de baja (`deletedAt != null`): siguen en la base con todos sus datos,
-   * pero no se listan.
+   * Por defecto filtra las dadas de baja (`deletedAt != null`): siguen en la base con todos
+   * sus datos, pero no se listan. Con `includeDeleted` se incluyen también las dadas de baja
+   * —las necesita la pantalla cuando se activa "Mostrar dadas de baja", para poder
+   * reactivarlas—; el frontend las distingue por el campo `deletedAt` que viaja en la
+   * respuesta y las muestra atenuadas.
    */
-  async findAll() {
+  async findAll(includeDeleted = false) {
     const tenants = await this.prisma.tenant.findMany({
-      where: { deletedAt: null },
+      where: includeDeleted ? undefined : { deletedAt: null },
       include: TENANT_INCLUDE,
       orderBy: { name: 'asc' },
     });
@@ -154,6 +157,32 @@ export class TenantsService {
       data: { deletedAt: new Date() },
     });
     return { message: `Empresa ${tenant.name} dada de baja.` };
+  }
+
+  /**
+   * Reactivación: revierte la baja lógica poniendo `deletedAt = null`.
+   *
+   * Operación inversa y simétrica de `remove`. Como la baja no destruyó nada —membresías,
+   * roles, áreas, settings y flujos quedaron intactos, solo ocultos por los distintos filtros
+   * de `deletedAt`—, basta con quitar la marca para que la empresa vuelva a listarse, aparezca
+   * de nuevo en el selector y el bot vuelva a atenderla, tal como estaba antes de la baja.
+   *
+   * Busca solo entre las dadas de baja (`deletedAt != null`): reactivar una empresa que ya
+   * está activa no tiene sentido y devuelve 404, igual que un id inexistente. El slug nunca se
+   * liberó mientras estuvo de baja, así que reactivar no puede chocar con otra empresa. La
+   * empresa de sistema no llega nunca acá: no se puede dar de baja.
+   */
+  async restore(id: string) {
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id, deletedAt: { not: null } },
+    });
+    if (!tenant) throw new NotFoundException('Empresa dada de baja no encontrada');
+
+    await this.prisma.tenant.update({
+      where: { id },
+      data: { deletedAt: null },
+    });
+    return { message: `Empresa ${tenant.name} reactivada.` };
   }
 
   /**
