@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
-import { ALL_TENANTS, SYSTEM_TENANT_SLUG } from '@/lib/system-tenant';
+import { ALL_TENANTS, SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
 
 interface RoleOption {
   id: string;
@@ -38,75 +38,139 @@ interface UserData {
 type Feedback = { kind: 'ok' | 'error'; text: string };
 
 /** El nombre visible de un usuario: nombre y apellido, o el email si no tiene. */
-function userLabel(u: UserData) {
+function userLabel(u: { firstName: string | null; lastName: string | null; email: string }) {
   return [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
 }
 
+/** La empresa a pre-seleccionar / a pedir la lista completa: comparte alta y edición. */
+function useSystemTenantId() {
+  return typeof window !== 'undefined'
+    ? localStorage.getItem(SYSTEM_TENANT_ID_KEY)
+    : null;
+}
+
+/**
+ * Roles de una empresa, por su header. Sirve al superadmin (que puede pararse en cualquiera)
+ * y al usuario común (en las suyas), sin depender de los endpoints `/by-tenant`, que son solo
+ * del tenant de sistema. Devuelve [] ante error (sin permiso, empresa vacía) para no romper.
+ */
+async function fetchRolesForTenant(tenantId: string): Promise<RoleOption[]> {
+  try {
+    const data = await apiFetch('/roles', { headers: { 'X-Tenant-Id': tenantId } });
+    return (data || []).map((r: any) => ({ id: r.id, name: r.name }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchAreasForTenant(tenantId: string): Promise<AreaOption[]> {
+  try {
+    const data = await apiFetch('/areas', { headers: { 'X-Tenant-Id': tenantId } });
+    return (data || []).map((a: any) => ({ id: a.id, name: a.name }));
+  } catch {
+    return [];
+  }
+}
+
 export default function UsersPage() {
-  const { hasPermission, user: currentUser, activeTenant } = useAuth();
-  // "Todas las empresas": vista consolidada de solo lectura (una fila por membresía).
+  const {
+    hasPermission,
+    hasPermissionInTenant,
+    user: currentUser,
+    activeTenant,
+    isSystemUser,
+  } = useAuth();
+
+  // "Todas las empresas": vista consolidada (una fila por membresía, con columna Empresa).
   const isAllTenants = activeTenant === ALL_TENANTS;
-  // Parado en la empresa de sistema, el superadmin da de alta multiempresa (los endpoints
-  // cross-tenant que necesita el formulario solo responden desde ahí).
-  const activeSlug = currentUser?.tenants?.find((t) => t.tenantId === activeTenant)?.tenant
-    ?.slug;
-  const isSystemTenant = activeSlug === SYSTEM_TENANT_SLUG;
-  // El alta multiempresa (formulario con su propio selector de empresas) se puede usar tanto
-  // parado en la empresa de sistema como en "Todas las empresas": en ambos casos el header
-  // resuelve a la empresa de sistema, que es lo que exige SystemTenantGuard.
-  const canMultiCreate = isSystemTenant || isAllTenants;
+
   const [users, setUsers] = useState<UserData[]>([]);
-  const [roles, setRoles] = useState<RoleOption[]>([]);
-  const [areas, setAreas] = useState<AreaOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Filtro por empresa; solo se usa en el modo consolidado. */
+  const [tenantFilter, setTenantFilter] = useState<string>('');
 
   /** null = cerrado · { user: null } = alta · { user } = edición. */
   const [editing, setEditing] = useState<{ user: UserData | null } | null>(null);
   /** El usuario cuyo detalle se está viendo (clic en la fila). */
   const [viewing, setViewing] = useState<UserData | null>(null);
 
-  // En "Todas las empresas" editar y borrar se apagan (son por empresa), pero el alta sigue
-  // disponible: el formulario multiempresa elige las empresas destino por su cuenta. No
-  // alcanza con los permisos para apagar el resto, porque el superadmin tiene rol de sistema
-  // con todos los permisos.
   const canCreate = hasPermission('users', 'create');
-  const canUpdate = hasPermission('users', 'update') && !isAllTenants;
-  const canDelete = hasPermission('users', 'delete') && !isAllTenants;
-  const canReadRoles = hasPermission('roles', 'read');
-  const canReadAreas = hasPermission('areas', 'read');
+
+  // Empresas donde el usuario común puede dar de alta: es miembro con permiso de crear
+  // usuarios y de ver roles (el rol es obligatorio, así que sin verlos no podría completar).
+  // Para el superadmin es `null`: el formulario trae la lista completa desde `/tenants/all`.
+  const creatableTenants = useMemo<TenantOption[] | null>(() => {
+    if (isSystemUser) return null;
+    return (currentUser?.tenants ?? [])
+      .filter(
+        (m) =>
+          m.role?.permissions?.some(
+            (p) => p.resource === 'users' && p.action === 'create',
+          ) &&
+          m.role?.permissions?.some(
+            (p) => p.resource === 'roles' && p.action === 'read',
+          ),
+      )
+      .map((m) => ({ id: m.tenant.id, name: m.tenant.name, slug: m.tenant.slug }));
+  }, [currentUser, isSystemUser]);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
-      // En la vista consolidada solo hace falta el listado cross-tenant; roles y áreas del
-      // tenant activo solo alimentan el formulario de alta/edición, que ahí no se abre.
       if (isAllTenants) {
-        setUsers(await apiFetch('/users/all'));
-        return;
+        setUsers(await apiFetch(isSystemUser ? '/users/all' : '/users/mine'));
+      } else {
+        setUsers(await apiFetch('/users'));
       }
-      // El área es opcional, así que sin permiso para verlas la pantalla sigue andando:
-      // simplemente no aparece el selector.
-      const [userData, roleData, areaData] = await Promise.all([
-        apiFetch('/users'),
-        canReadRoles ? apiFetch('/roles') : Promise.resolve([]),
-        canReadAreas ? apiFetch('/areas') : Promise.resolve([]),
-      ]);
-      setUsers(userData);
-      setRoles(roleData.map((r: any) => ({ id: r.id, name: r.name })));
-      setAreas(areaData.map((a: any) => ({ id: a.id, name: a.name })));
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAllTenants]);
+  }, [isAllTenants, isSystemUser]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Empresas presentes en el listado, para alimentar el filtro del modo consolidado.
+  const tenantsInList = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const u of users) if (u.tenant) byId.set(u.tenant.id, u.tenant.name);
+    return Array.from(byId, ([id, name]) => ({ id, name })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [users]);
+
+  const visibleUsers = useMemo(
+    () =>
+      isAllTenants && tenantFilter
+        ? users.filter((u) => u.tenant?.id === tenantFilter)
+        : users,
+    [users, isAllTenants, tenantFilter],
+  );
+
+  /** El header con la empresa de una fila, para operar sobre ella aunque no sea la activa. */
+  function tenantHeaders(u: UserData): Record<string, string> | undefined {
+    return u.tenant ? { 'X-Tenant-Id': u.tenant.id } : undefined;
+  }
+
+  /** ¿Puede editar esta fila? En consolidado, según su permiso en la empresa de la fila. */
+  function canUpdateRow(u: UserData) {
+    return u.tenant
+      ? hasPermissionInTenant(u.tenant.id, 'users', 'update')
+      : hasPermission('users', 'update');
+  }
+
+  /** ¿Puede dar de baja esta fila? Mismo criterio por empresa que editar. */
+  function canDeleteRow(u: UserData) {
+    return u.tenant
+      ? hasPermissionInTenant(u.tenant.id, 'users', 'delete')
+      : hasPermission('users', 'delete');
+  }
 
   function openModal(user: UserData | null) {
     setFeedback(null);
@@ -133,7 +197,10 @@ export default function UsersPage() {
   async function confirmDelete(u: UserData) {
     setBusy(true);
     try {
-      const res = await apiFetch(`/users/${u.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/users/${u.id}`, {
+        method: 'DELETE',
+        headers: tenantHeaders(u),
+      });
       setFeedback({ kind: 'ok', text: res?.message || 'Usuario dado de baja.' });
       setDeletingId(null);
       await load();
@@ -152,8 +219,6 @@ export default function UsersPage() {
 
   if (loading) return <p className="text-gray-500">Cargando...</p>;
 
-  const noRoles = roles.length === 0;
-
   return (
     <div>
       <div className="flex items-center justify-between gap-4 mb-6">
@@ -161,14 +226,6 @@ export default function UsersPage() {
         {canCreate && (
           <button
             onClick={() => openModal(null)}
-            // El alta multiempresa trae sus roles por empresa, así que no depende de que el
-            // tenant activo tenga roles.
-            disabled={noRoles && !canMultiCreate}
-            title={
-              noRoles && !canMultiCreate
-                ? 'Primero tiene que haber al menos un rol'
-                : undefined
-            }
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 whitespace-nowrap"
           >
             Nuevo usuario
@@ -182,24 +239,24 @@ export default function UsersPage() {
         </p>
       )}
 
-      {/* La lista de roles queda vacía por dos motivos distintos —la empresa no tiene
-          ninguno, o esta persona no puede verlos— y cada uno se resuelve de otra forma.
-          Con un solo mensaje, a quien le falta el permiso se le decía que no hay roles
-          (falso) y se lo mandaba a una pantalla a la que tampoco puede entrar. */}
-      {noRoles && canCreate && !canMultiCreate && (
-        <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4 text-sm">
-          {canReadRoles ? (
-            <>
-              No hay roles en este tenant. El rol es obligatorio, así que creá uno en{' '}
-              <strong>Roles</strong> antes de dar de alta usuarios.
-            </>
-          ) : (
-            <>
-              No tenés permiso para ver los roles, y el rol es obligatorio para dar de alta
-              un usuario. Pedile a un administrador que te habilite <strong>ver roles</strong>.
-            </>
-          )}
-        </p>
+      {/* Filtro por empresa: solo en la vista consolidada. En una empresa concreta el propio
+          selector del sidebar ya cumple esa función, así que ahí sería redundante. */}
+      {isAllTenants && tenantsInList.length > 1 && (
+        <div className="mb-4 flex items-center gap-2">
+          <label className="text-sm text-gray-600">Empresa:</label>
+          <select
+            value={tenantFilter}
+            onChange={(e) => setTenantFilter(e.target.value)}
+            className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+          >
+            <option value="">Todas</option>
+            {tenantsInList.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
 
       <div className="bg-white rounded shadow overflow-x-auto">
@@ -221,14 +278,18 @@ export default function UsersPage() {
             </tr>
           </thead>
           <tbody>
-            {users.length === 0 && (
+            {visibleUsers.length === 0 && (
               <tr>
                 <td
                   colSpan={isAllTenants ? 10 : 9}
                   className="px-4 py-6 text-center text-gray-400"
                 >
-                  <p className="mb-3">Todavía no hay usuarios en esta empresa.</p>
-                  {canCreate && (!noRoles || canMultiCreate) && (
+                  <p className="mb-3">
+                    {isAllTenants
+                      ? 'Todavía no hay usuarios en tus empresas.'
+                      : 'Todavía no hay usuarios en esta empresa.'}
+                  </p>
+                  {canCreate && (
                     <button
                       onClick={() => openModal(null)}
                       className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
@@ -240,15 +301,27 @@ export default function UsersPage() {
               </tr>
             )}
 
-            {users.map((u) => {
-              if (deletingId === u.id) {
+            {visibleUsers.map((u) => {
+              // La clave incluye la empresa: en consolidado una persona aparece una vez por
+              // empresa, y con solo el id se repetiría la key.
+              const rowKey = u.tenant ? `${u.id}-${u.tenant.id}` : u.id;
+
+              if (deletingId === rowKey) {
                 return (
-                  <tr key={u.id} className="border-t bg-red-50">
+                  <tr key={rowKey} className="border-t bg-red-50">
                     <td colSpan={isAllTenants ? 10 : 9} className="px-4 py-2">
                       <div className="flex gap-2 items-center flex-wrap">
                         <span className="text-red-700 mr-1">
-                          ¿Dar de baja a <b>{userLabel(u)}</b> de esta empresa? Se lo quita
-                          de este tenant; su historial se conserva.
+                          ¿Dar de baja a <b>{userLabel(u)}</b>
+                          {u.tenant ? (
+                            <>
+                              {' '}
+                              de <b>{u.tenant.name}</b>?
+                            </>
+                          ) : (
+                            ' de esta empresa?'
+                          )}{' '}
+                          Se lo quita de esa empresa; su historial se conserva.
                         </span>
                         <button
                           onClick={() => confirmDelete(u)}
@@ -274,7 +347,7 @@ export default function UsersPage() {
 
               return (
                 <tr
-                  key={isAllTenants ? `${u.id}-${u.tenant?.id}` : u.id}
+                  key={rowKey}
                   onClick={() => openDetail(u)}
                   className="border-t hover:bg-gray-50 cursor-pointer"
                   title="Ver detalle"
@@ -310,7 +383,7 @@ export default function UsersPage() {
                       onClick={(e) => e.stopPropagation()}
                       title=""
                     >
-                      {canUpdate && (
+                      {canUpdateRow(u) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -321,7 +394,7 @@ export default function UsersPage() {
                           Editar
                         </button>
                       )}
-                      {canDelete &&
+                      {canDeleteRow(u) &&
                         (isSelf ? (
                           // aria-disabled y no disabled: con `disabled` de verdad, quien navega
                           // por teclado ni lo encuentra, y en táctil no hay hover que dé el motivo.
@@ -342,7 +415,7 @@ export default function UsersPage() {
                               e.stopPropagation();
                               setFeedback(null);
                               setViewing(null);
-                              setDeletingId(u.id);
+                              setDeletingId(rowKey);
                             }}
                             className="text-red-600 hover:text-red-800 px-2"
                           >
@@ -358,23 +431,28 @@ export default function UsersPage() {
         </table>
       </div>
 
-      {editing && (
-        <UserModal
-          user={editing.user}
-          roles={roles}
-          areas={areas}
-          canReadAreas={canReadAreas}
-          // Alta multiempresa: parado en la empresa de sistema o en la vista "Todas las empresas".
-          multiTenant={canMultiCreate && !editing.user}
-          onClose={() => setEditing(null)}
-          onSaved={afterSave}
-        />
-      )}
+      {editing &&
+        (editing.user ? (
+          <UserEditModal
+            user={editing.user}
+            isSelf={editing.user.id === currentUser?.id}
+            creatableTenants={creatableTenants}
+            onClose={() => setEditing(null)}
+            onSaved={afterSave}
+          />
+        ) : (
+          <UserModal
+            availableTenants={creatableTenants}
+            presetTenantId={isAllTenants ? null : activeTenant}
+            onClose={() => setEditing(null)}
+            onSaved={afterSave}
+          />
+        ))}
 
       {viewing && (
         <UserDetailModal
           user={viewing}
-          canEdit={canUpdate}
+          canEdit={canUpdateRow(viewing)}
           onEdit={() => openModal(viewing)}
           onClose={() => setViewing(null)}
         />
@@ -384,7 +462,7 @@ export default function UsersPage() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Ventana de usuario: un solo formulario para crear y para editar     */
+/* Alta: un usuario nuevo en una o varias empresas                     */
 /* ------------------------------------------------------------------ */
 
 interface Membership {
@@ -394,40 +472,33 @@ interface Membership {
 }
 
 function UserModal({
-  user,
-  roles,
-  areas,
-  canReadAreas,
-  multiTenant,
+  availableTenants,
+  presetTenantId,
   onClose,
   onSaved,
 }: {
-  user: UserData | null;
-  roles: RoleOption[];
-  areas: AreaOption[];
-  canReadAreas: boolean;
-  multiTenant: boolean;
+  /** Empresas destino. null = superadmin (se traen todas desde `/tenants/all`). */
+  availableTenants: TenantOption[] | null;
+  /** Empresa a pre-seleccionar (donde estás parado). null = elegís desde cero. */
+  presetTenantId: string | null;
   onClose: () => void;
   onSaved: (message: Feedback) => void;
 }) {
-  const base = {
-    email: user?.email ?? '',
-    firstName: user?.firstName ?? '',
-    lastName: user?.lastName ?? '',
-    phone: user?.phone ?? '',
-    invgateUserId: user?.invgateUserId ?? '',
-    roleId: user?.role?.id ?? '',
-    areaId: user?.area?.id ?? '',
-  };
+  const systemTenantId = useSystemTenantId();
 
-  const [form, setForm] = useState({ ...base, password: '' });
+  const [form, setForm] = useState({
+    email: '',
+    firstName: '',
+    lastName: '',
+    phone: '',
+    invgateUserId: '',
+    password: '',
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // Alta multiempresa: solo al crear (no al editar). El rol y el área van por empresa.
-  const isMulti = multiTenant && !user;
-  const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [memberships, setMemberships] = useState<Membership[]>([]);
+  const [tenantChoices, setTenantChoices] = useState<TenantOption[]>(availableTenants ?? []);
   const [rolesByTenant, setRolesByTenant] = useState<Record<string, RoleOption[]>>({});
   const [areasByTenant, setAreasByTenant] = useState<Record<string, AreaOption[]>>({});
 
@@ -438,51 +509,51 @@ function UserModal({
     firstRef.current?.select();
   }, []);
 
-  // La lista de empresas del selector: solo responde parado en la empresa de sistema, que es
-  // justo donde se habilita este formulario.
-  useEffect(() => {
-    if (!isMulti) return;
-    apiFetch('/tenants/all')
-      .then((list: any[]) =>
-        setAllTenants(list.map((t) => ({ id: t.id, name: t.name, slug: t.slug }))),
-      )
-      .catch((err: any) => setError(err.message));
-  }, [isMulti]);
-
-  // Roles y áreas se piden por empresa, con caché para no repetir el request (patrón del
-  // editor de flujos). El catch deja la lista vacía en vez de romper el formulario.
   async function loadRolesForTenant(tenantId: string) {
     if (rolesByTenant[tenantId]) return;
-    try {
-      const data = await apiFetch(`/roles/by-tenant/${tenantId}`);
-      setRolesByTenant((prev) => ({
-        ...prev,
-        [tenantId]: (data || []).map((r: any) => ({ id: r.id, name: r.name })),
-      }));
-    } catch {
-      setRolesByTenant((prev) => ({ ...prev, [tenantId]: prev[tenantId] || [] }));
-    }
+    const roles = await fetchRolesForTenant(tenantId);
+    setRolesByTenant((prev) => ({ ...prev, [tenantId]: roles }));
   }
-
   async function loadAreasForTenant(tenantId: string) {
     if (areasByTenant[tenantId]) return;
-    try {
-      const data = await apiFetch(`/areas/by-tenant/${tenantId}`);
-      setAreasByTenant((prev) => ({
-        ...prev,
-        [tenantId]: (data || []).map((a: any) => ({ id: a.id, name: a.name })),
-      }));
-    } catch {
-      setAreasByTenant((prev) => ({ ...prev, [tenantId]: prev[tenantId] || [] }));
-    }
+    const areas = await fetchAreasForTenant(tenantId);
+    setAreasByTenant((prev) => ({ ...prev, [tenantId]: areas }));
   }
 
+  // La lista de empresas para el desplegable. El superadmin la pide con el header de sistema
+  // (única empresa desde la que `/tenants/all` responde), esté parado donde esté.
+  useEffect(() => {
+    if (availableTenants) {
+      setTenantChoices(availableTenants);
+      return;
+    }
+    apiFetch(
+      '/tenants/all',
+      systemTenantId ? { headers: { 'X-Tenant-Id': systemTenantId } } : undefined,
+    )
+      .then((list: any[]) =>
+        setTenantChoices(list.map((t) => ({ id: t.id, name: t.name, slug: t.slug }))),
+      )
+      .catch((err: any) => setError(err.message));
+  }, [availableTenants, systemTenantId]);
+
   function addTenant(tenantId: string) {
-    if (!tenantId || memberships.some((m) => m.tenantId === tenantId)) return;
-    setMemberships((prev) => [...prev, { tenantId, roleId: '', areaId: '' }]);
+    if (!tenantId) return;
+    setMemberships((prev) =>
+      prev.some((m) => m.tenantId === tenantId)
+        ? prev
+        : [...prev, { tenantId, roleId: '', areaId: '' }],
+    );
     loadRolesForTenant(tenantId);
     loadAreasForTenant(tenantId);
   }
+
+  // Pre-seleccionar la empresa donde estás parado, si la hay.
+  useEffect(() => {
+    if (presetTenantId) addTenant(presetTenantId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetTenantId]);
+
   function removeTenant(tenantId: string) {
     setMemberships((prev) => prev.filter((m) => m.tenantId !== tenantId));
   }
@@ -497,29 +568,19 @@ function UserModal({
     );
   }
 
-  const availableTenants = allTenants.filter(
+  const availableToAdd = tenantChoices.filter(
     (t) => !memberships.some((m) => m.tenantId === t.id),
   );
-  const tenantName = (id: string) => allTenants.find((t) => t.id === id)?.name ?? id;
+  const tenantName = (id: string) => tenantChoices.find((t) => t.id === id)?.name ?? id;
 
-  const noRoles = roles.length === 0;
-
-  const changed = isMulti
-    ? form.firstName.length > 0 ||
-      form.lastName.length > 0 ||
-      form.email.length > 0 ||
-      form.phone.length > 0 ||
-      form.invgateUserId.length > 0 ||
-      form.password.length > 0 ||
-      memberships.length > 0
-    : form.firstName !== base.firstName ||
-      form.lastName !== base.lastName ||
-      form.phone !== base.phone ||
-      form.invgateUserId !== base.invgateUserId ||
-      form.roleId !== base.roleId ||
-      (canReadAreas && form.areaId !== base.areaId) ||
-      form.password.length > 0 ||
-      (!user && form.email !== base.email);
+  const changed =
+    form.firstName.length > 0 ||
+    form.lastName.length > 0 ||
+    form.email.length > 0 ||
+    form.phone.length > 0 ||
+    form.invgateUserId.length > 0 ||
+    form.password.length > 0 ||
+    memberships.length > 0;
 
   const requestClose = useCallback(() => {
     if (saving) return;
@@ -540,326 +601,57 @@ function UserModal({
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    if (memberships.length === 0) {
+      setError('Elegí al menos una empresa.');
+      return;
+    }
+    if (memberships.some((m) => !m.roleId)) {
+      setError('Cada empresa necesita un rol.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      if (user) {
-        const payload: Record<string, string> = {
+      await apiFetch('/users/multi', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: form.email,
           firstName: form.firstName,
           lastName: form.lastName,
-          phone: form.phone,
-          invgateUserId: form.invgateUserId,
-          roleId: form.roleId,
-        };
-        // La contraseña solo viaja si se completó: vacío significa "no la cambies".
-        if (form.password) payload.password = form.password;
-        // Sin permiso para ver áreas no hay selector, y mandar el campo vacío le borraría
-        // el área al usuario sin que nadie lo haya pedido.
-        if (canReadAreas) payload.areaId = form.areaId;
-
-        await apiFetch(`/users/${user.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        });
-        onSaved({ kind: 'ok', text: `Usuario ${userLabel({ ...user, ...form } as UserData)} guardado.` });
-      } else if (isMulti) {
-        if (memberships.length === 0) {
-          setError('Elegí al menos una empresa.');
-          setSaving(false);
-          return;
-        }
-        if (memberships.some((m) => !m.roleId)) {
-          setError('Cada empresa necesita un rol.');
-          setSaving(false);
-          return;
-        }
-        await apiFetch('/users/multi', {
-          method: 'POST',
-          body: JSON.stringify({
-            email: form.email,
-            firstName: form.firstName,
-            lastName: form.lastName,
-            password: form.password,
-            phone: form.phone || undefined,
-            invgateUserId: form.invgateUserId || undefined,
-            memberships: memberships.map((m) => ({
-              tenantId: m.tenantId,
-              roleId: m.roleId,
-              areaId: m.areaId || undefined,
-            })),
-          }),
-        });
-        onSaved({
-          kind: 'ok',
-          text: `Usuario creado en ${memberships.length} ${
-            memberships.length === 1 ? 'empresa' : 'empresas'
-          }.`,
-        });
-      } else {
-        await apiFetch('/users', {
-          method: 'POST',
-          body: JSON.stringify(form),
-        });
-        onSaved({ kind: 'ok', text: 'Usuario creado.' });
-      }
+          password: form.password,
+          phone: form.phone || undefined,
+          invgateUserId: form.invgateUserId || undefined,
+          memberships: memberships.map((m) => ({
+            tenantId: m.tenantId,
+            roleId: m.roleId,
+            areaId: m.areaId || undefined,
+          })),
+        }),
+      });
+      onSaved({
+        kind: 'ok',
+        text: `Usuario creado en ${memberships.length} ${
+          memberships.length === 1 ? 'empresa' : 'empresas'
+        }.`,
+      });
     } catch (err: any) {
       setError(err.message);
       setSaving(false);
     }
   }
 
-  const saveDisabled = isMulti
-    ? saving || memberships.length === 0 || memberships.some((m) => !m.roleId)
-    : saving || (user === null && noRoles) || (user !== null && !changed);
+  const saveDisabled =
+    saving || memberships.length === 0 || memberships.some((m) => !m.roleId);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-gray-900/55"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) requestClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="user-modal-title"
-    >
-      <form
-        onSubmit={save}
-        className="bg-white rounded-md shadow-2xl w-full max-w-[720px] max-h-full flex flex-col text-gray-900"
-      >
-        <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
-          <div className="flex-1 min-w-0">
-            <h2 id="user-modal-title" className="text-lg font-semibold text-gray-800">
-              {user ? 'Editar usuario' : 'Nuevo usuario'}
-            </h2>
-            {isMulti && (
-              <p className="mt-1 text-xs text-gray-500">
-                Alta en varias empresas: elegí el rol y el área de cada una.
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            aria-label="Cerrar"
-            className="text-xl leading-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded px-2 py-1"
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="px-5 py-4 overflow-y-auto flex-1">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Nombre *</label>
-              <input
-                ref={firstRef}
-                placeholder="Juan"
-                value={form.firstName}
-                onChange={(e) => setForm({ ...form, firstName: e.target.value })}
-                className="border border-gray-200 px-3 py-2 rounded w-full"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Apellido *</label>
-              <input
-                placeholder="Pérez"
-                value={form.lastName}
-                onChange={(e) => setForm({ ...form, lastName: e.target.value })}
-                className="border border-gray-200 px-3 py-2 rounded w-full"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Email *</label>
-              <input
-                type="email"
-                placeholder="juan.perez@empresa.com"
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-                className="border border-gray-200 px-3 py-2 rounded w-full disabled:bg-gray-100"
-                disabled={!!user}
-                title={user ? 'El email no se puede cambiar' : undefined}
-                required
-              />
-            </div>
-
-            {!isMulti && (
-              <>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Rol *</label>
-                  <select
-                    value={form.roleId}
-                    onChange={(e) => setForm({ ...form, roleId: e.target.value })}
-                    className="border border-gray-200 px-3 py-2 rounded w-full"
-                    required
-                  >
-                    <option value="">Seleccionar rol</option>
-                    {roles.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {canReadAreas && (
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Área</label>
-                    <select
-                      value={form.areaId}
-                      onChange={(e) => setForm({ ...form, areaId: e.target.value })}
-                      className="border border-gray-200 px-3 py-2 rounded w-full"
-                    >
-                      <option value="">Sin área</option>
-                      {areas.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name}
-                        </option>
-                      ))}
-                    </select>
-                    {areas.length === 0 && (
-                      <p className="text-xs text-gray-400 mt-1">
-                        Todavía no hay áreas en esta empresa.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Teléfono</label>
-              <input
-                placeholder="+54911..."
-                value={form.phone}
-                onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                className="border border-gray-200 px-3 py-2 rounded w-full"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">ID de Invgate</label>
-              <input
-                value={form.invgateUserId}
-                onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
-                className="border border-gray-200 px-3 py-2 rounded w-full"
-                maxLength={64}
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">
-                {user ? 'Nueva contraseña' : 'Contraseña *'}
-              </label>
-              <input
-                type="password"
-                placeholder={user ? 'Dejar vacío para no cambiarla' : 'Mínimo 8 caracteres'}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                className="border border-gray-200 px-3 py-2 rounded w-full"
-                minLength={8}
-                required={!user}
-              />
-            </div>
-          </div>
-
-          {isMulti && (
-            <div className="mt-4 border-t border-gray-200 pt-4">
-              <label className="block text-xs text-gray-500 mb-1">Empresas *</label>
-              <p className="text-xs text-gray-400 mb-3">
-                Elegí en qué empresas se da de alta a la persona. Por cada una, un rol
-                (obligatorio) y un área (opcional).
-              </p>
-
-              {memberships.length === 0 && (
-                <p className="text-xs text-gray-400 mb-2">
-                  Todavía no agregaste ninguna empresa.
-                </p>
-              )}
-
-              <div className="space-y-2">
-                {memberships.map((m) => {
-                  const tRoles = rolesByTenant[m.tenantId];
-                  const tAreas = areasByTenant[m.tenantId];
-                  return (
-                    <div key={m.tenantId} className="border border-gray-200 rounded p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-medium text-sm">{tenantName(m.tenantId)}</span>
-                        <button
-                          type="button"
-                          onClick={() => removeTenant(m.tenantId)}
-                          className="text-red-600 hover:text-red-800 text-xs"
-                        >
-                          Quitar
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">Rol *</label>
-                          <select
-                            value={m.roleId}
-                            onChange={(e) => setMembershipRole(m.tenantId, e.target.value)}
-                            className="border border-gray-200 px-3 py-2 rounded w-full"
-                            required
-                          >
-                            <option value="">
-                              {tRoles ? 'Seleccionar rol' : 'Cargando...'}
-                            </option>
-                            {(tRoles || []).map((r) => (
-                              <option key={r.id} value={r.id}>
-                                {r.name}
-                              </option>
-                            ))}
-                          </select>
-                          {tRoles && tRoles.length === 0 && (
-                            <p className="text-xs text-amber-700 mt-1">
-                              Esta empresa no tiene roles. Creá uno antes de darla de alta.
-                            </p>
-                          )}
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">Área</label>
-                          <select
-                            value={m.areaId}
-                            onChange={(e) => setMembershipArea(m.tenantId, e.target.value)}
-                            className="border border-gray-200 px-3 py-2 rounded w-full"
-                          >
-                            <option value="">Sin área</option>
-                            {(tAreas || []).map((a) => (
-                              <option key={a.id} value={a.id}>
-                                {a.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {availableTenants.length > 0 && (
-                <select
-                  value=""
-                  onChange={(e) => addTenant(e.target.value)}
-                  className="mt-2 border border-gray-200 px-3 py-2 rounded w-full text-gray-600"
-                >
-                  <option value="">+ Agregar empresa…</option>
-                  {availableTenants.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
-        </div>
-
-        {error && (
-          <p className="px-5 py-2 text-sm text-red-600 bg-red-50 border-t border-red-200">
-            {error}
-          </p>
-        )}
-
-        <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-3 rounded-b-md">
+    <ModalShell
+      title="Nuevo usuario"
+      subtitle="Elegí en qué empresas se da de alta a la persona: por cada una, un rol y, opcional, un área."
+      onRequestClose={requestClose}
+      onSubmit={save}
+      error={error}
+      footer={
+        <>
           <button
             type="button"
             onClick={requestClose}
@@ -873,10 +665,724 @@ function UserModal({
             disabled={saveDisabled}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
           >
-            {saving ? 'Guardando...' : user ? 'Guardar' : 'Crear'}
+            {saving ? 'Guardando...' : 'Crear'}
+          </button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <PersonField label="Nombre *">
+          <input
+            ref={firstRef}
+            placeholder="Juan"
+            value={form.firstName}
+            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            required
+          />
+        </PersonField>
+        <PersonField label="Apellido *">
+          <input
+            placeholder="Pérez"
+            value={form.lastName}
+            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            required
+          />
+        </PersonField>
+        <PersonField label="Email *">
+          <input
+            type="email"
+            placeholder="juan.perez@empresa.com"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            required
+          />
+        </PersonField>
+        <PersonField label="Teléfono">
+          <input
+            placeholder="+54911..."
+            value={form.phone}
+            onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+          />
+        </PersonField>
+        <PersonField label="ID de Invgate">
+          <input
+            value={form.invgateUserId}
+            onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            maxLength={64}
+          />
+        </PersonField>
+        <PersonField label="Contraseña *">
+          <input
+            type="password"
+            placeholder="Mínimo 8 caracteres"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            minLength={8}
+            required
+          />
+        </PersonField>
+      </div>
+
+      <MembershipsEditor
+        memberships={memberships.map((m) => ({
+          tenantId: m.tenantId,
+          tenantName: tenantName(m.tenantId),
+          roleId: m.roleId,
+          areaId: m.areaId,
+          existing: false,
+          removed: false,
+          roleEditable: true,
+          removable: true,
+        }))}
+        rolesByTenant={rolesByTenant}
+        areasByTenant={areasByTenant}
+        availableToAdd={availableToAdd}
+        onAdd={addTenant}
+        onRemove={removeTenant}
+        onRestore={() => {}}
+        onRole={setMembershipRole}
+        onArea={setMembershipArea}
+        emptyHint="Todavía no agregaste ninguna empresa."
+      />
+    </ModalShell>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Edición: la persona y todas sus empresas administrables             */
+/* ------------------------------------------------------------------ */
+
+interface EditMembership {
+  tenantId: string;
+  tenantName: string;
+  roleId: string;
+  areaId: string;
+  /** Nombre actual del rol/área, para mostrar las empresas en solo lectura sin cargar sus
+   *  listas (cuando no hay permiso para editarlas). */
+  roleName: string;
+  areaName: string;
+  /** Ya existía al abrir el editor (vs. agregada en esta sesión). */
+  existing: boolean;
+  /** Marcada para dar de baja al guardar (solo existentes). */
+  removed: boolean;
+}
+
+function UserEditModal({
+  user,
+  isSelf,
+  creatableTenants,
+  onClose,
+  onSaved,
+}: {
+  user: UserData;
+  /** El usuario se está editando a sí mismo: no puede darse de baja de ninguna empresa. */
+  isSelf: boolean;
+  /** Empresas donde se puede agregar (usuario común). null = superadmin (todas). */
+  creatableTenants: TenantOption[] | null;
+  onClose: () => void;
+  onSaved: (message: Feedback) => void;
+}) {
+  const { hasPermissionInTenant } = useAuth();
+  const systemTenantId = useSystemTenantId();
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const [form, setForm] = useState({
+    firstName: user.firstName ?? '',
+    lastName: user.lastName ?? '',
+    phone: user.phone ?? '',
+    invgateUserId: user.invgateUserId ?? '',
+    password: '',
+  });
+  const [base, setBase] = useState(form);
+
+  const [memberships, setMemberships] = useState<EditMembership[]>([]);
+  /** Estado inicial de las membresías, para detectar cambios. */
+  const [baseMemberships, setBaseMemberships] = useState<EditMembership[]>([]);
+  const [tenantChoices, setTenantChoices] = useState<TenantOption[]>(creatableTenants ?? []);
+  const [rolesByTenant, setRolesByTenant] = useState<Record<string, RoleOption[]>>({});
+  const [areasByTenant, setAreasByTenant] = useState<Record<string, AreaOption[]>>({});
+
+  const firstRef = useRef<HTMLInputElement>(null);
+
+  async function loadRolesForTenant(tenantId: string) {
+    if (rolesByTenant[tenantId]) return;
+    const roles = await fetchRolesForTenant(tenantId);
+    setRolesByTenant((prev) => ({ ...prev, [tenantId]: roles }));
+  }
+  async function loadAreasForTenant(tenantId: string) {
+    if (areasByTenant[tenantId]) return;
+    const areas = await fetchAreasForTenant(tenantId);
+    setAreasByTenant((prev) => ({ ...prev, [tenantId]: areas }));
+  }
+
+  // Poblar el editor: los datos de la persona y sus membresías visibles.
+  useEffect(() => {
+    apiFetch(`/users/${user.id}/memberships`)
+      .then((data: any) => {
+        const person = {
+          firstName: data.firstName ?? '',
+          lastName: data.lastName ?? '',
+          phone: data.phone ?? '',
+          invgateUserId: data.invgateUserId ?? '',
+          password: '',
+        };
+        setForm(person);
+        setBase(person);
+        const mapped: EditMembership[] = (data.memberships || []).map((m: any) => ({
+          tenantId: m.tenantId,
+          tenantName: m.tenant?.name ?? m.tenantId,
+          roleId: m.role?.id ?? '',
+          areaId: m.area?.id ?? '',
+          roleName: m.role?.name ?? '',
+          areaName: m.area?.name ?? '',
+          existing: true,
+          removed: false,
+        }));
+        setMemberships(mapped);
+        setBaseMemberships(mapped);
+        // Traer roles/áreas de cada empresa que se puede editar (para los selects).
+        for (const m of mapped) {
+          if (hasPermissionInTenant(m.tenantId, 'users', 'update')) {
+            loadRolesForTenant(m.tenantId);
+            loadAreasForTenant(m.tenantId);
+          }
+        }
+      })
+      .catch((err: any) => setError(err.message))
+      .finally(() => {
+        setLoading(false);
+        setTimeout(() => firstRef.current?.focus(), 0);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.id]);
+
+  // Lista de empresas para agregar. El superadmin la pide con el header de sistema.
+  useEffect(() => {
+    if (creatableTenants) {
+      setTenantChoices(creatableTenants);
+      return;
+    }
+    apiFetch(
+      '/tenants/all',
+      systemTenantId ? { headers: { 'X-Tenant-Id': systemTenantId } } : undefined,
+    )
+      .then((list: any[]) =>
+        setTenantChoices(list.map((t) => ({ id: t.id, name: t.name, slug: t.slug }))),
+      )
+      .catch(() => {
+        // Sin la lista solo no se pueden agregar empresas nuevas; el resto del editor anda.
+      });
+  }, [creatableTenants, systemTenantId]);
+
+  function addTenant(tenantId: string) {
+    if (!tenantId) return;
+    setMemberships((prev) => {
+      const found = prev.find((m) => m.tenantId === tenantId);
+      // Si estaba marcada para baja, agregar la restaura en vez de duplicarla.
+      if (found) {
+        return prev.map((m) => (m.tenantId === tenantId ? { ...m, removed: false } : m));
+      }
+      const name = tenantChoices.find((t) => t.id === tenantId)?.name ?? tenantId;
+      return [
+        ...prev,
+        {
+          tenantId,
+          tenantName: name,
+          roleId: '',
+          areaId: '',
+          roleName: '',
+          areaName: '',
+          existing: false,
+          removed: false,
+        },
+      ];
+    });
+    loadRolesForTenant(tenantId);
+    loadAreasForTenant(tenantId);
+  }
+
+  function removeMembership(tenantId: string) {
+    setMemberships((prev) =>
+      prev
+        // Las nuevas se sacan de la lista; las existentes se marcan para baja.
+        .map((m) =>
+          m.tenantId === tenantId && m.existing ? { ...m, removed: true } : m,
+        )
+        .filter((m) => !(m.tenantId === tenantId && !m.existing)),
+    );
+  }
+  function restoreMembership(tenantId: string) {
+    setMemberships((prev) =>
+      prev.map((m) => (m.tenantId === tenantId ? { ...m, removed: false } : m)),
+    );
+  }
+  function setMembershipRole(tenantId: string, roleId: string) {
+    setMemberships((prev) =>
+      prev.map((m) => (m.tenantId === tenantId ? { ...m, roleId } : m)),
+    );
+  }
+  function setMembershipArea(tenantId: string, areaId: string) {
+    setMemberships((prev) =>
+      prev.map((m) => (m.tenantId === tenantId ? { ...m, areaId } : m)),
+    );
+  }
+
+  const availableToAdd = tenantChoices.filter(
+    (t) => !memberships.some((m) => m.tenantId === t.id && !m.removed),
+  );
+
+  const membershipsChanged =
+    memberships.length !== baseMemberships.length ||
+    memberships.some((m) => {
+      const b = baseMemberships.find((x) => x.tenantId === m.tenantId);
+      return !b || b.roleId !== m.roleId || b.areaId !== m.areaId || m.removed;
+    });
+  const personChanged =
+    form.firstName !== base.firstName ||
+    form.lastName !== base.lastName ||
+    form.phone !== base.phone ||
+    form.invgateUserId !== base.invgateUserId ||
+    form.password.length > 0;
+  const changed = personChanged || membershipsChanged;
+
+  const requestClose = useCallback(() => {
+    if (saving) return;
+    if (changed && !confirm('Tenés cambios sin guardar. ¿Descartarlos?')) return;
+    onClose();
+  }, [saving, changed, onClose]);
+
+  useEffect(() => {
+    function onEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        requestClose();
+      }
+    }
+    document.addEventListener('keydown', onEscape);
+    return () => document.removeEventListener('keydown', onEscape);
+  }, [requestClose]);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    const kept = memberships.filter((m) => !m.removed);
+    if (kept.some((m) => !m.roleId)) {
+      setError('Cada empresa necesita un rol.');
+      return;
+    }
+
+    // Confirmar las bajas (empresas existentes marcadas para quitar): son destructivas.
+    const toRemove = memberships.filter((m) => m.existing && m.removed);
+    if (toRemove.length > 0) {
+      const names = toRemove.map((m) => m.tenantName).join(', ');
+      const ok = confirm(
+        `Vas a dar de baja a ${userLabel(user)} de: ${names}. ` +
+          'Se conserva su historial. ¿Continuar?',
+      );
+      if (!ok) return;
+    }
+
+    setSaving(true);
+    setError('');
+    try {
+      const res = await apiFetch(`/users/${user.id}/full`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          firstName: form.firstName,
+          lastName: form.lastName,
+          phone: form.phone,
+          invgateUserId: form.invgateUserId,
+          ...(form.password ? { password: form.password } : {}),
+          memberships: kept.map((m) => ({
+            tenantId: m.tenantId,
+            roleId: m.roleId,
+            areaId: m.areaId || undefined,
+          })),
+        }),
+      });
+      onSaved({ kind: 'ok', text: res?.message || `Usuario ${userLabel(user)} guardado.` });
+    } catch (err: any) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <ModalShell title="Editar usuario" onRequestClose={onClose}>
+        <p className="text-gray-500 text-sm">Cargando...</p>
+      </ModalShell>
+    );
+  }
+
+  const editableMemberships: EditorRow[] = memberships.map((m) => ({
+    tenantId: m.tenantId,
+    tenantName: m.tenantName,
+    roleId: m.roleId,
+    areaId: m.areaId,
+    roleName: m.roleName,
+    areaName: m.areaName,
+    existing: m.existing,
+    removed: m.removed,
+    // Nuevas: siempre editables. Existentes: solo con permiso en esa empresa.
+    roleEditable: !m.existing || hasPermissionInTenant(m.tenantId, 'users', 'update'),
+    // Quitar: nuevas siempre; existentes solo con delete y si no es uno mismo.
+    removable: !m.existing || (!isSelf && hasPermissionInTenant(m.tenantId, 'users', 'delete')),
+  }));
+
+  return (
+    <ModalShell
+      title="Editar usuario"
+      subtitle="Cambiá los datos de la persona y sus empresas: rol y área por empresa, agregar o quitar empresas."
+      onRequestClose={requestClose}
+      onSubmit={save}
+      error={error}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={requestClose}
+            disabled={saving}
+            className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={saving || !changed}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
+          >
+            {saving ? 'Guardando...' : 'Guardar'}
+          </button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <PersonField label="Nombre *">
+          <input
+            ref={firstRef}
+            value={form.firstName}
+            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            required
+          />
+        </PersonField>
+        <PersonField label="Apellido *">
+          <input
+            value={form.lastName}
+            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            required
+          />
+        </PersonField>
+        <PersonField label="Email">
+          <input
+            value={user.email}
+            className="border border-gray-200 px-3 py-2 rounded w-full bg-gray-100"
+            disabled
+            title="El email no se puede cambiar"
+          />
+        </PersonField>
+        <PersonField label="Teléfono">
+          <input
+            placeholder="+54911..."
+            value={form.phone}
+            onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+          />
+        </PersonField>
+        <PersonField label="ID de Invgate">
+          <input
+            value={form.invgateUserId}
+            onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            maxLength={64}
+          />
+        </PersonField>
+        <PersonField label="Nueva contraseña">
+          <input
+            type="password"
+            placeholder="Dejar vacío para no cambiarla"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            className="border border-gray-200 px-3 py-2 rounded w-full"
+            minLength={8}
+          />
+        </PersonField>
+      </div>
+
+      <MembershipsEditor
+        memberships={editableMemberships}
+        rolesByTenant={rolesByTenant}
+        areasByTenant={areasByTenant}
+        availableToAdd={availableToAdd}
+        onAdd={addTenant}
+        onRemove={removeMembership}
+        onRestore={restoreMembership}
+        onRole={setMembershipRole}
+        onArea={setMembershipArea}
+        emptyHint="Esta persona no está en ninguna empresa que puedas administrar."
+      />
+    </ModalShell>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Editor de empresas: compartido por alta y edición                   */
+/* ------------------------------------------------------------------ */
+
+interface EditorRow {
+  tenantId: string;
+  tenantName: string;
+  roleId: string;
+  areaId: string;
+  /** Nombre actual del rol/área, para el render en solo lectura. */
+  roleName?: string;
+  areaName?: string;
+  existing: boolean;
+  removed: boolean;
+  roleEditable: boolean;
+  removable: boolean;
+}
+
+function MembershipsEditor({
+  memberships,
+  rolesByTenant,
+  areasByTenant,
+  availableToAdd,
+  onAdd,
+  onRemove,
+  onRestore,
+  onRole,
+  onArea,
+  emptyHint,
+}: {
+  memberships: EditorRow[];
+  rolesByTenant: Record<string, RoleOption[]>;
+  areasByTenant: Record<string, AreaOption[]>;
+  availableToAdd: TenantOption[];
+  onAdd: (tenantId: string) => void;
+  onRemove: (tenantId: string) => void;
+  onRestore: (tenantId: string) => void;
+  onRole: (tenantId: string, roleId: string) => void;
+  onArea: (tenantId: string, areaId: string) => void;
+  emptyHint: string;
+}) {
+  return (
+    <div className="mt-4 border-t border-gray-200 pt-4">
+      <label className="block text-xs text-gray-500 mb-1">Empresas *</label>
+      <p className="text-xs text-gray-400 mb-3">
+        Por cada empresa, un rol (obligatorio) y un área (opcional).
+      </p>
+
+      {memberships.length === 0 && (
+        <p className="text-xs text-gray-400 mb-2">{emptyHint}</p>
+      )}
+
+      <div className="space-y-2">
+        {memberships.map((m) => {
+          const tRoles = rolesByTenant[m.tenantId];
+          const tAreas = areasByTenant[m.tenantId];
+          // En solo lectura no se cargan las listas de la empresa, así que el nombre viene
+          // de la propia fila (lo trajo el backend); si están cargadas, se usan igual.
+          const roleName =
+            m.roleName || tRoles?.find((r) => r.id === m.roleId)?.name || '—';
+          const areaName =
+            m.areaName || tAreas?.find((a) => a.id === m.areaId)?.name || 'Sin área';
+
+          if (m.removed) {
+            return (
+              <div
+                key={m.tenantId}
+                className="border border-red-200 bg-red-50 rounded p-3 flex items-center justify-between"
+              >
+                <span className="text-sm text-red-700">
+                  <b>{m.tenantName}</b> — se dará de baja al guardar
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRestore(m.tenantId)}
+                  className="text-blue-600 hover:text-blue-800 text-xs"
+                >
+                  Deshacer
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div key={m.tenantId} className="border border-gray-200 rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-medium text-sm">{m.tenantName}</span>
+                {m.removable && (
+                  <button
+                    type="button"
+                    onClick={() => onRemove(m.tenantId)}
+                    className="text-red-600 hover:text-red-800 text-xs"
+                  >
+                    Quitar
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Rol *</label>
+                  {m.roleEditable ? (
+                    <>
+                      <select
+                        value={m.roleId}
+                        onChange={(e) => onRole(m.tenantId, e.target.value)}
+                        className="border border-gray-200 px-3 py-2 rounded w-full"
+                        required
+                      >
+                        <option value="">{tRoles ? 'Seleccionar rol' : 'Cargando...'}</option>
+                        {(tRoles || []).map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                      {tRoles && tRoles.length === 0 && (
+                        <p className="text-xs text-amber-700 mt-1">
+                          Esta empresa no tiene roles. Creá uno antes de asignarla.
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="px-3 py-2 text-sm text-gray-700 bg-gray-50 border border-gray-100 rounded">
+                      {roleName}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Área</label>
+                  {m.roleEditable ? (
+                    <select
+                      value={m.areaId}
+                      onChange={(e) => onArea(m.tenantId, e.target.value)}
+                      className="border border-gray-200 px-3 py-2 rounded w-full"
+                    >
+                      <option value="">Sin área</option>
+                      {(tAreas || []).map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="px-3 py-2 text-sm text-gray-700 bg-gray-50 border border-gray-100 rounded">
+                      {areaName}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {availableToAdd.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => onAdd(e.target.value)}
+          className="mt-2 border border-gray-200 px-3 py-2 rounded w-full text-gray-600"
+        >
+          <option value="">+ Agregar empresa…</option>
+          {availableToAdd.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Piezas de presentación compartidas                                  */
+/* ------------------------------------------------------------------ */
+
+function PersonField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function ModalShell({
+  title,
+  subtitle,
+  onRequestClose,
+  onSubmit,
+  error,
+  footer,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  onRequestClose: () => void;
+  onSubmit?: (e: React.FormEvent) => void;
+  error?: string;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const Inner = onSubmit ? 'form' : 'div';
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-gray-900/55"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onRequestClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="user-modal-title"
+    >
+      <Inner
+        onSubmit={onSubmit}
+        className="bg-white rounded-md shadow-2xl w-full max-w-[720px] max-h-full flex flex-col text-gray-900"
+      >
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
+          <div className="flex-1 min-w-0">
+            <h2 id="user-modal-title" className="text-lg font-semibold text-gray-800">
+              {title}
+            </h2>
+            {subtitle && <p className="mt-1 text-xs text-gray-500">{subtitle}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={onRequestClose}
+            aria-label="Cerrar"
+            className="text-xl leading-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded px-2 py-1"
+          >
+            ×
           </button>
         </div>
-      </form>
+
+        <div className="px-5 py-4 overflow-y-auto flex-1">{children}</div>
+
+        {error && (
+          <p className="px-5 py-2 text-sm text-red-600 bg-red-50 border-t border-red-200">
+            {error}
+          </p>
+        )}
+
+        {footer && (
+          <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-3 rounded-b-md">
+            {footer}
+          </div>
+        )}
+      </Inner>
     </div>
   );
 }

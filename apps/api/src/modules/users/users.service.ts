@@ -1,15 +1,20 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { systemTenantSlug } from '../../common/system-tenant';
+import { isProtectedRole } from '../rbac/protected-role';
 import {
   CreateUserDto,
   CreateUserMultiTenantDto,
   UpdateUserDto,
+  UpdateUserFullDto,
 } from './dto/user.dto';
 import * as bcrypt from 'bcrypt';
 
@@ -27,7 +32,10 @@ const USER_SELECT = {
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   /** Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant. */
   async findAll(tenantId: string) {
@@ -76,6 +84,55 @@ export class UsersService {
     }));
   }
 
+  /**
+   * Usuarios de TODAS las empresas del propio usuario (vista "Todas las empresas" del
+   * usuario común, que no es superadmin). Una fila por membresía, con su empresa — mismo
+   * shape que `findAllCrossTenant`, pero acotado a las empresas donde ESTE usuario puede
+   * ver usuarios (su rol tiene `users:read`).
+   *
+   * Es la contraparte no-privilegiada de `findAllCrossTenant`: el superadmin ve todo el
+   * sistema; el usuario común, solo sus empresas. El scope lo pone el propio userId, no el
+   * header, así que no necesita `SystemTenantGuard` ni un tenant activo — cada empresa se
+   * filtra por el permiso que el usuario tiene en ella.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some(
+          (p) => p.resource === 'users' && p.action === 'read',
+        ),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    const memberships = await this.prisma.userTenant.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      include: {
+        user: { select: USER_SELECT },
+        role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+
+    return memberships.map((m) => ({
+      ...m.user,
+      role: m.role,
+      area: m.area,
+      tenant: m.tenant,
+      joinedAt: m.createdAt,
+    }));
+  }
+
   async findOne(tenantId: string, userId: string) {
     const membership = await this.prisma.userTenant.findUnique({
       where: { userId_tenantId: { userId, tenantId } },
@@ -96,6 +153,56 @@ export class UsersService {
       area: membership.area,
       joinedAt: membership.createdAt,
     };
+  }
+
+  /**
+   * Los datos de una persona y sus membresías EN LAS EMPRESAS QUE EL EDITOR PUEDE VER
+   * (`users:read`), para poblar el editor multiempresa. El superusuario ve todas.
+   *
+   * Solo devuelve las membresías visibles: si la persona está en una empresa que quien edita
+   * no administra, esa membresía no aparece —y por lo tanto el editor no puede tocarla—. El
+   * scope lo pone `requesterId`, no el header.
+   */
+  async findMembershipsForEditor(requesterId: string, userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: USER_SELECT,
+    });
+    if (!user) throw new NotFoundException('El usuario no existe');
+
+    const isSuper = await this.isSystemSuperUser(requesterId);
+
+    const memberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: { tenant: { name: 'asc' } },
+    });
+
+    const visible: Array<{
+      tenantId: string;
+      tenant: { id: string; name: string; slug: string };
+      role: { id: string; name: string } | null;
+      area: { id: string; name: string } | null;
+    }> = [];
+    for (const m of memberships) {
+      if (
+        isSuper ||
+        (await this.hasUsersPermissionInTenant(requesterId, m.tenantId, 'read', isSuper))
+      ) {
+        visible.push({
+          tenantId: m.tenantId,
+          tenant: m.tenant,
+          role: m.role,
+          area: m.area,
+        });
+      }
+    }
+
+    return { ...user, memberships: visible };
   }
 
   async create(tenantId: string, dto: CreateUserDto) {
@@ -161,18 +268,30 @@ export class UsersService {
   }
 
   /**
-   * Alta de una persona en varias empresas a la vez (solo superadmin — lo gatea el
-   * controlador con `SystemTenantGuard`). Un rol y, opcional, un área por empresa.
+   * Alta de una persona en varias empresas a la vez. Un rol y, opcional, un área por empresa.
    *
-   * Es la generalización de `create`: valida rol y área de CADA empresa antes de tocar
-   * nada, y crea el usuario y las N membresías de forma atómica. Si el email ya existe,
-   * suma las membresías que falten en vez de crear la persona de nuevo — mismo criterio
-   * que `create` con un solo tenant.
+   * Ya no es exclusiva del superadmin: la puede usar cualquiera, pero solo sobre las empresas
+   * que puede administrar. `requesterId` es quien da el alta, y por cada empresa destino se
+   * valida que pueda crear usuarios ahí (`assertCanManageUsersInTenant`) — el superusuario en
+   * cualquiera, el resto solo donde es miembro con `users:create`. Como las empresas destino
+   * vienen en el body (no en el header), esta validación no la puede hacer `RolesGuard`; por
+   * eso vive acá.
+   *
+   * Es la generalización de `create`: valida permiso, rol y área de CADA empresa antes de
+   * tocar nada, y crea el usuario y las N membresías de forma atómica. Si el email ya existe,
+   * suma las membresías que falten en vez de crear la persona de nuevo — mismo criterio que
+   * `create` con un solo tenant.
    */
-  async createMultiTenant(dto: CreateUserMultiTenantDto) {
+  async createMultiTenant(requesterId: string, dto: CreateUserMultiTenantDto) {
     const tenantIds = dto.memberships.map((m) => m.tenantId);
     if (new Set(tenantIds).size !== tenantIds.length) {
       throw new BadRequestException('Hay empresas repetidas en la selección');
+    }
+
+    // Quien da el alta tiene que poder crear usuarios en CADA empresa destino. Sin este
+    // corte, con el header de una empresa propia se podría dar de alta en cualquier otra.
+    for (const tenantId of tenantIds) {
+      await this.assertCanManageUsersInTenant(requesterId, tenantId, 'create');
     }
 
     // Rol y área tienen que pertenecer a SU empresa: sin esto se colaría RBAC entre empresas.
@@ -300,6 +419,153 @@ export class UsersService {
   }
 
   /**
+   * Edición multiempresa: sincroniza en una sola operación los datos de la persona y sus
+   * membresías en las empresas que `requesterId` administra. `dto.memberships` es el estado
+   * FINAL deseado; el servicio calcula el diff contra lo actual y crea, actualiza o da de baja
+   * según haga falta.
+   *
+   * Reglas que respeta:
+   *  - Cada operación pide su permiso en ESA empresa: agregar → `users:create`, cambiar
+   *    rol/área → `users:update`, dar de baja → `users:delete`. El superusuario puede en todas.
+   *  - Solo toca empresas que el editor administra. Una empresa donde la persona es miembro
+   *    pero el editor no administra (no está en `memberships` porque ni la ve) NO se da de
+   *    baja: se calcula qué quitar solo entre las empresas que el editor podría quitar.
+   *  - No te podés dar de baja a vos mismo.
+   *  - Si tras las bajas la persona queda sin ninguna empresa, se aplica la misma regla que
+   *    `remove`: se borra el registro solo si no dejó historial.
+   */
+  async updateFull(requesterId: string, userId: string, dto: UpdateUserFullDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('El usuario no existe');
+
+    const desired = dto.memberships ?? [];
+    const desiredIds = desired.map((m) => m.tenantId);
+    if (new Set(desiredIds).size !== desiredIds.length) {
+      throw new BadRequestException('Hay empresas repetidas en la selección');
+    }
+
+    const isSuper = await this.isSystemSuperUser(requesterId);
+
+    const current = await this.prisma.userTenant.findMany({
+      where: { userId },
+      select: { tenantId: true, roleId: true, areaId: true },
+    });
+    const currentByTenant = new Map(current.map((m) => [m.tenantId, m]));
+
+    // Para tocar los datos de la persona (nombre, teléfono, contraseña…) hay que administrarla
+    // (`users:update`) en al menos una de sus empresas actuales. Sin esto, cualquiera podría
+    // cambiarle los datos mandando sus membresías tal cual —el diff quedaría vacío y no se
+    // validaría ningún permiso—. El superusuario puede siempre.
+    let canManageThisUser = isSuper;
+    for (const c of current) {
+      if (canManageThisUser) break;
+      canManageThisUser = await this.hasUsersPermissionInTenant(
+        requesterId,
+        c.tenantId,
+        'update',
+        isSuper,
+      );
+    }
+    if (!canManageThisUser) {
+      throw new ForbiddenException('No tenés permiso para editar a este usuario');
+    }
+
+    // Clasificación del diff.
+    const toCreate = desired.filter((m) => !currentByTenant.has(m.tenantId));
+    const toUpdate = desired.filter((m) => {
+      const c = currentByTenant.get(m.tenantId);
+      return (
+        c && (c.roleId !== m.roleId || (c.areaId ?? null) !== (m.areaId || null))
+      );
+    });
+
+    // Bajas: solo entre las empresas actuales que el editor puede quitar (`users:delete`) y
+    // que ya no están en el estado deseado. Las que no administra no se tocan aunque falten.
+    const desiredSet = new Set(desiredIds);
+    const toRemove: string[] = [];
+    for (const c of current) {
+      if (desiredSet.has(c.tenantId)) continue;
+      if (await this.hasUsersPermissionInTenant(requesterId, c.tenantId, 'delete', isSuper)) {
+        toRemove.push(c.tenantId);
+      }
+    }
+
+    if (toRemove.length > 0 && userId === requesterId) {
+      throw new BadRequestException('No podés darte de baja a vos mismo');
+    }
+
+    // Validaciones de permiso, rol y área antes de tocar nada.
+    for (const m of toCreate) {
+      await this.assertCanManageUsersInTenant(requesterId, m.tenantId, 'create');
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
+    }
+    for (const m of toUpdate) {
+      await this.assertCanManageUsersInTenant(requesterId, m.tenantId, 'update');
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
+    }
+
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, userId);
+    if (dto.invgateUserId) {
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, userId);
+    }
+
+    // El hash se calcula fuera de la transacción para no alargarla.
+    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : null;
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const m of toCreate) {
+        await tx.userTenant.create({
+          data: {
+            userId,
+            tenantId: m.tenantId,
+            roleId: m.roleId,
+            areaId: m.areaId || null,
+          },
+        });
+      }
+      for (const m of toUpdate) {
+        await tx.userTenant.update({
+          where: { userId_tenantId: { userId, tenantId: m.tenantId } },
+          data: { roleId: m.roleId, areaId: m.areaId || null },
+        });
+      }
+      for (const tenantId of toRemove) {
+        await tx.userTenant.delete({
+          where: { userId_tenantId: { userId, tenantId } },
+        });
+      }
+
+      const data: Record<string, unknown> = {};
+      if (dto.firstName !== undefined) data.firstName = dto.firstName;
+      if (dto.lastName !== undefined) data.lastName = dto.lastName;
+      if (dto.phone !== undefined) data.phone = dto.phone || null;
+      if (dto.invgateUserId !== undefined) {
+        data.invgateUserId = dto.invgateUserId || null;
+      }
+      if (passwordHash) data.passwordHash = passwordHash;
+      if (Object.keys(data).length > 0) {
+        await tx.user.update({ where: { id: userId }, data });
+      }
+    });
+
+    this.logger.log(
+      `Usuario ${userId} editado: +${toCreate.length} / ~${toUpdate.length} / -${toRemove.length} empresas`,
+    );
+
+    // Si las bajas lo dejaron sin ninguna empresa, se aplica la misma regla que `remove`.
+    if (toRemove.length > 0) {
+      const pruned = await this.pruneUserIfOrphan(userId);
+      if (pruned.outcome === 'deleted') {
+        return { deleted: true, message: 'Usuario dado de baja de todas sus empresas.' };
+      }
+    }
+
+    return { deleted: false, message: 'Usuario guardado.' };
+  }
+
+  /**
    * Da de baja al usuario del tenant activo. No es un borrado físico salvo que el
    * usuario quede sin ningún tenant y sin historial: sus conversaciones, tickets y
    * métricas lo referencian y perderlas rompería la auditoría.
@@ -315,15 +581,40 @@ export class UsersService {
       where: { userId_tenantId: { userId, tenantId } },
     });
 
-    const remaining = await this.prisma.userTenant.count({ where: { userId } });
-    if (remaining > 0) {
-      return {
-        deleted: false,
-        message: 'Usuario dado de baja de este tenant. Sigue activo en otros tenants.',
-      };
+    const result = await this.pruneUserIfOrphan(userId);
+    switch (result.outcome) {
+      case 'still-member':
+        return {
+          deleted: false,
+          message: 'Usuario dado de baja de este tenant. Sigue activo en otros tenants.',
+        };
+      case 'kept-history':
+        return {
+          deleted: false,
+          message:
+            'Usuario dado de baja. No se eliminó el registro porque tiene historial ' +
+            `(${result.conversations} conversaciones, ${result.tickets} tickets, ${result.metrics} métricas).`,
+        };
+      case 'deleted':
+        return { deleted: true, message: 'Usuario eliminado.' };
     }
+  }
 
-    // Sin tenants: lo borramos del todo solo si no dejó historial.
+  /**
+   * Tras quitarle a un usuario una o más membresías, decide el destino de su registro: si
+   * todavía pertenece a alguna empresa (`still-member`), o dejó historial (`kept-history`:
+   * conversaciones / tickets / métricas), se conserva; solo se borra (`deleted`) cuando quedó
+   * sin empresas Y sin historial. Compartido por `remove` (baja de una empresa) y `updateFull`
+   * (edición multiempresa), que arman su propio mensaje según el caso.
+   */
+  private async pruneUserIfOrphan(userId: string): Promise<
+    | { outcome: 'still-member' }
+    | { outcome: 'kept-history'; conversations: number; tickets: number; metrics: number }
+    | { outcome: 'deleted' }
+  > {
+    const remaining = await this.prisma.userTenant.count({ where: { userId } });
+    if (remaining > 0) return { outcome: 'still-member' };
+
     const [conversations, tickets, metrics] = await Promise.all([
       this.prisma.conversation.count({ where: { userId } }),
       this.prisma.ticket.count({ where: { userId } }),
@@ -331,17 +622,12 @@ export class UsersService {
     ]);
 
     if (conversations + tickets + metrics > 0) {
-      return {
-        deleted: false,
-        message:
-          'Usuario dado de baja. No se eliminó el registro porque tiene historial ' +
-          `(${conversations} conversaciones, ${tickets} tickets, ${metrics} métricas).`,
-      };
+      return { outcome: 'kept-history', conversations, tickets, metrics };
     }
 
     await this.prisma.user.delete({ where: { id: userId } });
     this.logger.log(`Usuario ${userId} eliminado (sin tenants ni historial)`);
-    return { deleted: true, message: 'Usuario eliminado.' };
+    return { outcome: 'deleted' };
   }
 
   // --- Usado por el orquestador de conversaciones (canal WhatsApp) ---
@@ -389,6 +675,86 @@ export class UsersService {
   }
 
   // --- helpers ---
+
+  /**
+   * `true` si el usuario es el superusuario del sistema (miembro del tenant de sistema con el
+   * rol protegido). Mismo criterio que `RolesGuard`, pero resuelto por userId porque acá no
+   * hay un vínculo ya resuelto por `TenantGuard`.
+   */
+  private async isSystemSuperUser(userId: string): Promise<boolean> {
+    const systemSlug = systemTenantSlug(this.config);
+    const membership = await this.prisma.userTenant.findFirst({
+      where: { userId, tenant: { slug: systemSlug } },
+      include: {
+        role: { select: { name: true, tenant: { select: { slug: true } } } },
+      },
+    });
+    if (!membership) return false;
+    return isProtectedRole(membership.role.name, membership.role.tenant.slug, systemSlug);
+  }
+
+  /**
+   * `true` si el usuario puede hacer la acción de usuarios pedida en esa empresa. Versión
+   * booleana de `assertCanManageUsersInTenant`, para cuando hay que decidir por empresa sin
+   * cortar (poblar el editor, calcular el diff de bajas). `isSuper` se puede pasar ya resuelto
+   * para no repetir la consulta del rol de sistema una vez por empresa.
+   */
+  private async hasUsersPermissionInTenant(
+    userId: string,
+    tenantId: string,
+    action: 'read' | 'create' | 'update' | 'delete',
+    isSuper?: boolean,
+  ): Promise<boolean> {
+    if (isSuper ?? (await this.isSystemSuperUser(userId))) return true;
+
+    const membership = await this.prisma.userTenant.findUnique({
+      where: { userId_tenantId: { userId, tenantId } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+    return (
+      !!membership &&
+      membership.role.permissions.some(
+        (p) => p.resource === 'users' && p.action === action,
+      )
+    );
+  }
+
+  /**
+   * Corta si el usuario no puede administrar usuarios en esta empresa. El superusuario del
+   * sistema puede en cualquiera; el resto, solo en las empresas donde es miembro y su rol
+   * tiene el permiso pedido.
+   *
+   * Es el equivalente por-empresa de la cadena `TenantGuard` + `RolesGuard`, necesario acá
+   * porque el alta multiempresa recibe las empresas destino en el body (no en el header), así
+   * que los guards no pueden validarlas.
+   */
+  private async assertCanManageUsersInTenant(
+    userId: string,
+    tenantId: string,
+    action: 'create' | 'update' | 'delete',
+  ) {
+    if (await this.isSystemSuperUser(userId)) return;
+
+    const membership = await this.prisma.userTenant.findUnique({
+      where: { userId_tenantId: { userId, tenantId } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+    if (!membership) {
+      throw new ForbiddenException('No pertenecés a alguna de las empresas seleccionadas');
+    }
+    const allowed = membership.role.permissions.some(
+      (p) => p.resource === 'users' && p.action === action,
+    );
+    if (!allowed) {
+      throw new ForbiddenException(
+        'No tenés permiso para administrar usuarios en alguna de las empresas seleccionadas',
+      );
+    }
+  }
 
   /** El rol tiene que existir y pertenecer al tenant: si no, se filtra RBAC entre tenants. */
   private async assertRoleBelongsToTenant(tenantId: string, roleId: string) {

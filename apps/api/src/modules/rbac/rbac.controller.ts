@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Put, Delete, Body, Param, Req, UseGuards } from '@nestjs/common';
 import { RoleService } from './role.service';
 import { PermissionService } from './permission.service';
 import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
@@ -59,6 +59,19 @@ export class RbacController {
   @RequirePermission('roles', 'read')
   async findAllCrossTenant() {
     return this.roleService.findAllCrossTenant();
+  }
+
+  /**
+   * Roles de TODAS las empresas del propio usuario (vista "Todas las empresas" del usuario
+   * común). Contraparte no-privilegiada de `/roles/all`: el scope lo pone su userId, no el
+   * header, y cada empresa se filtra por si su rol tiene `roles:read` ahí. Por eso no lleva
+   * `SystemTenantGuard` ni `@RequirePermission` — la autorización es por-empresa, adentro del
+   * servicio. Espejo de `GET /users/mine`. Va antes de `@Get(':id')` para que `mine` no entre
+   * como id.
+   */
+  @Get('mine')
+  async findMine(@Req() req: any) {
+    return this.roleService.findMine(req.user.userId);
   }
 
   @Post()

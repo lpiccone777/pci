@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { AreasService } from './areas.service';
@@ -38,6 +39,19 @@ export class AreasController {
   @RequirePermission('areas', 'read')
   async findAllCrossTenant() {
     return this.areasService.findAllCrossTenant();
+  }
+
+  /**
+   * Áreas de TODAS las empresas del propio usuario (vista "Todas las empresas" del usuario
+   * común). Contraparte no-privilegiada de `/areas/all`: el scope lo pone su userId, no el
+   * header, y cada empresa se filtra por si su rol tiene `areas:read` ahí. Por eso no lleva
+   * `SystemTenantGuard` ni `@RequirePermission` — la autorización es por-empresa, adentro del
+   * servicio. Espejo de `GET /users/mine`. Va antes de `@Get(':id')` para que `mine` no entre
+   * como id.
+   */
+  @Get('mine')
+  async findMine(@Req() req: any) {
+    return this.areasService.findMine(req.user.userId);
   }
 
   /**

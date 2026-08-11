@@ -26,8 +26,12 @@ interface AreaUser {
 type Feedback = { kind: 'ok' | 'error'; text: string };
 
 export default function AreasPage() {
-  const { hasPermission, activeTenant } = useAuth();
-  // Vista consolidada de solo lectura: se ven las áreas de todas las empresas, sin ABM.
+  const { hasPermission, hasPermissionInTenant, activeTenant, isSystemUser } = useAuth();
+  // Vista consolidada "Todas las empresas": el superadmin ve las de todo el sistema
+  // (`/areas/all`); el usuario común con varias empresas, solo las suyas (`/areas/mine`).
+  // Antes era exclusiva del superadmin y de solo lectura; ahora ambos pueden modificar y
+  // eliminar por fila (cada acción va contra la empresa de esa fila), pero el alta sigue
+  // apagada: para crear hay que pararse en una empresa puntual.
   const isAllTenants = activeTenant === ALL_TENANTS;
   const [areas, setAreas] = useState<AreaData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,21 +46,36 @@ export default function AreasPage() {
   /** El área cuya lista de usuarios se está viendo (clic en el número). */
   const [viewingUsers, setViewingUsers] = useState<AreaData | null>(null);
 
-  // En "Todas las empresas" el ABM se apaga entero: es una vista de solo lectura. No alcanza
-  // con los permisos, porque el superadmin tiene rol de sistema con todos los permisos.
+  // El alta se apaga en la vista consolidada: no hay una empresa activa donde crear. Modificar
+  // y eliminar, en cambio, se deciden por fila (cada una es de una empresa distinta): ver
+  // `rowCanUpdate` / `rowCanDelete`.
   const canCreate = hasPermission('areas', 'create') && !isAllTenants;
   const canUpdate = hasPermission('areas', 'update') && !isAllTenants;
   const canDelete = hasPermission('areas', 'delete') && !isAllTenants;
 
+  // En la vista consolidada el permiso se evalúa contra la empresa de la fila (el superadmin
+  // que opera sobre una empresa ajena cae a su rol de sistema). En una empresa puntual manda
+  // el permiso del tenant activo, ya resuelto en `canUpdate` / `canDelete`.
+  const rowCanUpdate = (a: AreaData) =>
+    isAllTenants ? hasPermissionInTenant(a.tenant?.id ?? '', 'areas', 'update') : canUpdate;
+  const rowCanDelete = (a: AreaData) =>
+    isAllTenants ? hasPermissionInTenant(a.tenant?.id ?? '', 'areas', 'delete') : canDelete;
+
   const load = useCallback(async () => {
     try {
-      setAreas(await apiFetch(isAllTenants ? '/areas/all' : '/areas'));
+      // Consolidada: el superadmin trae todo el sistema; el usuario común, solo sus empresas.
+      const endpoint = !isAllTenants
+        ? '/areas'
+        : isSystemUser
+          ? '/areas/all'
+          : '/areas/mine';
+      setAreas(await apiFetch(endpoint));
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants]);
+  }, [isAllTenants, isSystemUser]);
 
   useEffect(() => {
     load();
@@ -98,7 +117,14 @@ export default function AreasPage() {
   async function confirmDelete(area: AreaData) {
     setBusy(true);
     try {
-      const res = await apiFetch(`/areas/${area.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/areas/${area.id}`, {
+        method: 'DELETE',
+        // En la vista consolidada la baja va contra la empresa de la fila, no contra el header
+        // del selector (que apunta al sistema / a la empresa de respaldo).
+        ...(isAllTenants && area.tenant
+          ? { headers: { 'X-Tenant-Id': area.tenant.id } }
+          : {}),
+      });
       setFeedback({ kind: 'ok', text: res?.message || `Área ${area.name} eliminada.` });
       setDeletingId(null);
       await load();
@@ -132,7 +158,9 @@ export default function AreasPage() {
       </div>
       <p className="text-sm text-gray-500 mb-6">
         {isAllTenants
-          ? 'Áreas de todas las empresas. Vista de solo lectura: para crear o editar, elegí una empresa en el selector lateral.'
+          ? `Áreas de ${
+              isSystemUser ? 'todas las empresas' : 'todas tus empresas'
+            }. Podés modificar o eliminar cada una en su empresa; para crear una nueva, elegí una empresa en el selector lateral.`
           : 'Agrupan a los usuarios de esta empresa para auditoría y métricas. No intervienen en los flujos IVR, que se resuelven por rol.'}
       </p>
 
@@ -159,7 +187,11 @@ export default function AreasPage() {
             {areas.length === 0 && (
               <tr>
                 <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-6 text-center text-gray-400">
-                  <p className="mb-3">Todavía no hay áreas en esta empresa.</p>
+                  <p className="mb-3">
+                    {isAllTenants
+                      ? 'No hay áreas para mostrar.'
+                      : 'Todavía no hay áreas en esta empresa.'}
+                  </p>
                   {canCreate && (
                     <button
                       onClick={() => openModal(null)}
@@ -178,7 +210,14 @@ export default function AreasPage() {
                   <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">
                     <div className="flex gap-2 items-center flex-wrap">
                       <span className="text-red-700 mr-1">
-                        ¿Eliminar el área <b>{a.name}</b>? Esta acción no se puede deshacer.
+                        ¿Eliminar el área <b>{a.name}</b>
+                        {isAllTenants && a.tenant ? (
+                          <>
+                            {' '}
+                            de <b>{a.tenant.name}</b>
+                          </>
+                        ) : null}
+                        ? Esta acción no se puede deshacer.
                       </span>
                       <button
                         onClick={() => confirmDelete(a)}
@@ -241,7 +280,7 @@ export default function AreasPage() {
                       onClick={(e) => e.stopPropagation()}
                       title=""
                     >
-                      {canUpdate && (
+                      {rowCanUpdate(a) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -252,7 +291,7 @@ export default function AreasPage() {
                           Editar
                         </button>
                       )}
-                      {canDelete &&
+                      {rowCanDelete(a) &&
                         (a.userCount === 0 ? (
                           <button
                             onClick={(e) => {
@@ -295,9 +334,16 @@ export default function AreasPage() {
         <AreaModal
           area={editing.area}
           canCreate={canCreate}
-          canUpdate={canUpdate}
+          canUpdate={editing.area ? rowCanUpdate(editing.area) : canUpdate}
+          // En la vista consolidada, la ventana muestra la empresa del área y dirige el guardado
+          // a ella; en una empresa puntual, ambas quedan indefinidas y se opera sobre la activa.
+          tenantName={isAllTenants ? editing.area?.tenant?.name : undefined}
+          tenantHeader={isAllTenants ? editing.area?.tenant?.id : undefined}
           otherNames={areas
             .filter((a) => a.id !== editing.area?.id)
+            // El nombre es único por empresa: en la vista consolidada solo chocan las de la
+            // misma empresa que se está editando.
+            .filter((a) => !isAllTenants || a.tenant?.id === editing.area?.tenant?.id)
             .map((a) => a.name.toLowerCase())}
           onClose={() => setEditing(null)}
           onSaved={afterSave}
@@ -307,7 +353,7 @@ export default function AreasPage() {
       {viewing && (
         <AreaDetailModal
           area={viewing}
-          canEdit={canUpdate}
+          canEdit={rowCanUpdate(viewing)}
           isAllTenants={isAllTenants}
           onEdit={() => openModal(viewing)}
           onViewUsers={() => {
@@ -334,6 +380,8 @@ function AreaModal({
   area,
   canCreate,
   canUpdate,
+  tenantName,
+  tenantHeader,
   otherNames,
   onClose,
   onSaved,
@@ -341,6 +389,10 @@ function AreaModal({
   area: AreaData | null;
   canCreate: boolean;
   canUpdate: boolean;
+  /** Nombre de la empresa del área, solo en la vista consolidada. Se muestra en el encabezado. */
+  tenantName?: string;
+  /** Empresa a la que dirigir el guardado (header `X-Tenant-Id`), solo en la vista consolidada. */
+  tenantHeader?: string;
   otherNames: string[];
   onClose: () => void;
   onSaved: (message: Feedback) => void;
@@ -406,6 +458,9 @@ function AreaModal({
         await apiFetch(`/areas/${area.id}`, {
           method: 'PATCH',
           body: JSON.stringify({ name: trimmed }),
+          // En la vista consolidada el guardado va contra la empresa del área, no contra el
+          // header del selector.
+          ...(tenantHeader ? { headers: { 'X-Tenant-Id': tenantHeader } } : {}),
         });
         onSaved({ kind: 'ok', text: `Área ${trimmed} guardada.` });
       }
@@ -433,6 +488,11 @@ function AreaModal({
             <h2 id="area-modal-title" className="text-lg font-semibold text-gray-800">
               {area ? 'Editar área' : 'Nueva área'}
             </h2>
+            {tenantName && (
+              <p className="mt-1 text-xs text-gray-500">
+                Empresa: <span className="text-gray-700">{tenantName}</span>
+              </p>
+            )}
           </div>
           <button
             onClick={requestClose}

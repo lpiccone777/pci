@@ -63,7 +63,7 @@ function usersPhrase(count: number) {
 }
 
 export default function RolesPage() {
-  const { hasPermission, user, activeTenant } = useAuth();
+  const { hasPermission, hasPermissionInTenant, user, activeTenant, isSystemUser } = useAuth();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,14 +81,30 @@ export default function RolesPage() {
   } | null>(null);
   const [viewingUsers, setViewingUsers] = useState<RoleRow | null>(null);
 
-  // "Todas las empresas": vista consolidada de solo lectura, se apaga todo el ABM.
+  // Vista consolidada "Todas las empresas": el superadmin ve los roles de todo el sistema
+  // (`/roles/all`); el usuario común con varias empresas, solo los de las suyas (`/roles/mine`).
+  // Antes era exclusiva del superadmin y de solo lectura; ahora ambos pueden modificar y
+  // eliminar por fila (cada acción va contra la empresa de esa fila), pero el alta sigue
+  // apagada: para crear hay que pararse en una empresa puntual.
   const isAllTenants = activeTenant === ALL_TENANTS;
 
   const canCreate = hasPermission('roles', 'create') && !isAllTenants;
   const canUpdateRole = hasPermission('roles', 'update') && !isAllTenants;
   const canDelete = hasPermission('roles', 'delete') && !isAllTenants;
   const canUpdatePerms = hasPermission('permissions', 'update') && !isAllTenants;
-  const canEditSomething = canUpdateRole || canUpdatePerms;
+
+  // En la vista consolidada, cada fila es de una empresa distinta: el permiso se evalúa contra
+  // esa empresa (el superadmin que opera sobre una empresa ajena cae a su rol de sistema). En
+  // una empresa puntual manda el permiso del tenant activo, ya resuelto arriba.
+  const rowCanUpdateRole = (r: RoleRow) =>
+    isAllTenants ? hasPermissionInTenant(r.tenant?.id ?? '', 'roles', 'update') : canUpdateRole;
+  const rowCanUpdatePerms = (r: RoleRow) =>
+    isAllTenants
+      ? hasPermissionInTenant(r.tenant?.id ?? '', 'permissions', 'update')
+      : canUpdatePerms;
+  const rowCanDelete = (r: RoleRow) =>
+    isAllTenants ? hasPermissionInTenant(r.tenant?.id ?? '', 'roles', 'delete') : canDelete;
+  const rowCanEditSomething = (r: RoleRow) => rowCanUpdateRole(r) || rowCanUpdatePerms(r);
 
   /**
    * El rol del usuario en el tenant activo. Sirve para avisarle cuando está por editar
@@ -102,18 +118,35 @@ export default function RolesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [catalogData, roleData] = await Promise.all([
-        apiFetch('/roles/catalog'),
-        apiFetch(isAllTenants ? '/roles/all' : '/roles'),
-      ]);
-      setCatalog(catalogData);
+      if (!isAllTenants) {
+        const [catalogData, roleData] = await Promise.all([
+          apiFetch('/roles/catalog'),
+          apiFetch('/roles'),
+        ]);
+        setCatalog(catalogData);
+        setRoles(roleData);
+        return;
+      }
+      // Consolidada: el superadmin trae todo el sistema; el usuario común, solo sus empresas.
+      const roleData = await apiFetch(isSystemUser ? '/roles/all' : '/roles/mine');
       setRoles(roleData);
+      // El catálogo de permisos alimenta la matriz del modal de edición. `/roles/catalog` pide
+      // `roles:read` en el tenant del header: para el superadmin la empresa de sistema alcanza,
+      // pero la empresa de respaldo del usuario común puede no tenerlo, así que se pide contra
+      // una empresa donde sí (la de cualquier rol visible). Sin roles visibles no hace falta.
+      if (roleData.length > 0) {
+        const headers =
+          !isSystemUser && roleData[0]?.tenant?.id
+            ? { headers: { 'X-Tenant-Id': roleData[0].tenant.id } }
+            : undefined;
+        setCatalog(await apiFetch('/roles/catalog', headers));
+      }
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants]);
+  }, [isAllTenants, isSystemUser]);
 
   useEffect(() => {
     load();
@@ -149,7 +182,14 @@ export default function RolesPage() {
   async function confirmDelete(role: RoleRow) {
     setBusy(true);
     try {
-      const res = await apiFetch(`/roles/${role.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/roles/${role.id}`, {
+        method: 'DELETE',
+        // En la vista consolidada la baja va contra la empresa de la fila, no contra el header
+        // del selector (que apunta al sistema / a la empresa de respaldo).
+        ...(isAllTenants && role.tenant
+          ? { headers: { 'X-Tenant-Id': role.tenant.id } }
+          : {}),
+      });
       setFeedback({ kind: 'ok', text: res?.message || `Rol ${role.name} eliminado.` });
       setDeletingId(null);
       await load();
@@ -188,8 +228,9 @@ export default function RolesPage() {
 
       {isAllTenants && (
         <p className="text-sm text-gray-500 mb-6">
-          Roles de todas las empresas. Vista de solo lectura: para crear o editar, elegí una
-          empresa en el selector lateral.
+          Roles de {isSystemUser ? 'todas las empresas' : 'todas tus empresas'}. Podés modificar
+          o eliminar cada uno en su empresa; para crear uno nuevo, elegí una empresa en el
+          selector lateral.
         </p>
       )}
 
@@ -229,7 +270,11 @@ export default function RolesPage() {
             {roles.length === 0 && (
               <tr>
                 <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-6 text-center text-gray-400">
-                  <p className="mb-3">Todavía no hay roles en esta empresa.</p>
+                  <p className="mb-3">
+                    {isAllTenants
+                      ? 'No hay roles para mostrar.'
+                      : 'Todavía no hay roles en esta empresa.'}
+                  </p>
                   {canCreate && (
                     <button
                       onClick={() => openModal(null, 'edit')}
@@ -248,8 +293,14 @@ export default function RolesPage() {
                   <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">
                     <div className="flex gap-2 items-center flex-wrap">
                       <span className="text-red-700 mr-1">
-                        ¿Eliminar el rol <b>{role.name}</b>? Esta acción no se puede
-                        deshacer.
+                        ¿Eliminar el rol <b>{role.name}</b>
+                        {isAllTenants && role.tenant ? (
+                          <>
+                            {' '}
+                            de <b>{role.tenant.name}</b>
+                          </>
+                        ) : null}
+                        ? Esta acción no se puede deshacer.
                       </span>
                       <button
                         onClick={() => confirmDelete(role)}
@@ -335,7 +386,7 @@ export default function RolesPage() {
                       onClick={(e) => e.stopPropagation()}
                       title=""
                     >
-                      {canEditSomething && !role.isProtected && (
+                      {rowCanEditSomething(role) && !role.isProtected && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -346,7 +397,7 @@ export default function RolesPage() {
                           Editar
                         </button>
                       )}
-                      {canDelete &&
+                      {rowCanDelete(role) &&
                         (role.userCount === 0 && !role.isProtected ? (
                           <button
                             onClick={(e) => {
@@ -397,16 +448,26 @@ export default function RolesPage() {
           catalog={catalog}
           initialEdit={editing.mode === 'edit'}
           isAllTenants={isAllTenants}
+          // En la vista consolidada, el guardado (nombre y permisos) va contra la empresa del rol.
+          tenantHeader={isAllTenants ? editing.role?.tenant?.id : undefined}
           // El rol del sistema anula cualquier permiso de edición: el backend lo rechaza
           // igual, y dejar la matriz activa sería prometer algo que va a fallar al guardar.
+          // En la vista consolidada los permisos se evalúan contra la empresa del rol.
           canEditName={
-            !editing.role?.isProtected && (editing.role ? canUpdateRole : canCreate)
+            !editing.role?.isProtected &&
+            (editing.role ? rowCanUpdateRole(editing.role) : canCreate)
           }
-          canEditPerms={canUpdatePerms && !editing.role?.isProtected}
+          canEditPerms={
+            !editing.role?.isProtected &&
+            (editing.role ? rowCanUpdatePerms(editing.role) : canUpdatePerms)
+          }
           isProtected={!!editing.role?.isProtected}
           isOwnRole={!!editing.role && editing.role.id === ownRoleId}
           otherNames={roles
             .filter((r) => r.id !== editing.role?.id)
+            // El nombre es único por empresa: en la vista consolidada solo chocan los de la
+            // misma empresa que se está editando.
+            .filter((r) => !isAllTenants || r.tenant?.id === editing.role?.tenant?.id)
             .map((r) => r.name)}
           onClose={() => setEditing(null)}
           onSaved={afterSave}
@@ -429,6 +490,7 @@ function RoleModal({
   catalog,
   initialEdit,
   isAllTenants,
+  tenantHeader,
   canEditName,
   canEditPerms,
   isProtected,
@@ -441,6 +503,8 @@ function RoleModal({
   catalog: Catalog;
   initialEdit: boolean;
   isAllTenants: boolean;
+  /** Empresa a la que dirigir el guardado (header `X-Tenant-Id`), solo en la vista consolidada. */
+  tenantHeader?: string;
   canEditName: boolean;
   canEditPerms: boolean;
   isProtected: boolean;
@@ -583,6 +647,9 @@ function RoleModal({
         await apiFetch(`/roles/${role.id}`, {
           method: 'PATCH',
           body: JSON.stringify({ name: trimmed }),
+          // En la vista consolidada el guardado va contra la empresa del rol, no contra el
+          // header del selector.
+          ...(tenantHeader ? { headers: { 'X-Tenant-Id': tenantHeader } } : {}),
         });
       }
 
@@ -592,6 +659,7 @@ function RoleModal({
           await apiFetch(`/roles/${roleId}/permissions`, {
             method: 'PUT',
             body: JSON.stringify({ permissions: payload }),
+            ...(tenantHeader ? { headers: { 'X-Tenant-Id': tenantHeader } } : {}),
           });
         } catch (permErr: any) {
           if (justCreated) {

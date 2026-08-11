@@ -33,3 +33,14 @@ export const ALL_TENANTS = '__all__';
  * sesión.
  */
 export const SYSTEM_TENANT_ID_KEY = 'systemTenantId';
+
+/**
+ * Dónde se guarda una empresa "de respaldo" del usuario común: la primera de sus membresías.
+ *
+ * En "Todas las empresas" el usuario común no tiene empresa de sistema a la que apuntar (no
+ * es miembro), así que `apiFetch` usa esta como header base para que `TenantGuard` no
+ * rechace la request. Los endpoints de ese modo no dependen del header —`/users/mine` va por
+ * el userId, y cada fila manda su propia empresa—, pero el header igual tiene que ser válido.
+ * Lo escribe `use-auth`; se limpia al cerrar sesión.
+ */
+export const FALLBACK_TENANT_ID_KEY = 'fallbackTenantId';

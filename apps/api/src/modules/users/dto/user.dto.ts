@@ -111,6 +111,50 @@ export class CreateUserMultiTenantDto {
   memberships: UserMembershipDto[];
 }
 
+/**
+ * Edición multiempresa de una persona: los datos de la persona (compartidos entre sus
+ * empresas) más el estado deseado de sus membresías en las empresas que quien edita
+ * administra. Es la contraparte de `CreateUserMultiTenantDto` para editar en vez de crear.
+ *
+ * `memberships` es el estado FINAL, no un delta: el servicio compara contra las membresías
+ * actuales y crea, actualiza o da de baja según haga falta. Puede venir vacío (dar de baja de
+ * todas las empresas administrables). Solo toca las empresas que el editor administra; las
+ * demás membresías de la persona quedan intactas.
+ */
+export class UpdateUserFullDto {
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty({ message: 'El nombre es obligatorio' })
+  @MaxLength(80)
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty({ message: 'El apellido es obligatorio' })
+  @MaxLength(80)
+  lastName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(8, { message: 'La contraseña debe tener al menos 8 caracteres' })
+  password?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UserMembershipDto)
+  memberships: UserMembershipDto[];
+}
+
 export class UpdateUserDto {
   @IsOptional()
   @IsString()
