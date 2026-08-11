@@ -129,6 +129,38 @@ export class ConversationsService implements OnModuleInit {
 
     this.logger.log(`[${tenantId}] Mensaje de ${from}: ${body.substring(0, 50)}...`);
 
+    // 0. Baja lógica de la empresa: si está dada de baja, el bot no la atiende. La baja la
+    // saca del panel (listado, selector, acceso al backoffice), pero los mensajes reales
+    // entran por el broker sin pasar por `TenantGuard`, así que el corte hay que hacerlo
+    // acá — antes de crear el usuario placeholder, la conversación o gastar el LLM. A un
+    // mensaje real no se le responde nada (silencio); si viene por RPC (/simulate, con
+    // `replyTo`), se contesta para no dejar al llamador esperando hasta el timeout.
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { deletedAt: true },
+    });
+    if (!tenant || tenant.deletedAt) {
+      this.logger.warn(
+        `[${tenantId}] Mensaje de ${from} ignorado: la empresa está dada de baja o no existe.`,
+      );
+      if (msg.replyTo) {
+        const notice = 'La empresa está dada de baja: el bot no atiende sus mensajes.';
+        await this.broker.publish(
+          msg.replyTo,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: notice },
+            tenantId,
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: false },
+        );
+        return notice;
+      }
+      return '';
+    }
+
     // 1. Identificar al usuario por teléfono, consultando el registro de usuarios.
     // "Conocido" = está registrado en este tenant, con rol (`UserTenant` + `Role`) —
     // no simplemente "existe un User con este teléfono". Ese chequeo tiene que
@@ -293,7 +325,9 @@ export class ConversationsService implements OnModuleInit {
     let currentNodeId = conversation.currentNodeId;
 
     if (!flowId) {
-      const flow = await this.flowService.findActiveFlowForTenant(tenantId);
+      // El flujo de inicio se elige por (empresa + rol del usuario): `identity.roleId`
+      // ya viene resuelto desde handleMessage contra el registro real de usuarios.
+      const flow = await this.flowService.findActiveFlowForTenant(tenantId, identity.roleId);
       if (!flow) return null;
       flowId = flow.id;
       currentNodeId = this.findStartNodeId(flow.nodes as any[]);
