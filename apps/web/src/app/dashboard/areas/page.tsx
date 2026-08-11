@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { ALL_TENANTS } from '@/lib/system-tenant';
 
 interface AreaData {
   id: string;
@@ -11,6 +12,8 @@ interface AreaData {
   createdAt: string;
   /** Cuántos usuarios del tenant activo están asignados a esta área. */
   userCount: number;
+  /** Solo en la vista "Todas las empresas": a qué empresa pertenece el área. */
+  tenant?: { id: string; name: string; slug: string };
 }
 
 interface AreaUser {
@@ -23,7 +26,9 @@ interface AreaUser {
 type Feedback = { kind: 'ok' | 'error'; text: string };
 
 export default function AreasPage() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, activeTenant } = useAuth();
+  // Vista consolidada de solo lectura: se ven las áreas de todas las empresas, sin ABM.
+  const isAllTenants = activeTenant === ALL_TENANTS;
   const [areas, setAreas] = useState<AreaData[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -37,19 +42,21 @@ export default function AreasPage() {
   /** El área cuya lista de usuarios se está viendo (clic en el número). */
   const [viewingUsers, setViewingUsers] = useState<AreaData | null>(null);
 
-  const canCreate = hasPermission('areas', 'create');
-  const canUpdate = hasPermission('areas', 'update');
-  const canDelete = hasPermission('areas', 'delete');
+  // En "Todas las empresas" el ABM se apaga entero: es una vista de solo lectura. No alcanza
+  // con los permisos, porque el superadmin tiene rol de sistema con todos los permisos.
+  const canCreate = hasPermission('areas', 'create') && !isAllTenants;
+  const canUpdate = hasPermission('areas', 'update') && !isAllTenants;
+  const canDelete = hasPermission('areas', 'delete') && !isAllTenants;
 
   const load = useCallback(async () => {
     try {
-      setAreas(await apiFetch('/areas'));
+      setAreas(await apiFetch(isAllTenants ? '/areas/all' : '/areas'));
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAllTenants]);
 
   useEffect(() => {
     load();
@@ -124,8 +131,9 @@ export default function AreasPage() {
         )}
       </div>
       <p className="text-sm text-gray-500 mb-6">
-        Agrupan a los usuarios de esta empresa para auditoría y métricas. No intervienen en
-        los flujos IVR, que se resuelven por rol.
+        {isAllTenants
+          ? 'Áreas de todas las empresas. Vista de solo lectura: para crear o editar, elegí una empresa en el selector lateral.'
+          : 'Agrupan a los usuarios de esta empresa para auditoría y métricas. No intervienen en los flujos IVR, que se resuelven por rol.'}
       </p>
 
       {feedback && (
@@ -138,6 +146,9 @@ export default function AreasPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
             <tr>
+              {isAllTenants && (
+                <th className="text-left px-4 py-2 font-semibold">Empresa</th>
+              )}
               <th className="text-left px-4 py-2 font-semibold">Nombre</th>
               <th className="text-right px-4 py-2 font-semibold whitespace-nowrap">Usuarios</th>
               <th className="text-left px-4 py-2 font-semibold">Creada</th>
@@ -147,7 +158,7 @@ export default function AreasPage() {
           <tbody>
             {areas.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-gray-400">
+                <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-6 text-center text-gray-400">
                   <p className="mb-3">Todavía no hay áreas en esta empresa.</p>
                   {canCreate && (
                     <button
@@ -164,7 +175,7 @@ export default function AreasPage() {
             {areas.map((a) =>
               deletingId === a.id ? (
                 <tr key={a.id} className="border-t bg-red-50">
-                  <td colSpan={4} className="px-4 py-2">
+                  <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">
                     <div className="flex gap-2 items-center flex-wrap">
                       <span className="text-red-700 mr-1">
                         ¿Eliminar el área <b>{a.name}</b>? Esta acción no se puede deshacer.
@@ -193,21 +204,30 @@ export default function AreasPage() {
                   className="border-t hover:bg-gray-50 cursor-pointer"
                   title="Ver detalle"
                 >
+                  {isAllTenants && (
+                    <td className="px-4 py-2 text-gray-500">{a.tenant?.name ?? '—'}</td>
+                  )}
                   <td className="px-4 py-2 font-medium">{a.name}</td>
                   <td className="px-4 py-2 text-right">
                     {/* El número ES el acceso a la lista, igual que en Roles: el dato y la
                         forma de abrirlo son la misma cosa, así que no lleva un botón aparte.
-                        stopPropagation para que abrir la lista no dispare también el detalle. */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openUsers(a);
-                      }}
-                      title={`Ver los usuarios del área ${a.name}`}
-                      className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
-                    >
-                      {a.userCount}
-                    </button>
+                        stopPropagation para que abrir la lista no dispare también el detalle.
+                        En "Todas las empresas" el drill-down pega contra un endpoint scopeado
+                        a la empresa activa, así que ahí el número va como texto plano. */}
+                    {isAllTenants ? (
+                      <span className="tabular-nums">{a.userCount}</span>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openUsers(a);
+                        }}
+                        title={`Ver los usuarios del área ${a.name}`}
+                        className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
+                      >
+                        {a.userCount}
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-2">{new Date(a.createdAt).toLocaleDateString()}</td>
                   <td className="px-4 text-right whitespace-nowrap">
@@ -288,6 +308,7 @@ export default function AreasPage() {
         <AreaDetailModal
           area={viewing}
           canEdit={canUpdate}
+          isAllTenants={isAllTenants}
           onEdit={() => openModal(viewing)}
           onViewUsers={() => {
             const a = viewing;
@@ -479,12 +500,14 @@ function AreaModal({
 function AreaDetailModal({
   area,
   canEdit,
+  isAllTenants,
   onEdit,
   onViewUsers,
   onClose,
 }: {
   area: AreaData;
   canEdit: boolean;
+  isAllTenants: boolean;
   onEdit: () => void;
   onViewUsers: () => void;
   onClose: () => void;
@@ -534,6 +557,14 @@ function AreaDetailModal({
 
         <div className="px-5 py-4 overflow-y-auto flex-1">
           <dl className="divide-y divide-gray-100">
+            {isAllTenants && area.tenant && (
+              <div className="flex justify-between gap-4 py-2">
+                <dt className="text-xs uppercase tracking-wider text-gray-500">Empresa</dt>
+                <dd className="text-sm text-gray-800 text-right break-all">
+                  {area.tenant.name}
+                </dd>
+              </div>
+            )}
             <div className="flex justify-between gap-4 py-2">
               <dt className="text-xs uppercase tracking-wider text-gray-500">Nombre</dt>
               <dd className="text-sm text-gray-800 text-right break-all">{area.name}</dd>
@@ -541,13 +572,18 @@ function AreaDetailModal({
             <div className="flex justify-between gap-4 py-2">
               <dt className="text-xs uppercase tracking-wider text-gray-500">Usuarios</dt>
               <dd className="text-sm text-gray-800 text-right tabular-nums">
-                {/* El número abre la lista, igual que en la tabla. */}
-                <button
-                  onClick={onViewUsers}
-                  className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
-                >
-                  {area.userCount}
-                </button>
+                {/* El número abre la lista, igual que en la tabla. En "Todas las empresas"
+                    el drill-down pega contra un endpoint scopeado, así que va como texto. */}
+                {isAllTenants ? (
+                  <span className="tabular-nums">{area.userCount}</span>
+                ) : (
+                  <button
+                    onClick={onViewUsers}
+                    className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
+                  >
+                    {area.userCount}
+                  </button>
+                )}
               </dd>
             </div>
             <div className="flex justify-between gap-4 py-2">

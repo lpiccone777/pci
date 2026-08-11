@@ -1,3 +1,5 @@
+import { ALL_TENANTS, SYSTEM_TENANT_ID_KEY } from './system-tenant';
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 function getToken(): string | null {
@@ -5,9 +7,20 @@ function getToken(): string | null {
   return localStorage.getItem('token');
 }
 
+/**
+ * El id de empresa que va en `X-Tenant-Id`. Normalmente es el tenant activo tal cual, pero
+ * el centinela "Todas las empresas" no es una empresa: se traduce al id de la empresa de
+ * sistema, que es lo que `SystemTenantGuard` exige como empresa activa para responder los
+ * endpoints cross-tenant (`/users/all`, etc.). Las pantallas, aparte, deciden pegar contra
+ * los endpoints `/all` cuando están en ese modo.
+ */
 function getActiveTenant(): string | null {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem('activeTenant');
+  const active = localStorage.getItem('activeTenant');
+  if (active === ALL_TENANTS) {
+    return localStorage.getItem(SYSTEM_TENANT_ID_KEY);
+  }
+  return active;
 }
 
 export async function apiFetch(path: string, options: RequestInit = {}) {

@@ -3,7 +3,11 @@
 import { useState, useEffect, useCallback, useMemo, createContext, useContext, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
-import { ALL_TENANTS_CACHE_KEY, SYSTEM_TENANT_SLUG } from '@/lib/system-tenant';
+import {
+  ALL_TENANTS_CACHE_KEY,
+  SYSTEM_TENANT_ID_KEY,
+  SYSTEM_TENANT_SLUG,
+} from '@/lib/system-tenant';
 
 interface User {
   id: string;
@@ -56,6 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { Authorization: `Bearer ${tkn}` },
       });
       setUser(data);
+
+      // El id de la empresa de sistema lo necesita `apiFetch` para traducir el centinela
+      // "Todas las empresas" al header que exige `SystemTenantGuard`. Se guarda acá, donde
+      // ya tenemos las membresías con su slug.
+      const systemTenantId = data.tenants?.find(
+        (t: { tenant: { slug: string; id: string } }) =>
+          t.tenant.slug === SYSTEM_TENANT_SLUG,
+      )?.tenant.id;
+      if (systemTenantId) {
+        localStorage.setItem(SYSTEM_TENANT_ID_KEY, systemTenantId);
+      }
+
       const firstTenant = tenantId || data.tenants?.[0]?.tenantId;
       if (firstTenant) {
         setActiveTenantState(firstTenant);
@@ -102,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('token');
     localStorage.removeItem('activeTenant');
     localStorage.removeItem(ALL_TENANTS_CACHE_KEY);
+    localStorage.removeItem(SYSTEM_TENANT_ID_KEY);
     setToken(null);
     setUser(null);
     setActiveTenantState(null);
@@ -109,12 +126,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setActiveTenant = useCallback((id: string) => {
-    setActiveTenantState(id);
+    // No tocamos el estado de React antes de recargar. Cambiarlo dispara un re-render que
+    // vuelve a lanzar los fetch de la pantalla con el tenant nuevo, y la recarga los aborta
+    // a mitad de camino: ese era el "NetworkError" en rojo que se alcanzaba a ver al cambiar
+    // de empresa. La recarga sola alcanza —el API opera por el header X-Tenant-Id, no por el
+    // JWT—, y el tenant activo se relee de localStorage al montar.
     localStorage.setItem('activeTenant', id);
-    // Antes esto solo cambiaba el estado local: el tenant iba dentro del JWT, así que
-    // el API seguía operando sobre el tenant viejo. Ahora `apiFetch` manda el header
-    // X-Tenant-Id, así que basta con recargar para que todas las vistas se refresquen
-    // contra el tenant nuevo.
     window.location.reload();
   }, []);
 

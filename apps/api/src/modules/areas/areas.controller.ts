@@ -13,6 +13,7 @@ import { CreateAreaDto, UpdateAreaDto } from './dto/area.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
 import { TenantGuard } from '../../common/guards/tenant.guard';
+import { SystemTenantGuard } from '../../common/guards/system-tenant.guard';
 import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
 import { RolesGuard } from '../rbac/guards/roles.guard';
 
@@ -24,6 +25,30 @@ export class AreasController {
   @Get()
   @RequirePermission('areas', 'read')
   async findAll(@CurrentTenant() tenantId: string) {
+    return this.areasService.findAll(tenantId);
+  }
+
+  /**
+   * Áreas de TODAS las empresas (modo lectura "Todas las empresas" del superadmin).
+   * Operación cross-tenant, así que va con `SystemTenantGuard` — mismo criterio que
+   * `GET /tenants/all`. Declarado antes de `@Get(':id')` para que `all` no entre como id.
+   */
+  @Get('all')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('areas', 'read')
+  async findAllCrossTenant() {
+    return this.areasService.findAllCrossTenant();
+  }
+
+  /**
+   * Áreas de OTRA empresa (no la activa), para el alta multiempresa de usuarios: por cada
+   * empresa elegida hay que ofrecer sus áreas. Espejo de `GET /roles/by-tenant/:tenantId`.
+   * El `tenantId` sale del path; el tenant activo sigue siendo el de sistema.
+   */
+  @Get('by-tenant/:tenantId')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('areas', 'read')
+  async findAllForTenant(@Param('tenantId') tenantId: string) {
     return this.areasService.findAll(tenantId);
   }
 

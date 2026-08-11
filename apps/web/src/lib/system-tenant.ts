@@ -18,3 +18,18 @@ export const SYSTEM_TENANT_SLUG =
  * opciones y no habría forma de volver. Se limpia al cerrar sesión.
  */
 export const ALL_TENANTS_CACHE_KEY = 'allTenants';
+
+/**
+ * Valor centinela del selector para "Todas las empresas" (vista consolidada de solo
+ * lectura del superusuario). No es el id de ninguna empresa: viaja como tenant activo, y
+ * `apiFetch` lo traduce al id de la empresa de sistema en el header `X-Tenant-Id` (que es
+ * lo que exige `SystemTenantGuard` en el backend para los endpoints cross-tenant `/all`).
+ */
+export const ALL_TENANTS = '__all__';
+
+/**
+ * Dónde se guarda el id de la empresa de sistema. Lo escribe `use-auth` al resolver el
+ * usuario y lo lee `apiFetch` para traducir el centinela `ALL_TENANTS`. Se limpia al cerrar
+ * sesión.
+ */
+export const SYSTEM_TENANT_ID_KEY = 'systemTenantId';

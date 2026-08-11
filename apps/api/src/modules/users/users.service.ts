@@ -6,7 +6,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
+import {
+  CreateUserDto,
+  CreateUserMultiTenantDto,
+  UpdateUserDto,
+} from './dto/user.dto';
 import * as bcrypt from 'bcrypt';
 
 const USER_SELECT = {
@@ -41,6 +45,33 @@ export class UsersService {
       ...m.user,
       role: m.role,
       area: m.area,
+      joinedAt: m.createdAt,
+    }));
+  }
+
+  /**
+   * Usuarios de TODAS las empresas (una fila por membresía), con la empresa de cada una.
+   * Modo lectura del superadmin ("Todas las empresas"): mismo mapeo que `findAll` pero sin
+   * scope de tenant y sumando `tenant`. Una misma persona en varias empresas aparece varias
+   * veces, una por membresía, con el rol/área que tiene en cada una. El corte de acceso lo
+   * pone `SystemTenantGuard` en el controlador.
+   */
+  async findAllCrossTenant() {
+    const memberships = await this.prisma.userTenant.findMany({
+      include: {
+        user: { select: USER_SELECT },
+        role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+
+    return memberships.map((m) => ({
+      ...m.user,
+      role: m.role,
+      area: m.area,
+      tenant: m.tenant,
       joinedAt: m.createdAt,
     }));
   }
@@ -127,6 +158,99 @@ export class UsersService {
 
     this.logger.log(`Usuario creado: ${user.email} en tenant ${tenantId}`);
     return this.findOne(tenantId, user.id);
+  }
+
+  /**
+   * Alta de una persona en varias empresas a la vez (solo superadmin — lo gatea el
+   * controlador con `SystemTenantGuard`). Un rol y, opcional, un área por empresa.
+   *
+   * Es la generalización de `create`: valida rol y área de CADA empresa antes de tocar
+   * nada, y crea el usuario y las N membresías de forma atómica. Si el email ya existe,
+   * suma las membresías que falten en vez de crear la persona de nuevo — mismo criterio
+   * que `create` con un solo tenant.
+   */
+  async createMultiTenant(dto: CreateUserMultiTenantDto) {
+    const tenantIds = dto.memberships.map((m) => m.tenantId);
+    if (new Set(tenantIds).size !== tenantIds.length) {
+      throw new BadRequestException('Hay empresas repetidas en la selección');
+    }
+
+    // Rol y área tienen que pertenecer a SU empresa: sin esto se colaría RBAC entre empresas.
+    for (const m of dto.memberships) {
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
+    }
+
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId);
+
+    const membershipData = dto.memberships.map((m) => ({
+      tenantId: m.tenantId,
+      roleId: m.roleId,
+      areaId: m.areaId || null,
+    }));
+
+    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
+
+    if (existing) {
+      // El email ya existe: sumamos solo las membresías nuevas. Si ya es miembro de alguna
+      // de las empresas elegidas, cortamos entero (no dar de alta a medias).
+      const already = await this.prisma.userTenant.findMany({
+        where: { userId: existing.id, tenantId: { in: tenantIds } },
+        select: { tenantId: true },
+      });
+      if (already.length > 0) {
+        throw new ConflictException(
+          'La persona ya es miembro de alguna de las empresas seleccionadas',
+        );
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.userTenant.createMany({
+          data: membershipData.map((m) => ({ ...m, userId: existing.id })),
+        });
+        // El ID de Invgate es de la persona: si todavía no lo tenía, lo completamos sin pisar.
+        if (dto.invgateUserId && !existing.invgateUserId) {
+          await tx.user.update({
+            where: { id: existing.id },
+            data: { invgateUserId: dto.invgateUserId },
+          });
+        }
+      });
+
+      this.logger.log(
+        `Usuario existente ${existing.email} agregado a ${membershipData.length} empresas`,
+      );
+      return {
+        userId: existing.id,
+        email: existing.email,
+        created: false,
+        memberships: membershipData.length,
+      };
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+
+    // La persona nueva + todas sus membresías en una sola operación: atómica por sí misma.
+    const user = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        phone: dto.phone || null,
+        invgateUserId: dto.invgateUserId || null,
+        passwordHash,
+        tenants: { create: membershipData },
+      },
+    });
+
+    this.logger.log(`Usuario creado: ${user.email} en ${membershipData.length} empresas`);
+    return {
+      userId: user.id,
+      email: user.email,
+      created: true,
+      memberships: membershipData.length,
+    };
   }
 
   async update(tenantId: string, userId: string, dto: UpdateUserDto) {

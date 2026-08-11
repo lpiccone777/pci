@@ -36,6 +36,27 @@ export class AreasService {
     }));
   }
 
+  /**
+   * Áreas de TODAS las empresas, con la empresa a la que pertenece cada una. Es el modo
+   * lectura del superadmin ("Todas las empresas"): mismo mapeo que `findAll` pero sin scope
+   * de tenant y sumando `tenant` para la columna Empresa. El corte de acceso lo pone
+   * `SystemTenantGuard` en el controlador, no este método.
+   */
+  async findAllCrossTenant() {
+    const areas = await this.prisma.area.findMany({
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: {
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { userTenants: true } },
+      },
+    });
+
+    return areas.map(({ _count, ...area }) => ({
+      ...area,
+      userCount: _count.userTenants,
+    }));
+  }
+
   async findOne(tenantId: string, id: string) {
     const area = await this.prisma.area.findFirst({ where: { id, tenantId } });
     if (!area) {

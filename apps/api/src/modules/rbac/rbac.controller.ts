@@ -49,6 +49,18 @@ export class RbacController {
     return this.roleService.findAll(tenantId);
   }
 
+  /**
+   * Roles de TODAS las empresas (modo lectura "Todas las empresas" del superadmin).
+   * Cross-tenant, con `SystemTenantGuard` como `GET /tenants/all`. Va antes de `@Get(':id')`
+   * para que `all` no entre como id.
+   */
+  @Get('all')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('roles', 'read')
+  async findAllCrossTenant() {
+    return this.roleService.findAllCrossTenant();
+  }
+
   @Post()
   @RequirePermission('roles', 'create')
   async create(@Body() dto: CreateRoleDto, @CurrentTenant() tenantId: string) {

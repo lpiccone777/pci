@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { ALL_TENANTS } from '@/lib/system-tenant';
 
 interface CatalogEntry {
   key: string;
@@ -35,6 +36,8 @@ interface RoleRow {
    * rechaza modificarlo, renombrarlo o eliminarlo. Se muestra en modo consulta.
    */
   isProtected: boolean;
+  /** Solo en la vista "Todas las empresas": a qué empresa pertenece el rol. */
+  tenant?: { id: string; name: string; slug: string };
 }
 
 interface RoleUser {
@@ -78,10 +81,13 @@ export default function RolesPage() {
   } | null>(null);
   const [viewingUsers, setViewingUsers] = useState<RoleRow | null>(null);
 
-  const canCreate = hasPermission('roles', 'create');
-  const canUpdateRole = hasPermission('roles', 'update');
-  const canDelete = hasPermission('roles', 'delete');
-  const canUpdatePerms = hasPermission('permissions', 'update');
+  // "Todas las empresas": vista consolidada de solo lectura, se apaga todo el ABM.
+  const isAllTenants = activeTenant === ALL_TENANTS;
+
+  const canCreate = hasPermission('roles', 'create') && !isAllTenants;
+  const canUpdateRole = hasPermission('roles', 'update') && !isAllTenants;
+  const canDelete = hasPermission('roles', 'delete') && !isAllTenants;
+  const canUpdatePerms = hasPermission('permissions', 'update') && !isAllTenants;
   const canEditSomething = canUpdateRole || canUpdatePerms;
 
   /**
@@ -98,7 +104,7 @@ export default function RolesPage() {
     try {
       const [catalogData, roleData] = await Promise.all([
         apiFetch('/roles/catalog'),
-        apiFetch('/roles'),
+        apiFetch(isAllTenants ? '/roles/all' : '/roles'),
       ]);
       setCatalog(catalogData);
       setRoles(roleData);
@@ -107,7 +113,7 @@ export default function RolesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAllTenants]);
 
   useEffect(() => {
     load();
@@ -164,7 +170,11 @@ export default function RolesPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between gap-4 mb-6">
+      <div
+        className={`flex items-center justify-between gap-4 ${
+          isAllTenants ? 'mb-2' : 'mb-6'
+        }`}
+      >
         <h1 className="text-2xl font-bold text-gray-800">Roles</h1>
         {canCreate && (
           <button
@@ -175,6 +185,13 @@ export default function RolesPage() {
           </button>
         )}
       </div>
+
+      {isAllTenants && (
+        <p className="text-sm text-gray-500 mb-6">
+          Roles de todas las empresas. Vista de solo lectura: para crear o editar, elegí una
+          empresa en el selector lateral.
+        </p>
+      )}
 
       {feedback && (
         <p
@@ -195,6 +212,9 @@ export default function RolesPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
             <tr>
+              {isAllTenants && (
+                <th className="text-left px-4 py-2 font-semibold">Empresa</th>
+              )}
               <th className="text-left px-4 py-2 font-semibold">Rol</th>
               <th className="text-right px-4 py-2 font-semibold whitespace-nowrap">
                 Usuarios
@@ -208,7 +228,7 @@ export default function RolesPage() {
           <tbody>
             {roles.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-gray-400">
+                <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-6 text-center text-gray-400">
                   <p className="mb-3">Todavía no hay roles en esta empresa.</p>
                   {canCreate && (
                     <button
@@ -225,7 +245,7 @@ export default function RolesPage() {
             {roles.map((role) =>
               deletingId === role.id ? (
                 <tr key={role.id} className="border-t bg-red-50">
-                  <td colSpan={4} className="px-4 py-2">
+                  <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">
                     <div className="flex gap-2 items-center flex-wrap">
                       <span className="text-red-700 mr-1">
                         ¿Eliminar el rol <b>{role.name}</b>? Esta acción no se puede
@@ -255,6 +275,9 @@ export default function RolesPage() {
                   className="border-t hover:bg-gray-50 cursor-pointer"
                   title="Ver detalle"
                 >
+                  {isAllTenants && (
+                    <td className="px-4 py-2 text-gray-500">{role.tenant?.name ?? '—'}</td>
+                  )}
                   <td className="px-4 py-2">
                     <span className="font-medium">{role.name}</span>
                     {role.isProtected && (
@@ -269,17 +292,23 @@ export default function RolesPage() {
                   <td className="px-4 py-2 text-right">
                     {/* El número ES el acceso a la lista: el dato y la forma de abrirlo
                         son la misma cosa, así que no lleva un botón aparte. stopPropagation
-                        para que abrir la lista no dispare también el detalle de la fila. */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openUsers(role);
-                      }}
-                      title={`Ver los usuarios con el rol ${role.name}`}
-                      className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
-                    >
-                      {role.userCount}
-                    </button>
+                        para que abrir la lista no dispare también el detalle de la fila. En
+                        "Todas las empresas" el drill-down pega contra un endpoint scopeado a
+                        la empresa activa, así que ahí el número va como texto plano. */}
+                    {isAllTenants ? (
+                      <span className="tabular-nums">{role.userCount}</span>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openUsers(role);
+                        }}
+                        title={`Ver los usuarios con el rol ${role.name}`}
+                        className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
+                      >
+                        {role.userCount}
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right">
                     {role.permissionCount === 0 ? (
@@ -367,6 +396,7 @@ export default function RolesPage() {
           role={editing.role}
           catalog={catalog}
           initialEdit={editing.mode === 'edit'}
+          isAllTenants={isAllTenants}
           // El rol del sistema anula cualquier permiso de edición: el backend lo rechaza
           // igual, y dejar la matriz activa sería prometer algo que va a fallar al guardar.
           canEditName={
@@ -398,6 +428,7 @@ function RoleModal({
   role,
   catalog,
   initialEdit,
+  isAllTenants,
   canEditName,
   canEditPerms,
   isProtected,
@@ -409,6 +440,7 @@ function RoleModal({
   role: RoleRow | null;
   catalog: Catalog;
   initialEdit: boolean;
+  isAllTenants: boolean;
   canEditName: boolean;
   canEditPerms: boolean;
   isProtected: boolean;
@@ -659,6 +691,11 @@ function RoleModal({
                     ? 'Rol del sistema'
                     : role.name}
             </h2>
+            {isAllTenants && role?.tenant && (
+              <p className="-mt-2 mb-3 text-xs text-gray-500">
+                Empresa: <span className="text-gray-700">{role.tenant.name}</span>
+              </p>
+            )}
             <label htmlFor="role-name" className="block text-xs text-gray-500 mb-1">
               Nombre del rol *
             </label>

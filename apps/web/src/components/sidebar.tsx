@@ -5,7 +5,11 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { apiFetch } from '@/lib/api';
-import { ALL_TENANTS_CACHE_KEY, SYSTEM_TENANT_SLUG } from '@/lib/system-tenant';
+import {
+  ALL_TENANTS,
+  ALL_TENANTS_CACHE_KEY,
+  SYSTEM_TENANT_SLUG,
+} from '@/lib/system-tenant';
 
 interface TenantOption {
   id: string;
@@ -53,7 +57,10 @@ export default function Sidebar() {
   const [allTenants, setAllTenants] = useState<TenantOption[] | null>(null);
 
   const activeSlug = user?.tenants?.find((t) => t.tenantId === activeTenant)?.tenant?.slug;
-  const isSystemTenant = activeSlug === SYSTEM_TENANT_SLUG;
+  const isAllTenants = activeTenant === ALL_TENANTS;
+  // "Todas las empresas" opera parado en la empresa de sistema (lo traduce `apiFetch`), así
+  // que cuenta como estar en ella para el menú: los ítems solo-sistema siguen visibles.
+  const isSystemTenant = activeSlug === SYSTEM_TENANT_SLUG || isAllTenants;
 
   /**
    * El superusuario puede pararse en cualquier empresa, así que el selector no puede
@@ -100,12 +107,16 @@ export default function Sidebar() {
         {user && (
           <div className="mt-2 text-sm text-gray-400">
             <p className="truncate">{user.email}</p>
-            {tenantOptions.length > 1 ? (
+            {tenantOptions.length > 1 || isSystemUser ? (
               <select
                 value={activeTenant || ''}
                 onChange={(e) => setActiveTenant(e.target.value)}
                 className="mt-1 w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs"
               >
+                {/* Solo el superusuario ve la vista consolidada; no es una empresa real. */}
+                {isSystemUser && (
+                  <option value={ALL_TENANTS}>🌐 Todas las empresas</option>
+                )}
                 {tenantOptions.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -115,10 +126,8 @@ export default function Sidebar() {
             ) : tenantOptions[0] ? (
               <p className="text-xs mt-1">{tenantOptions[0].name}</p>
             ) : null}
-            {isSystemUser && !isSystemTenant && (
-              // Estar parado en una empresa ajena no se nota en ningún otro lado: el resto
-              // de la pantalla se ve igual que si fuera propia.
-              <p className="text-xs mt-1 text-amber-400">Estás en otra empresa</p>
+            {isAllTenants && (
+              <p className="text-xs mt-1 text-amber-400">Viendo todas las empresas</p>
             )}
           </div>
         )}

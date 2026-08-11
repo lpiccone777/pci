@@ -1,11 +1,15 @@
 import {
+  ArrayMinSize,
+  IsArray,
   IsEmail,
   IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateUserDto {
   @IsEmail({}, { message: 'El email no es válido' })
@@ -45,6 +49,66 @@ export class CreateUserDto {
   @IsString()
   @MaxLength(64)
   invgateUserId?: string;
+}
+
+/**
+ * Una membresía a crear en el alta multiempresa: la persona entra a esta empresa con este
+ * rol y (opcional) esta área. Mapea 1:1 a una fila `UserTenant`.
+ */
+export class UserMembershipDto {
+  @IsString()
+  @IsNotEmpty({ message: 'La empresa es obligatoria' })
+  tenantId: string;
+
+  /** Obligatorio: todo usuario entra a cada empresa con un rol. */
+  @IsString()
+  @IsNotEmpty({ message: 'El rol es obligatorio' })
+  roleId: string;
+
+  /** Opcional: el área agrupa para auditoría y métricas, no habilita nada. */
+  @IsOptional()
+  @IsString()
+  areaId?: string;
+}
+
+/**
+ * Alta de una persona en varias empresas a la vez. Solo superadmin (el controlador lo gatea
+ * con `SystemTenantGuard`). Los datos de la persona son únicos; el rol y el área van por
+ * empresa dentro de `memberships`.
+ */
+export class CreateUserMultiTenantDto {
+  @IsEmail({}, { message: 'El email no es válido' })
+  email: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'El nombre es obligatorio' })
+  @MaxLength(80)
+  firstName: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'El apellido es obligatorio' })
+  @MaxLength(80)
+  lastName: string;
+
+  @IsString()
+  @MinLength(8, { message: 'La contraseña debe tener al menos 8 caracteres' })
+  password: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Elegí al menos una empresa' })
+  @ValidateNested({ each: true })
+  @Type(() => UserMembershipDto)
+  memberships: UserMembershipDto[];
 }
 
 export class UpdateUserDto {

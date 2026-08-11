@@ -120,6 +120,27 @@ export class RoleService {
     return roles.map((r) => this.toResponse(r));
   }
 
+  /**
+   * Roles de TODAS las empresas, con la empresa de cada uno. Modo lectura del superadmin
+   * ("Todas las empresas"). Mismo mapeo que `findAll`, pero sin scope de tenant y sumando
+   * `tenant` a la respuesta (que `toResponse` normalmente descarta) para la columna Empresa.
+   * El corte de acceso lo pone `SystemTenantGuard` en el controlador.
+   */
+  async findAllCrossTenant() {
+    const roles = await this.prisma.role.findMany({
+      include: {
+        permissions: true,
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { userTenants: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+    return roles.map((r) => ({
+      ...this.toResponse(r),
+      tenant: { id: r.tenant.id, name: r.tenant.name, slug: r.tenant.slug },
+    }));
+  }
+
   async findOne(tenantId: string, id: string) {
     const role = await this.findEntity(tenantId, id);
     return this.toResponse(role);
