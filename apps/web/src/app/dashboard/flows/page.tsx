@@ -29,7 +29,15 @@ export default function FlowsPage() {
 
   async function loadFlows() {
     try {
-      const data = await apiFetch('/flows');
+      // El backoffice (tenant de sistema) ve TODOS los flujos, tengan o no empresas
+      // asignadas: así un flujo sin empresas no "desaparece" del listado. Si no es el
+      // tenant de sistema (403), cae al listado scopeado por tenant.
+      let data;
+      try {
+        data = await apiFetch('/flows/all');
+      } catch {
+        data = await apiFetch('/flows');
+      }
       setFlows(data);
     } catch (err) {
       console.error('Error loading flows:', err);
@@ -106,6 +114,11 @@ export default function FlowsPage() {
                       {tf.tenant.name}
                     </span>
                   ))}
+                  {flow.tenantFlows.length === 0 && (
+                    <span className="bg-amber-50 text-amber-700 text-xs px-2 py-1 rounded">
+                      Sin empresas
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex gap-2">

@@ -51,6 +51,17 @@ interface UserOption {
   lastName?: string | null;
 }
 
+interface RoleOption {
+  id: string;
+  name: string;
+}
+
+/** En qué empresa está disponible el flujo y qué roles lo reciben ahí. */
+interface Assignment {
+  tenantId: string;
+  roleIds: string[];
+}
+
 const customNodeTypes = {
   start: StartNode,
   message: MessageNode,
@@ -113,7 +124,15 @@ function FlowEditorInner() {
   const [flowContext, setFlowContext] = useState('none');
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
-  const [selectedTenantIds, setSelectedTenantIds] = useState<string[]>([]);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  // Cache de roles por empresa: se traen de GET /roles/by-tenant/:tenantId. Se
+  // precargan los de las empresas ya asignadas al abrir un flujo existente, y se
+  // suman los de una empresa nueva al agregarla en el modal.
+  const [rolesByTenant, setRolesByTenant] = useState<Record<string, RoleOption[]>>({});
+  const [modalOpen, setModalOpen] = useState(false);
+  const [expandedTenants, setExpandedTenants] = useState<string[]>([]);
+  // Copia de `assignments` al abrir el modal, para poder descartar con "Cancelar".
+  const [assignmentsSnapshot, setAssignmentsSnapshot] = useState<Assignment[] | null>(null);
   const [isStartFlow, setIsStartFlow] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -172,8 +191,15 @@ function FlowEditorInner() {
       setFlowDescription(flow.description || '');
       setFlowContext(flow.context || 'none');
       const tenantFlows = flow.tenantFlows || [];
-      setSelectedTenantIds(tenantFlows.map((tf: any) => tf.tenant.id));
+      const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
+        tenantId: tf.tenant.id,
+        roleIds: (tf.roles || []).map((r: any) => r.roleId),
+      }));
+      setAssignments(loaded);
       setIsStartFlow(tenantFlows.some((tf: any) => tf.isStart));
+      // Precargar los roles de las empresas ya asignadas: así el contador "X/Y" y
+      // los chips del modal quedan completos apenas se abre.
+      loadRolesForTenants(loaded.map((a) => a.tenantId));
       setNodes(flow.nodes || []);
       setEdges(
         (flow.edges || []).map((e: any) => ({
@@ -189,10 +215,96 @@ function FlowEditorInner() {
     }
   }
 
-  function toggleTenant(tenantId: string) {
-    setSelectedTenantIds((prev) =>
-      prev.includes(tenantId) ? prev.filter((id) => id !== tenantId) : [...prev, tenantId],
+  // Roles quedan sin flujo de inicio cuando no hay empresas: mantener el toggle
+  // coherente (igual que el mock, que apaga "Inicio" al quedar sin empresas).
+  useEffect(() => {
+    if (assignments.length === 0 && isStartFlow) setIsStartFlow(false);
+  }, [assignments, isStartFlow]);
+
+  async function loadRolesForTenant(tenantId: string) {
+    // Cache: si ya se cargaron, no repetir el request.
+    if (rolesByTenant[tenantId]) return;
+    try {
+      const data = await apiFetch(`/roles/by-tenant/${tenantId}`);
+      setRolesByTenant((prev) => ({
+        ...prev,
+        [tenantId]: (data || []).map((r: any) => ({ id: r.id, name: r.name })),
+      }));
+    } catch {
+      // Sin acceso o error: dejo la lista vacía para esa empresa. El modal muestra
+      // "sin roles" en vez de romperse.
+      setRolesByTenant((prev) => ({ ...prev, [tenantId]: prev[tenantId] || [] }));
+    }
+  }
+
+  function loadRolesForTenants(tenantIds: string[]) {
+    tenantIds.forEach((id) => loadRolesForTenant(id));
+  }
+
+  // ---- Helpers de lectura sobre el estado del modal ----
+  const rolesFor = (tenantId: string): RoleOption[] => rolesByTenant[tenantId] || [];
+  const getAssignment = (tenantId: string) => assignments.find((a) => a.tenantId === tenantId);
+  const isRoleOn = (tenantId: string, roleId: string) =>
+    !!getAssignment(tenantId)?.roleIds.includes(roleId);
+  const totalRoles = () => assignments.reduce((sum, a) => sum + a.roleIds.length, 0);
+  const availableTenants = () =>
+    allTenants.filter((t) => !assignments.some((a) => a.tenantId === t.id));
+  const tenantName = (tenantId: string) =>
+    allTenants.find((t) => t.id === tenantId)?.name || tenantId;
+
+  // ---- Mutaciones del modal (operan sobre `assignments`) ----
+  function addTenant(tenantId: string) {
+    if (getAssignment(tenantId)) return;
+    setAssignments((prev) => [...prev, { tenantId, roleIds: [] }]);
+    setExpandedTenants((prev) => (prev.includes(tenantId) ? prev : [...prev, tenantId]));
+    loadRolesForTenant(tenantId);
+  }
+  function removeTenant(tenantId: string) {
+    setAssignments((prev) => prev.filter((a) => a.tenantId !== tenantId));
+    setExpandedTenants((prev) => prev.filter((x) => x !== tenantId));
+  }
+  function toggleRole(tenantId: string, roleId: string, on: boolean) {
+    setAssignments((prev) =>
+      prev.map((a) =>
+        a.tenantId !== tenantId
+          ? a
+          : {
+              ...a,
+              roleIds: on
+                ? a.roleIds.includes(roleId)
+                  ? a.roleIds
+                  : [...a.roleIds, roleId]
+                : a.roleIds.filter((x) => x !== roleId),
+            },
+      ),
     );
+  }
+  function selectAllRoles(tenantId: string) {
+    // Snapshot de los roles existentes al momento de marcar, no comodín: si después
+    // se crea un rol nuevo en la empresa, no queda incluido solo.
+    const all = rolesFor(tenantId).map((r) => r.id);
+    setAssignments((prev) => prev.map((a) => (a.tenantId === tenantId ? { ...a, roleIds: all } : a)));
+  }
+  function clearAllRoles(tenantId: string) {
+    setAssignments((prev) => prev.map((a) => (a.tenantId === tenantId ? { ...a, roleIds: [] } : a)));
+  }
+  function toggleExpand(tenantId: string) {
+    setExpandedTenants((prev) =>
+      prev.includes(tenantId) ? prev.filter((x) => x !== tenantId) : [...prev, tenantId],
+    );
+  }
+
+  // ---- Abrir / cerrar el modal ----
+  function openModal() {
+    // Snapshot para poder descartar con "Cancelar". La persistencia real recién
+    // ocurre con el "Guardar" del header del editor (saveFlow).
+    setAssignmentsSnapshot(JSON.parse(JSON.stringify(assignments)));
+    setModalOpen(true);
+  }
+  function closeModal(save: boolean) {
+    if (!save && assignmentsSnapshot) setAssignments(assignmentsSnapshot);
+    setAssignmentsSnapshot(null);
+    setModalOpen(false);
   }
 
   const onConnect = useCallback(
@@ -286,6 +398,16 @@ function FlowEditorInner() {
   }
 
   async function saveFlow() {
+    // Aviso al vaciar: dejar el flujo sin empresas no lo borra, pero no lo recibe
+    // nadie y queda "sin asignar". Confirmamos antes de persistir para que sea
+    // intencional (aplica tanto a quitar la última empresa como a no asignar ninguna).
+    if (assignments.length === 0) {
+      const ok = confirm(
+        'Este flujo va a quedar sin empresas asignadas: no lo va a recibir ningún usuario ' +
+          'y aparecerá como "sin asignar" en la lista. ¿Guardar igual?',
+      );
+      if (!ok) return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -318,7 +440,7 @@ function FlowEditorInner() {
           method: 'POST',
           body: JSON.stringify({
             ...payload,
-            tenantIds: selectedTenantIds,
+            assignments,
             isStart: isStartFlow,
           }),
         });
@@ -328,11 +450,11 @@ function FlowEditorInner() {
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
-        // La asignación a tenants es un endpoint aparte del resto de los campos
-        // del flujo (igual que ya era antes de agregar los checkboxes).
+        // La asignación de empresas y roles es un endpoint aparte del resto de los
+        // campos del flujo (igual que ya era antes de agregar los checkboxes).
         await apiFetch(`/flows/${id}/assign-tenants`, {
           method: 'POST',
-          body: JSON.stringify({ tenantIds: selectedTenantIds, isStart: isStartFlow }),
+          body: JSON.stringify({ assignments, isStart: isStartFlow }),
         });
         alert('Flujo guardado');
       }
@@ -394,37 +516,64 @@ function FlowEditorInner() {
         </button>
       </div>
 
-      {/* Asignación a tenants: en qué empresas está disponible este flujo, y si
-          es el flujo de inicio para ellas. Solo se muestra si se pudo cargar la
-          lista completa de tenants (requiere tenant de sistema, ver loadTenants). */}
+      {/* Asignación a empresas y roles: en qué empresas está disponible este flujo,
+          qué roles lo reciben en cada una, y si es el flujo de inicio para esos
+          pares (empresa + rol). Solo se muestra si se pudo cargar la lista completa
+          de tenants (requiere tenant de sistema, ver loadTenants). */}
       {allTenants.length > 0 && (
-        <div className="bg-gray-50 border-b px-4 py-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-gray-500 font-medium">Disponible en:</span>
-            {allTenants.map((t) => (
-              <label key={t.id} className="flex items-center gap-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedTenantIds.includes(t.id)}
-                  onChange={() => toggleTenant(t.id)}
-                />
-                {t.name}
-              </label>
-            ))}
+        <div className="bg-gray-50 border-b px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+          <span className="text-gray-500 font-medium">Disponible en:</span>
+
+          <button
+            type="button"
+            onClick={openModal}
+            className="inline-flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg font-medium hover:bg-gray-50 hover:border-gray-400"
+          >
+            <svg
+              className="w-4 h-4 text-blue-600"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 21h18" />
+              <path d="M5 21V7l7-4 7 4v14" />
+              <path d="M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01" />
+            </svg>
+            Empresas y roles
+            <span className="bg-blue-100 text-blue-700 text-xs font-semibold rounded-full px-1.5 py-0.5">
+              {assignments.length}
+            </span>
+          </button>
+
+          <div className="flex items-center gap-2 text-gray-600">
+            {assignments.length === 0 ? (
+              <span className="text-gray-400 italic">Sin empresas asignadas</span>
+            ) : (
+              <span className="text-gray-700 font-semibold">
+                {assignments.length} {assignments.length === 1 ? 'empresa' : 'empresas'} ·{' '}
+                {totalRoles()} {totalRoles() === 1 ? 'rol' : 'roles'}
+              </span>
+            )}
           </div>
 
           <label
-            className="flex items-center gap-1 cursor-pointer border-l pl-4"
-            title="Cada tenant tiene como máximo un flujo de inicio. Si otro flujo ya lo era para alguno de los tenants marcados arriba, se lo desmarca al guardar."
+            className="flex items-center gap-1.5 cursor-pointer border-l pl-4 select-none"
+            title="Un flujo de inicio por (empresa + rol). Si otro flujo ya era el inicio para alguno de esos pares, se lo reemplaza al guardar."
           >
             <input
               type="checkbox"
               checked={isStartFlow}
-              disabled={selectedTenantIds.length === 0}
+              disabled={assignments.length === 0}
               onChange={(e) => setIsStartFlow(e.target.checked)}
             />
-            <span className={selectedTenantIds.length === 0 ? 'text-gray-400' : ''}>
-              Inicio {selectedTenantIds.length === 0 && '(elegí un tenant primero)'}
+            <span className={assignments.length === 0 ? 'text-gray-400' : ''}>
+              Inicio{' '}
+              {assignments.length === 0 && (
+                <span className="text-gray-400 text-xs">(elegí una empresa primero)</span>
+              )}
             </span>
           </label>
         </div>
@@ -502,6 +651,172 @@ function FlowEditorInner() {
           </div>
         )}
       </div>
+
+      {/* Modal "Empresas y roles": acordeón por empresa con sus roles. Escribe sobre
+          `assignments`; la persistencia real recae en el "Guardar" del header. */}
+      {modalOpen && (
+        <div
+          className="fixed inset-0 bg-slate-900/55 flex items-center justify-center p-6 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeModal(false);
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col overflow-hidden">
+            {/* Header del modal */}
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Empresas y roles</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Elegí en qué empresas está disponible el flujo y, dentro de cada una, qué roles lo
+                  reciben.
+                </p>
+              </div>
+              <button
+                onClick={() => closeModal(false)}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Body: acordeón + agregar empresa */}
+            <div className="px-5 py-4 overflow-auto">
+              {assignments.length === 0 && (
+                <div className="text-center text-gray-400 py-6 text-sm">
+                  No hay empresas asignadas todavía.
+                </div>
+              )}
+
+              {assignments.map((a) => {
+                const roles = rolesFor(a.tenantId);
+                const open = expandedTenants.includes(a.tenantId);
+                return (
+                  <div key={a.tenantId} className="border rounded-xl mb-2.5 overflow-hidden">
+                    <div
+                      className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer bg-gray-50 hover:bg-gray-100"
+                      onClick={() => toggleExpand(a.tenantId)}
+                    >
+                      <span className="text-gray-400 w-3">{open ? '▾' : '▸'}</span>
+                      <span className="font-semibold">{tenantName(a.tenantId)}</span>
+                      <span className="text-gray-500 text-xs">
+                        {a.roleIds.length}/{roles.length} roles
+                      </span>
+                      <span className="ml-auto" />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeTenant(a.tenantId);
+                        }}
+                        className="text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50"
+                      >
+                        Quitar
+                      </button>
+                    </div>
+
+                    {open && (
+                      <div className="p-3 border-t">
+                        {roles.length === 0 ? (
+                          <p className="text-gray-400 text-xs">Sin roles en esta empresa.</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {roles.map((r) => {
+                              const on = isRoleOn(a.tenantId, r.id);
+                              return (
+                                <label
+                                  key={r.id}
+                                  className={`inline-flex items-center gap-1.5 border px-2.5 py-1 rounded-full text-sm cursor-pointer ${
+                                    on
+                                      ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium'
+                                      : 'bg-white border-gray-300 text-gray-700 hover:border-gray-400'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="m-0"
+                                    checked={on}
+                                    onChange={(e) => toggleRole(a.tenantId, r.id, e.target.checked)}
+                                  />
+                                  <span>{r.name}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {roles.length > 0 && (
+                          <div className="flex gap-2 mt-2.5">
+                            <button
+                              onClick={() => selectAllRoles(a.tenantId)}
+                              className="text-blue-600 text-xs px-1 py-0.5 rounded hover:bg-blue-50"
+                            >
+                              Seleccionar todos
+                            </button>
+                            <button
+                              onClick={() => clearAllRoles(a.tenantId)}
+                              className="text-blue-600 text-xs px-1 py-0.5 rounded hover:bg-blue-50"
+                            >
+                              Limpiar
+                            </button>
+                          </div>
+                        )}
+
+                        {a.roleIds.length === 0 && (
+                          <div className="mt-2.5 inline-block text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 text-xs">
+                            Sin roles: ningún usuario de {tenantName(a.tenantId)} recibe este flujo.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {availableTenants().length > 0 ? (
+                <div className="mt-3">
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) addTenant(e.target.value);
+                    }}
+                    className="border border-dashed border-gray-400 bg-white text-gray-600 rounded-lg px-2.5 py-1.5 text-sm min-w-[210px]"
+                  >
+                    <option value="">+ Agregar empresa…</option>
+                    {availableTenants().map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <p className="text-gray-400 text-xs mt-3">Todas las empresas ya están agregadas.</p>
+              )}
+            </div>
+
+            {/* Footer del modal */}
+            <div className="px-5 py-3.5 border-t flex justify-between items-center gap-3">
+              <span className="text-xs text-gray-400 max-w-[60%]">
+                Sin roles marcados en una empresa = ningún usuario de esa empresa recibe el flujo.
+              </span>
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => closeModal(false)}
+                  className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => closeModal(true)}
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                >
+                  Guardar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

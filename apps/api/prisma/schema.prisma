@@ -41,6 +41,11 @@ model Tenant {
   slug      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  // Baja lógica: una empresa dada de baja conserva su fila (y sus datos) pero deja de
+  // listarse. Es el primer softdelete del sistema — la baja de usuario, en cambio, borra
+  // la membresía (UserTenant). No se libera el slug, que es @unique global: una empresa
+  // dada de baja lo sigue ocupando. La restauración quedó fuera de alcance por ahora.
+  deletedAt DateTime?
 
   users         UserTenant[]
   roles         Role[]
@@ -77,8 +82,9 @@ model Role {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  permissions RolePermission[]
-  userTenants UserTenant[]
+  permissions     RolePermission[]
+  userTenants     UserTenant[]
+  tenantFlowRoles TenantFlowRole[]
 
   @@unique([name, tenantId])
 }
@@ -280,11 +286,29 @@ model TenantFlow {
   // máximo un flujo de inicio" se aplica en FlowService.applyTenantAssignment,
   // no acá (Prisma no soporta índices únicos parciales en el schema DSL).
   isStart  Boolean @default(false)
-  flow     Flow    @relation(fields: [flowId], references: [id], onDelete: Cascade)
-  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  flow     Flow             @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles    TenantFlowRole[]
 
   @@unique([flowId, tenantId])
   @@index([tenantId])
   @@index([flowId])
   @@index([isStart])
+}
+
+// Roles habilitados para un flujo dentro de una empresa. Cada fila = un rol que
+// recibe ese flujo en ese tenant. Cuelga de TenantFlow (el par flujo↔empresa) y
+// no de Flow: los roles son por tenant, y un mismo flujo puede tener distintos
+// roles habilitados en cada empresa. Sin filas para un TenantFlow → ese flujo no
+// lo recibe nadie en esa empresa. La invariante "un flujo de inicio por (empresa
+// + rol)" se aplica en FlowService.applyTenantAssignment, no con constraint de BD.
+model TenantFlowRole {
+  id           String     @id @default(cuid())
+  tenantFlowId String
+  tenantFlow   TenantFlow @relation(fields: [tenantFlowId], references: [id], onDelete: Cascade)
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantFlowId, roleId])
+  @@index([roleId])
 }

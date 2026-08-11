@@ -7,6 +7,7 @@ import { getPermissionCatalog } from './permissions.catalog';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
 import { TenantGuard } from '../../common/guards/tenant.guard';
+import { SystemTenantGuard } from '../../common/guards/system-tenant.guard';
 import { RequirePermission } from './decorators/require-permission.decorator';
 import { RolesGuard } from './guards/roles.guard';
 
@@ -30,6 +31,22 @@ export class RbacController {
   @RequirePermission('roles', 'read')
   getCatalog() {
     return getPermissionCatalog();
+  }
+
+  /**
+   * Roles de OTRA empresa (no la activa). El editor de flujos corre en el tenant de
+   * sistema y necesita listar los roles de cada empresa para el modal "Empresas y
+   * roles"; `GET /roles` (findAll) solo trae los del tenant activo.
+   *
+   * Operación cross-tenant, así que va con `SystemTenantGuard` (mismo criterio que
+   * `GET /tenants/all`), no con un permiso RBAC a secas. La ruta lleva dos segmentos
+   * tras `/roles`, así que no compite con `@Get(':id')`; igual va antes por las dudas.
+   */
+  @Get('by-tenant/:tenantId')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('roles', 'read')
+  async findAllForTenant(@Param('tenantId') tenantId: string) {
+    return this.roleService.findAll(tenantId);
   }
 
   @Post()
