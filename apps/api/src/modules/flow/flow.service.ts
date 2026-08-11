@@ -44,6 +44,9 @@ export class FlowService {
             },
           },
         },
+        contextSource: {
+          select: { id: true, name: true, type: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -59,6 +62,9 @@ export class FlowService {
               select: { id: true, name: true, slug: true },
             },
           },
+        },
+        contextSource: {
+          select: { id: true, name: true, type: true },
         },
       },
     });

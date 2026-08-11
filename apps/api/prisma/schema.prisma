@@ -30,8 +30,8 @@ model User {
   devices           Device[]
   deviceValidations DeviceValidation[]
   conversations     Conversation[]
-  tickets           Ticket[]         @relation("TicketReporter")
-  assignedTickets   Ticket[]         @relation("TicketAssignee")
+  tickets           Ticket[]           @relation("TicketReporter")
+  assignedTickets   Ticket[]           @relation("TicketAssignee")
   metrics           Metric[]
 }
 
@@ -42,14 +42,15 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users         UserTenant[]
-  roles         Role[]
-  areas         Area[]
-  conversations Conversation[]
-  tickets       Ticket[]
-  metrics       Metric[]
-  settings      Setting[]
-  tenantFlows   TenantFlow[]
+  users          UserTenant[]
+  roles          Role[]
+  areas          Area[]
+  conversations  Conversation[]
+  tickets        Ticket[]
+  metrics        Metric[]
+  settings       Setting[]
+  tenantFlows    TenantFlow[]
+  contextSources ContextSource[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -146,20 +147,21 @@ model DeviceValidation {
 }
 
 model Conversation {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   userId        String
-  user          User     @relation(fields: [userId], references: [id])
+  user          User      @relation(fields: [userId], references: [id])
   tenantId      String
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
   channel       String
   externalId    String?
-  status        String   @default("active") // "active" | "closed"
+  status        String    @default("active") // "active" | "closed"
   closedAt      DateTime? // Cuándo se cerró; habilita reanudarla dentro de la ventana de resume.
+  sessionStartedAt DateTime? // Se resetea al crear o reanudar la charla; acota qué Message cuentan como historial de la sesión actual (una reanudación reusa el mismo id, así que sin esto el historial de antes del cierre se filtraba al LLM).
   currentFlowId String?
   currentNodeId String?
   flowState     Json? // Variables del flujo: { problemDescription: "...", ticketId: "944" }
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   messages Message[]
   metrics  Metric[]
@@ -235,25 +237,69 @@ model Metric {
 }
 
 model Flow {
-  id          String       @id @default(cuid())
-  name        String
-  description String?
-  nodes       Json // ReactFlow nodes JSON
-  edges       Json // ReactFlow edges JSON
-  isActive    Boolean      @default(true)
-  isDefault   Boolean      @default(false) // Flujo por defecto si no hay match
+  id              String               @id @default(cuid())
+  name            String
+  description     String?
+  nodes           Json // ReactFlow nodes JSON
+  edges           Json // ReactFlow edges JSON
+  isActive        Boolean              @default(true)
+  isDefault       Boolean              @default(false) // Flujo por defecto si no hay match
   // Fuente de datos que respalda las respuestas de este flujo. Lista cerrada
   // (ver FLOW_CONTEXT_OPTIONS en flow-context.ts): 'none' | 'invgate' | 'internal_kb' | 'other'.
-  context     String       @default("none")
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  tenantFlows TenantFlow[]
-  createdBy   String? // userId
-  roundRobins FlowNodeRoundRobin[]
+  // DEPRECATED: reemplazado de a poco por contextSourceId (ver ContextSource). Se
+  // conserva por compatibilidad con flujos existentes — no se borra en esta etapa.
+  context         String               @default("none")
+  // Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar durante la
+  // conversación. Nullable: no todos los flujos necesitan una. La ejecución real
+  // (consultarla desde el motor de conversaciones) es trabajo de una etapa
+  // posterior — ver docs/plan-de-trabajo.md, sección "Fuentes de verdad".
+  contextSourceId String?
+  contextSource   ContextSource?       @relation(fields: [contextSourceId], references: [id], onDelete: SetNull)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  tenantFlows     TenantFlow[]
+  createdBy       String? // userId
+  roundRobins     FlowNodeRoundRobin[]
 
   @@index([isActive])
   @@index([isDefault])
   @@index([context])
+  @@index([contextSourceId])
+}
+
+/// Fuente de verdad externa que un flujo puede consultar para dar contexto a sus
+/// respuestas: un servidor MCP remoto, un servicio de RAG, un webhook de n8n, o un
+/// proceso propio suscripto a una cola de nuestro RabbitMQ (`broker`).
+/// No instalamos ni hosteamos nada de esto — `config` guarda los parámetros de
+/// conexión a un servicio que ya corre en otro lado.
+///
+/// Por tenant (como Area), no por flujo: la misma fuente se puede reusar entre
+/// varios flujos de la empresa sin duplicar credenciales. `type` decide qué forma
+/// tiene `config` — ver CONTEXT_SOURCE_TYPES en context-source-types.catalog.ts,
+/// que es la única fuente de verdad (nunca mejor dicho) de qué tipos y campos son
+/// válidos, igual que SETTINGS_CATALOG para `Setting`.
+///
+/// Los campos marcados `secret` en el catálogo viajan cifrados dentro de `config`
+/// (mismo mecanismo que SecretsCipher usa para `Setting`: AES-256-GCM, nunca en
+/// texto plano en la fila). Un GET nunca devuelve el valor real de esos campos.
+model ContextSource {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  // 'mcp' | 'rag' | 'n8n' | 'broker' (catálogo abierto en código, ver context-source-types.catalog.ts).
+  // String y no enum de Prisma para poder sumar tipos nuevos sin migración de schema.
+  type      String
+  config    Json     @default("{}")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flows Flow[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
+  @@index([type])
 }
 
 // Estado del round robin de un nodo `transfer_agent`: a quién le tocó la

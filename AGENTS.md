@@ -132,6 +132,50 @@ request. Si tocás esto, tres cosas que ya rompieron el flujo una vez cada una:
   `publish()` acepta `{ assert: false }` — usarlo siempre que se publique contra una cola
   que el propio código ya declaró (como la de respuesta RPC).
 
+## Fuentes de verdad (`ContextSource`)
+
+Cada flujo puede vincularse a una fuente de verdad externa (MCP remoto, RAG, o webhook de
+n8n) que el backoffice administra en `/dashboard/context-sources`. El catálogo de tipos y
+campos vive en `context-source-types.catalog.ts` — mismo criterio que `settings.catalog.ts`:
+única fuente de verdad de qué tipos y campos son válidos, y `ContextSourcesService` descarta
+cualquier key de `config` que no esté declarada ahí para el `type` de esa fuente.
+
+- **Por tenant, no por flujo:** `ContextSource` tiene `tenantId` (como `Area`) para poder
+  reusar la misma fuente entre varios flujos de la empresa sin duplicar credenciales.
+  `Flow.contextSourceId` es un FK simple y nullable — **un único valor por flujo**, no una
+  relación N:N. Ver la limitación conocida más abajo.
+- **Secrets dentro de `config` (Json):** los campos marcados `secret: true` en el catálogo se
+  cifran con `SecretsCipher` (mismo mecanismo AES-256-GCM que `Setting`) antes de guardarse
+  dentro del `Json`, y nunca se devuelven en claro por la API — el GET expone un enmascarado
+  más `<campo>IsSet`, igual que los settings marcados `secret`. Un campo `secret` ausente en
+  un `PATCH` significa "no tocar" (conserva el cifrado existente); mandarlo explícito en
+  `null`/`''` lo borra.
+- **Todo I/O externo pasa por el broker**, misma regla que WhatsApp (ver "Desacople de
+  canales" en Constraints, y la sección Broker/RabbitMQ más abajo): `ContextSourcesController`
+  nunca hace `fetch()` directo contra un MCP/RAG/n8n. "Probar conexión"
+  (`POST /context-sources/:id/test-connection`) publica un `BrokerService.request()` a
+  `context-source.test-connection`, y `ContextSourceConnectorService` —suscripto a esa cola
+  desde `onModuleInit`, mismo patrón que `ConversationsService` con `whatsapp.incoming`— hace
+  la llamada real y responde por el canal RPC. Hoy productor y consumidor viven en el mismo
+  proceso; es el punto de extensión para cuando la consulta real se dispare desde el motor de
+  flujos, potencialmente desde un worker separado.
+- **No instalamos nada:** `config` son parámetros de conexión (URL + credenciales) a un
+  servicio que ya corre en otro lado. No hay proceso local de MCP, RAG ni n8n en este repo.
+
+**Limitación conocida:** `Flow` puede estar asignado a varios tenants a la vez (`TenantFlow`,
+N:N), pero `ContextSource` es por tenant y `Flow.contextSourceId` es un único FK global del
+flujo. Un flujo compartido entre dos empresas hoy usa la MISMA fuente de verdad (o ninguna)
+para ambas — no hay forma de que cada tenant vea una fuente distinta. Si hace falta, la
+solución es una tabla puente `FlowContextSource` con `tenantId` (mismo patrón que
+`TenantFlow`), no forzar el FK actual. Ver `docs/plan-de-trabajo.md`, sección "Fuentes de
+verdad — Ejecución real".
+
+**Pendiente (deliberadamente fuera de esta etapa):** la ejecución real — que el motor de
+conversaciones (`ConversationsService.executeNode`) consulte la fuente vinculada durante una
+conversación — no está implementada. Lo que existe hoy es administración (CRUD + probar
+conexión) y la vinculación flujo↔fuente. Ver `docs/plan-de-trabajo.md` para el detalle de qué
+falta por tipo (handshake MCP, contrato de RAG, cola RPC dedicada para la consulta en vivo).
+
 ## Resolución del tenant
 
 El JWT identifica **a la persona y nada más**: `{ sub, email }`. El tenant activo viaja

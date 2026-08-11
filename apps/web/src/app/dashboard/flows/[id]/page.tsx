@@ -51,6 +51,12 @@ interface UserOption {
   lastName?: string | null;
 }
 
+interface ContextSourceOption {
+  id: string;
+  name: string;
+  type: string;
+}
+
 const customNodeTypes = {
   start: StartNode,
   message: MessageNode,
@@ -111,6 +117,8 @@ function FlowEditorInner() {
   const [flowName, setFlowName] = useState('Nuevo Flujo');
   const [flowDescription, setFlowDescription] = useState('');
   const [flowContext, setFlowContext] = useState('none');
+  const [contextSourceId, setContextSourceId] = useState<string>('');
+  const [contextSources, setContextSources] = useState<ContextSourceOption[]>([]);
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [selectedTenantIds, setSelectedTenantIds] = useState<string[]>([]);
@@ -125,6 +133,7 @@ function FlowEditorInner() {
     // aparecen: no tiene sentido asignar un flujo a tenants que no se pueden ver.
     loadTenants();
     loadUsers();
+    loadContextSources();
 
     if (!isNew) {
       loadFlow();
@@ -165,12 +174,24 @@ function FlowEditorInner() {
     }
   }
 
+  async function loadContextSources() {
+    try {
+      const data = await apiFetch('/context-sources');
+      setContextSources(data.filter((s: any) => s.isActive));
+    } catch {
+      // Sin permiso `context-sources:read` en el tenant actual: el selector queda
+      // vacío, igual que allTenants/allUsers cuando falta el permiso equivalente.
+      setContextSources([]);
+    }
+  }
+
   async function loadFlow() {
     try {
       const flow = await apiFetch(`/flows/${id}`);
       setFlowName(flow.name);
       setFlowDescription(flow.description || '');
       setFlowContext(flow.context || 'none');
+      setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
       const tenantFlows = flow.tenantFlows || [];
       setSelectedTenantIds(tenantFlows.map((tf: any) => tf.tenant.id));
       setIsStartFlow(tenantFlows.some((tf: any) => tf.isStart));
@@ -292,6 +313,7 @@ function FlowEditorInner() {
         name: flowName,
         description: flowDescription,
         context: flowContext,
+        contextSourceId: contextSourceId || null,
         // Solo lo que define el flujo. ReactFlow agrega estado de runtime a nodos y
         // aristas (`measured` con el tamaño calculado, `selected`, `dragging`) que no
         // es parte del flujo y que el ValidationPipe del backend rechaza.
@@ -381,6 +403,19 @@ function FlowEditorInner() {
             {contextOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={contextSourceId}
+            onChange={(e) => setContextSourceId(e.target.value)}
+            className="text-gray-600 border rounded px-2 py-1 text-sm"
+            title="Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar"
+          >
+            <option value="">Sin fuente de verdad</option>
+            {contextSources.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.type})
               </option>
             ))}
           </select>

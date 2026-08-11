@@ -29,10 +29,24 @@ export class CreateFlowDto {
   @IsOptional()
   isDefault?: boolean;
 
-  /** Fuente de datos que respalda las respuestas del flujo. Ver flow-context.ts. */
+  /**
+   * DEPRECATED: fuente de datos de la lista cerrada de flow-context.ts. Se
+   * conserva por compatibilidad — el campo nuevo es `contextSourceId`.
+   */
   @IsIn(FLOW_CONTEXT_VALUES)
   @IsOptional()
   context?: string;
+
+  /**
+   * Fuente de verdad (MCP/RAG/n8n/broker) que este flujo consulta. `null` desvincula.
+   * `FlowService` no valida tenant acá: el frontend solo ofrece en el dropdown las
+   * fuentes del tenant activo, pero un flujo puede estar asignado a varios
+   * tenants (`TenantFlow`) y `ContextSource` es por tenant — ver la limitación
+   * documentada en AGENTS.md.
+   */
+  @IsString()
+  @IsOptional()
+  contextSourceId?: string | null;
 
   @IsArray()
   @IsString({ each: true })
@@ -89,8 +103,13 @@ export class UpdateFlowDto {
   @IsOptional()
   isDefault?: boolean;
 
-  /** Fuente de datos que respalda las respuestas del flujo. Ver flow-context.ts. */
+  /** DEPRECATED: ver el comentario equivalente en CreateFlowDto. */
   @IsIn(FLOW_CONTEXT_VALUES)
   @IsOptional()
   context?: string;
+
+  /** Ver el comentario equivalente en CreateFlowDto. */
+  @IsString()
+  @IsOptional()
+  contextSourceId?: string | null;
 }

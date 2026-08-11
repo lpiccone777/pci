@@ -30,12 +30,12 @@ export interface PermissionAction {
 }
 
 /**
- * Los 13 recursos del sistema.
+ * Los 14 recursos del sistema.
  *
- * Hoy solo `users`, `tenants`, `roles`, `permissions`, `areas`, `settings` y `flows`
- * protegen alguna operación con `@RequirePermission`. El resto se declara igual: son los
- * módulos que todavía no se protegieron, y tener el permiso disponible antes evita tener
- * que repartirlo a mano el día que se protejan.
+ * Hoy solo `users`, `tenants`, `roles`, `permissions`, `areas`, `settings`, `flows`
+ * y `context-sources` protegen alguna operación con `@RequirePermission`. El resto se
+ * declara igual: son los módulos que todavía no se protegieron, y tener el permiso
+ * disponible antes evita tener que repartirlo a mano el día que se protejan.
  *
  * El orden es el que se ve en la matriz.
  */
@@ -53,6 +53,7 @@ export const PERMISSION_RESOURCES: readonly PermissionResource[] = [
   { key: 'channels', label: 'Canales' },
   { key: 'llm', label: 'Modelos de lenguaje' },
   { key: 'flows', label: 'Flujos IVR' },
+  { key: 'context-sources', label: 'Fuentes de verdad' },
 ] as const;
 
 /** Las 4 acciones CRUD. `read` va primera porque es la que habilita a las demás. */
@@ -63,7 +64,7 @@ export const PERMISSION_ACTIONS: readonly PermissionAction[] = [
   { key: 'delete', label: 'Eliminar' },
 ] as const;
 
-/** Cantidad de permisos asignables: 13 recursos × 4 acciones = 52. */
+/** Cantidad de permisos asignables: 14 recursos × 4 acciones = 56. */
 export const PERMISSION_TOTAL = PERMISSION_RESOURCES.length * PERMISSION_ACTIONS.length;
 
 /** Un par recurso-acción, que es todo lo que hace falta para decidir si algo se permite. */
