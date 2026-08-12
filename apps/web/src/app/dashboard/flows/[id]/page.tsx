@@ -614,9 +614,9 @@ function FlowEditorInner() {
         </div>
       )}
 
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-h-0">
         {/* Sidebar - Node Types */}
-        <div className="w-48 bg-gray-50 border-r p-4 overflow-y-auto">
+        <div className="w-48 bg-gray-50 border-r p-4 overflow-y-auto min-h-0">
           <h3 className="font-semibold mb-4 text-sm">Nodos</h3>
           <div className="space-y-2">
             {nodeTypeList.map((nt) => (
@@ -663,7 +663,7 @@ function FlowEditorInner() {
 
         {/* Properties Panel */}
         {selectedNode && (
-          <div className="w-72 bg-white border-l p-4 overflow-y-auto">
+          <div className="w-72 bg-white border-l p-4 overflow-y-auto min-h-0">
             <h3 className="font-semibold mb-4">Propiedades</h3>
             <p className="text-xs text-gray-500 mb-4">{selectedNode.type}</p>
             <NodeProperties

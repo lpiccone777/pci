@@ -76,6 +76,17 @@ interface NodeExecutionResult {
   flowState?: any;
 }
 
+/** Un menú apilado en `flowState.__menuStack` — ver `navigateMenuBack`. */
+interface MenuStackEntry {
+  nodeId: string;
+  flowId: string;
+}
+
+/** Valor reservado de la opción "Volver" sintética — no puede colisionar con
+ * un `opt.value` real porque el editor de flujos genera esos valores como
+ * índices numéricos o slugs simples, nunca con este prefijo. */
+const BACK_OPTION_VALUE = '__volver';
+
 @Injectable()
 export class ConversationsService implements OnModuleInit {
   private readonly logger = new Logger(ConversationsService.name);
@@ -560,6 +571,34 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
+   * Vuelve al menú que quedó en el tope de `menuStack` (ver `case 'menu'`).
+   * Si ese menú pertenece a otro `Flow` (submenú entrado vía nodo `subflow`),
+   * reusa el mismo mecanismo de cambio de flujo que `case 'subflow'`
+   * (`flowState.__subflow`, leído por el loop principal de `executeFlow`) en
+   * vez de duplicar esa lógica acá.
+   */
+  private navigateMenuBack(
+    flowState: Record<string, any>,
+    menuStack: MenuStackEntry[],
+    currentFlowId: string,
+  ): NodeExecutionResult {
+    const stack = [...menuStack];
+    const target = stack.pop();
+    flowState.__menuStack = stack;
+
+    // No debería pasar — "Volver" solo se ofrece cuando la pila no está vacía —
+    // pero ante un flowState corrupto de una sesión vieja, mejor no romper nada.
+    if (!target) {
+      return { flowState };
+    }
+
+    if (target.flowId !== currentFlowId) {
+      return { flowState: { ...flowState, __subflow: { flowId: target.flowId, entryNodeId: target.nodeId } } };
+    }
+    return { nextNodeId: target.nodeId, flowState };
+  }
+
+  /**
    * Le pregunta al LLM si un mensaje que ya activó `looksLikeCancelAttempt` es
    * un pedido de cerrar o reiniciar la charla entera (despedida, "cerrá esto",
    * "quiero reiniciar"), a diferencia de `confirmCancelIntent` que evalúa si es
@@ -949,6 +988,14 @@ export class ConversationsService implements OnModuleInit {
       ? await this.pickNextAssignee(flowId, node.id, assigneeIds)
       : null;
 
+    // `data.message` es texto configurado en el editor y puede traer `{{variable}}`
+    // (ej. `{{descripcion}}`, `{{Urgencia}}`) igual que el texto de cualquier otro
+    // nodo — pero a diferencia de esos, nunca pasaba por `executeFlow` como
+    // `responseText` (es una nota interna, no le llega al usuario, ver comentario
+    // más abajo), así que el interpolate() que corre ahí no lo tocaba y las
+    // variables quedaban sin reemplazar en el mail y en el ticket.
+    const note = data.message ? this.interpolate(data.message, flowState) : undefined;
+
     if (methods.includes('ticket') && assignee) {
       const ticket = await this.prisma.ticket.create({
         data: {
@@ -956,7 +1003,7 @@ export class ConversationsService implements OnModuleInit {
           tenantId,
           assignedToId: assignee.id,
           subject: (flowState.subject || body).substring(0, 100),
-          description: [data.message, flowState.description || body].filter(Boolean).join('\n\n'),
+          description: [note, flowState.description || body].filter(Boolean).join('\n\n'),
           priority: flowState.priority || 'medium',
         },
       });
@@ -982,7 +1029,7 @@ export class ConversationsService implements OnModuleInit {
           subject: `Transferencia de conversación — ${userName}`,
           text:
             `${userName} (${user?.phone || 'sin teléfono'}) fue transferido a soporte humano.\n\n` +
-            (data.message ? `Nota: ${data.message}\n\n` : '') +
+            (note ? `Nota: ${note}\n\n` : '') +
             `Último mensaje: "${body}"\n\n` +
             (assigneeName ? `Asignado a: ${assigneeName}\n` : 'Sin colaborador asignado.\n') +
             (flowState.lastTicketId ? `Ticket: #${flowState.lastTicketId}\n` : ''),
@@ -1082,6 +1129,16 @@ export class ConversationsService implements OnModuleInit {
       case 'menu': {
         const options = data.options || [];
 
+        // Pila de navegación entre menús (pedido 2026-08-12): cada vez que se
+        // elige una opción real (no "Volver") se apila el menú que se abandona,
+        // así el próximo menú puede ofrecer "Volver" a él. Vacía = no hay menú
+        // anterior (el menú raíz nunca la muestra). Es runtime, no del grafo del
+        // flujo: refleja por dónde pasó ESTA conversación, no la estructura
+        // estática — funciona igual si un submenú se llega desde varios lados.
+        const menuStack: MenuStackEntry[] = flowState.__menuStack || [];
+        const displayOptions =
+          menuStack.length > 0 ? [...options, { value: BACK_OPTION_VALUE, label: 'Volver' }] : options;
+
         // Ya se derivó a conversación libre con el LLM (el mensaje anterior no
         // encajaba en ninguna opción ni era una cancelación): sigue atendiendo
         // con el historial completo, sin volver a evaluar contra las opciones.
@@ -1096,7 +1153,7 @@ export class ConversationsService implements OnModuleInit {
         // encadenar nodos el menú consumiría el mensaje que lo activó.
         if (flowState.__awaiting !== node.id) {
           flowState.__awaiting = node.id;
-          const interactive = this.buildMenuInteractive(data.text, options);
+          const interactive = this.buildMenuInteractive(data.text, displayOptions);
           // Si hay interactivo, `responseText` tiene que ser SOLO el header (sin
           // la lista numerada): las opciones ya se ven en los botones/lista, y
           // ese mismo texto es el que `executeFlow` termina mandando como body
@@ -1106,20 +1163,24 @@ export class ConversationsService implements OnModuleInit {
             : (
                 (data.text ?? '') +
                 '\n' +
-                options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
+                displayOptions.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
               ).trim();
           return { responseText, interactive, waitForInput: true, flowState };
         }
 
-        const selected = options.find(
+        const selected = displayOptions.find(
           (opt: any) =>
             body.trim() === opt.value ||
             body.trim() === opt.label ||
-            body.trim() === String(options.indexOf(opt) + 1),
+            body.trim() === String(displayOptions.indexOf(opt) + 1),
         );
 
         if (selected) {
           delete flowState.__awaiting;
+          if (selected.value === BACK_OPTION_VALUE) {
+            return this.navigateMenuBack(flowState, menuStack, flowId);
+          }
+          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
           // Arista con sourceHandle = valor de la opción elegida
           const edge = edges.find(
             (e: any) => e.source === node.id && e.sourceHandle === String(selected.value),
@@ -1132,18 +1193,22 @@ export class ConversationsService implements OnModuleInit {
         // querer cancelar la gestión ("dejalo", "mejor no"). Se interpreta con
         // el LLM antes de asumir que es una opción inválida — solo se gasta esta
         // llamada acá, nunca en el camino feliz de un match literal.
-        const interpretation = await this.interpretMenuChoice(body, options);
+        const interpretation = await this.interpretMenuChoice(body, displayOptions);
 
         if (interpretation.cancel) {
           return this.cancelInteraction(flowState);
         }
 
         const matched = interpretation.optionValue
-          ? options.find((opt: any) => String(opt.value) === interpretation.optionValue)
+          ? displayOptions.find((opt: any) => String(opt.value) === interpretation.optionValue)
           : undefined;
 
         if (matched) {
           delete flowState.__awaiting;
+          if (matched.value === BACK_OPTION_VALUE) {
+            return this.navigateMenuBack(flowState, menuStack, flowId);
+          }
+          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
           const edge = edges.find(
             (e: any) => e.source === node.id && e.sourceHandle === String(matched.value),
           );

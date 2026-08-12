@@ -391,6 +391,34 @@
   - Verificado en vivo contra un servidor real (`opencodego`): lenguaje natural mapeado
     correctamente a una opción, cancelación coloquial confirmada (conversación reseteada
     en BD), y texto sin sentido sigue repitiendo el menú sin forzar un match falso
+- [x] **Opción "Volver" automática en todo menú que no sea el raíz** (pedido 2026-08-12)
+  - Regla: cualquier `menu` debe ofrecer volver al menú anterior, salvo que no exista uno
+    (el menú por el que arranca el flujo). Se resolvió en el motor, no a mano en cada nodo
+    del editor — así funciona para todos los menús existentes y futuros sin cablear nada
+  - `flowState.__menuStack: {nodeId, flowId}[]` — pila de navegación **de esta conversación
+    en tiempo de ejecución**, no del grafo estático del flujo: cada vez que se elige una
+    opción real (no "Volver") se apila el menú que se abandona (`case 'menu'`,
+    `ConversationsService`). Vacía = no hay menú anterior → no se ofrece "Volver". Al elegir
+    una opción real se apila SIEMPRE, sin mirar qué tipo de nodo sigue — si hay nodos no
+    interactivos en el medio (`input`, `variable`, etc.) antes del próximo menú, la pila ya
+    tiene la entrada correcta para cuando se necesite
+  - "Volver" es una opción sintética (`value: '__volver'`, reservado — el editor solo genera
+    valores numéricos por defecto) que se agrega a `options` únicamente para mostrar y
+    matchear (`displayOptions`), nunca se persiste en el `Flow.nodes` del editor. Participa
+    del match literal Y de `interpretMenuChoice` (el clasificador LLM), así que también
+    entiende "volvé", "atrás", etc., no solo el label exacto
+  - Al elegir "Volver" (`navigateMenuBack`) se desapila el tope y se navega ahí. Si ese menú
+    pertenece a otro `Flow` (se llegó vía nodo `subflow`), reusa el mecanismo existente de
+    cambio de flujo (`flowState.__subflow`, ya consumido por el loop de `executeFlow`) en vez
+    de duplicar esa lógica — soporta cruzar de vuelta un límite de subflow sin código nuevo
+  - `buildMenuInteractive` ya cortaba en 10 opciones (WhatsApp): si un menú ya tenía 10 y le
+    toca sumar "Volver", se pasa el límite y cae solo al modo texto plano — sin límite, sin
+    romper nada, comportamiento ya existente reutilizado tal cual
+  - Verificado en vivo contra el flujo real (`Test Flow`): menú raíz (`__menuStack` vacía) →
+    elegir opción → nodo `input` intermedio → submenú (`__menuStack` con el raíz apilado,
+    "Volver" ofrecido) → elegir "Volver" → vuelve exactamente al menú raíz con la pila vacía
+    de nuevo. El caso de cruzar un `subflow` al volver quedó implementado y tipado, pero sin
+    ejercitar en vivo todavía (no había un caso de prueba a mano con esa forma exacta)
 
 ### Conector real de WhatsApp y Email ✅ COMPLETADO (pedido 2026-08-05)
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
