@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { ALL_TENANTS } from '@/lib/system-tenant';
 
 interface CatalogEntry {
   key: string;
@@ -35,6 +36,8 @@ interface RoleRow {
    * rechaza modificarlo, renombrarlo o eliminarlo. Se muestra en modo consulta.
    */
   isProtected: boolean;
+  /** Solo en la vista "Todas las empresas": a qué empresa pertenece el rol. */
+  tenant?: { id: string; name: string; slug: string };
 }
 
 interface RoleUser {
@@ -60,23 +63,50 @@ function usersPhrase(count: number) {
 }
 
 export default function RolesPage() {
-  const { hasPermission, user, activeTenant } = useAuth();
+  const { hasPermission, hasPermissionInTenant, user, activeTenant, isSystemUser } = useAuth();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Filtro por empresa; solo se usa en el modo consolidado. */
+  const [tenantFilter, setTenantFilter] = useState<string>('');
 
-  /** null = cerrado · { role: null } = alta · { role } = edición. */
-  const [editing, setEditing] = useState<{ role: RoleRow | null } | null>(null);
+  /**
+   * null = cerrado. `mode` distingue abrir para ver (clic en la fila, arranca en solo
+   * lectura) de abrir para editar (botón Editar / alta). `role: null` = alta.
+   */
+  const [editing, setEditing] = useState<{
+    role: RoleRow | null;
+    mode: 'view' | 'edit';
+  } | null>(null);
   const [viewingUsers, setViewingUsers] = useState<RoleRow | null>(null);
 
-  const canCreate = hasPermission('roles', 'create');
-  const canUpdateRole = hasPermission('roles', 'update');
-  const canDelete = hasPermission('roles', 'delete');
-  const canUpdatePerms = hasPermission('permissions', 'update');
-  const canEditSomething = canUpdateRole || canUpdatePerms;
+  // Vista consolidada "Todas las empresas": el superadmin ve los roles de todo el sistema
+  // (`/roles/all`); el usuario común con varias empresas, solo los de las suyas (`/roles/mine`).
+  // Antes era exclusiva del superadmin y de solo lectura; ahora ambos pueden modificar y
+  // eliminar por fila (cada acción va contra la empresa de esa fila), pero el alta sigue
+  // apagada: para crear hay que pararse en una empresa puntual.
+  const isAllTenants = activeTenant === ALL_TENANTS;
+
+  const canCreate = hasPermission('roles', 'create') && !isAllTenants;
+  const canUpdateRole = hasPermission('roles', 'update') && !isAllTenants;
+  const canDelete = hasPermission('roles', 'delete') && !isAllTenants;
+  const canUpdatePerms = hasPermission('permissions', 'update') && !isAllTenants;
+
+  // En la vista consolidada, cada fila es de una empresa distinta: el permiso se evalúa contra
+  // esa empresa (el superadmin que opera sobre una empresa ajena cae a su rol de sistema). En
+  // una empresa puntual manda el permiso del tenant activo, ya resuelto arriba.
+  const rowCanUpdateRole = (r: RoleRow) =>
+    isAllTenants ? hasPermissionInTenant(r.tenant?.id ?? '', 'roles', 'update') : canUpdateRole;
+  const rowCanUpdatePerms = (r: RoleRow) =>
+    isAllTenants
+      ? hasPermissionInTenant(r.tenant?.id ?? '', 'permissions', 'update')
+      : canUpdatePerms;
+  const rowCanDelete = (r: RoleRow) =>
+    isAllTenants ? hasPermissionInTenant(r.tenant?.id ?? '', 'roles', 'delete') : canDelete;
+  const rowCanEditSomething = (r: RoleRow) => rowCanUpdateRole(r) || rowCanUpdatePerms(r);
 
   /**
    * El rol del usuario en el tenant activo. Sirve para avisarle cuando está por editar
@@ -88,29 +118,63 @@ export default function RolesPage() {
     return user.tenants?.find((t) => t.tenantId === activeTenant)?.role?.id ?? null;
   }, [user, activeTenant]);
 
+  // Empresas presentes en el listado, para alimentar el filtro del modo consolidado.
+  const tenantsInList = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const r of roles) if (r.tenant) byId.set(r.tenant.id, r.tenant.name);
+    return Array.from(byId, ([id, name]) => ({ id, name })).sort((x, y) =>
+      x.name.localeCompare(y.name),
+    );
+  }, [roles]);
+
+  const visibleRoles = useMemo(
+    () =>
+      isAllTenants && tenantFilter
+        ? roles.filter((r) => r.tenant?.id === tenantFilter)
+        : roles,
+    [roles, isAllTenants, tenantFilter],
+  );
+
   const load = useCallback(async () => {
     try {
-      const [catalogData, roleData] = await Promise.all([
-        apiFetch('/roles/catalog'),
-        apiFetch('/roles'),
-      ]);
-      setCatalog(catalogData);
+      if (!isAllTenants) {
+        const [catalogData, roleData] = await Promise.all([
+          apiFetch('/roles/catalog'),
+          apiFetch('/roles'),
+        ]);
+        setCatalog(catalogData);
+        setRoles(roleData);
+        return;
+      }
+      // Consolidada: el superadmin trae todo el sistema; el usuario común, solo sus empresas.
+      const roleData = await apiFetch(isSystemUser ? '/roles/all' : '/roles/mine');
       setRoles(roleData);
+      // El catálogo de permisos alimenta la matriz del modal de edición. `/roles/catalog` pide
+      // `roles:read` en el tenant del header: para el superadmin la empresa de sistema alcanza,
+      // pero la empresa de respaldo del usuario común puede no tenerlo, así que se pide contra
+      // una empresa donde sí (la de cualquier rol visible). Sin roles visibles no hace falta.
+      if (roleData.length > 0) {
+        const headers =
+          !isSystemUser && roleData[0]?.tenant?.id
+            ? { headers: { 'X-Tenant-Id': roleData[0].tenant.id } }
+            : undefined;
+        setCatalog(await apiFetch('/roles/catalog', headers));
+      }
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAllTenants, isSystemUser]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  function openModal(role: RoleRow | null) {
+  function openModal(role: RoleRow | null, mode: 'view' | 'edit') {
     setFeedback(null);
     setDeletingId(null);
-    setEditing({ role });
+    setEditing({ role, mode });
   }
 
   function openUsers(role: RoleRow) {
@@ -137,7 +201,14 @@ export default function RolesPage() {
   async function confirmDelete(role: RoleRow) {
     setBusy(true);
     try {
-      const res = await apiFetch(`/roles/${role.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/roles/${role.id}`, {
+        method: 'DELETE',
+        // En la vista consolidada la baja va contra la empresa de la fila, no contra el header
+        // del selector (que apunta al sistema / a la empresa de respaldo).
+        ...(isAllTenants && role.tenant
+          ? { headers: { 'X-Tenant-Id': role.tenant.id } }
+          : {}),
+      });
       setFeedback({ kind: 'ok', text: res?.message || `Rol ${role.name} eliminado.` });
       setDeletingId(null);
       await load();
@@ -158,17 +229,29 @@ export default function RolesPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between gap-4 mb-6">
+      <div
+        className={`flex items-center justify-between gap-4 ${
+          isAllTenants ? 'mb-2' : 'mb-6'
+        }`}
+      >
         <h1 className="text-2xl font-bold text-gray-800">Roles</h1>
         {canCreate && (
           <button
-            onClick={() => openModal(null)}
+            onClick={() => openModal(null, 'edit')}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 whitespace-nowrap"
           >
             Nuevo rol
           </button>
         )}
       </div>
+
+      {isAllTenants && (
+        <p className="text-sm text-gray-500 mb-6">
+          Roles de {isSystemUser ? 'todas las empresas' : 'todas tus empresas'}. Podés modificar
+          o eliminar cada uno en su empresa; para crear uno nuevo, elegí una empresa en el
+          selector lateral.
+        </p>
+      )}
 
       {feedback && (
         <p
@@ -185,10 +268,33 @@ export default function RolesPage() {
         </p>
       )}
 
+      {/* Filtro por empresa: solo en la vista consolidada. En una empresa concreta el propio
+          selector del sidebar ya cumple esa función, así que ahí sería redundante. */}
+      {isAllTenants && tenantsInList.length > 1 && (
+        <div className="mb-4 flex items-center gap-2">
+          <label className="text-sm text-gray-600">Empresa:</label>
+          <select
+            value={tenantFilter}
+            onChange={(e) => setTenantFilter(e.target.value)}
+            className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+          >
+            <option value="">Todas</option>
+            {tenantsInList.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="bg-white rounded shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
             <tr>
+              {isAllTenants && (
+                <th className="text-left px-4 py-2 font-semibold">Empresa</th>
+              )}
               <th className="text-left px-4 py-2 font-semibold">Rol</th>
               <th className="text-right px-4 py-2 font-semibold whitespace-nowrap">
                 Usuarios
@@ -202,11 +308,15 @@ export default function RolesPage() {
           <tbody>
             {roles.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-gray-400">
-                  <p className="mb-3">Todavía no hay roles en esta empresa.</p>
+                <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-6 text-center text-gray-400">
+                  <p className="mb-3">
+                    {isAllTenants
+                      ? 'No hay roles para mostrar.'
+                      : 'Todavía no hay roles en esta empresa.'}
+                  </p>
                   {canCreate && (
                     <button
-                      onClick={() => openModal(null)}
+                      onClick={() => openModal(null, 'edit')}
                       className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
                     >
                       Crear el primero
@@ -216,14 +326,20 @@ export default function RolesPage() {
               </tr>
             )}
 
-            {roles.map((role) =>
+            {visibleRoles.map((role) =>
               deletingId === role.id ? (
                 <tr key={role.id} className="border-t bg-red-50">
-                  <td colSpan={4} className="px-4 py-2">
+                  <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">
                     <div className="flex gap-2 items-center flex-wrap">
                       <span className="text-red-700 mr-1">
-                        ¿Eliminar el rol <b>{role.name}</b>? Esta acción no se puede
-                        deshacer.
+                        ¿Eliminar el rol <b>{role.name}</b>
+                        {isAllTenants && role.tenant ? (
+                          <>
+                            {' '}
+                            de <b>{role.tenant.name}</b>
+                          </>
+                        ) : null}
+                        ? Esta acción no se puede deshacer.
                       </span>
                       <button
                         onClick={() => confirmDelete(role)}
@@ -243,7 +359,15 @@ export default function RolesPage() {
                   </td>
                 </tr>
               ) : (
-                <tr key={role.id} className="border-t hover:bg-gray-50">
+                <tr
+                  key={role.id}
+                  onClick={() => openModal(role, 'view')}
+                  className="border-t hover:bg-gray-50 cursor-pointer"
+                  title="Ver detalle"
+                >
+                  {isAllTenants && (
+                    <td className="px-4 py-2 text-gray-500">{role.tenant?.name ?? '—'}</td>
+                  )}
                   <td className="px-4 py-2">
                     <span className="font-medium">{role.name}</span>
                     {role.isProtected && (
@@ -257,14 +381,24 @@ export default function RolesPage() {
                   </td>
                   <td className="px-4 py-2 text-right">
                     {/* El número ES el acceso a la lista: el dato y la forma de abrirlo
-                        son la misma cosa, así que no lleva un botón "Ver" aparte. */}
-                    <button
-                      onClick={() => openUsers(role)}
-                      title={`Ver los usuarios con el rol ${role.name}`}
-                      className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
-                    >
-                      {role.userCount}
-                    </button>
+                        son la misma cosa, así que no lleva un botón aparte. stopPropagation
+                        para que abrir la lista no dispare también el detalle de la fila. En
+                        "Todas las empresas" el drill-down pega contra un endpoint scopeado a
+                        la empresa activa, así que ahí el número va como texto plano. */}
+                    {isAllTenants ? (
+                      <span className="tabular-nums">{role.userCount}</span>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openUsers(role);
+                        }}
+                        title={`Ver los usuarios con el rol ${role.name}`}
+                        className="text-blue-600 hover:text-blue-800 hover:underline tabular-nums"
+                      >
+                        {role.userCount}
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right">
                     {role.permissionCount === 0 ? (
@@ -280,48 +414,65 @@ export default function RolesPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-2 text-right whitespace-nowrap">
-                    {/* El botón va siempre: sin permisos de edición la ventana se abre en
-                        modo consulta, que es la única forma de ver qué habilita un rol.
-                        La etiqueta dice de antemano lo que se va a poder hacer adentro. */}
-                    <button
-                      onClick={() => openModal(role)}
-                      className="text-blue-600 hover:text-blue-800 px-2"
+                  <td className="px-4 text-right whitespace-nowrap">
+                    {/* Fuera de la zona que abre el detalle va SOLO el grupo de botones. El
+                        stopPropagation vive en este contenedor, que se lleva el padding vertical
+                        (py-2) para ocupar el alto completo de la fila. El botón "Editar" solo
+                        aparece para quien puede editar y no es el rol de sistema; los demás ven
+                        el rol clickeando la fila. title="" evita heredar el tooltip del <tr>. */}
+                    <span
+                      className="inline-block align-middle py-2 pl-0.5 cursor-default"
+                      onClick={(e) => e.stopPropagation()}
+                      title=""
                     >
-                      {role.isProtected || !canEditSomething ? 'Ver' : 'Editar'}
-                    </button>
-                    {canDelete &&
-                      (role.userCount === 0 && !role.isProtected ? (
+                      {rowCanEditSomething(role) && !role.isProtected && (
                         <button
-                          onClick={() => {
-                            setFeedback(null);
-                            setDeletingId(role.id);
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openModal(role, 'edit');
                           }}
-                          className="text-red-600 hover:text-red-800 px-2"
+                          className="text-blue-600 hover:text-blue-800 px-2"
                         >
-                          Borrar
+                          Editar
                         </button>
-                      ) : (
-                        // aria-disabled y no disabled: con `disabled` de verdad, quien
-                        // navega por teclado ni siquiera lo encuentra, y en pantalla
-                        // táctil no hay hover que muestre el motivo.
-                        <button
-                          onClick={() => explainBlockedDelete(role)}
-                          aria-disabled="true"
-                          title={
-                            role.isProtected
-                              ? 'No se puede eliminar: es el rol de superusuario del sistema'
-                              : `No se puede eliminar: tiene ${role.userCount} ${
-                                  role.userCount === 1
-                                    ? 'usuario asignado'
-                                    : 'usuarios asignados'
-                                }`
-                          }
-                          className="text-gray-400 hover:text-gray-500 cursor-not-allowed px-2"
-                        >
-                          Borrar
-                        </button>
-                      ))}
+                      )}
+                      {rowCanDelete(role) &&
+                        (role.userCount === 0 && !role.isProtected ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFeedback(null);
+                              setDeletingId(role.id);
+                            }}
+                            className="text-red-600 hover:text-red-800 px-2"
+                          >
+                            Borrar
+                          </button>
+                        ) : (
+                          // aria-disabled y no disabled: con `disabled` de verdad, quien
+                          // navega por teclado ni siquiera lo encuentra, y en pantalla
+                          // táctil no hay hover que muestre el motivo.
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              explainBlockedDelete(role);
+                            }}
+                            aria-disabled="true"
+                            title={
+                              role.isProtected
+                                ? 'No se puede eliminar: es el rol de superusuario del sistema'
+                                : `No se puede eliminar: tiene ${role.userCount} ${
+                                    role.userCount === 1
+                                      ? 'usuario asignado'
+                                      : 'usuarios asignados'
+                                  }`
+                            }
+                            className="text-gray-400 hover:text-gray-500 cursor-not-allowed px-2"
+                          >
+                            Borrar
+                          </button>
+                        ))}
+                    </span>
                   </td>
                 </tr>
               ),
@@ -334,16 +485,28 @@ export default function RolesPage() {
         <RoleModal
           role={editing.role}
           catalog={catalog}
+          initialEdit={editing.mode === 'edit'}
+          isAllTenants={isAllTenants}
+          // En la vista consolidada, el guardado (nombre y permisos) va contra la empresa del rol.
+          tenantHeader={isAllTenants ? editing.role?.tenant?.id : undefined}
           // El rol del sistema anula cualquier permiso de edición: el backend lo rechaza
           // igual, y dejar la matriz activa sería prometer algo que va a fallar al guardar.
+          // En la vista consolidada los permisos se evalúan contra la empresa del rol.
           canEditName={
-            !editing.role?.isProtected && (editing.role ? canUpdateRole : canCreate)
+            !editing.role?.isProtected &&
+            (editing.role ? rowCanUpdateRole(editing.role) : canCreate)
           }
-          canEditPerms={canUpdatePerms && !editing.role?.isProtected}
+          canEditPerms={
+            !editing.role?.isProtected &&
+            (editing.role ? rowCanUpdatePerms(editing.role) : canUpdatePerms)
+          }
           isProtected={!!editing.role?.isProtected}
           isOwnRole={!!editing.role && editing.role.id === ownRoleId}
           otherNames={roles
             .filter((r) => r.id !== editing.role?.id)
+            // El nombre es único por empresa: en la vista consolidada solo chocan los de la
+            // misma empresa que se está editando.
+            .filter((r) => !isAllTenants || r.tenant?.id === editing.role?.tenant?.id)
             .map((r) => r.name)}
           onClose={() => setEditing(null)}
           onSaved={afterSave}
@@ -364,6 +527,9 @@ export default function RolesPage() {
 function RoleModal({
   role,
   catalog,
+  initialEdit,
+  isAllTenants,
+  tenantHeader,
   canEditName,
   canEditPerms,
   isProtected,
@@ -374,6 +540,10 @@ function RoleModal({
 }: {
   role: RoleRow | null;
   catalog: Catalog;
+  initialEdit: boolean;
+  isAllTenants: boolean;
+  /** Empresa a la que dirigir el guardado (header `X-Tenant-Id`), solo en la vista consolidada. */
+  tenantHeader?: string;
   canEditName: boolean;
   canEditPerms: boolean;
   isProtected: boolean;
@@ -407,6 +577,7 @@ function RoleModal({
   const [perms, setPerms] = useState<Set<string>>(() => new Set(basePerms));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [editMode, setEditMode] = useState(initialEdit);
 
   const nameRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -515,6 +686,9 @@ function RoleModal({
         await apiFetch(`/roles/${role.id}`, {
           method: 'PATCH',
           body: JSON.stringify({ name: trimmed }),
+          // En la vista consolidada el guardado va contra la empresa del rol, no contra el
+          // header del selector.
+          ...(tenantHeader ? { headers: { 'X-Tenant-Id': tenantHeader } } : {}),
         });
       }
 
@@ -524,6 +698,7 @@ function RoleModal({
           await apiFetch(`/roles/${roleId}/permissions`, {
             method: 'PUT',
             body: JSON.stringify({ permissions: payload }),
+            ...(tenantHeader ? { headers: { 'X-Tenant-Id': tenantHeader } } : {}),
           });
         } catch (permErr: any) {
           if (justCreated) {
@@ -583,14 +758,17 @@ function RoleModal({
   }
 
   /**
-   * No hay nada para editar: ni el nombre ni la matriz.
+   * `editMode` distingue ver de editar. La ventana se abre en modo consulta al clickear la
+   * fila (`initialEdit=false`) y directo en edición desde el botón Editar o el alta
+   * (`initialEdit=true`). El botón "Editar" del pie pasa de una a otra.
    *
-   * Cubre dos casos que en pantalla se ven igual — el rol del sistema, que llega con las
-   * dos banderas en `false`, y quien abre la ventana con permiso de solo lectura sobre
-   * roles. Antes solo se contemplaba el primero, así que el segundo no tenía forma de
-   * llegar hasta acá.
+   * Los permisos reales siguen mandando: un rol de sistema o quien solo puede leer nunca
+   * habilita los campos —de hecho a esos el botón "Editar" ni les aparece—. `nameEditable`
+   * y `permsEditable` combinan permiso y modo; `canEditAnything` resume si hay algo editable.
    */
-  const readOnly = !canEditName && !canEditPerms;
+  const canEditAnything = canEditName || canEditPerms;
+  const nameEditable = canEditName && editMode;
+  const permsEditable = canEditPerms && editMode;
 
   const saveDisabled = saving || (role !== null && changeCount === 0);
 
@@ -612,14 +790,19 @@ function RoleModal({
         <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
           <div className="flex-1 min-w-0">
             <h2 id="role-modal-title" className="text-lg font-semibold text-gray-800 mb-3">
-              {readOnly
-                ? isProtected
-                  ? 'Rol del sistema'
-                  : 'Ver rol'
-                : role
+              {role === null
+                ? 'Nuevo rol'
+                : editMode
                   ? 'Editar rol'
-                  : 'Nuevo rol'}
+                  : isProtected
+                    ? 'Rol del sistema'
+                    : role.name}
             </h2>
+            {isAllTenants && role?.tenant && (
+              <p className="-mt-2 mb-3 text-xs text-gray-500">
+                Empresa: <span className="text-gray-700">{role.tenant.name}</span>
+              </p>
+            )}
             <label htmlFor="role-name" className="block text-xs text-gray-500 mb-1">
               Nombre del rol *
             </label>
@@ -634,7 +817,7 @@ function RoleModal({
                   save();
                 }
               }}
-              disabled={!canEditName || saving}
+              disabled={!nameEditable || saving}
               autoComplete="off"
               placeholder="Ej: Supervisor"
               className="w-full max-w-[340px] border border-gray-200 px-3 py-2 rounded disabled:bg-gray-100"
@@ -663,13 +846,13 @@ function RoleModal({
             </p>
           )}
           {/* En modo consulta el aviso no aplica: no hay forma de quitarse nada. */}
-          {isOwnRole && !readOnly && (
+          {isOwnRole && editMode && (
             <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3 text-sm">
               Este es tu rol. Si te quitás el permiso de modificar roles vas a perder el
               acceso a esta pantalla.
             </p>
           )}
-          {!canEditPerms && !isProtected && (
+          {editMode && !canEditPerms && !isProtected && (
             <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3 text-sm">
               No tenés permiso para modificar permisos. La matriz se muestra como consulta.
             </p>
@@ -696,7 +879,7 @@ function RoleModal({
                   >
                     <button
                       onClick={() => toggleCol(a.key)}
-                      disabled={!canEditPerms}
+                      disabled={!permsEditable}
                       className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
                     >
                       {a.label}
@@ -710,7 +893,7 @@ function RoleModal({
                 <th className="text-left px-2 py-1.5 font-semibold text-gray-800 border-b border-gray-300 whitespace-nowrap">
                   <button
                     onClick={toggleAll}
-                    disabled={!canEditPerms}
+                    disabled={!permsEditable}
                     className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
                   >
                     Todos los recursos
@@ -729,7 +912,7 @@ function RoleModal({
                         type="checkbox"
                         checked={full}
                         onChange={() => toggleCol(a.key)}
-                        disabled={!canEditPerms}
+                        disabled={!permsEditable}
                         aria-label={`Toda la columna ${a.label}`}
                         className="w-4 h-4 accent-blue-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
                       />
@@ -743,7 +926,7 @@ function RoleModal({
                   <th className="text-left px-2 py-1.5 font-normal text-gray-700 border-b border-gray-100 whitespace-nowrap">
                     <button
                       onClick={() => toggleRow(r.key)}
-                      disabled={!canEditPerms}
+                      disabled={!permsEditable}
                       className="underline decoration-dotted decoration-gray-300 underline-offset-[3px] hover:bg-blue-50 hover:decoration-blue-600 rounded px-1 disabled:no-underline disabled:cursor-not-allowed"
                     >
                       {r.label}
@@ -771,7 +954,7 @@ function RoleModal({
                           type="checkbox"
                           checked={on}
                           onChange={(e) => toggle(r.key, a.key, e.target.checked)}
-                          disabled={forced || !canEditPerms}
+                          disabled={forced || !permsEditable}
                           aria-label={`${a.label} ${r.label}`}
                           title={
                             forced
@@ -798,14 +981,16 @@ function RoleModal({
         <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center gap-3 rounded-b-md">
           <span
             className={`flex-1 text-[13px] ${
-              changeCount > 0
-                ? 'text-blue-700 font-medium'
-                : perms.size === 0
-                  ? 'text-amber-700'
-                  : 'text-gray-500'
+              !editMode
+                ? 'text-gray-500'
+                : changeCount > 0
+                  ? 'text-blue-700 font-medium'
+                  : perms.size === 0
+                    ? 'text-amber-700'
+                    : 'text-gray-500'
             }`}
           >
-            {readOnly
+            {!editMode
               ? ''
               : changeCount > 0
                 ? changeCount === 1
@@ -815,28 +1000,44 @@ function RoleModal({
                   ? 'Sin permisos: quien tenga este rol no va a poder hacer nada.'
                   : 'Sin cambios.'}
           </span>
-          {/* Cuando no hay nada que guardar —rol del sistema o permiso de solo lectura—
-              el botón no va: uno permanentemente gris solo invita a probar por qué no
-              anda. Y el que queda deja de ser "Cancelar", porque no hay nada que cancelar. */}
-          <button
-            onClick={requestClose}
-            disabled={saving}
-            className={
-              readOnly
-                ? 'bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700'
-                : 'text-gray-600 px-4 py-2 rounded hover:bg-gray-100'
-            }
-          >
-            {readOnly ? 'Cerrar' : 'Cancelar'}
-          </button>
-          {!readOnly && (
-            <button
-              onClick={save}
-              disabled={saveDisabled}
-              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
-            >
-              {saving ? 'Guardando...' : 'Guardar'}
-            </button>
+          {editMode ? (
+            <>
+              {/* En edición el botón secundario cancela; el primario guarda. */}
+              <button
+                onClick={requestClose}
+                disabled={saving}
+                className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={save}
+                disabled={saveDisabled}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
+              >
+                {saving ? 'Guardando...' : 'Guardar'}
+              </button>
+            </>
+          ) : (
+            <>
+              {/* En consulta, "Editar" pasa a modo edición —solo si hay algo para editar—;
+                  el rol de sistema y quien solo puede leer se quedan sin él. */}
+              {canEditAnything && (
+                <button
+                  onClick={() => setEditMode(true)}
+                  className="text-blue-600 px-4 py-2 rounded hover:bg-blue-50 whitespace-nowrap"
+                >
+                  Editar
+                </button>
+              )}
+              <button
+                onClick={requestClose}
+                disabled={saving}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+              >
+                Cerrar
+              </button>
+            </>
           )}
         </div>
       </div>

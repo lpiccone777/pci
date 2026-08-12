@@ -1,12 +1,21 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
+import { systemTenantSlug } from '../../common/system-tenant';
+import { isProtectedRole } from '../rbac/protected-role';
+import {
+  CreateUserDto,
+  CreateUserMultiTenantDto,
+  UpdateUserDto,
+  UpdateUserFullDto,
+} from './dto/user.dto';
 import * as bcrypt from 'bcrypt';
 
 const USER_SELECT = {
@@ -15,20 +24,54 @@ const USER_SELECT = {
   firstName: true,
   lastName: true,
   phone: true,
+  internalPhone: true,
   invgateUserId: true,
   createdAt: true,
 } as const;
+
+/**
+ * El sufijo que se le agrega a los campos de una persona dada de baja: `_20260811-143205`.
+ *
+ * Cumple dos funciones a la vez: marca la fila como dada de baja a simple vista y —sobre todo—
+ * LIBERA los campos únicos (email, teléfono, interno, invgateUserId), para que el valor original
+ * quede disponible si más adelante se da de alta a alguien con esos mismos datos.
+ *
+ * Sin espacios ni dos puntos a propósito: el mismo sufijo termina pegado a un email y a un
+ * teléfono, y ahí esos caracteres molestan.
+ *
+ * La hora se arma en UTC (no en la hora local del servidor) para que coincida con `deletedAt`,
+ * que se persiste en UTC como todas las fechas del sistema. Si se usara la hora local, el sufijo
+ * y el `deletedAt` de la misma baja mostrarían horas distintas —desfasadas por el huso horario—
+ * y no se podrían correlacionar mirando la tabla.
+ */
+function deletionSuffix(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `_${at.getUTCFullYear()}${pad(at.getUTCMonth() + 1)}${pad(at.getUTCDate())}` +
+    `-${pad(at.getUTCHours())}${pad(at.getUTCMinutes())}${pad(at.getUTCSeconds())}`
+  );
+}
 
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
-  /** Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant. */
+  /**
+   * Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant.
+   *
+   * El filtro por `deletedAt` es redundante en la práctica —a quien se da de baja se le quitan
+   * todas sus membresías, así que ya no tiene fila que listar— pero se deja explícito: es la
+   * garantía de que una persona dada de baja nunca reaparece en un listado, aunque quedara una
+   * membresía suelta por un dato inconsistente.
+   */
   async findAll(tenantId: string) {
     const memberships = await this.prisma.userTenant.findMany({
-      where: { tenantId },
+      where: { tenantId, user: { deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -45,9 +88,94 @@ export class UsersService {
     }));
   }
 
+  /**
+   * Usuarios de TODAS las empresas (una fila por membresía), con la empresa de cada una.
+   * Modo lectura del superadmin ("Todas las empresas"): mismo mapeo que `findAll` pero sin
+   * scope de tenant y sumando `tenant`. Una misma persona en varias empresas aparece varias
+   * veces, una por membresía, con el rol/área que tiene en cada una. El corte de acceso lo
+   * pone `SystemTenantGuard` en el controlador.
+   */
+  async findAllCrossTenant() {
+    const memberships = await this.prisma.userTenant.findMany({
+      // Excluye tanto a las personas dadas de baja como a las membresías contra empresas dadas
+      // de baja: la vista consolidada no debe mostrar datos de una empresa que ya no se lista.
+      where: { user: { deletedAt: null }, tenant: { deletedAt: null } },
+      include: {
+        user: { select: USER_SELECT },
+        role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+
+    return memberships.map((m) => ({
+      ...m.user,
+      role: m.role,
+      area: m.area,
+      tenant: m.tenant,
+      joinedAt: m.createdAt,
+    }));
+  }
+
+  /**
+   * Usuarios de TODAS las empresas del propio usuario (vista "Todas las empresas" del
+   * usuario común, que no es superadmin). Una fila por membresía, con su empresa — mismo
+   * shape que `findAllCrossTenant`, pero acotado a las empresas donde ESTE usuario puede
+   * ver usuarios (su rol tiene `users:read`).
+   *
+   * Es la contraparte no-privilegiada de `findAllCrossTenant`: el superadmin ve todo el
+   * sistema; el usuario común, solo sus empresas. El scope lo pone el propio userId, no el
+   * header, así que no necesita `SystemTenantGuard` ni un tenant activo — cada empresa se
+   * filtra por el permiso que el usuario tiene en ella.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some(
+          (p) => p.resource === 'users' && p.action === 'read',
+        ),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    const memberships = await this.prisma.userTenant.findMany({
+      where: { tenantId: { in: readableTenantIds }, user: { deletedAt: null } },
+      include: {
+        user: { select: USER_SELECT },
+        role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+
+    return memberships.map((m) => ({
+      ...m.user,
+      role: m.role,
+      area: m.area,
+      tenant: m.tenant,
+      joinedAt: m.createdAt,
+    }));
+  }
+
+  /**
+   * Una membresía concreta. `findFirst` y no `findUnique` porque hay que filtrar también por
+   * `user.deletedAt`, y la clave compuesta no admite condiciones extra. Como es el chequeo de
+   * pertenencia que usan `update` y `remove`, esto es lo que hace que una persona dada de baja
+   * no se pueda editar ni volver a dar de baja.
+   */
   async findOne(tenantId: string, userId: string) {
-    const membership = await this.prisma.userTenant.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
+    const membership = await this.prisma.userTenant.findFirst({
+      where: { userId, tenantId, user: { deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -67,47 +195,79 @@ export class UsersService {
     };
   }
 
-  async create(tenantId: string, dto: CreateUserDto) {
+  /**
+   * Los datos de una persona y sus membresías EN LAS EMPRESAS QUE EL EDITOR PUEDE VER
+   * (`users:read`), para poblar el editor multiempresa. El superusuario ve todas.
+   *
+   * Solo devuelve las membresías visibles: si la persona está en una empresa que quien edita
+   * no administra, esa membresía no aparece —y por lo tanto el editor no puede tocarla—. El
+   * scope lo pone `requesterId`, no el header.
+   */
+  async findMembershipsForEditor(requesterId: string, userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: USER_SELECT,
+    });
+    if (!user) throw new NotFoundException('El usuario no existe');
+
+    const isSuper = await this.isSystemSuperUser(requesterId);
+
+    const memberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { id: true, name: true } },
+        area: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: { tenant: { name: 'asc' } },
+    });
+
+    const visible: Array<{
+      tenantId: string;
+      tenant: { id: string; name: string; slug: string };
+      role: { id: string; name: string } | null;
+      area: { id: string; name: string } | null;
+    }> = [];
+    for (const m of memberships) {
+      if (
+        isSuper ||
+        (await this.hasUsersPermissionInTenant(requesterId, m.tenantId, 'read', isSuper))
+      ) {
+        visible.push({
+          tenantId: m.tenantId,
+          tenant: m.tenant,
+          role: m.role,
+          area: m.area,
+        });
+      }
+    }
+
+    // Sin ninguna empresa visible en común, quien consulta no administra a esta persona en
+    // ningún lado: cortamos para no filtrar sus datos (nombre, email, teléfono, id de Invgate)
+    // a alguien que no tiene por qué verlos. Sin este corte, el endpoint no lleva
+    // `@RequirePermission` y devolvía los datos de cualquier persona con solo su id. El
+    // superusuario del sistema pasa siempre (ve todas las empresas).
+    if (!isSuper && visible.length === 0) {
+      throw new ForbiddenException('No tenés permiso para ver a este usuario');
+    }
+
+    return { ...user, memberships: visible };
+  }
+
+  async create(tenantId: string, requesterId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
 
     const areaId = dto.areaId || null;
     if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
-
-    if (existing) {
-      // El email ya existe en el sistema. Puede ser alguien de otro tenant que
-      // ahora también trabaja acá: en ese caso solo agregamos la membresía.
-      const alreadyHere = await this.prisma.userTenant.findUnique({
-        where: { userId_tenantId: { userId: existing.id, tenantId } },
-      });
-      if (alreadyHere) {
-        throw new ConflictException('Ya existe un usuario con ese email en este tenant');
-      }
-
-      await this.prisma.userTenant.create({
-        data: { userId: existing.id, tenantId, roleId: dto.roleId, areaId },
-      });
-
-      // El identificador de Invgate es de la persona, no de la membresía, y quien la
-      // suma acá puede ser el primero en conocerlo. Si el usuario todavía no lo tiene,
-      // lo guardamos; si ya lo tiene, no lo pisamos: dar de alta a alguien en un tenant
-      // no es motivo para cambiarle un dato que otro cargó. Sin esto, el campo se
-      // completaba en el formulario y se perdía en silencio.
-      if (dto.invgateUserId && !existing.invgateUserId) {
-        await this.assertInvgateUserIdAvailable(dto.invgateUserId, existing.id);
-        await this.prisma.user.update({
-          where: { id: existing.id },
-          data: { invgateUserId: dto.invgateUserId },
-        });
-      }
-
-      this.logger.log(`Usuario existente ${existing.email} agregado al tenant ${tenantId}`);
-      return this.findOne(tenantId, existing.id);
-    }
-
-    if (dto.phone) await this.assertPhoneAvailable(dto.phone);
-    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId);
+    // Los cuatro campos globales (email, teléfono, interno, identificador de Invgate) son únicos
+    // en todo el sistema: si alguno ya está en uso por una persona activa, el alta se bloquea. Antes el
+    // email reutilizaba el registro existente (lo sumaba a esta empresa); esa "alta encubierta"
+    // se quitó a pedido — para sumar a alguien que ya existe se usa la edición.
+    await this.assertEmailAvailable(dto.email, requesterId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId);
+    if (dto.internalPhone) await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId);
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -117,6 +277,7 @@ export class UsersService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         phone: dto.phone || null,
+        internalPhone: dto.internalPhone || null,
         invgateUserId: dto.invgateUserId || null,
         passwordHash,
         tenants: {
@@ -129,7 +290,80 @@ export class UsersService {
     return this.findOne(tenantId, user.id);
   }
 
-  async update(tenantId: string, userId: string, dto: UpdateUserDto) {
+  /**
+   * Alta de una persona en varias empresas a la vez. Un rol y, opcional, un área por empresa.
+   *
+   * Ya no es exclusiva del superadmin: la puede usar cualquiera, pero solo sobre las empresas
+   * que puede administrar. `requesterId` es quien da el alta, y por cada empresa destino se
+   * valida que pueda crear usuarios ahí (`assertCanManageUsersInTenant`) — el superusuario en
+   * cualquiera, el resto solo donde es miembro con `users:create`. Como las empresas destino
+   * vienen en el body (no en el header), esta validación no la puede hacer `RolesGuard`; por
+   * eso vive acá.
+   *
+   * Es la generalización de `create`: valida permiso, rol y área de CADA empresa antes de
+   * tocar nada, y crea el usuario y las N membresías de forma atómica. Si alguno de los cuatro
+   * campos globales (email, teléfono, interno, identificador de Invgate) ya está en uso por una
+   * persona activa, corta con un 409 — mismo criterio que `create`. Para sumar a alguien que ya existe
+   * a una empresa nueva se usa la edición, no el alta.
+   */
+  async createMultiTenant(requesterId: string, dto: CreateUserMultiTenantDto) {
+    const tenantIds = dto.memberships.map((m) => m.tenantId);
+    if (new Set(tenantIds).size !== tenantIds.length) {
+      throw new BadRequestException('Hay empresas repetidas en la selección');
+    }
+
+    // Quien da el alta tiene que poder crear usuarios en CADA empresa destino. Sin este
+    // corte, con el header de una empresa propia se podría dar de alta en cualquier otra.
+    for (const tenantId of tenantIds) {
+      await this.assertCanManageUsersInTenant(requesterId, tenantId, 'create');
+    }
+
+    // Rol y área tienen que pertenecer a SU empresa: sin esto se colaría RBAC entre empresas.
+    for (const m of dto.memberships) {
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
+    }
+
+    // Unicidad global de los cuatro campos: si alguno ya está en uso por una persona activa, el
+    // alta se bloquea entera (mismo criterio que `create`). El email ya no reutiliza el
+    // registro existente: para sumar a alguien que ya existe se usa la edición.
+    await this.assertEmailAvailable(dto.email, requesterId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId);
+    if (dto.internalPhone) await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId);
+
+    const membershipData = dto.memberships.map((m) => ({
+      tenantId: m.tenantId,
+      roleId: m.roleId,
+      areaId: m.areaId || null,
+    }));
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+
+    // La persona nueva + todas sus membresías en una sola operación: atómica por sí misma.
+    const user = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        phone: dto.phone || null,
+        internalPhone: dto.internalPhone || null,
+        invgateUserId: dto.invgateUserId || null,
+        passwordHash,
+        tenants: { create: membershipData },
+      },
+    });
+
+    this.logger.log(`Usuario creado: ${user.email} en ${membershipData.length} empresas`);
+    return {
+      userId: user.id,
+      email: user.email,
+      created: true,
+      memberships: membershipData.length,
+    };
+  }
+
+  async update(tenantId: string, userId: string, requesterId: string, dto: UpdateUserDto) {
     await this.findOne(tenantId, userId); // valida pertenencia al tenant
 
     // Rol y área viven los dos en la membresía, así que se actualizan de una sola vez.
@@ -154,15 +388,19 @@ export class UsersService {
       });
     }
 
-    if (dto.phone) await this.assertPhoneAvailable(dto.phone, userId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId, userId);
+    if (dto.internalPhone) {
+      await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId, userId);
+    }
     if (dto.invgateUserId) {
-      await this.assertInvgateUserIdAvailable(dto.invgateUserId, userId);
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId, userId);
     }
 
     const data: Record<string, unknown> = {};
     if (dto.firstName !== undefined) data.firstName = dto.firstName;
     if (dto.lastName !== undefined) data.lastName = dto.lastName;
     if (dto.phone !== undefined) data.phone = dto.phone || null;
+    if (dto.internalPhone !== undefined) data.internalPhone = dto.internalPhone || null;
     if (dto.invgateUserId !== undefined) {
       data.invgateUserId = dto.invgateUserId || null;
     }
@@ -176,9 +414,168 @@ export class UsersService {
   }
 
   /**
-   * Da de baja al usuario del tenant activo. No es un borrado físico salvo que el
-   * usuario quede sin ningún tenant y sin historial: sus conversaciones, tickets y
-   * métricas lo referencian y perderlas rompería la auditoría.
+   * Edición multiempresa: sincroniza en una sola operación los datos de la persona y sus
+   * membresías en las empresas que `requesterId` administra. `dto.memberships` es el estado
+   * FINAL deseado; el servicio calcula el diff contra lo actual y crea, actualiza o da de baja
+   * según haga falta.
+   *
+   * Reglas que respeta:
+   *  - Cada operación pide su permiso en ESA empresa: agregar → `users:create`, cambiar
+   *    rol/área → `users:update`, dar de baja → `users:delete`. El superusuario puede en todas.
+   *  - Solo toca empresas que el editor administra. Una empresa donde la persona es miembro
+   *    pero el editor no administra (no está en `memberships` porque ni la ve) NO se da de
+   *    baja: se calcula qué quitar solo entre las empresas que el editor podría quitar.
+   *  - No te podés dar de baja a vos mismo.
+   *  - Si tras las bajas la persona queda sin ninguna empresa, se aplica la misma regla que
+   *    `remove`: baja lógica, sin reactivación posible.
+   */
+  async updateFull(requesterId: string, userId: string, dto: UpdateUserFullDto) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+    });
+    if (!user) throw new NotFoundException('El usuario no existe');
+
+    const desired = dto.memberships ?? [];
+    const desiredIds = desired.map((m) => m.tenantId);
+    if (new Set(desiredIds).size !== desiredIds.length) {
+      throw new BadRequestException('Hay empresas repetidas en la selección');
+    }
+
+    const isSuper = await this.isSystemSuperUser(requesterId);
+
+    const current = await this.prisma.userTenant.findMany({
+      where: { userId },
+      select: { tenantId: true, roleId: true, areaId: true },
+    });
+    const currentByTenant = new Map(current.map((m) => [m.tenantId, m]));
+
+    // Para tocar los datos de la persona (nombre, teléfono, contraseña…) hay que administrarla
+    // (`users:update`) en al menos una de sus empresas actuales. Sin esto, cualquiera podría
+    // cambiarle los datos mandando sus membresías tal cual —el diff quedaría vacío y no se
+    // validaría ningún permiso—. El superusuario puede siempre.
+    let canManageThisUser = isSuper;
+    for (const c of current) {
+      if (canManageThisUser) break;
+      canManageThisUser = await this.hasUsersPermissionInTenant(
+        requesterId,
+        c.tenantId,
+        'update',
+        isSuper,
+      );
+    }
+    if (!canManageThisUser) {
+      throw new ForbiddenException('No tenés permiso para editar a este usuario');
+    }
+
+    // Clasificación del diff.
+    const toCreate = desired.filter((m) => !currentByTenant.has(m.tenantId));
+    const toUpdate = desired.filter((m) => {
+      const c = currentByTenant.get(m.tenantId);
+      return (
+        c && (c.roleId !== m.roleId || (c.areaId ?? null) !== (m.areaId || null))
+      );
+    });
+
+    // Bajas: solo entre las empresas actuales que el editor puede quitar (`users:delete`) y
+    // que ya no están en el estado deseado. Las que no administra no se tocan aunque falten.
+    const desiredSet = new Set(desiredIds);
+    const toRemove: string[] = [];
+    for (const c of current) {
+      if (desiredSet.has(c.tenantId)) continue;
+      if (await this.hasUsersPermissionInTenant(requesterId, c.tenantId, 'delete', isSuper)) {
+        toRemove.push(c.tenantId);
+      }
+    }
+
+    if (toRemove.length > 0 && userId === requesterId) {
+      throw new BadRequestException('No podés darte de baja a vos mismo');
+    }
+
+    // Validaciones de permiso, rol y área antes de tocar nada.
+    for (const m of toCreate) {
+      await this.assertCanManageUsersInTenant(requesterId, m.tenantId, 'create');
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
+    }
+    for (const m of toUpdate) {
+      await this.assertCanManageUsersInTenant(requesterId, m.tenantId, 'update');
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
+    }
+
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId, userId);
+    if (dto.internalPhone) {
+      await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId, userId);
+    }
+    if (dto.invgateUserId) {
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId, userId);
+    }
+
+    // El hash se calcula fuera de la transacción para no alargarla.
+    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : null;
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const m of toCreate) {
+        await tx.userTenant.create({
+          data: {
+            userId,
+            tenantId: m.tenantId,
+            roleId: m.roleId,
+            areaId: m.areaId || null,
+          },
+        });
+      }
+      for (const m of toUpdate) {
+        await tx.userTenant.update({
+          where: { userId_tenantId: { userId, tenantId: m.tenantId } },
+          data: { roleId: m.roleId, areaId: m.areaId || null },
+        });
+      }
+      for (const tenantId of toRemove) {
+        await tx.userTenant.delete({
+          where: { userId_tenantId: { userId, tenantId } },
+        });
+      }
+
+      const data: Record<string, unknown> = {};
+      if (dto.firstName !== undefined) data.firstName = dto.firstName;
+      if (dto.lastName !== undefined) data.lastName = dto.lastName;
+      if (dto.phone !== undefined) data.phone = dto.phone || null;
+      if (dto.internalPhone !== undefined) data.internalPhone = dto.internalPhone || null;
+      if (dto.invgateUserId !== undefined) {
+        data.invgateUserId = dto.invgateUserId || null;
+      }
+      if (passwordHash) data.passwordHash = passwordHash;
+      if (Object.keys(data).length > 0) {
+        await tx.user.update({ where: { id: userId }, data });
+      }
+    });
+
+    this.logger.log(
+      `Usuario ${userId} editado: +${toCreate.length} / ~${toUpdate.length} / -${toRemove.length} empresas`,
+    );
+
+    // Si las bajas lo dejaron sin ninguna empresa, se aplica la misma regla que `remove`.
+    if (toRemove.length > 0) {
+      const pruned = await this.softDeleteIfOrphan(userId);
+      if (pruned.outcome === 'soft-deleted') {
+        return {
+          deleted: true,
+          message:
+            'Usuario dado de baja de todas sus empresas. No se puede reactivar: para que ' +
+            'vuelva hay que darlo de alta de nuevo.',
+        };
+      }
+    }
+
+    return { deleted: false, message: 'Usuario guardado.' };
+  }
+
+  /**
+   * Da de baja al usuario del tenant activo. Nunca borra la fila: si al quitarle esta membresía
+   * queda sin ninguna empresa, se le da de baja lógica (`deletedAt` + sufijo). Su historial
+   * —conversaciones, tickets y métricas— sigue apuntando a la misma fila, así que la auditoría
+   * queda intacta, pero la persona deja de existir para el sistema y no se puede reactivar.
    */
   async remove(tenantId: string, userId: string, requesterId: string) {
     if (userId === requesterId) {
@@ -191,33 +588,144 @@ export class UsersService {
       where: { userId_tenantId: { userId, tenantId } },
     });
 
-    const remaining = await this.prisma.userTenant.count({ where: { userId } });
-    if (remaining > 0) {
+    const result = await this.softDeleteIfOrphan(userId);
+    if (result.outcome === 'still-member') {
       return {
         deleted: false,
         message: 'Usuario dado de baja de este tenant. Sigue activo en otros tenants.',
       };
     }
 
-    // Sin tenants: lo borramos del todo solo si no dejó historial.
+    const history = result.conversations + result.tickets + result.metrics;
+    return {
+      deleted: true,
+      message:
+        'Usuario dado de baja. No pertenece a ninguna empresa y no se puede reactivar: ' +
+        'para que vuelva hay que darlo de alta de nuevo.' +
+        (history > 0
+          ? ` Se conserva su historial (${result.conversations} conversaciones, ${result.tickets} tickets, ${result.metrics} métricas).`
+          : ''),
+    };
+  }
+
+  /**
+   * Tras quitarle a un usuario una o más membresías, decide el destino de su registro: si
+   * todavía pertenece a alguna empresa se conserva tal cual (`still-member`); si quedó sin
+   * ninguna, se le da de baja lógica (`soft-deleted`). Compartido por `remove` (baja de una
+   * empresa) y `updateFull` (edición multiempresa), que arman su propio mensaje según el caso.
+   *
+   * Ya no existe el borrado físico: antes se borraba la fila cuando la persona no había dejado
+   * historial, y se conservaba si lo había. Ahora la fila se conserva siempre —el historial la
+   * referencia igual— y el conteo se sigue devolviendo solo para informarlo al operador.
+   */
+  private async softDeleteIfOrphan(userId: string): Promise<
+    | { outcome: 'still-member' }
+    | {
+        outcome: 'soft-deleted';
+        conversations: number;
+        tickets: number;
+        metrics: number;
+      }
+  > {
+    const remaining = await this.prisma.userTenant.count({ where: { userId } });
+    if (remaining > 0) return { outcome: 'still-member' };
+
     const [conversations, tickets, metrics] = await Promise.all([
       this.prisma.conversation.count({ where: { userId } }),
       this.prisma.ticket.count({ where: { userId } }),
       this.prisma.metric.count({ where: { userId } }),
     ]);
 
-    if (conversations + tickets + metrics > 0) {
-      return {
-        deleted: false,
-        message:
-          'Usuario dado de baja. No se eliminó el registro porque tiene historial ' +
-          `(${conversations} conversaciones, ${tickets} tickets, ${metrics} métricas).`,
-      };
-    }
+    await this.softDeleteUser(userId);
+    return { outcome: 'soft-deleted', conversations, tickets, metrics };
+  }
 
-    await this.prisma.user.delete({ where: { id: userId } });
-    this.logger.log(`Usuario ${userId} eliminado (sin tenants ni historial)`);
-    return { deleted: true, message: 'Usuario eliminado.' };
+  /**
+   * Baja lógica de la persona: marca `deletedAt` y le agrega el sufijo de fecha y hora al
+   * nombre, al apellido y a los cuatro campos únicos (email, teléfono, interno, identificador
+   * de Invgate).
+   *
+   * Sufijar los únicos es lo que hace posible el requisito del producto: que esos mismos datos
+   * se puedan volver a usar en un alta nueva. No hay reactivación — quien vuelve, vuelve como
+   * una persona nueva, sin el historial de la anterior.
+   *
+   * Los campos opcionales solo se tocan si tenían valor: no tiene sentido inventarle un
+   * teléfono "_20260811-143205" a alguien que nunca tuvo teléfono.
+   */
+  private async softDeleteUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        internalPhone: true,
+        invgateUserId: true,
+        firstName: true,
+        lastName: true,
+        deletedAt: true,
+      },
+    });
+    if (!user || user.deletedAt) return;
+
+    const now = new Date();
+    const suffix = await this.availableSuffix(user, deletionSuffix(now));
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        deletedAt: now,
+        email: `${user.email}${suffix}`,
+        phone: user.phone ? `${user.phone}${suffix}` : null,
+        internalPhone: user.internalPhone ? `${user.internalPhone}${suffix}` : null,
+        invgateUserId: user.invgateUserId
+          ? `${user.invgateUserId}${suffix}`
+          : null,
+        firstName: user.firstName ? `${user.firstName}${suffix}` : user.firstName,
+        lastName: user.lastName ? `${user.lastName}${suffix}` : user.lastName,
+      },
+    });
+
+    this.logger.log(`Usuario ${userId} dado de baja (baja lógica, sufijo ${suffix})`);
+  }
+
+  /**
+   * El sufijo a usar, garantizando que ninguno de los cuatro campos únicos choque.
+   *
+   * El sufijo tiene resolución de un segundo, así que dos bajas del mismo email en el mismo
+   * segundo producirían el mismo valor y la segunda fallaría contra la constraint. Es un caso
+   * rarísimo —requiere dar de alta y de baja la misma persona dos veces dentro del mismo
+   * segundo—, pero como el precio de cubrirlo es una consulta, se cubre: si hay choque, se le
+   * agrega el id del usuario, que es único por definición.
+   */
+  private async availableSuffix(
+    user: {
+      id: string;
+      email: string;
+      phone: string | null;
+      internalPhone: string | null;
+      invgateUserId: string | null;
+    },
+    suffix: string,
+  ): Promise<string> {
+    const taken = await this.prisma.user.findFirst({
+      where: {
+        id: { not: user.id },
+        OR: [
+          { email: `${user.email}${suffix}` },
+          ...(user.phone ? [{ phone: `${user.phone}${suffix}` }] : []),
+          ...(user.internalPhone
+            ? [{ internalPhone: `${user.internalPhone}${suffix}` }]
+            : []),
+          ...(user.invgateUserId
+            ? [{ invgateUserId: `${user.invgateUserId}${suffix}` }]
+            : []),
+        ],
+      },
+      select: { id: true },
+    });
+
+    return taken ? `${suffix}-${user.id}` : suffix;
   }
 
   // --- Usado por el orquestador de conversaciones (canal WhatsApp) ---
@@ -234,7 +742,7 @@ export class UsersService {
    */
   async findMembershipByPhone(phone: string, tenantId: string) {
     return this.prisma.userTenant.findFirst({
-      where: { tenantId, user: { phone } },
+      where: { tenantId, user: { phone, deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -243,11 +751,18 @@ export class UsersService {
   }
 
   async findByPhone(phone: string) {
-    return this.prisma.user.findUnique({ where: { phone } });
+    return this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
   }
 
+  /**
+   * Si el número perteneció a alguien dado de baja, su teléfono quedó sufijado y este `findFirst`
+   * no lo encuentra: se crea un contacto nuevo. Es lo esperado — la persona que vuelve arranca
+   * sin el historial de la anterior.
+   */
   async findOrCreateByPhone(phone: string, firstName?: string) {
-    let user = await this.prisma.user.findUnique({ where: { phone } });
+    let user = await this.prisma.user.findFirst({
+      where: { phone, deletedAt: null },
+    });
 
     if (!user) {
       user = await this.prisma.user.create({
@@ -266,6 +781,86 @@ export class UsersService {
 
   // --- helpers ---
 
+  /**
+   * `true` si el usuario es el superusuario del sistema (miembro del tenant de sistema con el
+   * rol protegido). Mismo criterio que `RolesGuard`, pero resuelto por userId porque acá no
+   * hay un vínculo ya resuelto por `TenantGuard`.
+   */
+  private async isSystemSuperUser(userId: string): Promise<boolean> {
+    const systemSlug = systemTenantSlug(this.config);
+    const membership = await this.prisma.userTenant.findFirst({
+      where: { userId, tenant: { slug: systemSlug } },
+      include: {
+        role: { select: { name: true, tenant: { select: { slug: true } } } },
+      },
+    });
+    if (!membership) return false;
+    return isProtectedRole(membership.role.name, membership.role.tenant.slug, systemSlug);
+  }
+
+  /**
+   * `true` si el usuario puede hacer la acción de usuarios pedida en esa empresa. Versión
+   * booleana de `assertCanManageUsersInTenant`, para cuando hay que decidir por empresa sin
+   * cortar (poblar el editor, calcular el diff de bajas). `isSuper` se puede pasar ya resuelto
+   * para no repetir la consulta del rol de sistema una vez por empresa.
+   */
+  private async hasUsersPermissionInTenant(
+    userId: string,
+    tenantId: string,
+    action: 'read' | 'create' | 'update' | 'delete',
+    isSuper?: boolean,
+  ): Promise<boolean> {
+    if (isSuper ?? (await this.isSystemSuperUser(userId))) return true;
+
+    const membership = await this.prisma.userTenant.findUnique({
+      where: { userId_tenantId: { userId, tenantId } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+    return (
+      !!membership &&
+      membership.role.permissions.some(
+        (p) => p.resource === 'users' && p.action === action,
+      )
+    );
+  }
+
+  /**
+   * Corta si el usuario no puede administrar usuarios en esta empresa. El superusuario del
+   * sistema puede en cualquiera; el resto, solo en las empresas donde es miembro y su rol
+   * tiene el permiso pedido.
+   *
+   * Es el equivalente por-empresa de la cadena `TenantGuard` + `RolesGuard`, necesario acá
+   * porque el alta multiempresa recibe las empresas destino en el body (no en el header), así
+   * que los guards no pueden validarlas.
+   */
+  private async assertCanManageUsersInTenant(
+    userId: string,
+    tenantId: string,
+    action: 'create' | 'update' | 'delete',
+  ) {
+    if (await this.isSystemSuperUser(userId)) return;
+
+    const membership = await this.prisma.userTenant.findUnique({
+      where: { userId_tenantId: { userId, tenantId } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+    if (!membership) {
+      throw new ForbiddenException('No pertenecés a alguna de las empresas seleccionadas');
+    }
+    const allowed = membership.role.permissions.some(
+      (p) => p.resource === 'users' && p.action === action,
+    );
+    if (!allowed) {
+      throw new ForbiddenException(
+        'No tenés permiso para administrar usuarios en alguna de las empresas seleccionadas',
+      );
+    }
+  }
+
   /** El rol tiene que existir y pertenecer al tenant: si no, se filtra RBAC entre tenants. */
   private async assertRoleBelongsToTenant(tenantId: string, roleId: string) {
     const role = await this.prisma.role.findFirst({ where: { id: roleId, tenantId } });
@@ -282,22 +877,219 @@ export class UsersService {
     }
   }
 
-  private async assertPhoneAvailable(phone: string, exceptUserId?: string) {
-    const owner = await this.prisma.user.findUnique({ where: { phone } });
+  /**
+   * El email lo tiene que tener libre alguien ACTIVO. Igual que el teléfono y el identificador
+   * de Invgate, es un campo único de todo el sistema; un usuario dado de baja tiene el email
+   * sufijado, así que no bloquea un alta nueva.
+   */
+  private async assertEmailAvailable(
+    email: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
+    const owner = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
+      select: { id: true },
+    });
     if (owner && owner.id !== exceptUserId) {
-      throw new ConflictException('Ya existe un usuario con ese teléfono');
+      throw new ConflictException(
+        await this.conflictBody('Ya existe un usuario con ese email', 'email', owner.id, requesterId),
+      );
     }
   }
 
   /**
-   * El identificador de Invgate es único en el sistema. Se valida acá y no solo con la
-   * constraint de la base para devolver un 409 con un mensaje entendible en vez del
-   * error crudo de Prisma.
+   * El teléfono lo tiene que tener libre alguien ACTIVO: los dados de baja lo tienen sufijado,
+   * así que ni siquiera coinciden, y el filtro deja explícito que no bloquean un alta nueva.
    */
-  private async assertInvgateUserIdAvailable(invgateUserId: string, exceptUserId?: string) {
-    const owner = await this.prisma.user.findUnique({ where: { invgateUserId } });
+  private async assertPhoneAvailable(
+    phone: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
+    const owner = await this.prisma.user.findFirst({
+      where: { phone, deletedAt: null },
+      select: { id: true },
+    });
     if (owner && owner.id !== exceptUserId) {
-      throw new ConflictException('Ya existe un usuario con ese identificador de Invgate');
+      throw new ConflictException(
+        await this.conflictBody('Ya existe un usuario con ese teléfono', 'phone', owner.id, requesterId),
+      );
     }
+  }
+
+  /**
+   * El interno lo tiene que tener libre alguien ACTIVO. Mismo criterio que el teléfono: un
+   * usuario dado de baja lo tiene sufijado, así que ni coincide ni bloquea un alta nueva.
+   */
+  private async assertInternalPhoneAvailable(
+    internalPhone: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
+    const owner = await this.prisma.user.findFirst({
+      where: { internalPhone, deletedAt: null },
+      select: { id: true },
+    });
+    if (owner && owner.id !== exceptUserId) {
+      throw new ConflictException(
+        await this.conflictBody('Ya existe un usuario con ese interno', 'internalPhone', owner.id, requesterId),
+      );
+    }
+  }
+
+  /**
+   * El identificador de Invgate es único entre los usuarios activos. Se valida acá y no solo
+   * con la constraint de la base para devolver un 409 con un mensaje entendible en vez del
+   * error crudo de Prisma. Mismo criterio que el teléfono: un usuario dado de baja no lo
+   * retiene.
+   */
+  private async assertInvgateUserIdAvailable(
+    invgateUserId: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
+    const owner = await this.prisma.user.findFirst({
+      where: { invgateUserId, deletedAt: null },
+      select: { id: true },
+    });
+    if (owner && owner.id !== exceptUserId) {
+      throw new ConflictException(
+        await this.conflictBody(
+          'Ya existe un usuario con ese identificador de Invgate',
+          'invgateUserId',
+          owner.id,
+          requesterId,
+        ),
+      );
+    }
+  }
+
+  // --- Conflictos de campos globales (quién ocupa un dato único) ---
+
+  /**
+   * Verifica si un campo global (email, teléfono, interno o identificador de Invgate) está
+   * disponible. Lo usa el formulario del backoffice para avisar en vivo, antes de guardar. El guardado
+   * revalida igual con los `assert*` de arriba: este chequeo es solo experiencia de usuario.
+   *
+   * Es un dato sensible (permite saber si un valor ya existe en el sistema), así que solo
+   * responde a quien puede gestionar usuarios en alguna empresa (o al superusuario). La
+   * identidad del ocupante se revela según la misma visibilidad que el resto: solo si quien
+   * pregunta comparte con él una empresa que administra.
+   */
+  async checkAvailability(
+    requesterId: string,
+    field: 'email' | 'phone' | 'invgateUserId' | 'internalPhone',
+    value: string,
+    excludeUserId?: string,
+  ) {
+    const isSuper = await this.isSystemSuperUser(requesterId);
+    if (!isSuper && !(await this.canManageUsersAnywhere(requesterId))) {
+      throw new ForbiddenException('No tenés permiso para verificar datos de usuarios');
+    }
+
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) return { available: true, field, conflict: null };
+
+    const owner = await this.prisma.user.findFirst({
+      where: {
+        deletedAt: null,
+        ...(field === 'email'
+          ? { email: trimmed }
+          : field === 'phone'
+            ? { phone: trimmed }
+            : field === 'internalPhone'
+              ? { internalPhone: trimmed }
+              : { invgateUserId: trimmed }),
+      },
+      select: { id: true },
+    });
+
+    if (!owner || owner.id === excludeUserId) {
+      return { available: true, field, conflict: null };
+    }
+
+    return {
+      available: false,
+      field,
+      conflict: await this.describeConflict(owner.id, requesterId, isSuper),
+    };
+  }
+
+  /**
+   * Cuerpo del 409 de "campo global en uso": además del mensaje legible lleva el `field` que
+   * chocó —para que el frontend lo muestre debajo del campo correcto— y la descripción del
+   * usuario que lo ocupa (nombre e id solo si quien pregunta puede verlo).
+   */
+  private async conflictBody(
+    message: string,
+    field: 'email' | 'phone' | 'invgateUserId' | 'internalPhone',
+    ownerId: string,
+    requesterId: string,
+    isSuper?: boolean,
+  ) {
+    return {
+      message,
+      field,
+      conflict: await this.describeConflict(ownerId, requesterId, isSuper),
+    };
+  }
+
+  /**
+   * Quién ocupa un dato global. La unicidad es de todo el sistema, pero ver a una persona es
+   * por empresa: si quien pregunta no comparte ninguna empresa visible con el dueño (ni es
+   * superusuario), no se le revela su identidad —solo que el dato está en uso—.
+   */
+  private async describeConflict(ownerId: string, requesterId: string, isSuper?: boolean) {
+    const canView = await this.canViewUser(requesterId, ownerId, isSuper);
+    if (!canView) return { canView: false, userId: null, name: null };
+
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { firstName: true, lastName: true, email: true },
+    });
+    const name = owner
+      ? [owner.firstName, owner.lastName].filter(Boolean).join(' ') || owner.email
+      : null;
+    return { canView: true, userId: ownerId, name };
+  }
+
+  /**
+   * `true` si `requesterId` puede ver a `ownerId`: el superusuario ve a todos; el resto, solo
+   * si comparte con esa persona alguna empresa donde tenga `users:read`. Mismo criterio de
+   * visibilidad que `findMembershipsForEditor`.
+   */
+  private async canViewUser(
+    requesterId: string,
+    ownerId: string,
+    isSuper?: boolean,
+  ): Promise<boolean> {
+    if (isSuper ?? (await this.isSystemSuperUser(requesterId))) return true;
+
+    const ownerTenants = await this.prisma.userTenant.findMany({
+      where: { userId: ownerId },
+      select: { tenantId: true },
+    });
+    for (const t of ownerTenants) {
+      if (await this.hasUsersPermissionInTenant(requesterId, t.tenantId, 'read')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** `true` si el usuario puede crear o actualizar usuarios en alguna de sus empresas. */
+  private async canManageUsersAnywhere(userId: string): Promise<boolean> {
+    const memberships = await this.prisma.userTenant.findMany({
+      where: { userId },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+    return memberships.some((m) =>
+      m.role.permissions.some(
+        (p) => p.resource === 'users' && (p.action === 'create' || p.action === 'update'),
+      ),
+    );
   }
 }

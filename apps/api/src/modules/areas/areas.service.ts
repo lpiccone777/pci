@@ -36,6 +36,74 @@ export class AreasService {
     }));
   }
 
+  /**
+   * Áreas de TODAS las empresas, con la empresa a la que pertenece cada una. Es el modo
+   * lectura del superadmin ("Todas las empresas"): mismo mapeo que `findAll` pero sin scope
+   * de tenant y sumando `tenant` para la columna Empresa. El corte de acceso lo pone
+   * `SystemTenantGuard` en el controlador, no este método.
+   */
+  async findAllCrossTenant() {
+    const areas = await this.prisma.area.findMany({
+      // No listar áreas de empresas dadas de baja: la empresa desaparece del listado de
+      // empresas, así que su contenido no debe seguir apareciendo en la vista consolidada.
+      where: { tenant: { deletedAt: null } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: {
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { userTenants: true } },
+      },
+    });
+
+    return areas.map(({ _count, ...area }) => ({
+      ...area,
+      userCount: _count.userTenants,
+    }));
+  }
+
+  /**
+   * Áreas de TODAS las empresas del propio usuario (vista "Todas las empresas" del usuario
+   * común, que no es superadmin). Mismo shape que `findAllCrossTenant` (una fila por área,
+   * con su empresa), pero acotado a las empresas donde ESTE usuario puede ver áreas (su rol
+   * tiene `areas:read`).
+   *
+   * Es la contraparte no-privilegiada de `findAllCrossTenant`: el superadmin ve todo el
+   * sistema; el usuario común, solo sus empresas. El scope lo pone el propio userId, no el
+   * header, así que no necesita `SystemTenantGuard` ni un tenant activo — cada empresa se
+   * filtra por el permiso que el usuario tiene en ella. Espejo de `UsersService.findMine`.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some(
+          (p) => p.resource === 'areas' && p.action === 'read',
+        ),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    const areas = await this.prisma.area.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: {
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { userTenants: true } },
+      },
+    });
+
+    return areas.map(({ _count, ...area }) => ({
+      ...area,
+      userCount: _count.userTenants,
+    }));
+  }
+
   async findOne(tenantId: string, id: string) {
     const area = await this.prisma.area.findFirst({ where: { id, tenantId } });
     if (!area) {

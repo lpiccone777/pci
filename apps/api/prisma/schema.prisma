@@ -11,6 +11,13 @@ model User {
   id            String   @id @default(cuid())
   email         String   @unique
   phone         String?  @unique
+  // Interno telefónico de la persona. Va acá y no en `UserTenant` porque es un dato de la
+  // persona, no de la empresa: la misma persona tiene el mismo interno valga en la empresa
+  // que valga (mismo criterio que `phone`). Lo usará un voicebot a futuro; hoy solo se carga.
+  // Opcional a propósito (se carga a mano y la mayoría no lo tiene) y único para que dos
+  // personas no compartan interno —un voicebot que enruta por interno tiene que resolver a
+  // una sola persona—. Como el resto de los únicos, se libera con sufijo en la baja lógica.
+  internalPhone String?  @unique
   passwordHash  String
   firstName     String?
   lastName      String?
@@ -25,6 +32,17 @@ model User {
   invgateUserId String?  @unique
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  // Baja lógica sin reactivación: una persona dada de baja conserva su fila —y con ella el
+  // historial que la referencia— pero deja de existir para el sistema. No hay "restaurar":
+  // para volver se da de alta una persona nueva, que arranca sin historial.
+  // A diferencia de `Tenant`, la baja SÍ libera los campos únicos (email, teléfono,
+  // invgateUserId): al marcar `deletedAt` se les agrega un sufijo con la fecha y hora de la
+  // baja, así el valor original queda disponible para el alta nueva. La alternativa era un
+  // índice único parcial (`WHERE deletedAt IS NULL`), descartada porque Prisma no lo soporta
+  // en el DSL y porque obligaba a filtrar a mano en cada búsqueda por esos campos: una que
+  // quedara sin filtrar dejaba entrar a un usuario dado de baja.
+  // Ver `UsersService.softDeleteUser`.
+  deletedAt     DateTime?
 
   tenants           UserTenant[]
   devices           Device[]
@@ -42,9 +60,11 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   // Baja lógica: una empresa dada de baja conserva su fila (y sus datos) pero deja de
-  // listarse. Es el primer softdelete del sistema — la baja de usuario, en cambio, borra
-  // la membresía (UserTenant). No se libera el slug, que es @unique global: una empresa
-  // dada de baja lo sigue ocupando. La restauración quedó fuera de alcance por ahora.
+  // listarse. No se libera el slug, que es @unique global: una empresa dada de baja lo
+  // sigue ocupando, y sí se puede reactivar.
+  // Ojo al comparar con `User.deletedAt`: la baja de usuario sigue el criterio opuesto en
+  // los dos ejes —libera sus campos únicos y no admite reactivación— porque son dos casos
+  // distintos: una empresa vuelve con sus datos, una persona vuelve como alguien nuevo.
   deletedAt DateTime?
 
   users          UserTenant[]

@@ -120,6 +120,72 @@ export class RoleService {
     return roles.map((r) => this.toResponse(r));
   }
 
+  /**
+   * Roles de TODAS las empresas, con la empresa de cada uno. Modo lectura del superadmin
+   * ("Todas las empresas"). Mismo mapeo que `findAll`, pero sin scope de tenant y sumando
+   * `tenant` a la respuesta (que `toResponse` normalmente descarta) para la columna Empresa.
+   * El corte de acceso lo pone `SystemTenantGuard` en el controlador.
+   */
+  async findAllCrossTenant() {
+    const roles = await this.prisma.role.findMany({
+      // No listar roles de empresas dadas de baja: la empresa desaparece del listado de
+      // empresas, así que su contenido no debe seguir apareciendo en la vista consolidada.
+      where: { tenant: { deletedAt: null } },
+      include: {
+        permissions: true,
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { userTenants: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+    return roles.map((r) => ({
+      ...this.toResponse(r),
+      tenant: { id: r.tenant.id, name: r.tenant.name, slug: r.tenant.slug },
+    }));
+  }
+
+  /**
+   * Roles de TODAS las empresas del propio usuario (vista "Todas las empresas" del usuario
+   * común, que no es superadmin). Mismo shape que `findAllCrossTenant` (con `tenant`), pero
+   * acotado a las empresas donde ESTE usuario puede ver roles (su rol tiene `roles:read`).
+   *
+   * Contraparte no-privilegiada de `findAllCrossTenant`: el superadmin ve todo el sistema; el
+   * usuario común, solo sus empresas. El scope lo pone el propio userId, no el header. Espejo
+   * de `UsersService.findMine` y `AreasService.findMine`.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some(
+          (p) => p.resource === 'roles' && p.action === 'read',
+        ),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    const roles = await this.prisma.role.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      include: {
+        permissions: true,
+        tenant: { select: { id: true, name: true, slug: true } },
+        _count: { select: { userTenants: true } },
+      },
+      orderBy: [{ tenant: { name: 'asc' } }, { createdAt: 'asc' }],
+    });
+    return roles.map((r) => ({
+      ...this.toResponse(r),
+      tenant: { id: r.tenant.id, name: r.tenant.name, slug: r.tenant.slug },
+    }));
+  }
+
   async findOne(tenantId: string, id: string) {
     const role = await this.findEntity(tenantId, id);
     return this.toResponse(role);

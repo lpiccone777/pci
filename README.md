@@ -243,23 +243,39 @@ Las API keys de LLM e Invgate solo se configuran mediante variables de entorno. 
 
 ## 👥 Gestión de usuarios (`/dashboard/users`)
 
-CRUD completo sobre los usuarios del **tenant activo**.
+ABM de usuarios en dos modos: **por empresa** (el tenant activo del sidebar) o **multiempresa**, desde la vista **"Todas las empresas"** del selector.
 
 | Método | Ruta | Permiso | Notas |
 |--------|------|---------|-------|
 | `GET` | `/users` | `users:read` | Usuarios del tenant activo, con el rol que tienen *en ese* tenant |
+| `GET` | `/users/all` | `users:read` + tenant de sistema | Todas las empresas — solo superadmin (`SystemTenantGuard`) |
+| `GET` | `/users/mine` | por empresa | Todas las empresas del propio usuario (las que puede ver) |
 | `GET` | `/users/:id` | `users:read` | |
-| `POST` | `/users` | `users:create` | `email`, `firstName`, `lastName`, `password`, `roleId` (obligatorios) y `phone` (opcional) |
-| `PATCH` | `/users/:id` | `users:update` | Cambia nombre, apellido, teléfono, rol o contraseña. El email no se edita |
-| `DELETE` | `/users/:id` | `users:delete` | Da de baja del tenant |
+| `GET` | `/users/:id/memberships` | por empresa | Persona + sus membresías, para poblar el editor multiempresa |
+| `GET` | `/users/check-availability` | por empresa | Chequea en vivo si un dato único ya está en uso |
+| `POST` | `/users` | `users:create` | Alta en el tenant activo (`email`, `firstName`, `lastName`, `password`, `roleId` obligatorios) |
+| `POST` | `/users/multi` | por empresa | Alta de una persona en varias empresas a la vez |
+| `PATCH` | `/users/:id` | `users:update` | Edita nombre, apellido, teléfono, interno, rol o contraseña en el tenant activo. El email no se edita |
+| `PATCH` | `/users/:id/full` | por empresa | Edita datos de la persona + sus membresías en varias empresas |
+| `DELETE` | `/users/:id` | `users:delete` | Da de baja del tenant activo |
+
+> **"por empresa"** = son rutas cross-tenant (los destinos vienen en el body o del propio usuario, no del header `X-Tenant-Id`), así que no llevan un `@RequirePermission` fijo: la autorización se valida **empresa por empresa dentro del servicio** —que puedas crear, editar o borrar usuarios en cada una—.
+
+**La vista "Todas las empresas" es consolidada:** una fila por membresía, con columna *Empresa* y filtro. El superadmin (`/users/all`) ve todo el sistema; un usuario común (`/users/mine`) ve solo las empresas donde su rol tiene `users:read`.
+
+**Alta y edición son multiempresa.** Desde el editor das de alta o modificás a una persona en varias empresas de una vez, cada una con su propio rol y área. Ya no hace falta cambiar de empresa en el sidebar para sumar a alguien a otra: elegís los destinos en el mismo formulario. Si el email ya existe en el sistema, en vez de fallar se reutiliza la persona y se le agrega la membresía nueva.
 
 **Nombre y apellido son campos separados** (`firstName` / `lastName`). La migración `20260803120000_split_user_name` partió la columna `name` preservando los datos existentes.
 
-**El rol es obligatorio.** Todo usuario entra al tenant con un rol asignado (`UserTenant.roleId`), y el backend valida que el rol pertenezca al tenant activo — si no, se podrían filtrar permisos entre empresas. Si el tenant todavía no tiene roles, la pantalla avisa y bloquea el alta.
+**El rol es obligatorio.** Todo usuario entra a una empresa con un rol asignado (`UserTenant.roleId`), y el backend valida que el rol pertenezca a esa empresa — si no, se podrían filtrar permisos entre empresas. Si la empresa todavía no tiene roles, la pantalla avisa y bloquea el alta.
 
-**El alta es siempre en el tenant activo.** El `tenantId` sale de `@CurrentTenant()`, nunca del body. Para sumar a alguien a otra empresa, cambiás de tenant en el sidebar y lo das de alta ahí. Si el email ya existe en el sistema, en vez de fallar se agrega la membresía al tenant nuevo reutilizando la persona.
+**Cuatro datos son únicos en todo el sistema:** email, teléfono, interno telefónico e ID de Invgate. El formulario los chequea en vivo (`/users/check-availability`) y, si el valor ya está tomado, avisa **quién lo usa** —o "un usuario de otra empresa" si está en una empresa que no administrás—.
 
-**La baja no es un borrado físico** salvo que el usuario quede sin ningún tenant y sin historial. Sus conversaciones, tickets y métricas lo referencian, y borrarlas rompería la auditoría. En ese caso la respuesta explica por qué se conservó el registro. Tampoco podés darte de baja a vos mismo.
+**El interno telefónico** (`internalPhone`) es un campo opcional nuevo por persona, pensado para un futuro voicebot que enrute por interno; hoy solo se carga. Vive en la persona y no en la membresía: es el mismo sin importar en qué empresa esté.
+
+**La baja nunca borra la fila.** Quitar a alguien de una empresa borra su membresía; si con eso queda sin ninguna, se le da de baja lógica: se le marca `deletedAt` y se le agrega un sufijo con la fecha y hora (`_20260811-143205`) al nombre, al apellido y a los cuatro campos únicos —email, teléfono, interno e identificador de Invgate—. Ese sufijo es lo que **libera esos datos**: se pueden volver a usar en un alta nueva sin que el sistema los rechace.
+
+**No hay reactivación.** Quien vuelve, vuelve como una persona nueva: se lo da de alta otra vez y arranca sin historial. El historial de la persona anterior (conversaciones, tickets y métricas) sigue apuntando a la fila dada de baja, así que la auditoría queda intacta. Un usuario dado de baja tampoco puede iniciar sesión, y su sesión abierta se corta en el siguiente `/auth/me`. Tampoco podés darte de baja a vos mismo.
 
 ---
 
