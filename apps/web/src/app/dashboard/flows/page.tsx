@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/hooks/use-auth';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
+import { ALL_TENANTS, SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
 
 interface Flow {
   id: string;
@@ -18,24 +19,42 @@ interface Flow {
 }
 
 export default function FlowsPage() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, activeTenant, isSystemUser } = useAuth();
   const router = useRouter();
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadFlows();
-  }, []);
+  // "Todas las empresas": vista consolidada de todos los flujos. En una empresa concreta el
+  // listado se filtra por ella, igual que el listado de usuarios.
+  const isAllTenants = activeTenant === ALL_TENANTS;
+  // El id de la empresa de sistema, para pedir /flows/all con el header que exige
+  // SystemTenantGuard cuando el superadmin mira "Todas las empresas".
+  const systemTenantId =
+    typeof window !== 'undefined' ? localStorage.getItem(SYSTEM_TENANT_ID_KEY) : null;
 
-  async function loadFlows() {
+  const loadFlows = useCallback(async () => {
+    setLoading(true);
     try {
-      // El backoffice (tenant de sistema) ve TODOS los flujos, tengan o no empresas
-      // asignadas: así un flujo sin empresas no "desaparece" del listado. Si no es el
-      // tenant de sistema (403), cae al listado scopeado por tenant.
-      let data;
-      try {
-        data = await apiFetch('/flows/all');
-      } catch {
+      let data: Flow[];
+      if (isSystemUser) {
+        // El superadmin administra los flujos de forma global: trae todos con el header de
+        // sistema. En "Todas las empresas" se muestran tal cual; parado en una empresa
+        // concreta se filtran a los asignados a esa empresa MÁS los que no tienen ninguna
+        // empresa asignada (globales pendientes: no pertenecen a nadie, así que si no
+        // quedarían escondidos en toda vista por-empresa).
+        const all: Flow[] = await apiFetch(
+          '/flows/all',
+          systemTenantId ? { headers: { 'X-Tenant-Id': systemTenantId } } : undefined,
+        );
+        data = isAllTenants
+          ? all
+          : all.filter(
+              (f) =>
+                f.tenantFlows.length === 0 ||
+                f.tenantFlows.some((tf) => tf.tenant.id === activeTenant),
+            );
+      } else {
+        // Usuario común: listado scopeado a su empresa activa (contrato de /flows sin cambios).
         data = await apiFetch('/flows');
       }
       setFlows(data);
@@ -44,7 +63,11 @@ export default function FlowsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [isAllTenants, isSystemUser, systemTenantId, activeTenant]);
+
+  useEffect(() => {
+    loadFlows();
+  }, [loadFlows]);
 
   async function deleteFlow(id: string) {
     if (!confirm('¿Eliminar este flujo?')) return;

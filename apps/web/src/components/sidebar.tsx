@@ -136,11 +136,6 @@ export default function Sidebar() {
             ) : tenantOptions[0] ? (
               <p className="text-xs mt-1">{tenantOptions[0].name}</p>
             ) : null}
-            {isAllTenants && (
-              <p className="text-xs mt-1 text-amber-400">
-                {isSystemUser ? 'Viendo todas las empresas' : 'Viendo todas mis empresas'}
-              </p>
-            )}
           </div>
         )}
       </div>
