@@ -19,6 +19,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { apiFetch } from '@/lib/api';
+import { SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
 import {
   StartNode,
   MessageNode,
@@ -125,9 +126,10 @@ function FlowEditorInner() {
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  // Cache de roles por empresa: se traen de GET /roles/by-tenant/:tenantId. Se
-  // precargan los de las empresas ya asignadas al abrir un flujo existente, y se
-  // suman los de una empresa nueva al agregarla en el modal.
+  // Cache de roles por empresa: se traen de GET /roles con el header de esa empresa (así
+  // el superadmin los lee parado en cualquier otra, igual que el alta de usuarios). Se
+  // precargan los de las empresas ya asignadas al abrir un flujo existente, y se suman los
+  // de una empresa nueva al agregarla en el modal.
   const [rolesByTenant, setRolesByTenant] = useState<Record<string, RoleOption[]>>({});
   const [modalOpen, setModalOpen] = useState(false);
   const [expandedTenants, setExpandedTenants] = useState<string[]>([]);
@@ -138,10 +140,17 @@ function FlowEditorInner() {
   const [saving, setSaving] = useState(false);
   const { screenToFlowPosition } = useReactFlow();
 
+  // El id de la empresa de sistema. Con él, los endpoints globales (lista de empresas) se
+  // piden con el header de sistema explícito, así el superadmin administra flujos parado en
+  // CUALQUIER empresa —igual que el alta de usuarios—, no solo en el tenant de sistema.
+  // null para el usuario común (no es miembro del sistema): cae a su empresa activa.
+  const systemTenantId =
+    typeof window !== 'undefined' ? localStorage.getItem(SYSTEM_TENANT_ID_KEY) : null;
+
   useEffect(() => {
-    // Lista completa de tenants para los checkboxes. Requiere estar en el tenant
-    // de sistema (SystemTenantGuard) — si no, queda vacía y los checkboxes no
-    // aparecen: no tiene sentido asignar un flujo a tenants que no se pueden ver.
+    // Lista completa de empresas para los checkboxes de asignación. El superadmin la pide
+    // con el header de sistema explícito (ver loadTenants), así aparece parado en cualquier
+    // empresa. Para el usuario común queda vacía y los checkboxes no se muestran.
     loadTenants();
     loadUsers();
 
@@ -163,12 +172,18 @@ function FlowEditorInner() {
 
   async function loadTenants() {
     try {
-      const data = await apiFetch('/tenants/all');
+      // Con el header de sistema explícito, `/tenants/all` responde parado en cualquier
+      // empresa: el superadmin es miembro del sistema, así que TenantGuard lo deja pasar
+      // (mismo patrón que el alta de usuarios). Sin ese id (usuario común), va con el header
+      // activo y solo responde en el tenant de sistema.
+      const data = await apiFetch(
+        '/tenants/all',
+        systemTenantId ? { headers: { 'X-Tenant-Id': systemTenantId } } : undefined,
+      );
       setAllTenants(data);
     } catch {
-      // Sin acceso (no es el tenant de sistema) o sin permiso: los checkboxes
-      // simplemente no se muestran, no es un error que deba interrumpir la carga
-      // del editor.
+      // Sin acceso o sin permiso: los checkboxes simplemente no se muestran, no es un
+      // error que deba interrumpir la carga del editor.
       setAllTenants([]);
     }
   }
@@ -225,7 +240,10 @@ function FlowEditorInner() {
     // Cache: si ya se cargaron, no repetir el request.
     if (rolesByTenant[tenantId]) return;
     try {
-      const data = await apiFetch(`/roles/by-tenant/${tenantId}`);
+      // GET /roles con el header de la empresa objetivo (no /roles/by-tenant, que exige estar
+      // parado en el sistema). TenantGuard deja al superadmin operar sobre cualquier empresa,
+      // así que los roles se leen parado donde sea. Mismo mecanismo que el alta de usuarios.
+      const data = await apiFetch('/roles', { headers: { 'X-Tenant-Id': tenantId } });
       setRolesByTenant((prev) => ({
         ...prev,
         [tenantId]: (data || []).map((r: any) => ({ id: r.id, name: r.name })),
@@ -470,7 +488,12 @@ function FlowEditorInner() {
   if (loading) return <div className="p-6">Cargando...</div>;
 
   return (
-    <div className="h-screen flex flex-col">
+    // `-m-6` cancela el padding de 24px que el layout del dashboard (main con p-6)
+    // pone alrededor: así el editor va borde a borde y ocupa exactamente el alto de
+    // la ventana. Sin esto, h-screen (100vh) + ese padding se pasan del viewport y
+    // aparece scroll, que además cortaba los controles de zoom de abajo del canvas.
+    // overflow-hidden asegura que nada del propio editor genere scroll de página.
+    <div className="-m-6 h-screen flex flex-col overflow-hidden">
       {/* Header */}
       <div className="bg-white border-b p-4 flex justify-between items-center">
         <div className="flex gap-4 items-center">
@@ -518,8 +541,8 @@ function FlowEditorInner() {
 
       {/* Asignación a empresas y roles: en qué empresas está disponible este flujo,
           qué roles lo reciben en cada una, y si es el flujo de inicio para esos
-          pares (empresa + rol). Solo se muestra si se pudo cargar la lista completa
-          de tenants (requiere tenant de sistema, ver loadTenants). */}
+          pares (empresa + rol). Solo se muestra si se pudo cargar la lista de empresas
+          (el superadmin, parado en cualquier empresa; ver loadTenants). */}
       {allTenants.length > 0 && (
         <div className="bg-gray-50 border-b px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
           <span className="text-gray-500 font-medium">Disponible en:</span>

@@ -3,7 +3,13 @@
 import { useState, useEffect, useCallback, useMemo, createContext, useContext, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
-import { ALL_TENANTS_CACHE_KEY, SYSTEM_TENANT_SLUG } from '@/lib/system-tenant';
+import {
+  ALL_TENANTS,
+  ALL_TENANTS_CACHE_KEY,
+  FALLBACK_TENANT_ID_KEY,
+  SYSTEM_TENANT_ID_KEY,
+  SYSTEM_TENANT_SLUG,
+} from '@/lib/system-tenant';
 
 interface User {
   id: string;
@@ -25,6 +31,14 @@ interface AuthContextType {
   verifyOtp: (code: string) => Promise<void>;
   logout: () => void;
   hasPermission: (resource: string, action: string) => boolean;
+  /**
+   * Igual que `hasPermission` pero para una empresa puntual, no la activa. Lo usa la vista
+   * "Todas las empresas", donde cada fila es de una empresa distinta y los botones (editar,
+   * eliminar) dependen del permiso que el usuario tiene EN esa empresa. El superusuario del
+   * sistema, que puede operar en cualquiera, cae a su rol de sistema para empresas donde no
+   * es miembro.
+   */
+  hasPermissionInTenant: (tenantId: string, resource: string, action: string) => boolean;
   activeTenant: string | null;
   setActiveTenant: (id: string) => void;
   /** Pertenece a la empresa de sistema: puede pararse en cualquier otra empresa. */
@@ -56,6 +70,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { Authorization: `Bearer ${tkn}` },
       });
       setUser(data);
+
+      // El id de la empresa de sistema lo necesita `apiFetch` para traducir el centinela
+      // "Todas las empresas" al header que exige `SystemTenantGuard`. Se guarda acá, donde
+      // ya tenemos las membresías con su slug.
+      const systemTenantId = data.tenants?.find(
+        (t: { tenant: { slug: string; id: string } }) =>
+          t.tenant.slug === SYSTEM_TENANT_SLUG,
+      )?.tenant.id;
+      if (systemTenantId) {
+        localStorage.setItem(SYSTEM_TENANT_ID_KEY, systemTenantId);
+      }
+
+      // Empresa de respaldo para el header en modo "Todas las empresas" del usuario común:
+      // su primera membresía. Ver `FALLBACK_TENANT_ID_KEY` y `apiFetch`.
+      const fallbackTenantId = data.tenants?.[0]?.tenantId;
+      if (fallbackTenantId) {
+        localStorage.setItem(FALLBACK_TENANT_ID_KEY, fallbackTenantId);
+      }
+
       const firstTenant = tenantId || data.tenants?.[0]?.tenantId;
       if (firstTenant) {
         setActiveTenantState(firstTenant);
@@ -102,6 +135,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('token');
     localStorage.removeItem('activeTenant');
     localStorage.removeItem(ALL_TENANTS_CACHE_KEY);
+    localStorage.removeItem(SYSTEM_TENANT_ID_KEY);
+    localStorage.removeItem(FALLBACK_TENANT_ID_KEY);
     setToken(null);
     setUser(null);
     setActiveTenantState(null);
@@ -109,12 +144,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setActiveTenant = useCallback((id: string) => {
-    setActiveTenantState(id);
+    // No tocamos el estado de React antes de recargar. Cambiarlo dispara un re-render que
+    // vuelve a lanzar los fetch de la pantalla con el tenant nuevo, y la recarga los aborta
+    // a mitad de camino: ese era el "NetworkError" en rojo que se alcanzaba a ver al cambiar
+    // de empresa. La recarga sola alcanza —el API opera por el header X-Tenant-Id, no por el
+    // JWT—, y el tenant activo se relee de localStorage al montar.
     localStorage.setItem('activeTenant', id);
-    // Antes esto solo cambiaba el estado local: el tenant iba dentro del JWT, así que
-    // el API seguía operando sobre el tenant viejo. Ahora `apiFetch` manda el header
-    // X-Tenant-Id, así que basta con recargar para que todas las vistas se refresquen
-    // contra el tenant nuevo.
     window.location.reload();
   }, []);
 
@@ -142,16 +177,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, activeTenant]);
 
   const hasPermission = useCallback(
-    (resource: string, action: string) =>
-      activeMembership?.role?.permissions?.some(
-        (p) => p.resource === resource && p.action === action,
-      ) ?? false,
-    [activeMembership],
+    (resource: string, action: string) => {
+      // En "Todas las empresas" no hay una única empresa activa: el permiso alcanza para el
+      // menú y los botones globales (como "Nuevo usuario") si el usuario lo tiene en alguna
+      // de sus empresas. El corte fino por empresa lo hace `hasPermissionInTenant` en cada
+      // fila. El superusuario del sistema tiene su rol de sistema entre las membresías, así
+      // que este `some` le da todos los permisos igual.
+      if (activeTenant === ALL_TENANTS) {
+        return (
+          user?.tenants?.some((t) =>
+            t.role?.permissions?.some(
+              (p) => p.resource === resource && p.action === action,
+            ),
+          ) ?? false
+        );
+      }
+      return (
+        activeMembership?.role?.permissions?.some(
+          (p) => p.resource === resource && p.action === action,
+        ) ?? false
+      );
+    },
+    [activeMembership, activeTenant, user],
+  );
+
+  const hasPermissionInTenant = useCallback(
+    (tenantId: string, resource: string, action: string) => {
+      // El vínculo con esa empresa; si no es miembro (superusuario del sistema operando sobre
+      // otra empresa), cae a su rol de sistema — mismo respaldo que `activeMembership`.
+      const membership =
+        user?.tenants?.find((t) => t.tenantId === tenantId) ??
+        user?.tenants?.find((t) => t.tenant.slug === SYSTEM_TENANT_SLUG);
+      return (
+        membership?.role?.permissions?.some(
+          (p) => p.resource === resource && p.action === action,
+        ) ?? false
+      );
+    },
+    [user],
   );
 
   return (
     <AuthContext.Provider
-      value={{ user, token, isLoading, login, verifyOtp, logout, hasPermission, activeTenant, setActiveTenant, isSystemUser }}
+      value={{ user, token, isLoading, login, verifyOtp, logout, hasPermission, hasPermissionInTenant, activeTenant, setActiveTenant, isSystemUser }}
     >
       {children}
     </AuthContext.Provider>
