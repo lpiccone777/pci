@@ -24,6 +24,7 @@ const USER_SELECT = {
   firstName: true,
   lastName: true,
   phone: true,
+  internalPhone: true,
   invgateUserId: true,
   createdAt: true,
 } as const;
@@ -32,8 +33,8 @@ const USER_SELECT = {
  * El sufijo que se le agrega a los campos de una persona dada de baja: `_20260811-143205`.
  *
  * Cumple dos funciones a la vez: marca la fila como dada de baja a simple vista y —sobre todo—
- * LIBERA los campos únicos (email, teléfono, invgateUserId), para que el valor original quede
- * disponible si más adelante se da de alta a alguien con esos mismos datos.
+ * LIBERA los campos únicos (email, teléfono, interno, invgateUserId), para que el valor original
+ * quede disponible si más adelante se da de alta a alguien con esos mismos datos.
  *
  * Sin espacios ni dos puntos a propósito: el mismo sufijo termina pegado a un email y a un
  * teléfono, y ahí esos caracteres molestan.
@@ -259,12 +260,13 @@ export class UsersService {
     const areaId = dto.areaId || null;
     if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
-    // Los tres campos globales (email, teléfono, identificador de Invgate) son únicos en todo
-    // el sistema: si alguno ya está en uso por una persona activa, el alta se bloquea. Antes el
+    // Los cuatro campos globales (email, teléfono, interno, identificador de Invgate) son únicos
+    // en todo el sistema: si alguno ya está en uso por una persona activa, el alta se bloquea. Antes el
     // email reutilizaba el registro existente (lo sumaba a esta empresa); esa "alta encubierta"
     // se quitó a pedido — para sumar a alguien que ya existe se usa la edición.
     await this.assertEmailAvailable(dto.email, requesterId);
     if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId);
+    if (dto.internalPhone) await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId);
     if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId);
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
@@ -275,6 +277,7 @@ export class UsersService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         phone: dto.phone || null,
+        internalPhone: dto.internalPhone || null,
         invgateUserId: dto.invgateUserId || null,
         passwordHash,
         tenants: {
@@ -298,9 +301,9 @@ export class UsersService {
    * eso vive acá.
    *
    * Es la generalización de `create`: valida permiso, rol y área de CADA empresa antes de
-   * tocar nada, y crea el usuario y las N membresías de forma atómica. Si alguno de los tres
-   * campos globales (email, teléfono, identificador de Invgate) ya está en uso por una persona
-   * activa, corta con un 409 — mismo criterio que `create`. Para sumar a alguien que ya existe
+   * tocar nada, y crea el usuario y las N membresías de forma atómica. Si alguno de los cuatro
+   * campos globales (email, teléfono, interno, identificador de Invgate) ya está en uso por una
+   * persona activa, corta con un 409 — mismo criterio que `create`. Para sumar a alguien que ya existe
    * a una empresa nueva se usa la edición, no el alta.
    */
   async createMultiTenant(requesterId: string, dto: CreateUserMultiTenantDto) {
@@ -321,11 +324,12 @@ export class UsersService {
       if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
     }
 
-    // Unicidad global de los tres campos: si alguno ya está en uso por una persona activa, el
+    // Unicidad global de los cuatro campos: si alguno ya está en uso por una persona activa, el
     // alta se bloquea entera (mismo criterio que `create`). El email ya no reutiliza el
     // registro existente: para sumar a alguien que ya existe se usa la edición.
     await this.assertEmailAvailable(dto.email, requesterId);
     if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId);
+    if (dto.internalPhone) await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId);
     if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId);
 
     const membershipData = dto.memberships.map((m) => ({
@@ -343,6 +347,7 @@ export class UsersService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         phone: dto.phone || null,
+        internalPhone: dto.internalPhone || null,
         invgateUserId: dto.invgateUserId || null,
         passwordHash,
         tenants: { create: membershipData },
@@ -384,6 +389,9 @@ export class UsersService {
     }
 
     if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId, userId);
+    if (dto.internalPhone) {
+      await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId, userId);
+    }
     if (dto.invgateUserId) {
       await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId, userId);
     }
@@ -392,6 +400,7 @@ export class UsersService {
     if (dto.firstName !== undefined) data.firstName = dto.firstName;
     if (dto.lastName !== undefined) data.lastName = dto.lastName;
     if (dto.phone !== undefined) data.phone = dto.phone || null;
+    if (dto.internalPhone !== undefined) data.internalPhone = dto.internalPhone || null;
     if (dto.invgateUserId !== undefined) {
       data.invgateUserId = dto.invgateUserId || null;
     }
@@ -495,6 +504,9 @@ export class UsersService {
     }
 
     if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId, userId);
+    if (dto.internalPhone) {
+      await this.assertInternalPhoneAvailable(dto.internalPhone, requesterId, userId);
+    }
     if (dto.invgateUserId) {
       await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId, userId);
     }
@@ -529,6 +541,7 @@ export class UsersService {
       if (dto.firstName !== undefined) data.firstName = dto.firstName;
       if (dto.lastName !== undefined) data.lastName = dto.lastName;
       if (dto.phone !== undefined) data.phone = dto.phone || null;
+      if (dto.internalPhone !== undefined) data.internalPhone = dto.internalPhone || null;
       if (dto.invgateUserId !== undefined) {
         data.invgateUserId = dto.invgateUserId || null;
       }
@@ -629,7 +642,8 @@ export class UsersService {
 
   /**
    * Baja lógica de la persona: marca `deletedAt` y le agrega el sufijo de fecha y hora al
-   * nombre, al apellido y a los tres campos únicos (email, teléfono, identificador de Invgate).
+   * nombre, al apellido y a los cuatro campos únicos (email, teléfono, interno, identificador
+   * de Invgate).
    *
    * Sufijar los únicos es lo que hace posible el requisito del producto: que esos mismos datos
    * se puedan volver a usar en un alta nueva. No hay reactivación — quien vuelve, vuelve como
@@ -645,6 +659,7 @@ export class UsersService {
         id: true,
         email: true,
         phone: true,
+        internalPhone: true,
         invgateUserId: true,
         firstName: true,
         lastName: true,
@@ -662,6 +677,7 @@ export class UsersService {
         deletedAt: now,
         email: `${user.email}${suffix}`,
         phone: user.phone ? `${user.phone}${suffix}` : null,
+        internalPhone: user.internalPhone ? `${user.internalPhone}${suffix}` : null,
         invgateUserId: user.invgateUserId
           ? `${user.invgateUserId}${suffix}`
           : null,
@@ -674,7 +690,7 @@ export class UsersService {
   }
 
   /**
-   * El sufijo a usar, garantizando que ninguno de los tres campos únicos choque.
+   * El sufijo a usar, garantizando que ninguno de los cuatro campos únicos choque.
    *
    * El sufijo tiene resolución de un segundo, así que dos bajas del mismo email en el mismo
    * segundo producirían el mismo valor y la segunda fallaría contra la constraint. Es un caso
@@ -683,7 +699,13 @@ export class UsersService {
    * agrega el id del usuario, que es único por definición.
    */
   private async availableSuffix(
-    user: { id: string; email: string; phone: string | null; invgateUserId: string | null },
+    user: {
+      id: string;
+      email: string;
+      phone: string | null;
+      internalPhone: string | null;
+      invgateUserId: string | null;
+    },
     suffix: string,
   ): Promise<string> {
     const taken = await this.prisma.user.findFirst({
@@ -692,6 +714,9 @@ export class UsersService {
         OR: [
           { email: `${user.email}${suffix}` },
           ...(user.phone ? [{ phone: `${user.phone}${suffix}` }] : []),
+          ...(user.internalPhone
+            ? [{ internalPhone: `${user.internalPhone}${suffix}` }]
+            : []),
           ...(user.invgateUserId
             ? [{ invgateUserId: `${user.invgateUserId}${suffix}` }]
             : []),
@@ -894,6 +919,26 @@ export class UsersService {
   }
 
   /**
+   * El interno lo tiene que tener libre alguien ACTIVO. Mismo criterio que el teléfono: un
+   * usuario dado de baja lo tiene sufijado, así que ni coincide ni bloquea un alta nueva.
+   */
+  private async assertInternalPhoneAvailable(
+    internalPhone: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
+    const owner = await this.prisma.user.findFirst({
+      where: { internalPhone, deletedAt: null },
+      select: { id: true },
+    });
+    if (owner && owner.id !== exceptUserId) {
+      throw new ConflictException(
+        await this.conflictBody('Ya existe un usuario con ese interno', 'internalPhone', owner.id, requesterId),
+      );
+    }
+  }
+
+  /**
    * El identificador de Invgate es único entre los usuarios activos. Se valida acá y no solo
    * con la constraint de la base para devolver un 409 con un mensaje entendible en vez del
    * error crudo de Prisma. Mismo criterio que el teléfono: un usuario dado de baja no lo
@@ -923,8 +968,8 @@ export class UsersService {
   // --- Conflictos de campos globales (quién ocupa un dato único) ---
 
   /**
-   * Verifica si un campo global (email, teléfono o identificador de Invgate) está disponible.
-   * Lo usa el formulario del backoffice para avisar en vivo, antes de guardar. El guardado
+   * Verifica si un campo global (email, teléfono, interno o identificador de Invgate) está
+   * disponible. Lo usa el formulario del backoffice para avisar en vivo, antes de guardar. El guardado
    * revalida igual con los `assert*` de arriba: este chequeo es solo experiencia de usuario.
    *
    * Es un dato sensible (permite saber si un valor ya existe en el sistema), así que solo
@@ -934,7 +979,7 @@ export class UsersService {
    */
   async checkAvailability(
     requesterId: string,
-    field: 'email' | 'phone' | 'invgateUserId',
+    field: 'email' | 'phone' | 'invgateUserId' | 'internalPhone',
     value: string,
     excludeUserId?: string,
   ) {
@@ -953,7 +998,9 @@ export class UsersService {
           ? { email: trimmed }
           : field === 'phone'
             ? { phone: trimmed }
-            : { invgateUserId: trimmed }),
+            : field === 'internalPhone'
+              ? { internalPhone: trimmed }
+              : { invgateUserId: trimmed }),
       },
       select: { id: true },
     });
@@ -976,7 +1023,7 @@ export class UsersService {
    */
   private async conflictBody(
     message: string,
-    field: 'email' | 'phone' | 'invgateUserId',
+    field: 'email' | 'phone' | 'invgateUserId' | 'internalPhone',
     ownerId: string,
     requesterId: string,
     isSuper?: boolean,

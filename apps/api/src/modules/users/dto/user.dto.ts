@@ -13,13 +13,13 @@ import {
 import { Type } from 'class-transformer';
 
 /**
- * Verificación en vivo de un campo global (email, teléfono o identificador de Invgate) desde el
- * formulario de alta/edición. `excludeUserId` es la persona que se está editando, para que su
- * propio dato no cuente como conflicto consigo misma.
+ * Verificación en vivo de un campo global (email, teléfono, interno o identificador de Invgate)
+ * desde el formulario de alta/edición. `excludeUserId` es la persona que se está editando, para
+ * que su propio dato no cuente como conflicto consigo misma.
  */
 export class CheckAvailabilityQueryDto {
-  @IsIn(['email', 'phone', 'invgateUserId'])
-  field: 'email' | 'phone' | 'invgateUserId';
+  @IsIn(['email', 'phone', 'invgateUserId', 'internalPhone'])
+  field: 'email' | 'phone' | 'invgateUserId' | 'internalPhone';
 
   @IsString()
   @IsNotEmpty()
@@ -63,6 +63,12 @@ export class CreateUserDto {
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  /** Opcional: interno telefónico de la persona. Hoy solo se carga; lo usará un voicebot. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  internalPhone?: string;
 
   /** Opcional: identificador de la persona en Invgate. Hoy se carga a mano. */
   @IsOptional()
@@ -121,6 +127,11 @@ export class CreateUserMultiTenantDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(30)
+  internalPhone?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(64)
   invgateUserId?: string;
 
@@ -161,6 +172,11 @@ export class UpdateUserFullDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(30)
+  internalPhone?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(64)
   invgateUserId?: string;
 
@@ -192,6 +208,15 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  /**
+   * Interno telefónico. Mismo criterio de "no lo toques" que el teléfono: cadena vacía lo
+   * deja sin interno; que la clave no venga significa que no se modifica.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  internalPhone?: string;
 
   /**
    * Identificador en Invgate. Cadena vacía lo deja sin identificador; que la clave no

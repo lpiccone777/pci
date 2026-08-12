@@ -27,6 +27,7 @@ interface UserData {
   firstName: string | null;
   lastName: string | null;
   phone: string | null;
+  internalPhone: string | null;
   invgateUserId: string | null;
   createdAt: string;
   role: RoleOption | null;
@@ -72,8 +73,8 @@ async function fetchAreasForTenant(tenantId: string): Promise<AreaOption[]> {
   }
 }
 
-/** Los tres campos únicos en todo el sistema. */
-type GlobalField = 'email' | 'phone' | 'invgateUserId';
+/** Los cuatro campos únicos en todo el sistema. */
+type GlobalField = 'email' | 'phone' | 'internalPhone' | 'invgateUserId';
 
 /**
  * El usuario que ya ocupa un campo global. `canView` false = no se revela quién es (está en una
@@ -330,6 +331,7 @@ export default function UsersPage() {
               <th className="text-left px-4 py-2 font-semibold">Rol</th>
               <th className="text-left px-4 py-2 font-semibold">Área</th>
               <th className="text-left px-4 py-2 font-semibold">Teléfono</th>
+              <th className="text-left px-4 py-2 font-semibold">Interno</th>
               <th className="text-left px-4 py-2 font-semibold whitespace-nowrap">ID Invgate</th>
               <th className="text-left px-4 py-2 font-semibold">Creado</th>
               <th className="px-4 py-2"></th>
@@ -339,7 +341,7 @@ export default function UsersPage() {
             {visibleUsers.length === 0 && (
               <tr>
                 <td
-                  colSpan={isAllTenants ? 10 : 9}
+                  colSpan={isAllTenants ? 11 : 10}
                   className="px-4 py-6 text-center text-gray-400"
                 >
                   <p className="mb-3">
@@ -367,7 +369,7 @@ export default function UsersPage() {
               if (deletingId === rowKey) {
                 return (
                   <tr key={rowKey} className="border-t bg-red-50">
-                    <td colSpan={isAllTenants ? 10 : 9} className="px-4 py-2">
+                    <td colSpan={isAllTenants ? 11 : 10} className="px-4 py-2">
                       <div className="flex gap-2 items-center flex-wrap">
                         <span className="text-red-700 mr-1">
                           ¿Dar de baja a <b>{userLabel(u)}</b>
@@ -429,6 +431,7 @@ export default function UsersPage() {
                   </td>
                   <td className="px-4 py-2 text-gray-600">{u.area?.name || '-'}</td>
                   <td className="px-4 py-2 text-gray-600">{u.phone || '-'}</td>
+                  <td className="px-4 py-2 text-gray-600">{u.internalPhone || '-'}</td>
                   <td className="px-4 py-2 text-gray-600">{u.invgateUserId || '-'}</td>
                   <td className="px-4 py-2 text-gray-600">
                     {new Date(u.createdAt).toLocaleDateString()}
@@ -551,6 +554,7 @@ function UserModal({
     firstName: '',
     lastName: '',
     phone: '',
+    internalPhone: '',
     invgateUserId: '',
     password: '',
   });
@@ -651,6 +655,7 @@ function UserModal({
     form.lastName.length > 0 ||
     form.email.length > 0 ||
     form.phone.length > 0 ||
+    form.internalPhone.length > 0 ||
     form.invgateUserId.length > 0 ||
     form.password.length > 0 ||
     memberships.length > 0;
@@ -697,6 +702,7 @@ function UserModal({
           lastName: form.lastName,
           password: form.password,
           phone: form.phone || undefined,
+          internalPhone: form.internalPhone || undefined,
           invgateUserId: form.invgateUserId || undefined,
           memberships: memberships.map((m) => ({
             tenantId: m.tenantId,
@@ -812,6 +818,24 @@ function UserModal({
           />
           {conflicts.phone && (
             <FieldConflictError conflict={conflicts.phone} onView={setConflictUserId} />
+          )}
+        </PersonField>
+        <PersonField label="Interno">
+          <input
+            placeholder="1024"
+            value={form.internalPhone}
+            onChange={(e) => {
+              setForm({ ...form, internalPhone: e.target.value });
+              clearConflict('internalPhone');
+            }}
+            onBlur={(e) => checkField('internalPhone', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.internalPhone ? 'border-red-400' : 'border-gray-200'
+            }`}
+            maxLength={30}
+          />
+          {conflicts.internalPhone && (
+            <FieldConflictError conflict={conflicts.internalPhone} onView={setConflictUserId} />
           )}
         </PersonField>
         <PersonField label="ID de Invgate">
@@ -934,6 +958,7 @@ function UserEditModal({
     firstName: user.firstName ?? '',
     lastName: user.lastName ?? '',
     phone: user.phone ?? '',
+    internalPhone: user.internalPhone ?? '',
     invgateUserId: user.invgateUserId ?? '',
     password: '',
   });
@@ -967,6 +992,7 @@ function UserEditModal({
           firstName: data.firstName ?? '',
           lastName: data.lastName ?? '',
           phone: data.phone ?? '',
+          internalPhone: data.internalPhone ?? '',
           invgateUserId: data.invgateUserId ?? '',
           password: '',
         };
@@ -1085,6 +1111,7 @@ function UserEditModal({
     form.firstName !== base.firstName ||
     form.lastName !== base.lastName ||
     form.phone !== base.phone ||
+    form.internalPhone !== base.internalPhone ||
     form.invgateUserId !== base.invgateUserId ||
     form.password.length > 0;
   const changed = personChanged || membershipsChanged;
@@ -1140,6 +1167,7 @@ function UserEditModal({
           firstName: form.firstName,
           lastName: form.lastName,
           phone: form.phone,
+          internalPhone: form.internalPhone,
           invgateUserId: form.invgateUserId,
           ...(form.password ? { password: form.password } : {}),
           memberships: kept.map((m) => ({
@@ -1255,6 +1283,24 @@ function UserEditModal({
           />
           {conflicts.phone && (
             <FieldConflictError conflict={conflicts.phone} onView={setConflictUserId} />
+          )}
+        </PersonField>
+        <PersonField label="Interno">
+          <input
+            placeholder="1024"
+            value={form.internalPhone}
+            onChange={(e) => {
+              setForm({ ...form, internalPhone: e.target.value });
+              clearConflict('internalPhone');
+            }}
+            onBlur={(e) => checkField('internalPhone', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.internalPhone ? 'border-red-400' : 'border-gray-200'
+            }`}
+            maxLength={30}
+          />
+          {conflicts.internalPhone && (
+            <FieldConflictError conflict={conflicts.internalPhone} onView={setConflictUserId} />
           )}
         </PersonField>
         <PersonField label="ID de Invgate">
@@ -1600,6 +1646,7 @@ function UserDetailModal({
     { label: 'Rol', value: user.role?.name || '-' },
     { label: 'Área', value: user.area?.name || 'Sin área' },
     { label: 'Teléfono', value: user.phone || '-' },
+    { label: 'Interno', value: user.internalPhone || '-' },
     { label: 'ID de Invgate', value: user.invgateUserId || '-' },
     { label: 'Creado', value: new Date(user.createdAt).toLocaleString() },
   ];
@@ -1673,6 +1720,7 @@ interface ConflictUserData {
   firstName: string | null;
   lastName: string | null;
   phone: string | null;
+  internalPhone: string | null;
   invgateUserId: string | null;
   memberships: Array<{
     tenantId: string;
@@ -1716,6 +1764,7 @@ function ConflictUserModal({ userId, onClose }: { userId: string; onClose: () =>
         },
         { label: 'Email', value: data.email },
         { label: 'Teléfono', value: data.phone || '-' },
+        { label: 'Interno', value: data.internalPhone || '-' },
         { label: 'ID de Invgate', value: data.invgateUserId || '-' },
       ]
     : [];

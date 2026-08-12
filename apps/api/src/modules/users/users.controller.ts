@@ -61,7 +61,7 @@ export class UsersController {
   }
 
   /**
-   * Verifica en vivo si un campo global (email/teléfono/Invgate) ya está en uso, para que el
+   * Verifica en vivo si un campo global (email/teléfono/interno/Invgate) ya está en uso, para que el
    * formulario avise antes de guardar. No lleva `@RequirePermission` porque el corte es global,
    * no por la empresa del header: el servicio exige poder gestionar usuarios en alguna empresa
    * (o ser superusuario). Va antes de `@Get(':id')` para que la ruta no entre como id.

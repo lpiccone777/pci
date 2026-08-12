@@ -11,6 +11,13 @@ model User {
   id            String   @id @default(cuid())
   email         String   @unique
   phone         String?  @unique
+  // Interno telefónico de la persona. Va acá y no en `UserTenant` porque es un dato de la
+  // persona, no de la empresa: la misma persona tiene el mismo interno valga en la empresa
+  // que valga (mismo criterio que `phone`). Lo usará un voicebot a futuro; hoy solo se carga.
+  // Opcional a propósito (se carga a mano y la mayoría no lo tiene) y único para que dos
+  // personas no compartan interno —un voicebot que enruta por interno tiene que resolver a
+  // una sola persona—. Como el resto de los únicos, se libera con sufijo en la baja lógica.
+  internalPhone String?  @unique
   passwordHash  String
   firstName     String?
   lastName      String?
