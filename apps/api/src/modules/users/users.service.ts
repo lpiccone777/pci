@@ -28,6 +28,29 @@ const USER_SELECT = {
   createdAt: true,
 } as const;
 
+/**
+ * El sufijo que se le agrega a los campos de una persona dada de baja: `_20260811-143205`.
+ *
+ * Cumple dos funciones a la vez: marca la fila como dada de baja a simple vista y —sobre todo—
+ * LIBERA los campos únicos (email, teléfono, invgateUserId), para que el valor original quede
+ * disponible si más adelante se da de alta a alguien con esos mismos datos.
+ *
+ * Sin espacios ni dos puntos a propósito: el mismo sufijo termina pegado a un email y a un
+ * teléfono, y ahí esos caracteres molestan.
+ *
+ * La hora se arma en UTC (no en la hora local del servidor) para que coincida con `deletedAt`,
+ * que se persiste en UTC como todas las fechas del sistema. Si se usara la hora local, el sufijo
+ * y el `deletedAt` de la misma baja mostrarían horas distintas —desfasadas por el huso horario—
+ * y no se podrían correlacionar mirando la tabla.
+ */
+function deletionSuffix(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `_${at.getUTCFullYear()}${pad(at.getUTCMonth() + 1)}${pad(at.getUTCDate())}` +
+    `-${pad(at.getUTCHours())}${pad(at.getUTCMinutes())}${pad(at.getUTCSeconds())}`
+  );
+}
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
@@ -37,10 +60,17 @@ export class UsersService {
     private readonly config: ConfigService,
   ) {}
 
-  /** Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant. */
+  /**
+   * Usuarios del tenant activo, con el rol y el área que tienen *en ese* tenant.
+   *
+   * El filtro por `deletedAt` es redundante en la práctica —a quien se da de baja se le quitan
+   * todas sus membresías, así que ya no tiene fila que listar— pero se deja explícito: es la
+   * garantía de que una persona dada de baja nunca reaparece en un listado, aunque quedara una
+   * membresía suelta por un dato inconsistente.
+   */
   async findAll(tenantId: string) {
     const memberships = await this.prisma.userTenant.findMany({
-      where: { tenantId },
+      where: { tenantId, user: { deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -66,6 +96,9 @@ export class UsersService {
    */
   async findAllCrossTenant() {
     const memberships = await this.prisma.userTenant.findMany({
+      // Excluye tanto a las personas dadas de baja como a las membresías contra empresas dadas
+      // de baja: la vista consolidada no debe mostrar datos de una empresa que ya no se lista.
+      where: { user: { deletedAt: null }, tenant: { deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -114,7 +147,7 @@ export class UsersService {
     if (readableTenantIds.length === 0) return [];
 
     const memberships = await this.prisma.userTenant.findMany({
-      where: { tenantId: { in: readableTenantIds } },
+      where: { tenantId: { in: readableTenantIds }, user: { deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -133,9 +166,15 @@ export class UsersService {
     }));
   }
 
+  /**
+   * Una membresía concreta. `findFirst` y no `findUnique` porque hay que filtrar también por
+   * `user.deletedAt`, y la clave compuesta no admite condiciones extra. Como es el chequeo de
+   * pertenencia que usan `update` y `remove`, esto es lo que hace que una persona dada de baja
+   * no se pueda editar ni volver a dar de baja.
+   */
   async findOne(tenantId: string, userId: string) {
-    const membership = await this.prisma.userTenant.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
+    const membership = await this.prisma.userTenant.findFirst({
+      where: { userId, tenantId, user: { deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -164,8 +203,8 @@ export class UsersService {
    * scope lo pone `requesterId`, no el header.
    */
   async findMembershipsForEditor(requesterId: string, userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
       select: USER_SELECT,
     });
     if (!user) throw new NotFoundException('El usuario no existe');
@@ -202,6 +241,15 @@ export class UsersService {
       }
     }
 
+    // Sin ninguna empresa visible en común, quien consulta no administra a esta persona en
+    // ningún lado: cortamos para no filtrar sus datos (nombre, email, teléfono, id de Invgate)
+    // a alguien que no tiene por qué verlos. Sin este corte, el endpoint no lleva
+    // `@RequirePermission` y devolvía los datos de cualquier persona con solo su id. El
+    // superusuario del sistema pasa siempre (ve todas las empresas).
+    if (!isSuper && visible.length === 0) {
+      throw new ForbiddenException('No tenés permiso para ver a este usuario');
+    }
+
     return { ...user, memberships: visible };
   }
 
@@ -211,7 +259,13 @@ export class UsersService {
     const areaId = dto.areaId || null;
     if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    // Solo entre los activos: una persona dada de baja tiene el email sufijado, así que no
+    // debería aparecer acá de todos modos, pero el filtro lo garantiza. Sin él, un email que
+    // por lo que sea no quedó sufijado convertiría el alta en una reactivación encubierta —con
+    // el historial de la persona anterior colgando— que es justamente lo que no se quiere.
+    const existing = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
+    });
 
     if (existing) {
       // El email ya existe en el sistema. Puede ser alguien de otro tenant que
@@ -309,7 +363,11 @@ export class UsersService {
       areaId: m.areaId || null,
     }));
 
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    // Solo entre los activos, por el mismo motivo que en `create`: dar de alta nunca revive a
+    // una persona dada de baja.
+    const existing = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
+    });
 
     if (existing) {
       // El email ya existe: sumamos solo las membresías nuevas. Si ya es miembro de alguna
@@ -432,10 +490,12 @@ export class UsersService {
    *    baja: se calcula qué quitar solo entre las empresas que el editor podría quitar.
    *  - No te podés dar de baja a vos mismo.
    *  - Si tras las bajas la persona queda sin ninguna empresa, se aplica la misma regla que
-   *    `remove`: se borra el registro solo si no dejó historial.
+   *    `remove`: baja lógica, sin reactivación posible.
    */
   async updateFull(requesterId: string, userId: string, dto: UpdateUserFullDto) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+    });
     if (!user) throw new NotFoundException('El usuario no existe');
 
     const desired = dto.memberships ?? [];
@@ -556,9 +616,14 @@ export class UsersService {
 
     // Si las bajas lo dejaron sin ninguna empresa, se aplica la misma regla que `remove`.
     if (toRemove.length > 0) {
-      const pruned = await this.pruneUserIfOrphan(userId);
-      if (pruned.outcome === 'deleted') {
-        return { deleted: true, message: 'Usuario dado de baja de todas sus empresas.' };
+      const pruned = await this.softDeleteIfOrphan(userId);
+      if (pruned.outcome === 'soft-deleted') {
+        return {
+          deleted: true,
+          message:
+            'Usuario dado de baja de todas sus empresas. No se puede reactivar: para que ' +
+            'vuelva hay que darlo de alta de nuevo.',
+        };
       }
     }
 
@@ -566,9 +631,10 @@ export class UsersService {
   }
 
   /**
-   * Da de baja al usuario del tenant activo. No es un borrado físico salvo que el
-   * usuario quede sin ningún tenant y sin historial: sus conversaciones, tickets y
-   * métricas lo referencian y perderlas rompería la auditoría.
+   * Da de baja al usuario del tenant activo. Nunca borra la fila: si al quitarle esta membresía
+   * queda sin ninguna empresa, se le da de baja lógica (`deletedAt` + sufijo). Su historial
+   * —conversaciones, tickets y métricas— sigue apuntando a la misma fila, así que la auditoría
+   * queda intacta, pero la persona deja de existir para el sistema y no se puede reactivar.
    */
   async remove(tenantId: string, userId: string, requesterId: string) {
     if (userId === requesterId) {
@@ -581,36 +647,44 @@ export class UsersService {
       where: { userId_tenantId: { userId, tenantId } },
     });
 
-    const result = await this.pruneUserIfOrphan(userId);
-    switch (result.outcome) {
-      case 'still-member':
-        return {
-          deleted: false,
-          message: 'Usuario dado de baja de este tenant. Sigue activo en otros tenants.',
-        };
-      case 'kept-history':
-        return {
-          deleted: false,
-          message:
-            'Usuario dado de baja. No se eliminó el registro porque tiene historial ' +
-            `(${result.conversations} conversaciones, ${result.tickets} tickets, ${result.metrics} métricas).`,
-        };
-      case 'deleted':
-        return { deleted: true, message: 'Usuario eliminado.' };
+    const result = await this.softDeleteIfOrphan(userId);
+    if (result.outcome === 'still-member') {
+      return {
+        deleted: false,
+        message: 'Usuario dado de baja de este tenant. Sigue activo en otros tenants.',
+      };
     }
+
+    const history = result.conversations + result.tickets + result.metrics;
+    return {
+      deleted: true,
+      message:
+        'Usuario dado de baja. No pertenece a ninguna empresa y no se puede reactivar: ' +
+        'para que vuelva hay que darlo de alta de nuevo.' +
+        (history > 0
+          ? ` Se conserva su historial (${result.conversations} conversaciones, ${result.tickets} tickets, ${result.metrics} métricas).`
+          : ''),
+    };
   }
 
   /**
    * Tras quitarle a un usuario una o más membresías, decide el destino de su registro: si
-   * todavía pertenece a alguna empresa (`still-member`), o dejó historial (`kept-history`:
-   * conversaciones / tickets / métricas), se conserva; solo se borra (`deleted`) cuando quedó
-   * sin empresas Y sin historial. Compartido por `remove` (baja de una empresa) y `updateFull`
-   * (edición multiempresa), que arman su propio mensaje según el caso.
+   * todavía pertenece a alguna empresa se conserva tal cual (`still-member`); si quedó sin
+   * ninguna, se le da de baja lógica (`soft-deleted`). Compartido por `remove` (baja de una
+   * empresa) y `updateFull` (edición multiempresa), que arman su propio mensaje según el caso.
+   *
+   * Ya no existe el borrado físico: antes se borraba la fila cuando la persona no había dejado
+   * historial, y se conservaba si lo había. Ahora la fila se conserva siempre —el historial la
+   * referencia igual— y el conteo se sigue devolviendo solo para informarlo al operador.
    */
-  private async pruneUserIfOrphan(userId: string): Promise<
+  private async softDeleteIfOrphan(userId: string): Promise<
     | { outcome: 'still-member' }
-    | { outcome: 'kept-history'; conversations: number; tickets: number; metrics: number }
-    | { outcome: 'deleted' }
+    | {
+        outcome: 'soft-deleted';
+        conversations: number;
+        tickets: number;
+        metrics: number;
+      }
   > {
     const remaining = await this.prisma.userTenant.count({ where: { userId } });
     if (remaining > 0) return { outcome: 'still-member' };
@@ -621,13 +695,84 @@ export class UsersService {
       this.prisma.metric.count({ where: { userId } }),
     ]);
 
-    if (conversations + tickets + metrics > 0) {
-      return { outcome: 'kept-history', conversations, tickets, metrics };
-    }
+    await this.softDeleteUser(userId);
+    return { outcome: 'soft-deleted', conversations, tickets, metrics };
+  }
 
-    await this.prisma.user.delete({ where: { id: userId } });
-    this.logger.log(`Usuario ${userId} eliminado (sin tenants ni historial)`);
-    return { outcome: 'deleted' };
+  /**
+   * Baja lógica de la persona: marca `deletedAt` y le agrega el sufijo de fecha y hora al
+   * nombre, al apellido y a los tres campos únicos (email, teléfono, identificador de Invgate).
+   *
+   * Sufijar los únicos es lo que hace posible el requisito del producto: que esos mismos datos
+   * se puedan volver a usar en un alta nueva. No hay reactivación — quien vuelve, vuelve como
+   * una persona nueva, sin el historial de la anterior.
+   *
+   * Los campos opcionales solo se tocan si tenían valor: no tiene sentido inventarle un
+   * teléfono "_20260811-143205" a alguien que nunca tuvo teléfono.
+   */
+  private async softDeleteUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        invgateUserId: true,
+        firstName: true,
+        lastName: true,
+        deletedAt: true,
+      },
+    });
+    if (!user || user.deletedAt) return;
+
+    const now = new Date();
+    const suffix = await this.availableSuffix(user, deletionSuffix(now));
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        deletedAt: now,
+        email: `${user.email}${suffix}`,
+        phone: user.phone ? `${user.phone}${suffix}` : null,
+        invgateUserId: user.invgateUserId
+          ? `${user.invgateUserId}${suffix}`
+          : null,
+        firstName: user.firstName ? `${user.firstName}${suffix}` : user.firstName,
+        lastName: user.lastName ? `${user.lastName}${suffix}` : user.lastName,
+      },
+    });
+
+    this.logger.log(`Usuario ${userId} dado de baja (baja lógica, sufijo ${suffix})`);
+  }
+
+  /**
+   * El sufijo a usar, garantizando que ninguno de los tres campos únicos choque.
+   *
+   * El sufijo tiene resolución de un segundo, así que dos bajas del mismo email en el mismo
+   * segundo producirían el mismo valor y la segunda fallaría contra la constraint. Es un caso
+   * rarísimo —requiere dar de alta y de baja la misma persona dos veces dentro del mismo
+   * segundo—, pero como el precio de cubrirlo es una consulta, se cubre: si hay choque, se le
+   * agrega el id del usuario, que es único por definición.
+   */
+  private async availableSuffix(
+    user: { id: string; email: string; phone: string | null; invgateUserId: string | null },
+    suffix: string,
+  ): Promise<string> {
+    const taken = await this.prisma.user.findFirst({
+      where: {
+        id: { not: user.id },
+        OR: [
+          { email: `${user.email}${suffix}` },
+          ...(user.phone ? [{ phone: `${user.phone}${suffix}` }] : []),
+          ...(user.invgateUserId
+            ? [{ invgateUserId: `${user.invgateUserId}${suffix}` }]
+            : []),
+        ],
+      },
+      select: { id: true },
+    });
+
+    return taken ? `${suffix}-${user.id}` : suffix;
   }
 
   // --- Usado por el orquestador de conversaciones (canal WhatsApp) ---
@@ -644,7 +789,7 @@ export class UsersService {
    */
   async findMembershipByPhone(phone: string, tenantId: string) {
     return this.prisma.userTenant.findFirst({
-      where: { tenantId, user: { phone } },
+      where: { tenantId, user: { phone, deletedAt: null } },
       include: {
         user: { select: USER_SELECT },
         role: { select: { id: true, name: true } },
@@ -653,11 +798,18 @@ export class UsersService {
   }
 
   async findByPhone(phone: string) {
-    return this.prisma.user.findUnique({ where: { phone } });
+    return this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
   }
 
+  /**
+   * Si el número perteneció a alguien dado de baja, su teléfono quedó sufijado y este `findFirst`
+   * no lo encuentra: se crea un contacto nuevo. Es lo esperado — la persona que vuelve arranca
+   * sin el historial de la anterior.
+   */
   async findOrCreateByPhone(phone: string, firstName?: string) {
-    let user = await this.prisma.user.findUnique({ where: { phone } });
+    let user = await this.prisma.user.findFirst({
+      where: { phone, deletedAt: null },
+    });
 
     if (!user) {
       user = await this.prisma.user.create({
@@ -772,20 +924,29 @@ export class UsersService {
     }
   }
 
+  /**
+   * El teléfono lo tiene que tener libre alguien ACTIVO: los dados de baja lo tienen sufijado,
+   * así que ni siquiera coinciden, y el filtro deja explícito que no bloquean un alta nueva.
+   */
   private async assertPhoneAvailable(phone: string, exceptUserId?: string) {
-    const owner = await this.prisma.user.findUnique({ where: { phone } });
+    const owner = await this.prisma.user.findFirst({
+      where: { phone, deletedAt: null },
+    });
     if (owner && owner.id !== exceptUserId) {
       throw new ConflictException('Ya existe un usuario con ese teléfono');
     }
   }
 
   /**
-   * El identificador de Invgate es único en el sistema. Se valida acá y no solo con la
-   * constraint de la base para devolver un 409 con un mensaje entendible en vez del
-   * error crudo de Prisma.
+   * El identificador de Invgate es único entre los usuarios activos. Se valida acá y no solo
+   * con la constraint de la base para devolver un 409 con un mensaje entendible en vez del
+   * error crudo de Prisma. Mismo criterio que el teléfono: un usuario dado de baja no lo
+   * retiene.
    */
   private async assertInvgateUserIdAvailable(invgateUserId: string, exceptUserId?: string) {
-    const owner = await this.prisma.user.findUnique({ where: { invgateUserId } });
+    const owner = await this.prisma.user.findFirst({
+      where: { invgateUserId, deletedAt: null },
+    });
     if (owner && owner.id !== exceptUserId) {
       throw new ConflictException('Ya existe un usuario con ese identificador de Invgate');
     }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
@@ -38,6 +38,8 @@ export default function AreasPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Filtro por empresa; solo se usa en el modo consolidado. */
+  const [tenantFilter, setTenantFilter] = useState<string>('');
 
   /** null = cerrado · { area: null } = alta · { area } = edición. */
   const [editing, setEditing] = useState<{ area: AreaData | null } | null>(null);
@@ -60,6 +62,23 @@ export default function AreasPage() {
     isAllTenants ? hasPermissionInTenant(a.tenant?.id ?? '', 'areas', 'update') : canUpdate;
   const rowCanDelete = (a: AreaData) =>
     isAllTenants ? hasPermissionInTenant(a.tenant?.id ?? '', 'areas', 'delete') : canDelete;
+
+  // Empresas presentes en el listado, para alimentar el filtro del modo consolidado.
+  const tenantsInList = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const a of areas) if (a.tenant) byId.set(a.tenant.id, a.tenant.name);
+    return Array.from(byId, ([id, name]) => ({ id, name })).sort((x, y) =>
+      x.name.localeCompare(y.name),
+    );
+  }, [areas]);
+
+  const visibleAreas = useMemo(
+    () =>
+      isAllTenants && tenantFilter
+        ? areas.filter((a) => a.tenant?.id === tenantFilter)
+        : areas,
+    [areas, isAllTenants, tenantFilter],
+  );
 
   const load = useCallback(async () => {
     try {
@@ -170,6 +189,26 @@ export default function AreasPage() {
         </p>
       )}
 
+      {/* Filtro por empresa: solo en la vista consolidada. En una empresa concreta el propio
+          selector del sidebar ya cumple esa función, así que ahí sería redundante. */}
+      {isAllTenants && tenantsInList.length > 1 && (
+        <div className="mb-4 flex items-center gap-2">
+          <label className="text-sm text-gray-600">Empresa:</label>
+          <select
+            value={tenantFilter}
+            onChange={(e) => setTenantFilter(e.target.value)}
+            className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+          >
+            <option value="">Todas</option>
+            {tenantsInList.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="bg-white rounded shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
@@ -204,7 +243,7 @@ export default function AreasPage() {
               </tr>
             )}
 
-            {areas.map((a) =>
+            {visibleAreas.map((a) =>
               deletingId === a.id ? (
                 <tr key={a.id} className="border-t bg-red-50">
                   <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">

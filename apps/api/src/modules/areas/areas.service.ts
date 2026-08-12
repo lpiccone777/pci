@@ -44,6 +44,9 @@ export class AreasService {
    */
   async findAllCrossTenant() {
     const areas = await this.prisma.area.findMany({
+      // No listar áreas de empresas dadas de baja: la empresa desaparece del listado de
+      // empresas, así que su contenido no debe seguir apareciendo en la vista consolidada.
+      where: { tenant: { deletedAt: null } },
       orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
       include: {
         tenant: { select: { id: true, name: true, slug: true } },

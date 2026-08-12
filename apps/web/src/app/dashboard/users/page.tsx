@@ -321,7 +321,9 @@ export default function UsersPage() {
                           ) : (
                             ' de esta empresa?'
                           )}{' '}
-                          Se lo quita de esa empresa; su historial se conserva.
+                          Se lo quita de esa empresa y su historial se conserva. Si no le
+                          queda ninguna otra, la baja es definitiva: no se puede reactivar y
+                          para que vuelva hay que darlo de alta de nuevo.
                         </span>
                         <button
                           onClick={() => confirmDelete(u)}
@@ -985,7 +987,9 @@ function UserEditModal({
       const names = toRemove.map((m) => m.tenantName).join(', ');
       const ok = confirm(
         `Vas a dar de baja a ${userLabel(user)} de: ${names}. ` +
-          'Se conserva su historial. ¿Continuar?',
+          'Se conserva su historial. Si no le queda ninguna otra empresa, la baja es ' +
+          'definitiva: no se puede reactivar y para que vuelva hay que darlo de alta de ' +
+          'nuevo. ¿Continuar?',
       );
       if (!ok) return;
     }

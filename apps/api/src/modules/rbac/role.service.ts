@@ -128,6 +128,9 @@ export class RoleService {
    */
   async findAllCrossTenant() {
     const roles = await this.prisma.role.findMany({
+      // No listar roles de empresas dadas de baja: la empresa desaparece del listado de
+      // empresas, así que su contenido no debe seguir apareciendo en la vista consolidada.
+      where: { tenant: { deletedAt: null } },
       include: {
         permissions: true,
         tenant: { select: { id: true, name: true, slug: true } },

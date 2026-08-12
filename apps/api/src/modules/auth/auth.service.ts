@@ -32,8 +32,10 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    // Solo entre los activos: el email de una persona dada de baja quedó sufijado y su valor
+    // original está libre para un alta nueva (ver `UsersService.softDeleteUser`).
+    const existing = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
     });
     if (existing) {
       throw new UnauthorizedException('El email ya está registrado');
@@ -56,8 +58,11 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, userAgent: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    // Quien fue dado de baja no entra. El email sufijado ya haría fallar la búsqueda por sí
+    // solo, pero el filtro explícito es la garantía: la baja corta el acceso, no depende de
+    // cómo haya quedado escrito el email.
+    const user = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
     });
     if (!user) {
       throw new UnauthorizedException('Credenciales inválidas');
@@ -109,8 +114,9 @@ export class AuthService {
       throw new UnauthorizedException('Código expirado');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: entry.userId },
+    // Puede haber sido dado de baja entre que pidió el código y lo ingresó.
+    const user = await this.prisma.user.findFirst({
+      where: { id: entry.userId, deletedAt: null },
     });
     if (!user) {
       throw new UnauthorizedException('Usuario no encontrado');
@@ -145,8 +151,10 @@ export class AuthService {
   }
 
   async me(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+    // El token sobrevive a la baja hasta que expira, así que la sesión se corta acá: si la
+    // persona fue dada de baja, `/auth/me` falla y el frontend cierra sesión solo.
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
       include: {
         tenants: {
           // Baja real: una empresa dada de baja no se informa en la sesión, así desaparece

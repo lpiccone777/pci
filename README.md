@@ -259,7 +259,9 @@ CRUD completo sobre los usuarios del **tenant activo**.
 
 **El alta es siempre en el tenant activo.** El `tenantId` sale de `@CurrentTenant()`, nunca del body. Para sumar a alguien a otra empresa, cambiás de tenant en el sidebar y lo das de alta ahí. Si el email ya existe en el sistema, en vez de fallar se agrega la membresía al tenant nuevo reutilizando la persona.
 
-**La baja no es un borrado físico** salvo que el usuario quede sin ningún tenant y sin historial. Sus conversaciones, tickets y métricas lo referencian, y borrarlas rompería la auditoría. En ese caso la respuesta explica por qué se conservó el registro. Tampoco podés darte de baja a vos mismo.
+**La baja nunca borra la fila.** Quitar a alguien de una empresa borra su membresía; si con eso queda sin ninguna, se le da de baja lógica: se le marca `deletedAt` y se le agrega un sufijo con la fecha y hora (`_20260811-143205`) al nombre, al apellido y a los tres campos únicos —email, teléfono e identificador de Invgate—. Ese sufijo es lo que **libera esos datos**: se pueden volver a usar en un alta nueva sin que el sistema los rechace.
+
+**No hay reactivación.** Quien vuelve, vuelve como una persona nueva: se lo da de alta otra vez y arranca sin historial. El historial de la persona anterior (conversaciones, tickets y métricas) sigue apuntando a la fila dada de baja, así que la auditoría queda intacta. Un usuario dado de baja tampoco puede iniciar sesión, y su sesión abierta se corta en el siguiente `/auth/me`. Tampoco podés darte de baja a vos mismo.
 
 ---
 

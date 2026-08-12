@@ -70,6 +70,8 @@ export default function RolesPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Filtro por empresa; solo se usa en el modo consolidado. */
+  const [tenantFilter, setTenantFilter] = useState<string>('');
 
   /**
    * null = cerrado. `mode` distingue abrir para ver (clic en la fila, arranca en solo
@@ -115,6 +117,23 @@ export default function RolesPage() {
     if (!user || !activeTenant) return null;
     return user.tenants?.find((t) => t.tenantId === activeTenant)?.role?.id ?? null;
   }, [user, activeTenant]);
+
+  // Empresas presentes en el listado, para alimentar el filtro del modo consolidado.
+  const tenantsInList = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const r of roles) if (r.tenant) byId.set(r.tenant.id, r.tenant.name);
+    return Array.from(byId, ([id, name]) => ({ id, name })).sort((x, y) =>
+      x.name.localeCompare(y.name),
+    );
+  }, [roles]);
+
+  const visibleRoles = useMemo(
+    () =>
+      isAllTenants && tenantFilter
+        ? roles.filter((r) => r.tenant?.id === tenantFilter)
+        : roles,
+    [roles, isAllTenants, tenantFilter],
+  );
 
   const load = useCallback(async () => {
     try {
@@ -249,6 +268,26 @@ export default function RolesPage() {
         </p>
       )}
 
+      {/* Filtro por empresa: solo en la vista consolidada. En una empresa concreta el propio
+          selector del sidebar ya cumple esa función, así que ahí sería redundante. */}
+      {isAllTenants && tenantsInList.length > 1 && (
+        <div className="mb-4 flex items-center gap-2">
+          <label className="text-sm text-gray-600">Empresa:</label>
+          <select
+            value={tenantFilter}
+            onChange={(e) => setTenantFilter(e.target.value)}
+            className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+          >
+            <option value="">Todas</option>
+            {tenantsInList.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="bg-white rounded shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
@@ -287,7 +326,7 @@ export default function RolesPage() {
               </tr>
             )}
 
-            {roles.map((role) =>
+            {visibleRoles.map((role) =>
               deletingId === role.id ? (
                 <tr key={role.id} className="border-t bg-red-50">
                   <td colSpan={isAllTenants ? 5 : 4} className="px-4 py-2">
