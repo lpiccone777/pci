@@ -6,11 +6,13 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
+  CheckAvailabilityQueryDto,
   CreateUserDto,
   CreateUserMultiTenantDto,
   UpdateUserDto,
@@ -58,6 +60,25 @@ export class UsersController {
     return this.usersService.findMine(req.user.userId);
   }
 
+  /**
+   * Verifica en vivo si un campo global (email/teléfono/Invgate) ya está en uso, para que el
+   * formulario avise antes de guardar. No lleva `@RequirePermission` porque el corte es global,
+   * no por la empresa del header: el servicio exige poder gestionar usuarios en alguna empresa
+   * (o ser superusuario). Va antes de `@Get(':id')` para que la ruta no entre como id.
+   */
+  @Get('check-availability')
+  async checkAvailability(
+    @Query() query: CheckAvailabilityQueryDto,
+    @Req() req: any,
+  ) {
+    return this.usersService.checkAvailability(
+      req.user.userId,
+      query.field,
+      query.value,
+      query.excludeUserId,
+    );
+  }
+
   @Get(':id')
   @RequirePermission('users', 'read')
   async findOne(@Param('id') id: string, @CurrentTenant() tenantId: string) {
@@ -77,8 +98,12 @@ export class UsersController {
 
   @Post()
   @RequirePermission('users', 'create')
-  async create(@Body() dto: CreateUserDto, @CurrentTenant() tenantId: string) {
-    return this.usersService.create(tenantId, dto);
+  async create(
+    @Body() dto: CreateUserDto,
+    @CurrentTenant() tenantId: string,
+    @Req() req: any,
+  ) {
+    return this.usersService.create(tenantId, req.user.userId, dto);
   }
 
   /**
@@ -100,8 +125,9 @@ export class UsersController {
     @Param('id') id: string,
     @Body() dto: UpdateUserDto,
     @CurrentTenant() tenantId: string,
+    @Req() req: any,
   ) {
-    return this.usersService.update(tenantId, id, dto);
+    return this.usersService.update(tenantId, id, req.user.userId, dto);
   }
 
   /**

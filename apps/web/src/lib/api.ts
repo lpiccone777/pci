@@ -51,8 +51,17 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: 'Error desconocido' }));
-    throw new Error(err.message || `HTTP ${res.status}`);
+    const body = await res.json().catch(() => ({ message: 'Error desconocido' }));
+    // Se conserva `err.message` como siempre (los consumidores lo leen), pero además se cuelga
+    // el cuerpo completo y el status: algunos errores (p. ej. un campo global en uso) traen
+    // datos extra —`field`, `conflict`— que la pantalla necesita para mostrar el detalle.
+    const error = new Error(body?.message || `HTTP ${res.status}`) as Error & {
+      status?: number;
+      body?: any;
+    };
+    error.status = res.status;
+    error.body = body;
+    throw error;
   }
 
   return res.json();

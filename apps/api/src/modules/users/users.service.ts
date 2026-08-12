@@ -253,53 +253,19 @@ export class UsersService {
     return { ...user, memberships: visible };
   }
 
-  async create(tenantId: string, dto: CreateUserDto) {
+  async create(tenantId: string, requesterId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
 
     const areaId = dto.areaId || null;
     if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
-    // Solo entre los activos: una persona dada de baja tiene el email sufijado, así que no
-    // debería aparecer acá de todos modos, pero el filtro lo garantiza. Sin él, un email que
-    // por lo que sea no quedó sufijado convertiría el alta en una reactivación encubierta —con
-    // el historial de la persona anterior colgando— que es justamente lo que no se quiere.
-    const existing = await this.prisma.user.findFirst({
-      where: { email: dto.email, deletedAt: null },
-    });
-
-    if (existing) {
-      // El email ya existe en el sistema. Puede ser alguien de otro tenant que
-      // ahora también trabaja acá: en ese caso solo agregamos la membresía.
-      const alreadyHere = await this.prisma.userTenant.findUnique({
-        where: { userId_tenantId: { userId: existing.id, tenantId } },
-      });
-      if (alreadyHere) {
-        throw new ConflictException('Ya existe un usuario con ese email en este tenant');
-      }
-
-      await this.prisma.userTenant.create({
-        data: { userId: existing.id, tenantId, roleId: dto.roleId, areaId },
-      });
-
-      // El identificador de Invgate es de la persona, no de la membresía, y quien la
-      // suma acá puede ser el primero en conocerlo. Si el usuario todavía no lo tiene,
-      // lo guardamos; si ya lo tiene, no lo pisamos: dar de alta a alguien en un tenant
-      // no es motivo para cambiarle un dato que otro cargó. Sin esto, el campo se
-      // completaba en el formulario y se perdía en silencio.
-      if (dto.invgateUserId && !existing.invgateUserId) {
-        await this.assertInvgateUserIdAvailable(dto.invgateUserId, existing.id);
-        await this.prisma.user.update({
-          where: { id: existing.id },
-          data: { invgateUserId: dto.invgateUserId },
-        });
-      }
-
-      this.logger.log(`Usuario existente ${existing.email} agregado al tenant ${tenantId}`);
-      return this.findOne(tenantId, existing.id);
-    }
-
-    if (dto.phone) await this.assertPhoneAvailable(dto.phone);
-    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId);
+    // Los tres campos globales (email, teléfono, identificador de Invgate) son únicos en todo
+    // el sistema: si alguno ya está en uso por una persona activa, el alta se bloquea. Antes el
+    // email reutilizaba el registro existente (lo sumaba a esta empresa); esa "alta encubierta"
+    // se quitó a pedido — para sumar a alguien que ya existe se usa la edición.
+    await this.assertEmailAvailable(dto.email, requesterId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId);
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -332,9 +298,10 @@ export class UsersService {
    * eso vive acá.
    *
    * Es la generalización de `create`: valida permiso, rol y área de CADA empresa antes de
-   * tocar nada, y crea el usuario y las N membresías de forma atómica. Si el email ya existe,
-   * suma las membresías que falten en vez de crear la persona de nuevo — mismo criterio que
-   * `create` con un solo tenant.
+   * tocar nada, y crea el usuario y las N membresías de forma atómica. Si alguno de los tres
+   * campos globales (email, teléfono, identificador de Invgate) ya está en uso por una persona
+   * activa, corta con un 409 — mismo criterio que `create`. Para sumar a alguien que ya existe
+   * a una empresa nueva se usa la edición, no el alta.
    */
   async createMultiTenant(requesterId: string, dto: CreateUserMultiTenantDto) {
     const tenantIds = dto.memberships.map((m) => m.tenantId);
@@ -354,57 +321,18 @@ export class UsersService {
       if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
     }
 
-    if (dto.phone) await this.assertPhoneAvailable(dto.phone);
-    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId);
+    // Unicidad global de los tres campos: si alguno ya está en uso por una persona activa, el
+    // alta se bloquea entera (mismo criterio que `create`). El email ya no reutiliza el
+    // registro existente: para sumar a alguien que ya existe se usa la edición.
+    await this.assertEmailAvailable(dto.email, requesterId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId);
+    if (dto.invgateUserId) await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId);
 
     const membershipData = dto.memberships.map((m) => ({
       tenantId: m.tenantId,
       roleId: m.roleId,
       areaId: m.areaId || null,
     }));
-
-    // Solo entre los activos, por el mismo motivo que en `create`: dar de alta nunca revive a
-    // una persona dada de baja.
-    const existing = await this.prisma.user.findFirst({
-      where: { email: dto.email, deletedAt: null },
-    });
-
-    if (existing) {
-      // El email ya existe: sumamos solo las membresías nuevas. Si ya es miembro de alguna
-      // de las empresas elegidas, cortamos entero (no dar de alta a medias).
-      const already = await this.prisma.userTenant.findMany({
-        where: { userId: existing.id, tenantId: { in: tenantIds } },
-        select: { tenantId: true },
-      });
-      if (already.length > 0) {
-        throw new ConflictException(
-          'La persona ya es miembro de alguna de las empresas seleccionadas',
-        );
-      }
-
-      await this.prisma.$transaction(async (tx) => {
-        await tx.userTenant.createMany({
-          data: membershipData.map((m) => ({ ...m, userId: existing.id })),
-        });
-        // El ID de Invgate es de la persona: si todavía no lo tenía, lo completamos sin pisar.
-        if (dto.invgateUserId && !existing.invgateUserId) {
-          await tx.user.update({
-            where: { id: existing.id },
-            data: { invgateUserId: dto.invgateUserId },
-          });
-        }
-      });
-
-      this.logger.log(
-        `Usuario existente ${existing.email} agregado a ${membershipData.length} empresas`,
-      );
-      return {
-        userId: existing.id,
-        email: existing.email,
-        created: false,
-        memberships: membershipData.length,
-      };
-    }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
@@ -430,7 +358,7 @@ export class UsersService {
     };
   }
 
-  async update(tenantId: string, userId: string, dto: UpdateUserDto) {
+  async update(tenantId: string, userId: string, requesterId: string, dto: UpdateUserDto) {
     await this.findOne(tenantId, userId); // valida pertenencia al tenant
 
     // Rol y área viven los dos en la membresía, así que se actualizan de una sola vez.
@@ -455,9 +383,9 @@ export class UsersService {
       });
     }
 
-    if (dto.phone) await this.assertPhoneAvailable(dto.phone, userId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId, userId);
     if (dto.invgateUserId) {
-      await this.assertInvgateUserIdAvailable(dto.invgateUserId, userId);
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId, userId);
     }
 
     const data: Record<string, unknown> = {};
@@ -566,9 +494,9 @@ export class UsersService {
       if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
     }
 
-    if (dto.phone) await this.assertPhoneAvailable(dto.phone, userId);
+    if (dto.phone) await this.assertPhoneAvailable(dto.phone, requesterId, userId);
     if (dto.invgateUserId) {
-      await this.assertInvgateUserIdAvailable(dto.invgateUserId, userId);
+      await this.assertInvgateUserIdAvailable(dto.invgateUserId, requesterId, userId);
     }
 
     // El hash se calcula fuera de la transacción para no alargarla.
@@ -925,15 +853,43 @@ export class UsersService {
   }
 
   /**
+   * El email lo tiene que tener libre alguien ACTIVO. Igual que el teléfono y el identificador
+   * de Invgate, es un campo único de todo el sistema; un usuario dado de baja tiene el email
+   * sufijado, así que no bloquea un alta nueva.
+   */
+  private async assertEmailAvailable(
+    email: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
+    const owner = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
+      select: { id: true },
+    });
+    if (owner && owner.id !== exceptUserId) {
+      throw new ConflictException(
+        await this.conflictBody('Ya existe un usuario con ese email', 'email', owner.id, requesterId),
+      );
+    }
+  }
+
+  /**
    * El teléfono lo tiene que tener libre alguien ACTIVO: los dados de baja lo tienen sufijado,
    * así que ni siquiera coinciden, y el filtro deja explícito que no bloquean un alta nueva.
    */
-  private async assertPhoneAvailable(phone: string, exceptUserId?: string) {
+  private async assertPhoneAvailable(
+    phone: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
     const owner = await this.prisma.user.findFirst({
       where: { phone, deletedAt: null },
+      select: { id: true },
     });
     if (owner && owner.id !== exceptUserId) {
-      throw new ConflictException('Ya existe un usuario con ese teléfono');
+      throw new ConflictException(
+        await this.conflictBody('Ya existe un usuario con ese teléfono', 'phone', owner.id, requesterId),
+      );
     }
   }
 
@@ -943,12 +899,150 @@ export class UsersService {
    * error crudo de Prisma. Mismo criterio que el teléfono: un usuario dado de baja no lo
    * retiene.
    */
-  private async assertInvgateUserIdAvailable(invgateUserId: string, exceptUserId?: string) {
+  private async assertInvgateUserIdAvailable(
+    invgateUserId: string,
+    requesterId: string,
+    exceptUserId?: string,
+  ) {
     const owner = await this.prisma.user.findFirst({
       where: { invgateUserId, deletedAt: null },
+      select: { id: true },
     });
     if (owner && owner.id !== exceptUserId) {
-      throw new ConflictException('Ya existe un usuario con ese identificador de Invgate');
+      throw new ConflictException(
+        await this.conflictBody(
+          'Ya existe un usuario con ese identificador de Invgate',
+          'invgateUserId',
+          owner.id,
+          requesterId,
+        ),
+      );
     }
+  }
+
+  // --- Conflictos de campos globales (quién ocupa un dato único) ---
+
+  /**
+   * Verifica si un campo global (email, teléfono o identificador de Invgate) está disponible.
+   * Lo usa el formulario del backoffice para avisar en vivo, antes de guardar. El guardado
+   * revalida igual con los `assert*` de arriba: este chequeo es solo experiencia de usuario.
+   *
+   * Es un dato sensible (permite saber si un valor ya existe en el sistema), así que solo
+   * responde a quien puede gestionar usuarios en alguna empresa (o al superusuario). La
+   * identidad del ocupante se revela según la misma visibilidad que el resto: solo si quien
+   * pregunta comparte con él una empresa que administra.
+   */
+  async checkAvailability(
+    requesterId: string,
+    field: 'email' | 'phone' | 'invgateUserId',
+    value: string,
+    excludeUserId?: string,
+  ) {
+    const isSuper = await this.isSystemSuperUser(requesterId);
+    if (!isSuper && !(await this.canManageUsersAnywhere(requesterId))) {
+      throw new ForbiddenException('No tenés permiso para verificar datos de usuarios');
+    }
+
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) return { available: true, field, conflict: null };
+
+    const owner = await this.prisma.user.findFirst({
+      where: {
+        deletedAt: null,
+        ...(field === 'email'
+          ? { email: trimmed }
+          : field === 'phone'
+            ? { phone: trimmed }
+            : { invgateUserId: trimmed }),
+      },
+      select: { id: true },
+    });
+
+    if (!owner || owner.id === excludeUserId) {
+      return { available: true, field, conflict: null };
+    }
+
+    return {
+      available: false,
+      field,
+      conflict: await this.describeConflict(owner.id, requesterId, isSuper),
+    };
+  }
+
+  /**
+   * Cuerpo del 409 de "campo global en uso": además del mensaje legible lleva el `field` que
+   * chocó —para que el frontend lo muestre debajo del campo correcto— y la descripción del
+   * usuario que lo ocupa (nombre e id solo si quien pregunta puede verlo).
+   */
+  private async conflictBody(
+    message: string,
+    field: 'email' | 'phone' | 'invgateUserId',
+    ownerId: string,
+    requesterId: string,
+    isSuper?: boolean,
+  ) {
+    return {
+      message,
+      field,
+      conflict: await this.describeConflict(ownerId, requesterId, isSuper),
+    };
+  }
+
+  /**
+   * Quién ocupa un dato global. La unicidad es de todo el sistema, pero ver a una persona es
+   * por empresa: si quien pregunta no comparte ninguna empresa visible con el dueño (ni es
+   * superusuario), no se le revela su identidad —solo que el dato está en uso—.
+   */
+  private async describeConflict(ownerId: string, requesterId: string, isSuper?: boolean) {
+    const canView = await this.canViewUser(requesterId, ownerId, isSuper);
+    if (!canView) return { canView: false, userId: null, name: null };
+
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { firstName: true, lastName: true, email: true },
+    });
+    const name = owner
+      ? [owner.firstName, owner.lastName].filter(Boolean).join(' ') || owner.email
+      : null;
+    return { canView: true, userId: ownerId, name };
+  }
+
+  /**
+   * `true` si `requesterId` puede ver a `ownerId`: el superusuario ve a todos; el resto, solo
+   * si comparte con esa persona alguna empresa donde tenga `users:read`. Mismo criterio de
+   * visibilidad que `findMembershipsForEditor`.
+   */
+  private async canViewUser(
+    requesterId: string,
+    ownerId: string,
+    isSuper?: boolean,
+  ): Promise<boolean> {
+    if (isSuper ?? (await this.isSystemSuperUser(requesterId))) return true;
+
+    const ownerTenants = await this.prisma.userTenant.findMany({
+      where: { userId: ownerId },
+      select: { tenantId: true },
+    });
+    for (const t of ownerTenants) {
+      if (await this.hasUsersPermissionInTenant(requesterId, t.tenantId, 'read')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** `true` si el usuario puede crear o actualizar usuarios en alguna de sus empresas. */
+  private async canManageUsersAnywhere(userId: string): Promise<boolean> {
+    const memberships = await this.prisma.userTenant.findMany({
+      where: { userId },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+    return memberships.some((m) =>
+      m.role.permissions.some(
+        (p) => p.resource === 'users' && (p.action === 'create' || p.action === 'update'),
+      ),
+    );
   }
 }

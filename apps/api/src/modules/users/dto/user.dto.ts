@@ -2,6 +2,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -10,6 +11,25 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+
+/**
+ * Verificación en vivo de un campo global (email, teléfono o identificador de Invgate) desde el
+ * formulario de alta/edición. `excludeUserId` es la persona que se está editando, para que su
+ * propio dato no cuente como conflicto consigo misma.
+ */
+export class CheckAvailabilityQueryDto {
+  @IsIn(['email', 'phone', 'invgateUserId'])
+  field: 'email' | 'phone' | 'invgateUserId';
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  value: string;
+
+  @IsOptional()
+  @IsString()
+  excludeUserId?: string;
+}
 
 export class CreateUserDto {
   @IsEmail({}, { message: 'El email no es válido' })

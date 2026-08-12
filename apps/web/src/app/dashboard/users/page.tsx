@@ -72,6 +72,64 @@ async function fetchAreasForTenant(tenantId: string): Promise<AreaOption[]> {
   }
 }
 
+/** Los tres campos únicos en todo el sistema. */
+type GlobalField = 'email' | 'phone' | 'invgateUserId';
+
+/**
+ * El usuario que ya ocupa un campo global. `canView` false = no se revela quién es (está en una
+ * empresa que quien edita no administra), y ahí `userId` y `name` van en null.
+ */
+type FieldConflict = { canView: boolean; userId: string | null; name: string | null };
+
+/**
+ * Verifica en vivo si un campo global ya está en uso. Devuelve el conflicto (quién lo usa) o
+ * null si está libre. Ante cualquier error (red, sin permiso) devuelve null: el chequeo en vivo
+ * es solo un aviso temprano; el guardado revalida igual contra el backend.
+ */
+async function checkFieldAvailability(
+  field: GlobalField,
+  value: string,
+  excludeUserId?: string,
+): Promise<FieldConflict | null> {
+  const v = value.trim();
+  if (!v) return null;
+  const params = new URLSearchParams({ field, value: v });
+  if (excludeUserId) params.set('excludeUserId', excludeUserId);
+  try {
+    const res = await apiFetch(`/users/check-availability?${params.toString()}`);
+    return res.available ? null : (res.conflict as FieldConflict);
+  } catch {
+    return null;
+  }
+}
+
+/** El error inline que va debajo de un campo global en conflicto. */
+function FieldConflictError({
+  conflict,
+  onView,
+}: {
+  conflict: FieldConflict;
+  onView: (userId: string) => void;
+}) {
+  return (
+    <p className="text-xs text-red-600 mt-1">
+      Ya está en uso por{' '}
+      {conflict.canView && conflict.userId ? (
+        <button
+          type="button"
+          onClick={() => onView(conflict.userId!)}
+          className="underline font-medium hover:text-red-800"
+        >
+          {conflict.name || 'otro usuario'}
+        </button>
+      ) : (
+        'un usuario de otra empresa'
+      )}
+      .
+    </p>
+  );
+}
+
 export default function UsersPage() {
   const {
     hasPermission,
@@ -498,6 +556,19 @@ function UserModal({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [conflicts, setConflicts] = useState<
+    Partial<Record<GlobalField, FieldConflict | null>>
+  >({});
+  const [conflictUserId, setConflictUserId] = useState<string | null>(null);
+
+  function clearConflict(field: GlobalField) {
+    setConflicts((prev) => ({ ...prev, [field]: null }));
+  }
+  async function checkField(field: GlobalField, value: string) {
+    const conflict = await checkFieldAvailability(field, value);
+    setConflicts((prev) => ({ ...prev, [field]: conflict }));
+  }
+  const hasConflict = Object.values(conflicts).some(Boolean);
 
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [tenantChoices, setTenantChoices] = useState<TenantOption[]>(availableTenants ?? []);
@@ -592,14 +663,18 @@ function UserModal({
 
   useEffect(() => {
     function onEscape(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        requestClose();
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      // Con la ficha del ocupante abierta encima, Escape la cierra a ella, no al formulario.
+      if (conflictUserId) {
+        setConflictUserId(null);
+        return;
       }
+      requestClose();
     }
     document.addEventListener('keydown', onEscape);
     return () => document.removeEventListener('keydown', onEscape);
-  }, [requestClose]);
+  }, [requestClose, conflictUserId]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -637,15 +712,26 @@ function UserModal({
         }.`,
       });
     } catch (err: any) {
-      setError(err.message);
+      const body = err?.body;
+      if (body?.field && body?.conflict) {
+        // El backend dice qué campo global chocó: lo mostramos debajo de ese campo.
+        setConflicts((prev) => ({ ...prev, [body.field]: body.conflict }));
+        setError('');
+      } else {
+        setError(err.message);
+      }
       setSaving(false);
     }
   }
 
   const saveDisabled =
-    saving || memberships.length === 0 || memberships.some((m) => !m.roleId);
+    saving ||
+    memberships.length === 0 ||
+    memberships.some((m) => !m.roleId) ||
+    hasConflict;
 
   return (
+    <>
     <ModalShell
       title="Nuevo usuario"
       subtitle="Elegí en qué empresas se da de alta a la persona: por cada una, un rol y, opcional, un área."
@@ -697,26 +783,53 @@ function UserModal({
             type="email"
             placeholder="juan.perez@empresa.com"
             value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            className="border border-gray-200 px-3 py-2 rounded w-full"
+            onChange={(e) => {
+              setForm({ ...form, email: e.target.value });
+              clearConflict('email');
+            }}
+            onBlur={(e) => checkField('email', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.email ? 'border-red-400' : 'border-gray-200'
+            }`}
             required
           />
+          {conflicts.email && (
+            <FieldConflictError conflict={conflicts.email} onView={setConflictUserId} />
+          )}
         </PersonField>
         <PersonField label="Teléfono">
           <input
             placeholder="+54911..."
             value={form.phone}
-            onChange={(e) => setForm({ ...form, phone: e.target.value })}
-            className="border border-gray-200 px-3 py-2 rounded w-full"
+            onChange={(e) => {
+              setForm({ ...form, phone: e.target.value });
+              clearConflict('phone');
+            }}
+            onBlur={(e) => checkField('phone', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.phone ? 'border-red-400' : 'border-gray-200'
+            }`}
           />
+          {conflicts.phone && (
+            <FieldConflictError conflict={conflicts.phone} onView={setConflictUserId} />
+          )}
         </PersonField>
         <PersonField label="ID de Invgate">
           <input
             value={form.invgateUserId}
-            onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
-            className="border border-gray-200 px-3 py-2 rounded w-full"
+            onChange={(e) => {
+              setForm({ ...form, invgateUserId: e.target.value });
+              clearConflict('invgateUserId');
+            }}
+            onBlur={(e) => checkField('invgateUserId', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.invgateUserId ? 'border-red-400' : 'border-gray-200'
+            }`}
             maxLength={64}
           />
+          {conflicts.invgateUserId && (
+            <FieldConflictError conflict={conflicts.invgateUserId} onView={setConflictUserId} />
+          )}
         </PersonField>
         <PersonField label="Contraseña *">
           <input
@@ -753,6 +866,13 @@ function UserModal({
         emptyHint="Todavía no agregaste ninguna empresa."
       />
     </ModalShell>
+      {conflictUserId && (
+        <ConflictUserModal
+          userId={conflictUserId}
+          onClose={() => setConflictUserId(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -796,6 +916,19 @@ function UserEditModal({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [conflicts, setConflicts] = useState<
+    Partial<Record<GlobalField, FieldConflict | null>>
+  >({});
+  const [conflictUserId, setConflictUserId] = useState<string | null>(null);
+
+  function clearConflict(field: GlobalField) {
+    setConflicts((prev) => ({ ...prev, [field]: null }));
+  }
+  async function checkField(field: GlobalField, value: string) {
+    const conflict = await checkFieldAvailability(field, value, user.id);
+    setConflicts((prev) => ({ ...prev, [field]: conflict }));
+  }
+  const hasConflict = Object.values(conflicts).some(Boolean);
 
   const [form, setForm] = useState({
     firstName: user.firstName ?? '',
@@ -964,14 +1097,18 @@ function UserEditModal({
 
   useEffect(() => {
     function onEscape(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        requestClose();
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      // Con la ficha del ocupante abierta encima, Escape la cierra a ella, no al formulario.
+      if (conflictUserId) {
+        setConflictUserId(null);
+        return;
       }
+      requestClose();
     }
     document.addEventListener('keydown', onEscape);
     return () => document.removeEventListener('keydown', onEscape);
-  }, [requestClose]);
+  }, [requestClose, conflictUserId]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -1014,7 +1151,14 @@ function UserEditModal({
       });
       onSaved({ kind: 'ok', text: res?.message || `Usuario ${userLabel(user)} guardado.` });
     } catch (err: any) {
-      setError(err.message);
+      const body = err?.body;
+      if (body?.field && body?.conflict) {
+        // El backend dice qué campo global chocó: lo mostramos debajo de ese campo.
+        setConflicts((prev) => ({ ...prev, [body.field]: body.conflict }));
+        setError('');
+      } else {
+        setError(err.message);
+      }
       setSaving(false);
     }
   }
@@ -1043,6 +1187,7 @@ function UserEditModal({
   }));
 
   return (
+    <>
     <ModalShell
       title="Editar usuario"
       subtitle="Cambiá los datos de la persona y sus empresas: rol y área por empresa, agregar o quitar empresas."
@@ -1061,7 +1206,7 @@ function UserEditModal({
           </button>
           <button
             type="submit"
-            disabled={saving || !changed}
+            disabled={saving || !changed || hasConflict}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
           >
             {saving ? 'Guardando...' : 'Guardar'}
@@ -1099,17 +1244,35 @@ function UserEditModal({
           <input
             placeholder="+54911..."
             value={form.phone}
-            onChange={(e) => setForm({ ...form, phone: e.target.value })}
-            className="border border-gray-200 px-3 py-2 rounded w-full"
+            onChange={(e) => {
+              setForm({ ...form, phone: e.target.value });
+              clearConflict('phone');
+            }}
+            onBlur={(e) => checkField('phone', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.phone ? 'border-red-400' : 'border-gray-200'
+            }`}
           />
+          {conflicts.phone && (
+            <FieldConflictError conflict={conflicts.phone} onView={setConflictUserId} />
+          )}
         </PersonField>
         <PersonField label="ID de Invgate">
           <input
             value={form.invgateUserId}
-            onChange={(e) => setForm({ ...form, invgateUserId: e.target.value })}
-            className="border border-gray-200 px-3 py-2 rounded w-full"
+            onChange={(e) => {
+              setForm({ ...form, invgateUserId: e.target.value });
+              clearConflict('invgateUserId');
+            }}
+            onBlur={(e) => checkField('invgateUserId', e.target.value)}
+            className={`border px-3 py-2 rounded w-full ${
+              conflicts.invgateUserId ? 'border-red-400' : 'border-gray-200'
+            }`}
             maxLength={64}
           />
+          {conflicts.invgateUserId && (
+            <FieldConflictError conflict={conflicts.invgateUserId} onView={setConflictUserId} />
+          )}
         </PersonField>
         <PersonField label="Nueva contraseña">
           <input
@@ -1136,6 +1299,13 @@ function UserEditModal({
         emptyHint="Esta persona no está en ninguna empresa que puedas administrar."
       />
     </ModalShell>
+      {conflictUserId && (
+        <ConflictUserModal
+          userId={conflictUserId}
+          onClose={() => setConflictUserId(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -1480,6 +1650,138 @@ function UserDetailModal({
               Editar
             </button>
           )}
+          <button
+            ref={closeRef}
+            onClick={onClose}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+          >
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Ficha del usuario que ya ocupa un campo global (solo lectura)       */
+/* ------------------------------------------------------------------ */
+
+interface ConflictUserData {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  invgateUserId: string | null;
+  memberships: Array<{
+    tenantId: string;
+    tenant: { id: string; name: string; slug: string };
+    role: { id: string; name: string } | null;
+    area: { id: string; name: string } | null;
+  }>;
+}
+
+/**
+ * La ficha del usuario que ya usa un dato global, abierta desde el link del error. Carga sus
+ * datos por id (`/users/:id/memberships`, que ya devuelve solo las empresas que quien consulta
+ * puede ver). Se muestra por encima del formulario; su Escape lo maneja el modal de abajo.
+ */
+function ConflictUserModal({ userId, onClose }: { userId: string; onClose: () => void }) {
+  const [data, setData] = useState<ConflictUserData | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    apiFetch(`/users/${userId}/memberships`)
+      .then((d: ConflictUserData) => setData(d))
+      .catch((err: any) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [userId]);
+
+  const fullName = data
+    ? [data.firstName, data.lastName].filter(Boolean).join(' ') || data.email
+    : '';
+
+  const rows = data
+    ? [
+        {
+          label: 'Nombre',
+          value: [data.firstName, data.lastName].filter(Boolean).join(' ') || '-',
+        },
+        { label: 'Email', value: data.email },
+        { label: 'Teléfono', value: data.phone || '-' },
+        { label: 'ID de Invgate', value: data.invgateUserId || '-' },
+      ]
+    : [];
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-gray-900/55"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="bg-white rounded-md shadow-2xl w-full max-w-[480px] max-h-full flex flex-col text-gray-900">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-4">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-semibold text-gray-800">
+              {loading ? 'Cargando…' : fullName || 'Usuario'}
+            </h2>
+            <p className="mt-1 text-xs text-gray-500">Ya usa este dato</p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Cerrar"
+            className="text-xl leading-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded px-2 py-1"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          {loading && !error && <p className="text-sm text-gray-500">Cargando...</p>}
+          {data && (
+            <>
+              <dl className="divide-y divide-gray-100">
+                {rows.map((r) => (
+                  <div key={r.label} className="flex justify-between gap-4 py-2">
+                    <dt className="text-xs uppercase tracking-wider text-gray-500">
+                      {r.label}
+                    </dt>
+                    <dd className="text-sm text-gray-800 text-right break-all">{r.value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <div className="mt-4">
+                <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Empresas</p>
+                {data.memberships.length === 0 ? (
+                  <p className="text-sm text-gray-400">Sin empresas visibles.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {data.memberships.map((m) => (
+                      <li key={m.tenantId} className="text-sm text-gray-700">
+                        <span className="font-medium">{m.tenant?.name ?? m.tenantId}</span>
+                        {m.role?.name ? ` · ${m.role.name}` : ''}
+                        {m.area?.name ? ` · ${m.area.name}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-3 rounded-b-md">
           <button
             ref={closeRef}
             onClick={onClose}
