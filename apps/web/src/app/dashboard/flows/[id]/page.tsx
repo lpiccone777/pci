@@ -57,6 +57,11 @@ interface ContextSourceOption {
   type: string;
 }
 
+interface FlowOption {
+  id: string;
+  name: string;
+}
+
 interface RoleOption {
   id: string;
   name: string;
@@ -132,6 +137,7 @@ function FlowEditorInner() {
   const [contextSources, setContextSources] = useState<ContextSourceOption[]>([]);
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
+  const [flowOptions, setFlowOptions] = useState<FlowOption[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   // Cache de roles por empresa: se traen de GET /roles/by-tenant/:tenantId. Se
   // precargan los de las empresas ya asignadas al abrir un flujo existente, y se
@@ -153,6 +159,7 @@ function FlowEditorInner() {
     loadTenants();
     loadUsers();
     loadContextSources();
+    loadFlowOptions();
 
     if (!isNew) {
       loadFlow();
@@ -201,6 +208,16 @@ function FlowEditorInner() {
       // Sin permiso `context-sources:read` en el tenant actual: el selector queda
       // vacío, igual que allTenants/allUsers cuando falta el permiso equivalente.
       setContextSources([]);
+    }
+  }
+
+  /** Flujos del tenant activo, para el dropdown "ID del flujo" del nodo `subflow`. */
+  async function loadFlowOptions() {
+    try {
+      const data = await apiFetch('/flows');
+      setFlowOptions(data.map((f: any) => ({ id: f.id, name: f.name })));
+    } catch {
+      setFlowOptions([]);
     }
   }
 
@@ -670,6 +687,7 @@ function FlowEditorInner() {
               node={selectedNode}
               onUpdate={updateNodeData}
               users={allUsers}
+              flows={flowOptions.filter((f) => f.id !== id)}
             />
             <button
               onClick={() => {
@@ -860,10 +878,12 @@ function NodeProperties({
   node,
   onUpdate,
   users,
+  flows,
 }: {
   node: Node;
   onUpdate: (key: string, value: any) => void;
   users: UserOption[];
+  flows: FlowOption[];
 }) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
@@ -1229,14 +1249,30 @@ function NodeProperties({
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">ID del flujo</label>
-            <input
-              type="text"
+            <label className="block text-sm font-medium mb-1">Flujo</label>
+            <select
               value={data.flowId || ''}
-              onChange={(e) => onUpdate('flowId', e.target.value)}
-              className="w-full border rounded p-2 text-sm font-mono"
-              placeholder="cmsb..."
-            />
+              onChange={(e) => {
+                const target = flows.find((f) => f.id === e.target.value);
+                onUpdate('flowId', e.target.value);
+                // El nombre viaja aparte (`flowName`, solo visual en el nodo) —
+                // se completa solo al elegir, pero sigue siendo editable a mano.
+                onUpdate('flowName', target?.name || '');
+              }}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="">Elegí un flujo…</option>
+              {flows.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+            {flows.length === 0 && (
+              <p className="text-xs text-gray-400 mt-1">
+                No hay otros flujos disponibles en la empresa activa.
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">ID nodo de entrada (opcional)</label>
