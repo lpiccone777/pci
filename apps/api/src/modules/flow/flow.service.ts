@@ -47,6 +47,9 @@ export class FlowService {
             },
           },
         },
+        contextSource: {
+          select: { id: true, name: true, type: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -65,6 +68,9 @@ export class FlowService {
               select: { roleId: true },
             },
           },
+        },
+        contextSource: {
+          select: { id: true, name: true, type: true },
         },
       },
     });

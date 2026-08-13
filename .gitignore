@@ -28,3 +28,7 @@ graphify-out/cache/
 graphify-out/.graphify*
 graphify-out/cost.json
 graphify-out/manifest.json
+
+# Docs internos, no versionar
+docs/*.pptx
+docs/informe-commits-*.md

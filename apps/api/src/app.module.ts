@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -20,10 +21,14 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { FlowModule } from './modules/flow/flow.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
+import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Habilita @Cron/@Interval en cualquier provider — hoy solo lo usa
+    // ConversationsService.closeInactiveConversations().
+    ScheduleModule.forRoot(),
     PrismaModule,
     AppConfigModule,
     AuthModule,
@@ -41,6 +46,7 @@ import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
     FlowModule,
     SettingsModule,
     WhatsAppModule,
+    ContextSourcesModule,
   ],
   controllers: [AppController],
   providers: [AppService, TenantGuard],

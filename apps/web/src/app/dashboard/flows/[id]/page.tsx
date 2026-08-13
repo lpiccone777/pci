@@ -52,6 +52,17 @@ interface UserOption {
   lastName?: string | null;
 }
 
+interface ContextSourceOption {
+  id: string;
+  name: string;
+  type: string;
+}
+
+interface FlowOption {
+  id: string;
+  name: string;
+}
+
 interface RoleOption {
   id: string;
   name: string;
@@ -123,8 +134,11 @@ function FlowEditorInner() {
   const [flowName, setFlowName] = useState('Nuevo Flujo');
   const [flowDescription, setFlowDescription] = useState('');
   const [flowContext, setFlowContext] = useState('none');
+  const [contextSourceId, setContextSourceId] = useState<string>('');
+  const [contextSources, setContextSources] = useState<ContextSourceOption[]>([]);
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
+  const [flowOptions, setFlowOptions] = useState<FlowOption[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   // Cache de roles por empresa: se traen de GET /roles con el header de esa empresa (así
   // el superadmin los lee parado en cualquier otra, igual que el alta de usuarios). Se
@@ -153,6 +167,8 @@ function FlowEditorInner() {
     // empresa. Para el usuario común queda vacía y los checkboxes no se muestran.
     loadTenants();
     loadUsers();
+    loadContextSources();
+    loadFlowOptions();
 
     if (!isNew) {
       loadFlow();
@@ -199,12 +215,34 @@ function FlowEditorInner() {
     }
   }
 
+  async function loadContextSources() {
+    try {
+      const data = await apiFetch('/context-sources');
+      setContextSources(data.filter((s: any) => s.isActive));
+    } catch {
+      // Sin permiso `context-sources:read` en el tenant actual: el selector queda
+      // vacío, igual que allTenants/allUsers cuando falta el permiso equivalente.
+      setContextSources([]);
+    }
+  }
+
+  /** Flujos del tenant activo, para el dropdown "ID del flujo" del nodo `subflow`. */
+  async function loadFlowOptions() {
+    try {
+      const data = await apiFetch('/flows');
+      setFlowOptions(data.map((f: any) => ({ id: f.id, name: f.name })));
+    } catch {
+      setFlowOptions([]);
+    }
+  }
+
   async function loadFlow() {
     try {
       const flow = await apiFetch(`/flows/${id}`);
       setFlowName(flow.name);
       setFlowDescription(flow.description || '');
       setFlowContext(flow.context || 'none');
+      setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
       const tenantFlows = flow.tenantFlows || [];
       const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
         tenantId: tf.tenant.id,
@@ -432,6 +470,7 @@ function FlowEditorInner() {
         name: flowName,
         description: flowDescription,
         context: flowContext,
+        contextSourceId: contextSourceId || null,
         // Solo lo que define el flujo. ReactFlow agrega estado de runtime a nodos y
         // aristas (`measured` con el tamaño calculado, `selected`, `dragging`) que no
         // es parte del flujo y que el ValidationPipe del backend rechaza.
@@ -529,6 +568,19 @@ function FlowEditorInner() {
               </option>
             ))}
           </select>
+          <select
+            value={contextSourceId}
+            onChange={(e) => setContextSourceId(e.target.value)}
+            className="text-gray-600 border rounded px-2 py-1 text-sm"
+            title="Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar"
+          >
+            <option value="">Sin fuente de verdad</option>
+            {contextSources.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.type})
+              </option>
+            ))}
+          </select>
         </div>
         <button
           onClick={saveFlow}
@@ -602,9 +654,9 @@ function FlowEditorInner() {
         </div>
       )}
 
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-h-0">
         {/* Sidebar - Node Types */}
-        <div className="w-48 bg-gray-50 border-r p-4 overflow-y-auto">
+        <div className="w-48 bg-gray-50 border-r p-4 overflow-y-auto min-h-0">
           <h3 className="font-semibold mb-4 text-sm">Nodos</h3>
           <div className="space-y-2">
             {nodeTypeList.map((nt) => (
@@ -651,13 +703,14 @@ function FlowEditorInner() {
 
         {/* Properties Panel */}
         {selectedNode && (
-          <div className="w-72 bg-white border-l p-4 overflow-y-auto">
+          <div className="w-72 bg-white border-l p-4 overflow-y-auto min-h-0">
             <h3 className="font-semibold mb-4">Propiedades</h3>
             <p className="text-xs text-gray-500 mb-4">{selectedNode.type}</p>
             <NodeProperties
               node={selectedNode}
               onUpdate={updateNodeData}
               users={allUsers}
+              flows={flowOptions.filter((f) => f.id !== id)}
             />
             <button
               onClick={() => {
@@ -848,10 +901,12 @@ function NodeProperties({
   node,
   onUpdate,
   users,
+  flows,
 }: {
   node: Node;
   onUpdate: (key: string, value: any) => void;
   users: UserOption[];
+  flows: FlowOption[];
 }) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
@@ -1217,14 +1272,30 @@ function NodeProperties({
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">ID del flujo</label>
-            <input
-              type="text"
+            <label className="block text-sm font-medium mb-1">Flujo</label>
+            <select
               value={data.flowId || ''}
-              onChange={(e) => onUpdate('flowId', e.target.value)}
-              className="w-full border rounded p-2 text-sm font-mono"
-              placeholder="cmsb..."
-            />
+              onChange={(e) => {
+                const target = flows.find((f) => f.id === e.target.value);
+                onUpdate('flowId', e.target.value);
+                // El nombre viaja aparte (`flowName`, solo visual en el nodo) —
+                // se completa solo al elegir, pero sigue siendo editable a mano.
+                onUpdate('flowName', target?.name || '');
+              }}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="">Elegí un flujo…</option>
+              {flows.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+            {flows.length === 0 && (
+              <p className="text-xs text-gray-400 mt-1">
+                No hay otros flujos disponibles en la empresa activa.
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">ID nodo de entrada (opcional)</label>

@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LlmService } from '../llm/llm.service';
@@ -9,6 +10,7 @@ import { LlmMessage } from '../llm/llm-provider.interface';
 import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
+import { ContextSourcesService } from '../context-sources/context-sources.service';
 import { createHash } from 'crypto';
 
 /**
@@ -22,11 +24,17 @@ import { createHash } from 'crypto';
 const SIMULATE_QUEUE = 'whatsapp.simulate.incoming';
 
 /**
- * Timeout del request/reply de simulate. Generoso a propósito: OpenCode Go razona
- * antes de responder y en la práctica tarda unos segundos, pero su propio timeout
- * interno por llamada HTTP es de 2 minutos (ver OpenCodeGoProvider).
+ * Timeout del request/reply de simulate. Generoso a propósito, y tiene que cubrir
+ * el peor caso real, no solo el típico: `interpretMenuChoice` y el `llmService.chat`
+ * final de `orchestratorLlm` son dos llamadas LLM separadas que pueden caer cada una
+ * en el timeout interno de 120s de OpenCode Go (ver `REQUEST_TIMEOUT_MS` en
+ * `OpenCodeGoProvider`), más hasta ~32s si `orchestratorLlm` además consulta una
+ * fuente de verdad (`ContextSourcesService.queryKnowledge`). Estaba en 90s — menos
+ * que el propio timeout interno de OpenCode Go que el comentario de al lado ya
+ * advertía — así que expiraba antes de que la llamada real pudiera siquiera
+ * terminar (bien o mal).
  */
-const SIMULATE_TIMEOUT_MS = 90_000;
+const SIMULATE_TIMEOUT_MS = 300_000;
 
 /** Corte de seguridad ante flujos con ciclos entre nodos no interactivos. */
 const MAX_FLOW_STEPS = 25;
@@ -38,8 +46,20 @@ const MAX_FLOW_STEPS = 25;
  */
 const RESUME_WINDOW_MS = 12 * 60 * 60 * 1000;
 
+/**
+ * Inactividad máxima de una charla `active` antes de cerrarla sola (pedido
+ * 2026-08-10). El próximo mensaje del usuario, si llega dentro de
+ * RESUME_WINDOW_MS, retoma la misma Conversation pero con el flujo reseteado
+ * (closeConversation ya deja currentNodeId/flowState en null) — "empieza de
+ * nuevo" sin perder el historial de Message.
+ */
+const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
+
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
+
+/** Texto exacto que `orchestratorLlm` le pide al LLM para señalar "necesito la fuente de verdad". */
+const NEEDS_SOURCE_SENTINEL = 'NECESITA_FUENTE';
 
 interface NodeExecutionResult {
   responseText?: string;
@@ -56,6 +76,17 @@ interface NodeExecutionResult {
   flowState?: any;
 }
 
+/** Un menú apilado en `flowState.__menuStack` — ver `navigateMenuBack`. */
+interface MenuStackEntry {
+  nodeId: string;
+  flowId: string;
+}
+
+/** Valor reservado de la opción "Volver" sintética — no puede colisionar con
+ * un `opt.value` real porque el editor de flujos genera esos valores como
+ * índices numéricos o slugs simples, nunca con este prefijo. */
+const BACK_OPTION_VALUE = '__volver';
+
 @Injectable()
 export class ConversationsService implements OnModuleInit {
   private readonly logger = new Logger(ConversationsService.name);
@@ -68,6 +99,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly flowService: FlowService,
     private readonly appConfig: AppConfigService,
     private readonly emailService: EmailService,
+    private readonly contextSourcesService: ContextSourcesService,
   ) {}
 
   async onModuleInit() {
@@ -164,7 +196,11 @@ export class ConversationsService implements OnModuleInit {
     if (!conversation) {
       // La última charla cerrada (nodo `end`, cancelación o fin de flujo) sigue
       // dentro de la ventana de reanudación: se reabre la misma Conversation —
-      // mismo id, mismo historial de Message— en vez de perder el contexto.
+      // mismo id — en vez de perder el flujo/ticket en curso. Los `Message` de
+      // la charla anterior quedan igual en la fila (auditoría), pero
+      // `sessionStartedAt` se resetea acá: es lo que usa `orchestratorLlm` para
+      // no mandarle al LLM historial de antes del cierre como si fuera la
+      // charla actual (ver ese método).
       const resumable = await this.prisma.conversation.findFirst({
         where: {
           userId: user.id,
@@ -179,7 +215,7 @@ export class ConversationsService implements OnModuleInit {
       conversation = resumable
         ? await this.prisma.conversation.update({
             where: { id: resumable.id },
-            data: { status: 'active', closedAt: null },
+            data: { status: 'active', closedAt: null, sessionStartedAt: new Date() },
           })
         : await this.prisma.conversation.create({
             data: {
@@ -187,6 +223,7 @@ export class ConversationsService implements OnModuleInit {
               tenantId,
               channel: 'whatsapp',
               externalId: from,
+              sessionStartedAt: new Date(),
             },
           });
     }
@@ -238,7 +275,7 @@ export class ConversationsService implements OnModuleInit {
       interactive = flowResult.interactive;
     } else {
       // Fallback: orquestador LLM para mensajes fuera de flujo
-      responseText = await this.orchestratorLlm(conversation, body, tenantId);
+      responseText = await this.orchestratorLlm(conversation, body, tenantId, null);
     }
 
     // 6. Guardar respuesta del asistente
@@ -339,6 +376,7 @@ export class ConversationsService implements OnModuleInit {
         flowState,
         identity,
         flowId,
+        flow.contextSourceId,
       );
 
       // Actualizar flowState ANTES de interpolar: si este mismo nodo acaba de
@@ -530,6 +568,34 @@ export class ConversationsService implements OnModuleInit {
       flowState,
       cancelFlow: true,
     };
+  }
+
+  /**
+   * Vuelve al menú que quedó en el tope de `menuStack` (ver `case 'menu'`).
+   * Si ese menú pertenece a otro `Flow` (submenú entrado vía nodo `subflow`),
+   * reusa el mismo mecanismo de cambio de flujo que `case 'subflow'`
+   * (`flowState.__subflow`, leído por el loop principal de `executeFlow`) en
+   * vez de duplicar esa lógica acá.
+   */
+  private navigateMenuBack(
+    flowState: Record<string, any>,
+    menuStack: MenuStackEntry[],
+    currentFlowId: string,
+  ): NodeExecutionResult {
+    const stack = [...menuStack];
+    const target = stack.pop();
+    flowState.__menuStack = stack;
+
+    // No debería pasar — "Volver" solo se ofrece cuando la pila no está vacía —
+    // pero ante un flowState corrupto de una sesión vieja, mejor no romper nada.
+    if (!target) {
+      return { flowState };
+    }
+
+    if (target.flowId !== currentFlowId) {
+      return { flowState: { ...flowState, __subflow: { flowId: target.flowId, entryNodeId: target.nodeId } } };
+    }
+    return { nextNodeId: target.nodeId, flowState };
   }
 
   /**
@@ -734,6 +800,28 @@ export class ConversationsService implements OnModuleInit {
     });
   }
 
+  /**
+   * Cierra sola toda charla `active` sin mensajes en los últimos
+   * INACTIVITY_TIMEOUT_MS. `messages: { none: { createdAt: { gte: cutoff } } }`
+   * — sin mensaje propio, no hay `Conversation.updatedAt` ni ningún otro campo
+   * de "última actividad" confiable: `persistFlowPosition` solo toca la fila en
+   * pasos que avanzan el flujo, no en cada mensaje entrante (ej. un `menu` que
+   * espera input no la vuelve a tocar).
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  private async closeInactiveConversations() {
+    const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
+    const stale = await this.prisma.conversation.findMany({
+      where: { status: 'active', messages: { none: { createdAt: { gte: cutoff } } } },
+      select: { id: true },
+    });
+
+    if (stale.length === 0) return;
+
+    await Promise.all(stale.map((c) => this.closeConversation(c.id)));
+    this.logger.log(`Cerradas ${stale.length} charla(s) por inactividad (>${INACTIVITY_TIMEOUT_MS / 60_000}min)`);
+  }
+
   /** Cierra la charla (nodo `end`, cancelación del usuario o fin del flujo). Queda retomable dentro de RESUME_WINDOW_MS. */
   private async closeConversation(conversationId: string) {
     await this.prisma.conversation.update({
@@ -900,6 +988,14 @@ export class ConversationsService implements OnModuleInit {
       ? await this.pickNextAssignee(flowId, node.id, assigneeIds)
       : null;
 
+    // `data.message` es texto configurado en el editor y puede traer `{{variable}}`
+    // (ej. `{{descripcion}}`, `{{Urgencia}}`) igual que el texto de cualquier otro
+    // nodo — pero a diferencia de esos, nunca pasaba por `executeFlow` como
+    // `responseText` (es una nota interna, no le llega al usuario, ver comentario
+    // más abajo), así que el interpolate() que corre ahí no lo tocaba y las
+    // variables quedaban sin reemplazar en el mail y en el ticket.
+    const note = data.message ? this.interpolate(data.message, flowState) : undefined;
+
     if (methods.includes('ticket') && assignee) {
       const ticket = await this.prisma.ticket.create({
         data: {
@@ -907,7 +1003,7 @@ export class ConversationsService implements OnModuleInit {
           tenantId,
           assignedToId: assignee.id,
           subject: (flowState.subject || body).substring(0, 100),
-          description: [data.message, flowState.description || body].filter(Boolean).join('\n\n'),
+          description: [note, flowState.description || body].filter(Boolean).join('\n\n'),
           priority: flowState.priority || 'medium',
         },
       });
@@ -933,7 +1029,7 @@ export class ConversationsService implements OnModuleInit {
           subject: `Transferencia de conversación — ${userName}`,
           text:
             `${userName} (${user?.phone || 'sin teléfono'}) fue transferido a soporte humano.\n\n` +
-            (data.message ? `Nota: ${data.message}\n\n` : '') +
+            (note ? `Nota: ${note}\n\n` : '') +
             `Último mensaje: "${body}"\n\n` +
             (assigneeName ? `Asignado a: ${assigneeName}\n` : 'Sin colaborador asignado.\n') +
             (flowState.lastTicketId ? `Ticket: #${flowState.lastTicketId}\n` : ''),
@@ -976,6 +1072,7 @@ export class ConversationsService implements OnModuleInit {
     flowState: Record<string, any>,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
     flowId: string,
+    contextSourceId: string | null,
   ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
@@ -1032,14 +1129,23 @@ export class ConversationsService implements OnModuleInit {
       case 'menu': {
         const options = data.options || [];
 
+        // Pila de navegación entre menús (pedido 2026-08-12): cada vez que se
+        // elige una opción real (no "Volver") se apila el menú que se abandona,
+        // así el próximo menú puede ofrecer "Volver" a él. Vacía = no hay menú
+        // anterior (el menú raíz nunca la muestra). Es runtime, no del grafo del
+        // flujo: refleja por dónde pasó ESTA conversación, no la estructura
+        // estática — funciona igual si un submenú se llega desde varios lados.
+        const menuStack: MenuStackEntry[] = flowState.__menuStack || [];
+        const displayOptions =
+          menuStack.length > 0 ? [...options, { value: BACK_OPTION_VALUE, label: 'Volver' }] : options;
+
         // Ya se derivó a conversación libre con el LLM (el mensaje anterior no
         // encajaba en ninguna opción ni era una cancelación): sigue atendiendo
         // con el historial completo, sin volver a evaluar contra las opciones.
-        // Por ahora solo recopila datos del problema — cuando estén definidas
-        // las fuentes de conocimiento, acá se decide autoservicio vs. generar
-        // un ticket con lo recopilado.
+        // Si el flujo tiene una fuente de verdad vinculada, `orchestratorLlm` la
+        // consulta antes de responder — ver ese método.
         if (flowState.__llmFallback === node.id) {
-          const responseText = await this.orchestratorLlm(conversation, body, tenantId);
+          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId);
           return { responseText, waitForInput: true, flowState };
         }
 
@@ -1047,7 +1153,7 @@ export class ConversationsService implements OnModuleInit {
         // encadenar nodos el menú consumiría el mensaje que lo activó.
         if (flowState.__awaiting !== node.id) {
           flowState.__awaiting = node.id;
-          const interactive = this.buildMenuInteractive(data.text, options);
+          const interactive = this.buildMenuInteractive(data.text, displayOptions);
           // Si hay interactivo, `responseText` tiene que ser SOLO el header (sin
           // la lista numerada): las opciones ya se ven en los botones/lista, y
           // ese mismo texto es el que `executeFlow` termina mandando como body
@@ -1057,20 +1163,24 @@ export class ConversationsService implements OnModuleInit {
             : (
                 (data.text ?? '') +
                 '\n' +
-                options.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
+                displayOptions.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
               ).trim();
           return { responseText, interactive, waitForInput: true, flowState };
         }
 
-        const selected = options.find(
+        const selected = displayOptions.find(
           (opt: any) =>
             body.trim() === opt.value ||
             body.trim() === opt.label ||
-            body.trim() === String(options.indexOf(opt) + 1),
+            body.trim() === String(displayOptions.indexOf(opt) + 1),
         );
 
         if (selected) {
           delete flowState.__awaiting;
+          if (selected.value === BACK_OPTION_VALUE) {
+            return this.navigateMenuBack(flowState, menuStack, flowId);
+          }
+          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
           // Arista con sourceHandle = valor de la opción elegida
           const edge = edges.find(
             (e: any) => e.source === node.id && e.sourceHandle === String(selected.value),
@@ -1083,18 +1193,22 @@ export class ConversationsService implements OnModuleInit {
         // querer cancelar la gestión ("dejalo", "mejor no"). Se interpreta con
         // el LLM antes de asumir que es una opción inválida — solo se gasta esta
         // llamada acá, nunca en el camino feliz de un match literal.
-        const interpretation = await this.interpretMenuChoice(body, options);
+        const interpretation = await this.interpretMenuChoice(body, displayOptions);
 
         if (interpretation.cancel) {
           return this.cancelInteraction(flowState);
         }
 
         const matched = interpretation.optionValue
-          ? options.find((opt: any) => String(opt.value) === interpretation.optionValue)
+          ? displayOptions.find((opt: any) => String(opt.value) === interpretation.optionValue)
           : undefined;
 
         if (matched) {
           delete flowState.__awaiting;
+          if (matched.value === BACK_OPTION_VALUE) {
+            return this.navigateMenuBack(flowState, menuStack, flowId);
+          }
+          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
           const edge = edges.find(
             (e: any) => e.source === node.id && e.sourceHandle === String(matched.value),
           );
@@ -1107,7 +1221,7 @@ export class ConversationsService implements OnModuleInit {
         // de `__llmFallback` al principio del case).
         delete flowState.__awaiting;
         flowState.__llmFallback = node.id;
-        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId);
+        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId);
         return { responseText: fallbackResponse, waitForInput: true, flowState };
       }
 
@@ -1280,14 +1394,24 @@ export class ConversationsService implements OnModuleInit {
   /**
    * Orquestador LLM para mensajes fuera de flujo o cuando no hay flujo activo.
    * Interpreta intenciones, detecta referencias a tickets, y genera respuestas completas.
+   * `contextSourceId`: fuente de verdad vinculada al `Flow` en curso (null si no
+   * hay flujo activo o el flujo no tiene ninguna vinculada) — ver más abajo.
    */
   private async orchestratorLlm(
     conversation: any,
     body: string,
     tenantId: string,
+    contextSourceId: string | null,
   ): Promise<string> {
+    // `sessionStartedAt` acota el historial a la sesión actual: si la charla
+    // se cerró y se reanudó (mismo Conversation.id, ver `handleMessage`), los
+    // `Message` de antes del cierre no cuentan como contexto de "la charla
+    // actual" — verificado en producción, una charla con varios turnos rotos
+    // de una sesión vieja seguía contaminando las respuestas nuevas después de
+    // reanudar. Fallback a `createdAt` para filas de antes de esta migración.
+    const sessionStart = conversation.sessionStartedAt ?? conversation.createdAt;
     const recentMessages = await this.prisma.message.findMany({
-      where: { conversationId: conversation.id },
+      where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
       orderBy: { createdAt: 'asc' },
       take: 10,
     });
@@ -1301,7 +1425,15 @@ export class ConversationsService implements OnModuleInit {
           '2. Si menciona un ticket existente, analizarlo para dar contexto\n' +
           '3. Si necesita crear un ticket, hacer las preguntas necesarias para completarlo\n' +
           '4. Si es una pregunta simple, responder directamente\n' +
-          '5. Siempre ser amable, conciso y en español.',
+          '5. Siempre ser amable, conciso y en español.' +
+          (contextSourceId
+            ? '\n6. Hay una fuente de verdad externa disponible para lo que no puedas responder ' +
+              'con lo que ya sabés o con el historial de esta charla. Si la necesitás, respondé ' +
+              `ÚNICAMENTE con el texto exacto "${NEEDS_SOURCE_SENTINEL}" — sin nada más, sin ` +
+              'inventar una respuesta ni pedir disculpas. Si ya podés responder sin consultarla, ' +
+              'respondé normalmente: no la necesitás para todos los mensajes, solo cuando de ' +
+              'verdad haga falta.'
+            : ''),
       },
       ...recentMessages.map((m) => ({
         role: (m.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
@@ -1324,9 +1456,55 @@ export class ConversationsService implements OnModuleInit {
       }
     }
 
-    return this.llmService.chat(llmMessages, {
+    const chatOptions = {
       systemPrompt:
         'Eres un asistente de soporte técnico amable y conciso. Responde en español. Si no sabes la respuesta, indícalo honestamente.',
-    });
+    };
+
+    try {
+      let responseText = await this.llmService.chat(llmMessages, chatOptions);
+
+      // Fuente de verdad vinculada al flujo: se consulta solo cuando el LLM pidió
+      // el sentinel de arriba, no en cada turno — antes se consultaba siempre que
+      // el flujo tuviera una `contextSourceId`, así que una charla que ya había
+      // resuelto su pregunta seguía pagando la latencia del RAG (~10-30s) en cada
+      // mensaje siguiente, aunque fuera un simple "gracias" o un tema nuevo que el
+      // LLM podía responder solo. Con el sentinel, se intenta responder local
+      // primero y solo se va al RAG cuando el propio LLM señala que lo necesita —
+      // el próximo turno vuelve a intentar local. `queryKnowledge` nunca tira
+      // (atrapa timeout/error internamente y devuelve `ok:false`).
+      if (contextSourceId && responseText.trim() === NEEDS_SOURCE_SENTINEL) {
+        const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
+        if (knowledge.ok && knowledge.answer) {
+          llmMessages.push({
+            role: 'system',
+            content: `Contexto de la fuente de verdad vinculada a este flujo:\n${knowledge.answer}`,
+          });
+          responseText = await this.llmService.chat(llmMessages, chatOptions);
+          // Verificado en producción: con proveedores poco confiables (ej. OpenCode Go en
+          // modo `plan`), a veces el LLM repite el sentinel tal cual incluso ya con el
+          // contexto de la fuente en el mensaje — sin este chequeo, el usuario recibía el
+          // texto crudo "NECESITA_FUENTE" como respuesta. Si vuelve a pasar, se le manda
+          // directamente la respuesta de la fuente en vez de nada.
+          if (responseText.trim() === NEEDS_SOURCE_SENTINEL) {
+            responseText = knowledge.answer;
+          }
+        } else {
+          this.logger.warn(`Fuente de verdad ${contextSourceId} sin respuesta útil: ${knowledge.message}`);
+          responseText =
+            'No tengo esa información disponible en este momento. ¿Podés reformular tu consulta o preguntar otra cosa?';
+        }
+      }
+
+      return responseText;
+    } catch (err) {
+      // A diferencia de `interpretMenuChoice` (que tiene un fallback silencioso
+      // porque es un paso interno), acá no hay nada más que devolver — es la
+      // respuesta final al usuario. Sin este catch, un timeout o error del
+      // proveedor (ej. OpenCode Go con REQUEST_TIMEOUT_MS=120s) tiraba sin capturar
+      // hasta `handleMessage`, y el usuario se quedaba sin ninguna respuesta.
+      this.logger.error(`orchestratorLlm: el proveedor LLM falló — ${err instanceof Error ? err.message : err}`);
+      return 'Perdón, tuve un problema para responderte. ¿Podés reformular tu consulta o intentar de nuevo en un momento?';
+    }
   }
 }

@@ -206,6 +206,12 @@
     mientras el proyecto no sea funcional. **Cerrar antes de exponer el API fuera de la red
     interna** (agregar `JwtAuthGuard` + tomar el tenant de `@CurrentTenant()`).
 - [x] Flujo completo end-to-end: mensaje → usuario → conversación → LLM/ticket → respuesta
+- [x] **Cierre automático por inactividad** (pedido 2026-08-10): `ConversationsService`
+  corre un `@Cron` cada 10 minutos (`ScheduleModule`, nuevo — `apps/api/src/app.module.ts`)
+  que cierra toda `Conversation` `active` sin `Message` en la última hora
+  (`INACTIVITY_TIMEOUT_MS`), reusando `closeConversation()`. El próximo mensaje del
+  usuario, si llega dentro de `RESUME_WINDOW_MS` (12h), retoma la misma `Conversation`
+  pero con el flujo reseteado — arranca de nuevo sin perder el historial de `Message`
 
 ### Configurabilidad general de flujos IVR ✅ COMPLETADO (pedido 2026-08-04)
 - [x] **Campo `context`** — fuente de datos que respalda las respuestas del flujo
@@ -385,6 +391,34 @@
   - Verificado en vivo contra un servidor real (`opencodego`): lenguaje natural mapeado
     correctamente a una opción, cancelación coloquial confirmada (conversación reseteada
     en BD), y texto sin sentido sigue repitiendo el menú sin forzar un match falso
+- [x] **Opción "Volver" automática en todo menú que no sea el raíz** (pedido 2026-08-12)
+  - Regla: cualquier `menu` debe ofrecer volver al menú anterior, salvo que no exista uno
+    (el menú por el que arranca el flujo). Se resolvió en el motor, no a mano en cada nodo
+    del editor — así funciona para todos los menús existentes y futuros sin cablear nada
+  - `flowState.__menuStack: {nodeId, flowId}[]` — pila de navegación **de esta conversación
+    en tiempo de ejecución**, no del grafo estático del flujo: cada vez que se elige una
+    opción real (no "Volver") se apila el menú que se abandona (`case 'menu'`,
+    `ConversationsService`). Vacía = no hay menú anterior → no se ofrece "Volver". Al elegir
+    una opción real se apila SIEMPRE, sin mirar qué tipo de nodo sigue — si hay nodos no
+    interactivos en el medio (`input`, `variable`, etc.) antes del próximo menú, la pila ya
+    tiene la entrada correcta para cuando se necesite
+  - "Volver" es una opción sintética (`value: '__volver'`, reservado — el editor solo genera
+    valores numéricos por defecto) que se agrega a `options` únicamente para mostrar y
+    matchear (`displayOptions`), nunca se persiste en el `Flow.nodes` del editor. Participa
+    del match literal Y de `interpretMenuChoice` (el clasificador LLM), así que también
+    entiende "volvé", "atrás", etc., no solo el label exacto
+  - Al elegir "Volver" (`navigateMenuBack`) se desapila el tope y se navega ahí. Si ese menú
+    pertenece a otro `Flow` (se llegó vía nodo `subflow`), reusa el mecanismo existente de
+    cambio de flujo (`flowState.__subflow`, ya consumido por el loop de `executeFlow`) en vez
+    de duplicar esa lógica — soporta cruzar de vuelta un límite de subflow sin código nuevo
+  - `buildMenuInteractive` ya cortaba en 10 opciones (WhatsApp): si un menú ya tenía 10 y le
+    toca sumar "Volver", se pasa el límite y cae solo al modo texto plano — sin límite, sin
+    romper nada, comportamiento ya existente reutilizado tal cual
+  - Verificado en vivo contra el flujo real (`Test Flow`): menú raíz (`__menuStack` vacía) →
+    elegir opción → nodo `input` intermedio → submenú (`__menuStack` con el raíz apilado,
+    "Volver" ofrecido) → elegir "Volver" → vuelve exactamente al menú raíz con la pila vacía
+    de nuevo. El caso de cruzar un `subflow` al volver quedó implementado y tipado, pero sin
+    ejercitar en vivo todavía (no había un caso de prueba a mano con esa forma exacta)
 
 ### Conector real de WhatsApp y Email ✅ COMPLETADO (pedido 2026-08-05)
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
@@ -584,6 +618,19 @@
     settings no tienen efecto acá. El `systemPrompt` sí
   - Verificado end-to-end contra un servidor real: flujo `start → message → llm_query`
     respondiendo en un solo mensaje con `opencode-go/kimi-k2.6`
+  - **Bug encontrado probando el wiring de fuentes de verdad (2026-08-11):**
+    `orchestratorLlm` (fallback de menú sin match) no tenía try/catch alrededor de su
+    `llmService.chat()` final — un timeout real de OpenCode Go (`REQUEST_TIMEOUT_MS = 120s`
+    en `OpenCodeGoProvider`) tiraba una excepción sin capturar hasta `handleMessage`, y el
+    usuario se quedaba sin ninguna respuesta (ni siquiera un error). Arreglado con un
+    catch que devuelve un mensaje genérico de disculpa. `interpretMenuChoice` (la otra
+    llamada LLM del flujo de menú) ya tenía su propio catch — no le pasaba esto
+  - **`SIMULATE_TIMEOUT_MS` estaba en 90s, por debajo del propio timeout interno de
+    120s de OpenCode Go** que el comentario de al lado ya advertía — expiraba con 504
+    antes de que la llamada real pudiera terminar, ni bien ni mal. Subido a 300s para
+    cubrir el peor caso real: dos llamadas LLM separadas (`interpretMenuChoice` +
+    `orchestratorLlm`) que pueden caer cada una en el timeout de 120s, más hasta ~32s
+    si además consulta una fuente de verdad vinculada
 - [x] **Los providers dejaron de leer configuración por su cuenta**
   - `LlmProviderFactory` resuelve API key + modelo + baseUrl y los pasa armados
     (`ResolvedProviderConfig`); antes cada provider leía `ConfigService` (solo env),
@@ -615,6 +662,174 @@
     todos los proveedores menos ese
   - Ahora cambiar de pestaña dispara la carga de modelos de ese proveedor automáticamente
     (una vez, cacheada) — el dropdown aparece solo en cualquier pestaña de LLM
+
+---
+
+## Fuentes de verdad (context sources) 🔄 EN PROGRESO (pedido 2026-08-06)
+
+Sistema de suministro de contexto independiente por flujo: cada flujo puede vincularse a
+una fuente de verdad externa (MCP remoto, servicio de RAG, proceso n8n, o proceso propio
+suscripto a una cola de nuestro RabbitMQ) que administra el backoffice. No se instala ni se
+hostea nada de esto — son parámetros de conexión a un servicio que ya corre en otro lado (o,
+para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el sistema).
+
+### Modelo y administración ✅ COMPLETADO — primera etapa
+- [x] Modelo `ContextSource` (Prisma): por tenant (como `Area`), `type` + `config` (Json)
+  — `apps/api/prisma/schema.prisma`, migración `20260807023944_add_context_sources`
+- [x] Catálogo de tipos y sus campos (`mcp` | `rag` | `n8n` | `broker`), misma idea que
+  `settings.catalog.ts` — `apps/api/src/modules/context-sources/context-source-types.catalog.ts`
+- [x] Secrets de `config` (API keys, tokens) cifrados con `SecretsCipher` (AES-256-GCM, mismo
+  mecanismo que `Setting`), nunca devueltos en claro por la API — enmascarados + `<campo>IsSet`
+- [x] CRUD completo con RBAC (`context-sources:read|create|update|delete`) —
+  `apps/api/src/modules/context-sources/{context-sources.service,controller,module}.ts`
+- [x] "Probar conexión" (`POST /context-sources/:id/test-connection`): un chequeo de
+  alcanzabilidad HTTP por tipo, publicado por el broker (RPC RabbitMQ, no HTTP directo) —
+  respeta el constraint de AGENTS.md de desacople de I/O externo por broker. Consumer en
+  `apps/api/src/modules/context-sources/broker/context-source-connector.service.ts`
+- [x] Menú lateral "Fuentes de Verdad" → `/dashboard/context-sources`: listado, alta/edición
+  con formulario dinámico por tipo (placeholders de ejemplo, campos secretos enmascarados),
+  botón "Probar conexión" — `apps/web/src/app/dashboard/context-sources/page.tsx`
+- [x] El editor de flujo (`/dashboard/flows/[id]`) suma un dropdown "fuente de verdad" que
+  vincula el flujo a una `ContextSource` del tenant activo (`Flow.contextSourceId`, nullable).
+  Convive con el `Flow.context` viejo (enum de 4 valores fijos), que queda deprecado pero sin
+  quitar — ver "Deuda técnica pendiente" más abajo
+
+### Ejecución real — 🔄 EN PROGRESO (segunda etapa, pedido 2026-08-11)
+
+- [x] **Wiring en el motor de flujos** (pedido 2026-08-11): cuando la charla se sale del flujo
+  armado (`case 'menu'` sin match de opción → modo `__llmFallback`, ver
+  `ConversationsService.executeNode`), `orchestratorLlm` consulta la `ContextSource` vinculada
+  al `Flow` en curso (`flow.contextSourceId`, threaded desde `executeFlow` a través de
+  `executeNode`, se actualiza solo si la charla entra a un `subflow`) y **inyecta la respuesta
+  como mensaje de sistema** antes de llamar al LLM — no se le devuelve la respuesta cruda al
+  usuario, mismo patrón que el contexto de ticket que ya existía ahí. Sin respuesta útil
+  (`ok:false`, timeout, tipo no soportado) sigue sin ese contexto — nunca corta la conversación.
+- [x] **Cola dedicada para la consulta real** (`CONTEXT_SOURCE_QUERY_QUEUE =
+  'context-source.query'`, separada de `CONTEXT_SOURCE_TEST_QUEUE`): mismo patrón RPC por el
+  broker, timeout más generoso (`QUERY_TIMEOUT_MS = 30s` en el connector, `32s` en el wrapper de
+  `ContextSourcesService.queryKnowledge`, pensados para una consulta en vivo — no un botón de
+  admin) — `apps/api/src/modules/context-sources/broker/context-source-connector.service.ts`
+- [x] **Connector real, solo `broker` por ahora** (era el único tipo con contrato probado en
+  producción): `ContextSourceConnectorService.queryBroker` publica `{"text": "<pregunta>"}` y
+  espera `{answer, error}` — contrato verificado end-to-end contra DonQuijote (el RAG de
+  referencia, `responseMode: fixedQueue`). `mcp`/`rag`/`n8n` devuelven `ok:false` con mensaje
+  explícito ("consulta en vivo todavía no implementada") en vez de fallar — quedan pendientes:
+  - `mcp`: handshake JSON-RPC del protocolo (`initialize` → `tools/list` / `resources/list` →
+    invocar), no solo un GET a `serverUrl`
+  - `rag`: contrato de request/response del endpoint de consulta es hoy desconocido/genérico
+    (no hay un estándar) — probablemente haga falta un campo más en el catálogo para el
+    "shape" del request, o aceptar que cada RAG necesita su propio adapter
+  - `n8n`: contrato de reachability conocido (webhook), pero no hay definido qué payload
+    espera ni qué campo de la respuesta es "la respuesta" — análogo al caso de `rag`
+- ⚠️ **Riesgo verificado en producción, no solo teórico**: probando `queryKnowledge` contra
+  DonQuijote (`responseMode: fixedQueue`, sin eco de `correlationId` todavía — ver el pedido ya
+  hecho al equipo del RAG en la sección de arriba), los dos primeros llamados devolvieron
+  `ok:false` con latencia de ~10ms — resultó ser el fallback FIFO (`BrokerService.
+  resolveOldestPendingForQueue`) drenando mensajes viejos sin consumir que habían quedado
+  atascados en `rag.DonQuijote.out` de sesiones de prueba anteriores, no respuestas a la
+  pregunta hecha. El tercer llamado, con la cola ya vacía, expiró a los 15s sin respuesta —
+  DonQuijote no estaba escuchando/respondiendo en el momento de la prueba. Conclusión: el
+  wiring nuevo funciona (publica, escucha, interpreta, degrada con gracia), pero **una cola de
+  respuesta fija sin correlationId acumula basura de sesiones viejas y se la puede atribuir a
+  la pregunta equivocada** — mismo motivo por el que ya se le pidió al equipo del RAG que
+  implemente el eco de `correlationId` (o, mejor, `replyTo`)
+- [x] **Bug de formato encontrado y arreglado (2026-08-11):** DonQuijote devolvía
+  siempre `error: "Mensaje vacío: enviá JSON {'text': '...'}"`, incluso mandando
+  `{"text": "..."}` — porque viajaba anidado en `data` (`{pattern, data: {text}, ...}`,
+  el sobre interno de `BrokerMessage`), no en la raíz del JSON publicado, que es donde
+  DonQuijote lo busca. `dispatchBrokerRequest` ahora aplana los campos de `data` también
+  en la raíz del mensaje publicado — compatible con un consumidor que lea el sobre
+  completo (`data.text`) y con uno que solo lea la raíz (`text`)
+- [x] **Segundo bug de formato, encontrado y arreglado (2026-08-11):** el eco de
+  `correlationId` del RAG ya funciona (confirmado por el equipo del RAG y verificado acá),
+  pero `queryBroker` seguía devolviendo `ok:false` ("sin ningún campo answer") con
+  DonQuijote respondiendo bien. Causa: `queryBroker` leía `reply.data.answer`, pero
+  DonQuijote no envuelve su respuesta bajo `data` — manda `{rag_id, answer, sources,
+  error, correlationId}` en la raíz del JSON (verificado inspeccionando la respuesta cruda
+  con `BrokerService.requestViaQueue` directo, sin pasar por el parseo). `reply.data` daba
+  `undefined` y la respuesta real, que sí estaba ahí, se descartaba silenciosamente. Mismo
+  patrón de bug que el de arriba pero en la dirección opuesta (entrante en vez de
+  saliente). Fix: `queryBroker` ahora usa `reply.data` si es un objeto, si no cae a
+  `reply` directamente — soporta ambos contratos sin romper a un consumidor que sí
+  envuelva bajo `data`
+  (`apps/api/src/modules/context-sources/broker/context-source-connector.service.ts`).
+  Verificado end-to-end con el servidor real como único consumidor de
+  `rag.DonQuijote.out` (sin scripts de diagnóstico compitiendo por la cola): varias
+  preguntas distintas devolvieron `ok:true` con respuestas correctas y bien fundamentadas
+  (citas de `DonQuijote.txt`, incluso "no tengo esa información" cuando corresponde)
+- ⚠️ **Aparte, se confirmó que competir por `rag.DonQuijote.out` rompe las respuestas**:
+  RabbitMQ reparte los mensajes de una cola por round-robin entre consumidores, sin mirar
+  `correlationId` — si el server real y un script de diagnóstico (u otra instancia del
+  backend) consumen la misma `responseQueueName` al mismo tiempo, la respuesta puede
+  llegarle al proceso equivocado y el otro expira por timeout. Con `responseMode:
+  fixedQueue` **solo puede haber un consumidor activo a la vez** sobre esa cola de
+  respuesta — limitación real, no solo teórica, para cualquier escenario con más de una
+  instancia del backend corriendo (horizontal scaling). No hay fix de código para esto:
+  es inherente al modo `fixedQueue` tal como lo pidió DonQuijote (sin `replyTo` dinámico)
+- ⚠️ **Contaminación de historial en charlas ya afectadas por el bug de arriba**: mientras
+  el bug de parseo estuvo activo, cada respuesta en una charla que preguntaba algo fuera
+  del flujo quedó como un mensaje de asistente con texto tipo "cerremos esta charla y
+  empecemos de nuevo" (ver `orchestratorLlm`). Como esa función manda los últimos 10
+  mensajes de la charla como historial al LLM, una charla con varios de esos turnos
+  rotos sigue arrastrando ese patrón incluso después del fix — no es un bug nuevo,
+  es historial ya escrito. Se cura solo: se limpia a los ~10 mensajes nuevos, o al cabo de
+  `RESUME_WINDOW_MS` (12h) cuando la charla deja de ser retomable y arranca una nueva con
+  historial vacío. Confirmado inyectando el mismo contexto de RAG (con la respuesta
+  correcta) con historial limpio vs. historial contaminado: con historial limpio el LLM
+  responde bien ("Rocinante."); con el historial real de la charla de prueba, sigue
+  devolviendo el texto de "reinicio" — la causa es el historial, no el LLM ni el RAG
+- [ ] **Multi-tenant de `Flow.contextSourceId`:** un `Flow` puede estar asignado a varios tenants
+  (`TenantFlow`, N:N) pero `ContextSource` es por tenant — hoy el FK es un solo valor global
+  del flujo, no por tenant. Si un flujo compartido entre dos empresas necesita una fuente
+  distinta por empresa, hace falta una tabla puente (`FlowContextSource` con `tenantId`) en
+  vez del FK directo actual. Limitación documentada, no resuelta — mismo patrón que la
+  limitación ya conocida de `Setting.key` global (ver AGENTS.md)
+- [x] **Consulta al RAG solo cuando hace falta, no en cada turno (pedido 2026-08-11):** antes,
+  una vez que una charla entraba en `__llmFallback` con una `contextSourceId` vinculada,
+  `orchestratorLlm` consultaba el RAG en **todos** los turnos siguientes — un simple "gracias"
+  pagaba los mismos ~10-30s de latencia que una pregunta real. Fix: se prueba responder
+  "local" primero (una sola llamada al LLM sin RAG), con una instrucción extra en el prompt
+  del orquestador para que, si de verdad necesita la fuente, responda ÚNICAMENTE con un texto
+  sentinel exacto (`NECESITA_FUENTE`, ver `NEEDS_SOURCE_SENTINEL` en `conversations.service.ts`).
+  Solo si el LLM devuelve ese sentinel se consulta `queryKnowledge` y se reintenta con el
+  contexto inyectado — el turno siguiente vuelve a intentar local, no queda "pegado" en modo
+  RAG. Mismo patrón de "pedile al LLM un token corto y confiá en él" que ya usan
+  `interpretMenuChoice`/`confirmCancelIntent` en este archivo.
+  - **Bug encontrado y arreglado en el mismo cambio:** si el LLM recibía el contexto real de
+    la fuente y aun así repetía el sentinel textual (visto en producción con el proveedor
+    OpenCode Go en modo `plan`), el texto crudo `"NECESITA_FUENTE"` se le mandaba tal cual al
+    usuario como respuesta. Ahora, si eso pasa, se le manda directamente la respuesta de la
+    fuente en vez del sentinel sin procesar.
+- [x] **Historial de charla acotado a la sesión actual (pedido 2026-08-11):** al reanudar una
+  charla cerrada dentro de `RESUME_WINDOW_MS` se reutiliza el mismo `Conversation.id` (para no
+  perder flujo/ticket en curso), pero eso significaba que `orchestratorLlm` seguía mandándole
+  al LLM los últimos 10 `Message` de la charla **sin importar si eran de antes o después del
+  cierre** — un historial viejo (a veces con turnos rotos, ver el hallazgo de arriba sobre
+  contaminación) se colaba como si fuera la charla actual. Fix: nuevo campo
+  `Conversation.sessionStartedAt` (migración `20260811155122_add_session_started_at`), seteado
+  al crear la conversación y en cada reanudación desde `closed`; `orchestratorLlm` filtra
+  `Message.createdAt >= sessionStartedAt` (con fallback a `createdAt` para filas de antes de
+  la migración). Los `Message` viejos no se borran — siguen en la fila para auditoría — solo
+  dejan de viajar como contexto del LLM.
+- [ ] Falta caché/rate-limit de consultas a la fuente dentro de una misma sesión (si la misma
+  pregunta se repite en el mismo turno de fallback, hoy se re-consulta igual)
+- 🔴 **Hallazgo crítico, no resuelto — contaminación cruzada en el proveedor OpenCode Go
+  (2026-08-11):** probando el fix de arriba contra DonQuijote en vivo, el LLM final (proveedor
+  `opencodego`, modelo `opencode-go/minimax-m3`, `agent: 'plan'`) devolvió una respuesta que
+  citaba el **"Manual Completo de SOICA" (software de control de accesos)** — un proyecto sin
+  ninguna relación con este chatbot ni con DonQuijote — como si fuera el contenido indexado,
+  **ignorando por completo** el contexto real que `queryKnowledge` sí había traído
+  correctamente de DonQuijote en esa misma llamada (confirmado con logs: hubo una consulta al
+  RAG exitosa, sin ningún WARN, pero la respuesta final no usó esa respuesta). Ya se había visto
+  una variante de esto antes en la sesión ("modo planificación", mención a un proyecto "WSF,
+  firma digital" con notebooks de NotebookLM). Conclusión: el servidor/agente de OpenCode Go
+  que estamos usando **no es confiable como fuente de verdad de lo que responde** — parece
+  compartir estado o "memoria" con otro proyecto/cuenta no relacionado, algo que ningún cambio
+  de prompt de nuestro lado puede arreglar. Esto es un problema de infraestructura/config del
+  lado de OpenCode Go, no un bug de este código — pendiente de que alguien con acceso a ese
+  servidor investigue si el endpoint/API key está compartido con otro proyecto o hay un bug de
+  aislamiento de sesiones ahí. Mientras tanto, cualquier respuesta de este proveedor debería
+  tratarse con desconfianza, no solo las que tocan una fuente de verdad.
 
 ---
 
@@ -666,6 +881,9 @@
 | Envío saliente de WhatsApp | Solo `type: text` | Ventana de 24hs de Meta; mensajes fuera de ventana necesitan `template` aprobado, no implementado (2026-08-05) |
 | Menú sin match en flujos IVR | LLM conversa y recopila datos, no repite el menú | Pedido explícito del usuario; decide autoservicio/ticket cuando existan fuentes de conocimiento definidas (2026-08-05) |
 | Credencial de MiniMax | Una sola key para chat y audio (T2A) | MiniMax usa el mismo Bearer token para ambas APIs — no hace falta duplicar el setting (2026-08-05) |
+| Fuentes de verdad (`ContextSource`) | Por tenant, FK simple desde `Flow` | Reusable entre flujos de la misma empresa sin duplicar credenciales; el dropdown del editor pidió una relación 1 valor por flujo, no N:N (2026-08-06) |
+| I/O de fuentes de verdad | Vía broker (RPC RabbitMQ), no HTTP directo desde el controller | Mismo constraint que WhatsApp: el core no depende de detalles de un canal/integración externa (AGENTS.md, "Desacople de canales") |
+| Punto de consulta de la fuente de verdad en el flujo | Fallback `__llmFallback` de `menu` (charla fuera de flujo), no cada `llm_query` | Coincide con el pedido ya cerrado el 2026-08-05 de qué hacer sin match de menú; un `llm_query` explícito ya tiene su propio `systemPrompt` armado a mano (2026-08-11) |
 
 ---
 
@@ -714,8 +932,18 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
    hoy `handleMessage` crea un `User`/`Conversation` nuevo por cada mensaje entrante sin
    límite — un número desconocido puede spamear el flujo (y disparar llamadas a LLM/email/
    ticket) sin ninguna contención
+8. `Flow.context` (enum viejo de 4 valores fijos) sigue vivo en paralelo a
+   `Flow.contextSourceId` (fuente de verdad real) — no se migró ni se sacó del editor.
+   Decidir si se termina deprecando del todo una vez que la ejecución real de fuentes de
+   verdad esté andando (ver Hito "Fuentes de verdad")
 
-**E. Audio (STT/TTS) — pedido explícitamente para después**
+**E. Fuentes de verdad — segunda etapa (ejecución real)**
+1. Ver "Fuentes de verdad (context sources)" arriba, sección "Ejecución real — PENDIENTE":
+   wiring en `ConversationsService`, connector real por tipo (handshake MCP, contrato de RAG),
+   cola RPC dedicada para la consulta en vivo, y la limitación de `Flow.contextSourceId` como
+   FK única (no por tenant) si un flujo compartido lo necesita
+
+**F. Audio (STT/TTS) — pedido explícitamente para después**
 1. `WHATSAPP_TENANT_ID` (recepción) y `WhatsAppService` (envío) solo manejan `type: text`
    hoy — hace falta extender el webhook para descargar audio de la Media API de Meta y
    `WhatsAppService` para subir y mandar `type: audio`

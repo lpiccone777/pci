@@ -42,6 +42,12 @@ const menuDefinition: MenuItem[] = [
   { label: 'Roles', href: '/dashboard/roles', resource: 'roles', action: 'read' },
   { label: 'Flujos IVR', href: '/dashboard/flows', resource: 'flows', action: 'read' },
   {
+    label: 'Fuentes de Verdad',
+    href: '/dashboard/context-sources',
+    resource: 'context-sources',
+    action: 'read',
+  },
+  {
     label: 'Configuración',
     href: '/settings',
     resource: 'settings',

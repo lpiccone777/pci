@@ -172,12 +172,30 @@ export const MenuNode = memo(({ id, data }: any) => {
         {data?.text && <p className="text-xs line-clamp-2">{data.text}</p>}
         {options.length > 0 && (
           <div className="mt-1 space-y-0.5">
+            {/* Cada fila lleva su propio handle de salida, alineado a la derecha
+                de esa fila — reemplaza el reparto por `left%` en Position.Bottom,
+                que con muchas opciones dibujaba una escalera diagonal en vez de
+                una lista prolija. */}
             {options.map((opt: any, i: number) => (
-              <div key={i} className="text-xs text-gray-500 flex items-center gap-1">
+              <div
+                key={opt.value ?? i}
+                className="relative text-xs text-gray-500 flex items-center gap-1 pr-1"
+              >
                 <span className="w-4 h-4 rounded bg-gray-100 flex items-center justify-center text-[10px]">
                   {i + 1}
                 </span>
                 {opt.label}
+                <Handle
+                  type="source"
+                  id={String(opt.value)}
+                  position={Position.Right}
+                  style={{
+                    background: color,
+                    top: '50%',
+                    right: -12,
+                    transform: 'translateY(-50%)',
+                  }}
+                />
               </div>
             ))}
           </div>
@@ -187,37 +205,10 @@ export const MenuNode = memo(({ id, data }: any) => {
       {/* Target handle (top) */}
       <Handle type="target" position={Position.Top} style={{ background: color }} />
 
-      {/* Source handles: one per option, distributed horizontally */}
+      {/* Sin opciones configuradas: una única salida abajo, como cualquier otro nodo. */}
       {options.length === 0 && (
         <Handle type="source" position={Position.Bottom} style={{ background: color }} />
       )}
-      {options.map((opt: any, i: number) => {
-        const total = options.length;
-        const leftPercent = total === 1 ? 50 : ((i / (total - 1)) * 80 + 10);
-        return (
-          <div key={opt.value || i} className="relative" style={{ height: 12 }}>
-            <Handle
-              type="source"
-              id={String(opt.value)}
-              position={Position.Bottom}
-              style={{
-                background: color,
-                left: `${leftPercent}%`,
-              }}
-            />
-            <div
-              className="absolute text-[9px] text-gray-500 font-medium whitespace-nowrap"
-              style={{
-                bottom: 0,
-                left: `${leftPercent}%`,
-                transform: 'translateX(-50%)',
-              }}
-            >
-              {opt.value}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 });
