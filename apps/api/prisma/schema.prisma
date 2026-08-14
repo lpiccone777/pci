@@ -244,6 +244,29 @@ model Setting {
   @@index([tenantId])
 }
 
+// Cache persistente de Content Templates de Twilio (ver `TwilioWhatsAppService`). Twilio
+// exige un template pre-creado (`ContentSid`) para mandar botones/listas de WhatsApp, y esos
+// templates no admiten variables en los títulos — así que se crea uno por CADA FORMA de menú
+// (mismos botones/filas, el body va aparte como variable) y se reusa. Global, no por tenant:
+// los Content Templates son de la cuenta de Twilio, no de una empresa en particular.
+model TwilioContentTemplate {
+  id           String   @id @default(cuid())
+  // Hash de la forma del menú (tipo + botones/filas, sin el body) — ver
+  // `TwilioWhatsAppService.hashInteractiveShape`. Único: es la clave de búsqueda real.
+  shapeHash    String   @unique
+  contentSid   String
+  // Mismo valor que se le mandó a Twilio como `friendly_name` al crearlo — si Twilio devuelve
+  // "nombre duplicado" alguna vez (no debería, dado que shapeHash ya es único acá), sirve para
+  // diagnosticar sin tener que ir a buscarlo a la consola de Twilio.
+  friendlyName String
+  // Resumen legible de las opciones (ej. "Sí | No | Hablar con un agente") — solo para debug
+  // manual en la BD, no lo usa el código.
+  label        String
+  createdAt    DateTime @default(now())
+
+  @@index([shapeHash])
+}
+
 model Metric {
   id             String        @id @default(cuid())
   conversationId String?

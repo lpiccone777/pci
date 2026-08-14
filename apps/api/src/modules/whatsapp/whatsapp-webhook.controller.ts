@@ -87,7 +87,7 @@ export class WhatsAppWebhookController {
 
           await this.broker.publish('whatsapp.incoming', {
             pattern: 'message.received',
-            data: { from: `+${message.from}`, body },
+            data: { from: `+${message.from}`, body, channel: 'whatsapp' },
             tenantId,
             timestamp: new Date().toISOString(),
           });

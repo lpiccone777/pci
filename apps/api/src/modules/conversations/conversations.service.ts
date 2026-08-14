@@ -11,6 +11,7 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService } from '../context-sources/context-sources.service';
+import { InvgateService } from '../invgate/invgate.service';
 import { createHash } from 'crypto';
 
 /**
@@ -61,6 +62,20 @@ const MAX_DELAY_SECONDS = 10;
 /** Texto exacto que `orchestratorLlm` le pide al LLM para señalar "necesito la fuente de verdad". */
 const NEEDS_SOURCE_SENTINEL = 'NECESITA_FUENTE';
 
+/**
+ * `maxTokens` de los clasificadores binarios/de opción (`confirmEndChatIntent`,
+ * `confirmCancelIntent`, `interpretMenuChoice`) — piden una sola palabra de respuesta, así
+ * que 10-20 tokens alcanzaban de sobra... hasta que un modelo de razonamiento obligatorio
+ * (MiniMax M2.x, no se puede apagar el "pensamiento") se volvió el proveedor activo
+ * (2026-08-14): el razonamiento interno consume el `maxTokens` ANTES de llegar a la
+ * palabra pedida, así que con un tope de 10 el modelo se queda sin presupuesto pensando y
+ * nunca llega a responder — `content` vuelve vacío, y los tres clasificadores devuelven
+ * su default "no" en silencio (nunca cierran la charla ni cancelan ni matchean una opción,
+ * pase lo que pase). 300 le da lugar al razonamiento sin ser un costo real para un
+ * proveedor no-razonador, que igual corta apenas emite la palabra.
+ */
+const CLASSIFIER_MAX_TOKENS = 300;
+
 interface NodeExecutionResult {
   responseText?: string;
   nextNodeId?: string;
@@ -100,15 +115,21 @@ export class ConversationsService implements OnModuleInit {
     private readonly appConfig: AppConfigService,
     private readonly emailService: EmailService,
     private readonly contextSourcesService: ContextSourcesService,
+    private readonly invgateService: InvgateService,
   ) {}
 
   async onModuleInit() {
     await this.broker.subscribe('whatsapp.incoming', this.handleMessage.bind(this));
+    // SMS es un canal aparte, no una alternativa de WhatsApp (a diferencia de Twilio vs
+    // Meta, que comparten cola porque son el mismo canal): conversaciones propias, no
+    // compite por whatsapp.incoming. `handleMessage` es el mismo — ver `channel` en el
+    // payload, que decide de qué `Conversation` y a qué cola de salida se habla.
+    await this.broker.subscribe('sms.incoming', this.handleMessage.bind(this));
     // Mismo handler, misma lógica de negocio: la única diferencia con el canal real
     // es por qué cola entra el mensaje. Así /simulate ejercita el camino real
     // completo (RabbitMQ de punta a punta) en vez de llamar al método en proceso.
     await this.broker.subscribe(SIMULATE_QUEUE, this.handleMessage.bind(this));
-    this.logger.log(`Subscribed to whatsapp.incoming and ${SIMULATE_QUEUE}`);
+    this.logger.log(`Subscribed to whatsapp.incoming, sms.incoming and ${SIMULATE_QUEUE}`);
   }
 
   /**
@@ -135,8 +156,14 @@ export class ConversationsService implements OnModuleInit {
 
   /** Devuelve el texto con el que respondió el bot, para que `simulate` pueda mostrarlo. */
   private async handleMessage(msg: BrokerMessage): Promise<string> {
-    const { from, body } = msg.data as { from: string; body: string };
+    // `channel` lo fija cada webhook al publicar (`whatsapp` para Meta/Twilio-WhatsApp,
+    // `sms` para Twilio SMS) — default 'whatsapp' para /simulate y cualquier publisher
+    // viejo que todavía no lo mande. Determina de qué `Conversation` se habla (un mismo
+    // usuario puede tener una charla activa por WhatsApp y otra por SMS al mismo tiempo,
+    // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
+    const { from, body, channel = 'whatsapp' } = msg.data as { from: string; body: string; channel?: string };
     const tenantId = msg.tenantId!;
+    const outgoingQueue = `${channel}.outgoing`;
 
     this.logger.log(`[${tenantId}] Mensaje de ${from}: ${body.substring(0, 50)}...`);
 
@@ -189,7 +216,7 @@ export class ConversationsService implements OnModuleInit {
 
     // 2. Buscar conversación activa, retomar una cerrada reciente, o crear una nueva
     let conversation = await this.prisma.conversation.findFirst({
-      where: { userId: user.id, tenantId, channel: 'whatsapp', status: 'active' },
+      where: { userId: user.id, tenantId, channel, status: 'active' },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -205,7 +232,7 @@ export class ConversationsService implements OnModuleInit {
         where: {
           userId: user.id,
           tenantId,
-          channel: 'whatsapp',
+          channel,
           status: 'closed',
           closedAt: { gte: new Date(Date.now() - RESUME_WINDOW_MS) },
         },
@@ -221,7 +248,7 @@ export class ConversationsService implements OnModuleInit {
             data: {
               userId: user.id,
               tenantId,
-              channel: 'whatsapp',
+              channel,
               externalId: from,
               sessionStartedAt: new Date(),
             },
@@ -250,7 +277,7 @@ export class ConversationsService implements OnModuleInit {
       });
 
       await this.broker.publish(
-        msg.replyTo ?? 'whatsapp.outgoing',
+        msg.replyTo ?? outgoingQueue,
         {
           pattern: 'message.send',
           data: { to: from, body: closingText },
@@ -298,7 +325,7 @@ export class ConversationsService implements OnModuleInit {
     // `ensureReplyConsumer()` como exclusiva, y reafirmarla acá sin esa propiedad
     // hace que RabbitMQ la rechace (ver el comentario en BrokerService.publish()).
     await this.broker.publish(
-      msg.replyTo ?? 'whatsapp.outgoing',
+      msg.replyTo ?? outgoingQueue,
       {
         pattern: 'message.send',
         data: { to: from, body: responseText, interactive },
@@ -622,7 +649,7 @@ export class ConversationsService implements OnModuleInit {
           },
           { role: 'user', content: `Mensaje del usuario: "${body}"` },
         ],
-        { temperature: 0, maxTokens: 10 },
+        { temperature: 0, maxTokens: CLASSIFIER_MAX_TOKENS },
       );
       return raw.trim().toUpperCase().startsWith('CERRAR');
     } catch (err) {
@@ -657,7 +684,7 @@ export class ConversationsService implements OnModuleInit {
             content: `Se le pidió: "${question || 'un dato'}"\nMensaje del usuario: "${body}"`,
           },
         ],
-        { temperature: 0, maxTokens: 10 },
+        { temperature: 0, maxTokens: CLASSIFIER_MAX_TOKENS },
       );
       return raw.trim().toUpperCase().startsWith('CANCEL');
     } catch (err) {
@@ -704,7 +731,7 @@ export class ConversationsService implements OnModuleInit {
             content: `Opciones:\n${listado}\n\nMensaje del usuario: "${body}"`,
           },
         ],
-        { temperature: 0, maxTokens: 20 },
+        { temperature: 0, maxTokens: CLASSIFIER_MAX_TOKENS },
       );
 
       const answer = raw.trim();
@@ -960,6 +987,94 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
+   * `customer_id` de InvGate para el `User` local dado. Usa `invgateUserId` si ya está
+   * cargado (alta manual desde el backoffice); si no, lo resuelve por teléfono contra
+   * InvGate y lo deja guardado ahí mismo para no repetir la búsqueda la próxima vez —
+   * mismo campo que ya usa el CRUD de usuarios (`UsersService`), esto es lo primero que
+   * lo completa automáticamente en vez de a mano.
+   */
+  private async resolveInvgateCustomerId(userId: string, phone: string): Promise<number | null> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { invgateUserId: true } });
+    if (user?.invgateUserId) {
+      const parsed = Number(user.invgateUserId);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+
+    const found = await this.invgateService.findUserByPhone(phone).catch((err) => {
+      this.logger.warn(`No se pudo buscar el usuario de InvGate por teléfono ${phone}: ${err.message}`);
+      return null;
+    });
+    if (!found) {
+      this.logger.warn(`Ningún usuario de InvGate matchea el teléfono ${phone} — el ticket no se sincroniza.`);
+      return null;
+    }
+
+    await this.prisma.user.update({ where: { id: userId }, data: { invgateUserId: String(found.id) } }).catch(() => {
+      // No debería fallar (el id de InvGate recién resuelto no puede colisionar con
+      // otro ya guardado salvo carrera rarísima) — si pasa, seguimos igual: el ticket
+      // ya tiene el customerId resuelto en memoria, solo no queda cacheado para la próxima.
+    });
+    return found.id;
+  }
+
+  /**
+   * Empuja un `Ticket` recién creado a InvGate y guarda el id remoto en `Ticket.invgateId`.
+   * Best-effort a propósito: si InvGate está mal configurado, caído, o el usuario no
+   * matchea ningún `customer_id`, el ticket local ya existe igual — nunca se corta la
+   * charla ni se le muestra un error al usuario por esto. Mismo criterio que
+   * `confirmCancelIntent`/`confirmEndChatIntent`: ante una falla del proveedor externo,
+   * seguir con el camino local en vez de romper la conversación.
+   */
+  private async syncTicketToInvgate(
+    ticket: { id: string; userId: string; subject: string; description: string | null },
+    from: string,
+  ): Promise<void> {
+    if (!this.invgateService.isConfigured()) return;
+
+    try {
+      const customerId = await this.resolveInvgateCustomerId(ticket.userId, from);
+      if (!customerId) return;
+
+      const incident = await this.invgateService.createTicketForChat(
+        customerId,
+        ticket.subject,
+        ticket.description ?? undefined,
+      );
+      if (!incident) return;
+
+      await this.prisma.ticket.update({ where: { id: ticket.id }, data: { invgateId: String(incident.id) } });
+      this.logger.log(`Ticket local ${ticket.id} sincronizado con InvGate #${incident.id}`);
+    } catch (err) {
+      this.logger.warn(`No se pudo sincronizar el ticket ${ticket.id} con InvGate: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Nodo `ticket_query`: si el ticket ya se sincronizó con InvGate, trae el estado
+   * real de ahí (InvGate es la fuente de verdad una vez sincronizado — el estado local
+   * solo se actualiza cuando el bot lo consulta, no hay webhook de InvGate todavía) y
+   * de paso actualiza `Ticket.status` local para que quede consistente. Sin
+   * `invgateId` (o si InvGate no responde), devuelve el estado local tal cual.
+   */
+  private async refreshInvgateStatus(ticket: { id: string; invgateId: string | null; status: string }): Promise<string> {
+    if (!ticket.invgateId || !this.invgateService.isConfigured()) return ticket.status;
+
+    try {
+      const incident = await this.invgateService.getIncident(ticket.invgateId);
+      if (incident.status_id === undefined) return ticket.status;
+
+      const statusName = await this.invgateService.getStatusName(incident.status_id);
+      if (statusName !== ticket.status) {
+        await this.prisma.ticket.update({ where: { id: ticket.id }, data: { status: statusName } });
+      }
+      return statusName;
+    } catch (err) {
+      this.logger.warn(`No se pudo refrescar el estado del ticket ${ticket.id} desde InvGate: ${(err as Error).message}`);
+      return ticket.status;
+    }
+  }
+
+  /**
    * Nodo `transfer_agent`: transfiere la gestión a un humano.
    *
    * - `data.methods` (subconjunto de 'email' | 'ticket' | 'phone' — 'phone'
@@ -1008,6 +1123,7 @@ export class ConversationsService implements OnModuleInit {
         },
       });
       flowState.lastTicketId = ticket.id;
+      await this.syncTicketToInvgate(ticket, user.phone);
     }
 
     if (methods.includes('email')) {
@@ -1301,6 +1417,7 @@ export class ConversationsService implements OnModuleInit {
           },
         });
         flowState.lastTicketId = ticket.id;
+        await this.syncTicketToInvgate(ticket, from);
         return {
           responseText: `Ticket #${ticket.id} creado. Un agente te contactará pronto.`,
           flowState,
@@ -1312,8 +1429,9 @@ export class ConversationsService implements OnModuleInit {
         if (ticketId) {
           const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
           if (ticket) {
+            const status = await this.refreshInvgateStatus(ticket);
             return {
-              responseText: `Ticket #${ticket.id}: ${ticket.subject} - Estado: ${ticket.status}`,
+              responseText: `Ticket #${ticket.id}: ${ticket.subject} - Estado: ${status}`,
             };
           }
         }

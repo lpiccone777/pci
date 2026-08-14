@@ -10,6 +10,10 @@ async function bootstrap() {
     credentials: true,
     // Sin esto el browser bloquea el header con el que viaja el tenant activo.
     allowedHeaders: ['Content-Type', 'Authorization', TENANT_HEADER],
+    // Por default el browser no deja leer headers custom de la respuesta desde JS aunque el
+    // server los mande — sin esto, `apiFetch` nunca ve el JWT renovado de
+    // SlidingSessionInterceptor (X-Access-Token) por más que viaje en la respuesta.
+    exposedHeaders: ['X-Access-Token'],
   });
   app.useGlobalPipes(
     new ValidationPipe({

@@ -21,6 +21,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { FlowModule } from './modules/flow/flow.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
+import { SmsModule } from './modules/sms/sms.module';
 import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
 
 @Module({
@@ -46,6 +47,7 @@ import { ContextSourcesModule } from './modules/context-sources/context-sources.
     FlowModule,
     SettingsModule,
     WhatsAppModule,
+    SmsModule,
     ContextSourcesModule,
   ],
   controllers: [AppController],

@@ -261,7 +261,7 @@ export default function SettingsPage() {
   const activePanelStatus = status?.providers.find((p) => p.provider === activeGroupProvider);
 
   return (
-    <div className="max-w-4xl">
+    <div>
       <h1 className="text-2xl font-bold mb-1 text-gray-800">Configuración del sistema</h1>
       <p className="text-sm text-gray-500 mb-6">
         Estos parámetros aplican sin reiniciar el backend. El valor efectivo se resuelve en
@@ -380,7 +380,7 @@ export default function SettingsPage() {
             )}
           </div>
 
-          <div className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {activeGroupSettings
               .map((s) => {
                 const draft = drafts[s.key] ?? '';

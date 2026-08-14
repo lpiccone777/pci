@@ -19,7 +19,18 @@ export class WhatsAppService implements OnModuleInit {
     private readonly broker: BrokerService,
   ) {}
 
+  /**
+   * Solo se suscribe si es el proveedor activo (`WHATSAPP_PROVIDER`, default 'meta') — con
+   * `TwilioWhatsAppService` también escuchando la misma cola, dos consumers activos a la vez
+   * se la repartirían por competencia (round robin de RabbitMQ) en vez de que uno solo la
+   * maneje. Ver el mismo chequeo, invertido, en `TwilioWhatsAppService.onModuleInit`.
+   */
   async onModuleInit() {
+    const provider = (await this.appConfig.get('WHATSAPP_PROVIDER', 'meta'))?.toLowerCase() || 'meta';
+    if (provider !== 'meta') {
+      this.logger.log(`WHATSAPP_PROVIDER=${provider}: conector de Meta inactivo, no se suscribe a whatsapp.outgoing.`);
+      return;
+    }
     await this.broker.subscribe('whatsapp.outgoing', this.handleOutgoing.bind(this));
   }
 

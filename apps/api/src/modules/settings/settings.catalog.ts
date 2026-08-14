@@ -35,6 +35,8 @@ export type SettingGroup =
   | 'LLM: OpenCode Go'
   | 'LLM: MiniMax'
   | 'Mensajería: WhatsApp'
+  | 'Mensajería: WhatsApp (Twilio)'
+  | 'Mensajería: SMS (Twilio)'
   | 'Mensajería: Email';
 
 export interface SettingDefinition {
@@ -368,6 +370,20 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
 
   // --- Mensajería: WhatsApp ---
   {
+    key: 'WHATSAPP_PROVIDER',
+    type: 'enum',
+    group: 'Mensajería: WhatsApp',
+    label: 'Proveedor activo',
+    defaultValue: 'meta',
+    description:
+      'Qué conector se suscribe a la cola de envío saliente: "meta" (Cloud API de Meta, ' +
+      'grupo de abajo) o "twilio" (grupo "Mensajería: WhatsApp (Twilio)"). Solo uno puede ' +
+      'estar activo a la vez — se lee una sola vez al arrancar el backend, así que un ' +
+      'cambio acá requiere reiniciarlo para tomar efecto (a diferencia de LLM_PROVIDER, ' +
+      'que se relee en cada request).',
+    allowedValues: ['meta', 'twilio'],
+  },
+  {
     key: 'WHATSAPP_API_TOKEN',
     type: 'string',
     group: 'Mensajería: WhatsApp',
@@ -423,6 +439,81 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'Limitación temporal: como los settings todavía son globales (no por tenant), un ' +
       'solo número de WhatsApp sirve a un solo tenant. Sin definir, usa el tenant más ' +
       'antiguo del sistema.',
+  },
+
+  // --- Mensajería: WhatsApp (Twilio) ---
+  {
+    key: 'TWILIO_ACCOUNT_SID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Account SID',
+    defaultValue: '',
+    placeholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    description: 'SID de la cuenta de Twilio (Console > Account Info). No es secreto, pero es solo escritura por consistencia con el resto de las credenciales.',
+  },
+  {
+    key: 'TWILIO_AUTH_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Auth Token',
+    defaultValue: '',
+    secret: true,
+    placeholder: '32 caracteres',
+    description: 'Auth Token de la cuenta de Twilio (Console > Account Info). Se guarda cifrado.',
+  },
+  {
+    key: 'TWILIO_WHATSAPP_FROM',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Número emisor de WhatsApp',
+    defaultValue: '',
+    placeholder: '+14155238886',
+    description:
+      'Número habilitado para WhatsApp en Twilio, en formato E.164 con "+" (el sandbox de ' +
+      'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
+      'automáticamente, no incluirlo acá.',
+  },
+  {
+    key: 'TWILIO_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número de Twilio. Misma ' +
+      'limitación que WHATSAPP_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
+      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
+  },
+
+  // --- Mensajería: SMS (Twilio) ---
+  // Reusa TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN del grupo de WhatsApp (Twilio) — es la misma
+  // cuenta de Twilio, solo cambia el número emisor. SMS no es un reemplazo de WhatsApp
+  // (a diferencia de Twilio vs Meta): es un canal aparte, con sus propias conversaciones.
+  {
+    key: 'TWILIO_SMS_FROM',
+    type: 'string',
+    group: 'Mensajería: SMS (Twilio)',
+    label: 'Número emisor de SMS',
+    defaultValue: '',
+    placeholder: '+15551234567',
+    description:
+      'Número de Twilio habilitado para SMS, en formato E.164 con "+". A diferencia del ' +
+      'número de WhatsApp, va SIN el prefijo "whatsapp:" (Twilio lo distingue por el canal, ' +
+      'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
+      'WhatsApp no sirve para esto.',
+  },
+  {
+    key: 'TWILIO_SMS_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Twilio)',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número de SMS. Misma ' +
+      'limitación que el resto de los canales: un solo número sirve a un solo tenant ' +
+      'mientras los settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
   },
 
   // --- Mensajería: Email ---
@@ -493,6 +584,8 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'LLM: OpenCode Go',
   'LLM: MiniMax',
   'Mensajería: WhatsApp',
+  'Mensajería: WhatsApp (Twilio)',
+  'Mensajería: SMS (Twilio)',
   'Mensajería: Email',
 ];
 
