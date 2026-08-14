@@ -18,6 +18,7 @@ const nodeColors: Record<string, string> = {
   webhook: '#f97316',
   end: '#991b1b',
   device_validation: '#0ea5e9',
+  sms: '#22c55e',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -35,6 +36,7 @@ const nodeLabels: Record<string, string> = {
   webhook: 'Webhook',
   end: 'Fin',
   device_validation: 'Validar Dispositivo',
+  sms: 'SMS',
 };
 
 function BaseNode({ id, data, type, children }: any) {
@@ -238,8 +240,14 @@ export const TicketCreateNode = memo(({ id, data }: any) => (
     {data?.subject && (
       <div className="mt-1 text-xs text-gray-500">Asunto: {data.subject}</div>
     )}
+    {data?.category && (
+      <div className="text-xs text-gray-500">Categoría: {data.category}</div>
+    )}
     {data?.priority && (
       <div className="text-xs text-gray-500">Prioridad: {data.priority}</div>
+    )}
+    {data?.ticketType && (
+      <div className="text-xs text-gray-500">Tipo: {data.ticketType}</div>
     )}
   </BaseNode>
 ));
@@ -255,6 +263,19 @@ export const TicketQueryNode = memo(({ id, data }: any) => (
 export const TransferAgentNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="transfer_agent" />
 ));
+
+export const SmsNode = memo(({ id, data }: any) => {
+  const recipients = data?.recipients || [];
+  return (
+    <BaseNode id={id} data={data} type="sms">
+      {recipients.length > 0 && (
+        <div className="mt-1 text-xs text-gray-500">
+          {recipients.length} destinatario{recipients.length === 1 ? '' : 's'}
+        </div>
+      )}
+    </BaseNode>
+  );
+});
 
 export const LlmQueryNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="llm_query">

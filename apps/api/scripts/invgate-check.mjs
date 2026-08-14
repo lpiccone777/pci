@@ -3,15 +3,19 @@
  * Chequeo de conectividad + catálogo de InvGate, por consola.
  *
  * Corre fuera de Nest (no arranca el backend) — solo lee `apps/api/.env` a mano y le
- * pega directo a `{INVGATE_API_URL}/api/v1`. Sirve para dos cosas:
+ * pega directo a `{INVGATE_API_URL}/api/v1`. Nota (2026-08-14): el backend real ya no lee
+ * las credenciales de acá — viven en `/settings > Integración: InvGate` (BD). Este script
+ * sigue leyendo `.env` a propósito, para poder probar conectividad sin depender de la BD ni
+ * de un backend levantado; si querés probar los valores que están en BD, cargalos temporal
+ * acá o consultalos con `SELECT * FROM "Setting" WHERE key LIKE 'INVGATE_%'`. Sirve para:
  *   1. Confirmar que INVGATE_API_URL/USER/KEY funcionan antes de prender el conector real.
  *   2. Listar los IDs de categoría/prioridad/tipo/fuente de ESTA instancia, para completar
- *      INVGATE_DEFAULT_CATEGORY_ID/PRIORITY_ID/TYPE_ID/SOURCE_ID en el .env — no hay un
+ *      INVGATE_DEFAULT_CATEGORY_ID/PRIORITY_ID/TYPE_ID/SOURCE_ID en `/settings` — no hay un
  *      valor universal, son específicos de cada instalación de InvGate.
  *
  *   pnpm --filter api invgate:check
  *   pnpm --filter api invgate:check -- --find-user +5491100000001
- *   pnpm --filter api invgate:check -- --find-user mavalos.ext --by username
+ *   pnpm --filter api invgate:check -- --find-user chatbot_test --by username
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

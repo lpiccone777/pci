@@ -67,10 +67,11 @@ Infra externa: PostgreSQL y RabbitMQ en `192.168.0.123`. No hay docker-compose.
 - **Invgate:** crear/leer/actualizar tickets va por un usuario técnico dedicado de API,
   nunca con credenciales del usuario final.
 - **Secrets:** nunca commiteados y **nunca devueltos por la API en texto plano**.
-  Las API keys de LLM se pueden cargar desde `/settings` (decisión explícita del usuario,
-  2026-08-03), pero se guardan **cifradas** con AES-256-GCM y son de **solo escritura**:
-  el `GET` devuelve un enmascarado y el flag `isSet`, jamás el valor. Ver "Secrets" abajo.
-  Las credenciales de Invgate siguen siendo solo env var.
+  Las API keys de LLM y las credenciales de Invgate se pueden cargar desde `/settings`
+  (decisión explícita del usuario — LLM: 2026-08-03; Invgate: 2026-08-14, reemplaza la
+  constraint original de spec §5 de "solo env var"), pero se guardan **cifradas** con
+  AES-256-GCM y son de **solo escritura**: el `GET` devuelve un enmascarado y el flag
+  `isSet`, jamás el valor. Ver "Secrets" abajo.
 
 ## Flujo de inicio por tenant
 
@@ -226,8 +227,9 @@ key fuera del catálogo se rechaza.
 ### Secrets en la tabla `Setting`
 
 La spec §5 pedía que las API keys vivieran solo en env vars / vault. El usuario pidió
-poder configurar cada proveedor de LLM completo desde el backoffice, así que se hizo una
-concesión acotada, con estas reglas que hay que respetar al tocar este código:
+poder configurar cada proveedor de LLM completo desde el backoffice (y después, 2026-08-14,
+también InvGate — administrar credenciales editando `.env` a mano era engorroso), así que
+se hizo una concesión acotada, con estas reglas que hay que respetar al tocar este código:
 
 - Una clave del catálogo marcada `secret: true` se guarda **cifrada** (AES-256-GCM,
   `SecretsCipher` en `src/config/secrets.cipher.ts`). La clave maestra es

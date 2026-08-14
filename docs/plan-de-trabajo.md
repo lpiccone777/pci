@@ -184,7 +184,7 @@
   - No hizo falta tocar la conversación de prueba a mano: una vez reiniciado el backend con
     este fix, el próximo "cerrar"/"chau" del usuario debería cerrarla de verdad
 
-### Integración Invgate 🔄 EN PROGRESO — código listo, bloqueado por token real (2026-08-13)
+### Integración Invgate ✅ COMPLETADO — token real cargado y funcionando (2026-08-14)
 - [x] **`InvgateService`** (`apps/api/src/modules/invgate/invgate.service.ts`) — cliente HTTP contra
       `{INVGATE_API_URL}/api/v1`, Basic Auth con el usuario técnico. Contrato de la API (paths,
       payloads form-encoded en los writes, no JSON) relevado contra el código fuente de
@@ -194,8 +194,19 @@
   - Usuarios: `findUserByPhone/findUserByUsername/findUserByEmail`, `resolveCreatorId()` (cachea
     en memoria el id de InvGate del usuario técnico, usado como `creator_id` de todo ticket)
   - Incidentes: `createIncident/getIncident/updateIncident/addComment`, más
-    `createTicketForChat()` (alto nivel: resuelve `creator_id` + defaults de catálogo, devuelve
-    `null` en vez de tirar si falta config — mismo criterio que WhatsAppService/TwilioWhatsAppService)
+    `createTicketForChat()` (alto nivel: resuelve `creator_id` + category/priority/type, devuelve
+    `null` en vez de tirar si falta algo — mismo criterio que WhatsAppService/TwilioWhatsAppService)
+- [x] **Credenciales reales verificadas** (2026-08-14): usuario técnico dedicado `chatbot_test`
+      con token de API (no la contraseña de portal, que fue el problema del intento anterior con
+      `mavalos.ext` — devolvía 401). `pnpm --filter api invgate:check` confirmó autenticación OK
+      y listó el catálogo real de esta instancia (5 prioridades, 6 tipos, 16 fuentes, categorías
+      muy específicas de la organización — hospitales, laboratorio, guardia IT, etc.)
+- [x] **Credenciales movidas a `/settings`** (pedido explícito del usuario, mismo día) — nuevo
+      grupo "Integración: InvGate": `INVGATE_API_URL`, `INVGATE_API_USER`,
+      `INVGATE_API_KEY` (secret, cifrado) y los 4 defaults de catálogo. Reemplaza la constraint
+      original de spec §5 ("Invgate solo env var") — administrar esto editando `.env` a mano era
+      engorroso; ahora sigue el mismo patrón cifrado/solo-escritura que WhatsApp/Twilio/LLM.
+      `.env` queda como fallback de la cascada BD→env→default, no como la forma normal de cargarlo
 - [x] **Crear tickets automáticos desde conversaciones** — `ConversationsService.syncTicketToInvgate()`,
       llamado desde el nodo `transfer_agent` (método `'ticket'`) y desde el nodo `ticket_create`. Best-effort:
       si InvGate está mal configurado, caído, o el usuario no matchea ningún `customer_id`, el `Ticket`
@@ -203,6 +214,39 @@
   - `customer_id` se resuelve por `User.invgateUserId` si ya está cargado, o por teléfono
     (`InvgateService.findUserByPhone`) — y ahí mismo se **backfillea** `invgateUserId` para no
     repetir la búsqueda la próxima vez
+- [x] **Categoría/prioridad/tipo del ticket resueltos por NOMBRE desde `flowState`** (pedido
+      explícito del usuario, mismo día — reemplaza el default único global que tenía antes)
+  - Un nodo `input`/`menu` del flujo puede guardar en `flowState.category` /
+    `flowState.priority` / `flowState.ticketType` el nombre tal cual aparece en InvGate (ej.
+    "Alta", "Incidente", "01 - ALGO NO ME FUNCIONA") — `InvgateService.resolveCategoryId/
+    resolvePriorityId/resolveTypeId` lo matchean contra el catálogo real (exacto, insensible a
+    mayúsculas/acentos) en el momento de crear el ticket. El nodo `ticket_create` respeta además
+    `data.category`/`data.priority`/`data.ticketType` fijados en el editor, con `flowState` como
+    fallback — mismo criterio que ya usaba `subject`/`description`
+  - Sin match (o sin que la charla haya seteado nada), cae al default configurado en `/settings`
+    (`INVGATE_DEFAULT_CATEGORY_ID`/etc.) — nunca rompe la creación del ticket por esto
+  - Categoría usa `search` server-side de la API (no solo la primera página) para no perderse un
+    match real en una lista de miles
+- [x] **Editor de flujos: nodo "Generar ticket" con catálogo real de InvGate** (pedido explícito
+      del usuario, mismo día — antes solo tenía `subject` y un `priority` hardcodeado en inglés
+      low/medium/high, que nunca matcheaba nada real)
+  - Nuevo `InvgateController` (`GET /invgate/catalog/{categories,priorities,types}`, mismos
+    guards que `/flows` — `flows:read`, no un permiso nuevo) para que el editor consulte el
+    catálogo real en vez de que alguien memorice IDs numéricos
+  - **Categoría acotada a una rama del árbol**, no las ~700+ categorías organizacionales de la
+    instancia real: nuevo setting `INVGATE_CATEGORY_PARENT_ID` (`/settings`, cargado en
+    `1601` = "Chatbot", bajo "DEPTO. SISTEMAS > Soporte" — encontrado por búsqueda contra la
+    API real) + `InvgateService.listCategoriesByParent()`/`listTicketCategories()`, que paginan
+    todo el catálogo una vez (sin filtro `parent_id` en la API) y cachean las subcategorías de
+    ese padre en memoria. El selector del editor muestra solo esas 12 categorías reales
+  - Prioridad y tipo de incidente: dropdowns con los valores reales completos (5 prioridades,
+    6 tipos) — reemplaza el `low`/`medium`/`high` inventado
+  - Nodo agregó `description` (el backend ya la usaba, la UI no la pedía) — los tres selectores
+    de catálogo caen a un `<input>` de texto libre si InvGate no está configurado o el catálogo
+    no cargó, para no bloquear la edición del flujo
+  - `ticketType` sumado a `FlowNodeDataDto` (backend) — no existía como campo validado
+  - Verificado en el browser real contra el backend: las tres listas muestran los valores reales
+    de la instancia (categorías de "Chatbot", Baja/Media/Alta/Urgente/Crítica, los 6 tipos)
 - [x] **Consultar estado de tickets existentes** — `ConversationsService.refreshInvgateStatus()`,
       llamado desde el nodo `ticket_query`: si el `Ticket` tiene `invgateId`, trae el estado real
       (`status_id` → nombre, resuelto contra el catálogo de estados cacheado) y lo escribe de
@@ -217,25 +261,17 @@
       comentarios reales en InvGate a partir de ESA detección arriesgaba postear en el ticket
       equivocado de un sistema real. Conviene resolver esa detección primero (ítem 3) y recién
       ahí conectar `addComment`
-- [ ] Mapeo de campos Invgate ↔ nuestro modelo `Ticket` — simplificación deliberada: `category_id`/
-      `priority_id`/`type_id`/`source_id` son un único default global por instalación
-      (`INVGATE_DEFAULT_*_ID` en `.env`), no hay mapeo de la prioridad local (`Ticket.priority`,
-      string libre 'low'/'medium'/etc.) a un `priority_id` real de InvGate todavía — todo ticket
-      creado por el bot usa la misma prioridad/categoría/tipo de InvGate sin importar lo que se
-      haya cargado en `flowState.priority`
-- ⚠️ **Bloqueado**: `INVGATE_API_KEY` cargado el 2026-08-13 resultó ser la contraseña de portal
-  de `mavalos.ext`, no un token de API — la API responde 401 (confirmado: `WWW-Authenticate:
-  Basic realm="API", Digest realm="API", domain="/api/v1"`, o sea que el path y el esquema
-  Basic están bien, la credencial no). Falta que el admin de InvGate genere/habilite un token de
-  API real para ese usuario. Una vez que lo tengan: cargarlo en `apps/api/.env`
-  (`INVGATE_API_KEY`) y correr `pnpm --filter api invgate:check` — valida la conexión y lista
-  los IDs de catálogo reales para completar `INVGATE_DEFAULT_CATEGORY_ID/PRIORITY_ID/TYPE_ID/SOURCE_ID`
 - ⚠️ **Deuda técnica**: se evaluó explorar la API primero con un MCP de InvGate Service Desk
   (`tracegazer/invgate-service-desk-mcp`, comunitario, no oficial) para probar antes de escribir
   el conector — descartado por ahora (2026-08-13), se pasa directo a integrar la API real con
   `INVGATE_API_URL`/`INVGATE_API_USER`/`INVGATE_API_KEY`. Retomar la idea del MCP si en algún
   punto hace falta explorar la API de forma exploratoria sin tocar código (ej. antes de mapear
   un endpoint nuevo)
+- ⚠️ **Pendiente**: todavía no se cargaron los 4 defaults de catálogo en `/settings` (el usuario
+  decidió priorizar la resolución dinámica por `flowState` en vez de fijar un default único) — sin
+  ellos, un ticket creado por una charla que no seteó categoría/prioridad/tipo falla en silencio
+  (se loguea, el `Ticket` local queda igual, pero no llega a InvGate). Conviene cargarlos como red
+  de seguridad aunque el flujo real siempre los setee
 
 ### Procesamiento de Conversaciones ✅ COMPLETADO
 - [x] `BrokerModule` suscrito a cola `whatsapp.incoming`
@@ -651,6 +687,64 @@
 - ⚠️ **Bloqueado**: falta un número de Twilio habilitado para SMS — el sandbox de WhatsApp
   (`+14155238886`) no sirve para esto, hace falta comprar/asignar un número real en la
   consola de Twilio y cargarlo en `TWILIO_SMS_FROM`
+
+### Editor de flujos: nuevo nodo "SMS" ✅ COMPLETADO (pedido 2026-08-14)
+- [x] **Nodo `sms`** — manda un SMS por Twilio a una lista de destinatarios configurados a mano
+      en el editor, no al usuario de la conversación actual (a diferencia de la respuesta normal
+      del flujo). Pensado para avisos salientes (ej. "se generó el ticket #123") a números que no
+      son necesariamente el que está chateando
+  - **Destinatarios por dropdown de usuarios** (`data.recipients: string[]` = userIds), mismo
+    criterio que `transfer_agent.watchers`/`collaborators` (reusa el componente `UserPickerList`
+    tal cual). Primer corte fue un campo de texto libre para el número, pero el pedido explícito
+    del usuario (2026-08-14, tras probarlo) fue no confiar en que alguien tipee bien un E.164 a
+    mano — un dropdown de usuarios existentes es menos propenso a error
+  - `executeSmsNode` resuelve cada userId contra `user.phone` y publica a la cola `sms.outgoing`
+    (una vez por destinatario que tenga teléfono cargado, salteando los que no) —
+    `TwilioSmsService` ya está suscripto ahí y hace la llamada real a la API de Twilio, así que
+    el nodo no necesita inyectarlo ni conocer credenciales
+  - `recipients?: string[]` sumado a `FlowNodeDataDto` (reusa el campo `message` ya existente
+    para el cuerpo del SMS, que sigue admitiendo `{{variable}}` vía
+    `ConversationsService.interpolate`)
+
+### Gupshup como alternativa de WhatsApp y SMS ✅ WHATSAPP FUNCIONAL — SMS bloqueado (pedido 2026-08-14)
+- [x] **`GupshupWhatsAppService`/`GupshupWebhookController`** — tercer conector de WhatsApp
+      (`WHATSAPP_PROVIDER=gupshup`), mismo contrato de colas que Meta/Twilio
+      (`whatsapp.outgoing`/`whatsapp.incoming`). Spec verificado contra la documentación
+      pública de Gupshup (`docs.gupshup.io`, 2026-08-14): `POST api.gupshup.io/wa/api/v1/msg`,
+      auth por header `apikey`, form-encoded
+  - **Interactivo (botones/listas) inline en el mismo request** — a diferencia de Twilio, que
+    exige pre-registrar un Content Template por cada forma de menú (`TwilioContentTemplate` en
+    BD + llamada extra a su Content API), Gupshup lo manda todo junto como el resto del
+    mensaje, igual de simple que la Cloud API de Meta. Sin caché, sin tabla nueva
+  - `postbackText` de cada botón/fila lleva el `id` de la opción (no el título) — mismo criterio
+    que `WhatsAppWebhookController.extractBody`, para que el nodo `menu` la matchee sin cambios
+  - ⚠️ Un campo (`title` a nivel de mensaje `list`, el header sobre el body) no tiene
+    equivalente en `WhatsAppInteractive` — se reusa `buttonText` ahí, cosmético nada más. A
+    confirmar contra tráfico real del sandbox antes de depender de esto en producción
+  - Nuevo grupo en `/settings`: "Mensajería: WhatsApp (Gupshup)" (`GUPSHUP_API_KEY` secret,
+    `GUPSHUP_WHATSAPP_SOURCE`, `GUPSHUP_APP_NAME`, `GUPSHUP_WHATSAPP_TENANT_ID`) — número
+    emisor y nombre de app ya cargados (WABA real, activa: `+15553788248` / app "dasyBot"),
+    falta el `apikey` para poder activar el proveedor
+- [x] **`SMS_PROVIDER` (setting nuevo)** — hasta ahora Twilio era el único conector de SMS y
+      `TwilioSmsService.onModuleInit` se suscribía a `sms.outgoing` sin preguntar nada (a
+      diferencia de WhatsApp, que ya tenía `WHATSAPP_PROVIDER` desde el conector de Twilio).
+      Gatear un segundo proveedor de SMS obligó a introducir ese mismo mecanismo acá por
+      primera vez
+- [x] **`GupshupSmsService`/`GupshupSmsWebhookController`** (`SMS_PROVIDER=gupshup`) —
+      **API completamente distinta de la de WhatsApp**: el "Enterprise SMS" de Gupshup
+      (`enterprise.smsgupshup.com/GatewayAPI/rest`) es un producto legacy con su propia cuenta
+      (`userid`/`password`, no el `apikey` de WhatsApp), request por query params (no JSON) y
+      respuesta en texto plano (`"success | numero | msgid"`, no JSON)
+  - ⚠️ **El shape del webhook de SMS ENTRANTE no se pudo verificar** contra documentación
+    pública (Gupshup documenta bien el callback de *reporte de entrega*, no el de respuesta de
+    un usuario) — el controller acepta varios nombres de campo candidatos como mejor esfuerzo y
+    loguea los campos recibidos en cada intento fallido, para poder ajustar el mapeo rápido en
+    cuanto haya tráfico real
+  - ⚠️ **Bloqueado**: el usuario no tiene todavía la cuenta de Enterprise SMS de Gupshup (es
+    una cuenta separada de la app de WhatsApp) — parametrizado (`GUPSHUP_SMS_USERID`,
+    `GUPSHUP_SMS_PASSWORD`, `GUPSHUP_SMS_TENANT_ID` en `/settings`) para cuando la consiga,
+    mismo criterio que `TWILIO_SMS_FROM` cuando faltaba el número. Mientras tanto sigue
+    funcionando con el sandbox/Twilio existente (`SMS_PROVIDER` default `'twilio'`)
 
 ---
 
@@ -1104,8 +1198,10 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 | RBAC | Dinámico (datos, no código) | Roles/permisos creados desde backend, nunca hardcoded |
 | LLM | Provider-agnostic | Business logic nunca llama OpenAI/Gemini/Claude directamente |
 | Secrets de LLM | BD cifrada + solo escritura | Desvío acotado de spec §5 para configurar proveedores desde el backoffice (2026-08-03) |
-| Secrets de Invgate | Env var únicamente | Sin necesidad de configurarlo desde la UI, se mantiene la regla original |
+| Secrets de Invgate | ~~Env var únicamente~~ → BD vía `/settings`, cifrado (SUPERADA 2026-08-14) | Administrar credenciales editando `.env` a mano era engorroso — mismo patrón que LLM/WhatsApp/Twilio, decisión explícita del usuario |
+| Campos de ticket de InvGate (categoría/prioridad/tipo) | Resueltos por NOMBRE desde `flowState`, con default de `/settings` como fallback | Reemplaza el default único global (2026-08-13): la charla recolecta el dato real, no hace falta que un flujo memorice IDs numéricos de una instancia puntual (2026-08-14) |
 | Tenant activo | Header `X-Tenant-Id`, no JWT | Un usuario pertenece a varios tenants; con el tenant en el token, cambiar de empresa exigía reemitirlo |
+| WhatsApp vs SMS de Gupshup | Dos productos y dos cuentas separadas, no una | La API moderna de WhatsApp (`api.gupshup.io`, auth `apikey`) y la de SMS (`enterprise.smsgupshup.com`, legacy, auth `userid`/`password`) no comparten credenciales ni formato de request/response — a diferencia de Twilio, donde WhatsApp y SMS son la misma cuenta con distinto número (2026-08-14) |
 | Nombre de usuario | `firstName` + `lastName` | Campos separados, pedido explícito |
 | Baja de usuario | Baja del tenant, no borrado físico | Conversaciones, tickets y métricas lo referencian |
 | Acceso a `/settings` | Tenant de sistema + `settings:*` | Corte por tenant, no por nombre de rol, para no romper RBAC dinámico |
@@ -1116,7 +1212,8 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 | I/O de fuentes de verdad | Vía broker (RPC RabbitMQ), no HTTP directo desde el controller | Mismo constraint que WhatsApp: el core no depende de detalles de un canal/integración externa (AGENTS.md, "Desacople de canales") |
 | Punto de consulta de la fuente de verdad en el flujo | Fallback `__llmFallback` de `menu` (charla fuera de flujo), no cada `llm_query` | Coincide con el pedido ya cerrado el 2026-08-05 de qué hacer sin match de menú; un `llm_query` explícito ya tiene su propio `systemPrompt` armado a mano (2026-08-11) |
 | WhatsApp: Meta vs Twilio | Conectores intercambiables por setting (`WHATSAPP_PROVIDER`), no coexistencia simultánea | Ambos consumen las mismas colas (`whatsapp.outgoing`/`whatsapp.incoming`) — `ConversationsService` no se modificó ni sabe cuál está activo; dos consumers a la vez en la misma cola competirían por los mensajes en vez de que uno solo la maneje (2026-08-13) |
-| Categoría/prioridad/tipo de los tickets de InvGate | Un único default global por instalación (`INVGATE_DEFAULT_*_ID`) | No hay mapeo de la prioridad local (string libre) a un `priority_id` real todavía; simplifica el primer corte, no hay UI de InvGate para elegir por ticket (2026-08-13) |
+| Categoría/prioridad/tipo de los tickets de InvGate | ~~Un único default global por instalación~~ → resuelto por nombre desde `flowState` (SUPERADA, ver fila de arriba) | Decisión original del primer corte (2026-08-13), reemplazada al día siguiente a pedido del usuario |
+| Categorías visibles en el editor de flujos | Acotadas a las subcategorías de `INVGATE_CATEGORY_PARENT_ID` (1601 = "Chatbot"), no el catálogo completo | La instancia real tiene ~700+ categorías organizacionales — la enorme mayoría no aplica a tickets del chatbot, pedido explícito del usuario (2026-08-14) |
 | `InvgateService.addComment` desde charla libre | Implementado pero sin gancho automático | La única detección de "el usuario habla de un ticket existente" es la búsqueda por regex + `id: {contains}` de `orchestratorLlm`, ya señalada como frágil (deuda técnica ítem 3) — postear en InvGate a partir de esa detección arriesgaba escribir en el ticket equivocado (2026-08-13) |
 | Botones de Twilio | Content Template por forma de menú, cacheado por hash, body como variable | Twilio no admite variables en títulos de botones/filas (solo en el body) — un template por forma de menú es la única manera de mantener menús 100% dinámicos como en Meta (2026-08-13) |
 | Cache de `ContentSid` de Twilio | Tabla `TwilioContentTemplate` (BD) + `Map` en memoria como L1 | Pedido explícito para sobrevivir reinicios del backend sin recrear Content Templates ya existentes (2026-08-13) |

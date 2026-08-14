@@ -29,6 +29,7 @@ import {
   TicketCreateNode,
   TicketQueryNode,
   TransferAgentNode,
+  SmsNode,
   LlmQueryNode,
   DelayNode,
   VariableNode,
@@ -58,6 +59,12 @@ interface ContextSourceOption {
   type: string;
 }
 
+/** Entrada de catálogo de InvGate (categoría/prioridad/tipo) — ver GET /invgate/catalog/*. */
+interface InvgateCatalogOption {
+  id: number;
+  name: string;
+}
+
 interface FlowOption {
   id: string;
   name: string;
@@ -83,6 +90,7 @@ const customNodeTypes = {
   ticket_create: TicketCreateNode,
   ticket_query: TicketQueryNode,
   transfer_agent: TransferAgentNode,
+  sms: SmsNode,
   llm_query: LlmQueryNode,
   delay: DelayNode,
   variable: VariableNode,
@@ -115,6 +123,7 @@ const nodeTypeList = [
   { type: 'ticket_create', label: 'Crear Ticket', color: '#ec4899' },
   { type: 'ticket_query', label: 'Consultar Ticket', color: '#ec4899' },
   { type: 'transfer_agent', label: 'Transferir Agente', color: '#6366f1' },
+  { type: 'sms', label: 'SMS', color: '#22c55e' },
   { type: 'llm_query', label: 'Consultar LLM', color: '#14b8a6' },
   { type: 'delay', label: 'Delay', color: '#6b7280' },
   { type: 'variable', label: 'Variable', color: '#84cc16' },
@@ -139,6 +148,13 @@ function FlowEditorInner() {
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [flowOptions, setFlowOptions] = useState<FlowOption[]>([]);
+  // Catálogo real de InvGate para el nodo "Generar ticket" — categorías acotadas a
+  // INVGATE_CATEGORY_PARENT_ID (ver /settings), prioridades y tipos completos (son pocos).
+  // Vacío si InvGate no está configurado o el usuario no tiene permiso `flows:read`: el
+  // campo cae a un input de texto libre, no bloquea la edición del flujo.
+  const [invgateCategories, setInvgateCategories] = useState<InvgateCatalogOption[]>([]);
+  const [invgatePriorities, setInvgatePriorities] = useState<InvgateCatalogOption[]>([]);
+  const [invgateTypes, setInvgateTypes] = useState<InvgateCatalogOption[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   // Cache de roles por empresa: se traen de GET /roles con el header de esa empresa (así
   // el superadmin los lee parado en cualquier otra, igual que el alta de usuarios). Se
@@ -169,6 +185,7 @@ function FlowEditorInner() {
     loadUsers();
     loadContextSources();
     loadFlowOptions();
+    loadInvgateCatalog();
 
     if (!isNew) {
       loadFlow();
@@ -233,6 +250,24 @@ function FlowEditorInner() {
       setFlowOptions(data.map((f: any) => ({ id: f.id, name: f.name })));
     } catch {
       setFlowOptions([]);
+    }
+  }
+
+  /** Catálogo de InvGate para el nodo `ticket_create` — ver comentario de los `useState`. */
+  async function loadInvgateCatalog() {
+    try {
+      const [categories, priorities, types] = await Promise.all([
+        apiFetch('/invgate/catalog/categories'),
+        apiFetch('/invgate/catalog/priorities'),
+        apiFetch('/invgate/catalog/types'),
+      ]);
+      setInvgateCategories(categories);
+      setInvgatePriorities(priorities);
+      setInvgateTypes(types);
+    } catch {
+      setInvgateCategories([]);
+      setInvgatePriorities([]);
+      setInvgateTypes([]);
     }
   }
 
@@ -416,7 +451,11 @@ function FlowEditorInner() {
       case 'condition':
         return { conditions: [], defaultTargetNodeId: '' };
       case 'ticket_create':
-        return { subject: '', priority: 'medium' };
+        // Vacío a propósito (no 'medium' como antes): category/priority/ticketType van por
+        // nombre real de InvGate — un valor en inglés inventado no matchea nada y termina
+        // cayendo al default de /settings igual, pero mostraba "Prioridad: medium" en el
+        // nodo como si fuera un valor real elegido.
+        return { subject: '', description: '', category: '', priority: '', ticketType: '' };
       case 'ticket_query':
         return { ticketIdVariable: '' };
       case 'transfer_agent':
@@ -427,6 +466,8 @@ function FlowEditorInner() {
           watchers: [],
           collaborators: [],
         };
+      case 'sms':
+        return { message: '', recipients: [] };
       case 'llm_query':
         return { systemPrompt: '', contextMessages: 10 };
       case 'delay':
@@ -711,6 +752,9 @@ function FlowEditorInner() {
               onUpdate={updateNodeData}
               users={allUsers}
               flows={flowOptions.filter((f) => f.id !== id)}
+              invgateCategories={invgateCategories}
+              invgatePriorities={invgatePriorities}
+              invgateTypes={invgateTypes}
             />
             <button
               onClick={() => {
@@ -902,11 +946,17 @@ function NodeProperties({
   onUpdate,
   users,
   flows,
+  invgateCategories,
+  invgatePriorities,
+  invgateTypes,
 }: {
   node: Node;
   onUpdate: (key: string, value: any) => void;
   users: UserOption[];
   flows: FlowOption[];
+  invgateCategories: InvgateCatalogOption[];
+  invgatePriorities: InvgateCatalogOption[];
+  invgateTypes: InvgateCatalogOption[];
 }) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
@@ -1148,18 +1198,101 @@ function NodeProperties({
               onChange={(e) => onUpdate('subject', e.target.value)}
               className="w-full border rounded p-2 text-sm"
             />
+            <p className="text-xs text-gray-400 mt-1">
+              Vacío: usa <code>{'{{subject}}'}</code> de la charla o los primeros 100 caracteres del mensaje.
+            </p>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Prioridad</label>
-            <select
-              value={data.priority || 'medium'}
-              onChange={(e) => onUpdate('priority', e.target.value)}
+            <label className="block text-sm font-medium mb-1">Descripción</label>
+            <textarea
+              value={data.description || ''}
+              onChange={(e) => onUpdate('description', e.target.value)}
               className="w-full border rounded p-2 text-sm"
-            >
-              <option value="low">Baja</option>
-              <option value="medium">Media</option>
-              <option value="high">Alta</option>
-            </select>
+              rows={3}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Vacío: usa <code>{'{{description}}'}</code> de la charla o el mensaje del usuario.
+            </p>
+          </div>
+          {/* Categoría/prioridad/tipo van por NOMBRE real de InvGate (no un id) — el bot
+              los resuelve contra el catálogo al crear el ticket (InvgateService.resolveCategoryId/
+              resolvePriorityId/resolveTypeId). Vacío en cualquiera de los tres: usa el default
+              de /settings > "Integración: InvGate". Si el catálogo no cargó (InvGate sin
+              configurar, o sin permiso), cae a un campo de texto libre para no bloquear la edición. */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Categoría (InvGate)</label>
+            {invgateCategories.length > 0 ? (
+              <select
+                value={data.category || ''}
+                onChange={(e) => onUpdate('category', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+              >
+                <option value="">(usar default de /settings)</option>
+                {invgateCategories.map((c) => (
+                  <option key={c.id} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={data.category || ''}
+                onChange={(e) => onUpdate('category', e.target.value)}
+                placeholder="Nombre exacto de la categoría en InvGate"
+                className="w-full border rounded p-2 text-sm"
+              />
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Prioridad (InvGate)</label>
+            {invgatePriorities.length > 0 ? (
+              <select
+                value={data.priority || ''}
+                onChange={(e) => onUpdate('priority', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+              >
+                <option value="">(usar default de /settings)</option>
+                {invgatePriorities.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={data.priority || ''}
+                onChange={(e) => onUpdate('priority', e.target.value)}
+                placeholder="Nombre exacto de la prioridad en InvGate"
+                className="w-full border rounded p-2 text-sm"
+              />
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Tipo de incidente (InvGate)</label>
+            {invgateTypes.length > 0 ? (
+              <select
+                value={data.ticketType || ''}
+                onChange={(e) => onUpdate('ticketType', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+              >
+                <option value="">(usar default de /settings)</option>
+                {invgateTypes.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={data.ticketType || ''}
+                onChange={(e) => onUpdate('ticketType', e.target.value)}
+                placeholder="Nombre exacto del tipo en InvGate"
+                className="w-full border rounded p-2 text-sm"
+              />
+            )}
           </div>
         </>
       )}
@@ -1457,6 +1590,31 @@ function NodeProperties({
             values={data.collaborators || []}
             users={users}
             onChange={(next) => onUpdate('collaborators', next)}
+          />
+        </>
+      )}
+
+      {type === 'sms' && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1">Mensaje</label>
+            <p className="text-xs text-gray-400 mb-1">
+              Admite variables del flujo, ej. {'{{userName}}'}.
+            </p>
+            <textarea
+              value={data.message || ''}
+              onChange={(e) => onUpdate('message', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              placeholder="Ej: Hola {{userName}}, tu ticket #{{lastTicketId}} fue actualizado."
+            />
+          </div>
+
+          <UserPickerList
+            label="Destinatarios"
+            values={data.recipients || []}
+            users={users}
+            onChange={(next) => onUpdate('recipients', next)}
           />
         </>
       )}

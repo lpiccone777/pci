@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { AppConfigService } from '../../config/app-config.service';
 
 const API_PREFIX = '/api/v1';
 const TIMEOUT_MS = 15_000;
@@ -45,18 +45,26 @@ export interface UpdateIncidentInput {
   typeId?: number;
 }
 
+/** Nombres (no IDs) recolectados durante la charla, a resolver contra el catálogo real. */
+export interface TicketFieldNames {
+  categoryName?: string;
+  priorityName?: string;
+  typeName?: string;
+}
+
 /**
  * Cliente de la API real de InvGate Service Desk (`{INVGATE_API_URL}/api/v1`), con el
  * usuario técnico dedicado (`INVGATE_API_USER`/`INVGATE_API_KEY`) — nunca con
  * credenciales del usuario final (AGENTS.md, "Invgate: crear/leer/actualizar tickets
  * va por un usuario técnico dedicado de API").
  *
- * Credenciales **solo por env var** (`ConfigService` de Nest, no `AppConfigService`):
- * a diferencia de WhatsApp/Twilio/LLM, la constraint de spec §5 las deja afuera de
- * `/settings` y de la BD por completo — así que este service nunca las cachea vía la
- * cascada BD→env que usa el resto de la config.
+ * Config vía `AppConfigService` (cascada BD → env → default), igual que WhatsApp/Twilio/
+ * LLM — decisión explícita del usuario (2026-08-14) que reemplaza la anterior ("solo env
+ * var"): administrar credenciales editando `.env` a mano era engorroso. `/settings >
+ * Integración: InvGate` es ahora la forma normal de cargarlas; `.env` sigue funcionando
+ * como fallback (útil para un bootstrap inicial sin tocar la BD).
  *
- * Auth confirmada contra una instancia real (2026-08-13): `GET /api/v1/...` sin
+ * Auth confirmada contra una instancia real (2026-08-13/14): `GET /api/v1/...` sin
  * credenciales responde 401 con `WWW-Authenticate: Basic realm="API", Digest
  * realm="API", domain="/api/v1"` — confirma el path y el esquema Basic. Endpoints y
  * payloads (form-encoded en los writes, no JSON) relevados contra el código fuente de
@@ -69,64 +77,60 @@ export class InvgateService {
   private readonly logger = new Logger(InvgateService.name);
   /** Id de InvGate del usuario técnico (`creator_id` de los tickets que crea el bot). Resuelto una vez, en memoria. */
   private creatorIdCache: number | null | undefined;
+  private statusNameCache: Map<number, string> | null = null;
+  private priorityCache: InvgateCatalogEntry[] | null = null;
+  private typeCache: InvgateCatalogEntry[] | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly appConfig: AppConfigService) {}
 
   /** Sin las tres credenciales no hay nada que hacer — mismo criterio que WhatsAppService/TwilioWhatsAppService. */
-  isConfigured(): boolean {
-    return Boolean(this.baseUrl() && this.apiUser() && this.apiKey());
+  async isConfigured(): Promise<boolean> {
+    const [url, user, key] = await Promise.all([this.baseUrl(), this.apiUser(), this.apiKey()]);
+    return Boolean(url && user && key);
   }
 
-  private baseUrl(): string | undefined {
-    return this.config.get<string>('INVGATE_API_URL')?.replace(/\/+$/, '');
+  private async baseUrl(): Promise<string | undefined> {
+    const raw = await this.appConfig.get('INVGATE_API_URL');
+    return raw?.replace(/\/+$/, '');
   }
 
-  private apiUser(): string | undefined {
-    return this.config.get<string>('INVGATE_API_USER');
+  private async apiUser(): Promise<string | undefined> {
+    return this.appConfig.get('INVGATE_API_USER');
   }
 
-  private apiKey(): string | undefined {
-    return this.config.get<string>('INVGATE_API_KEY');
+  private async apiKey(): Promise<string | undefined> {
+    return this.appConfig.get('INVGATE_API_KEY');
   }
 
   /**
-   * IDs de catálogo (categoría/prioridad/tipo/fuente) que usa el bot para los tickets
-   * que crea — InvGate no acepta un ticket sin esos tres primeros, y son específicos
-   * de cada instancia (no hay un valor universal "soporte genérico"). Se resuelven una
-   * vez con `listCategories()`/`listPriorities()`/etc. contra la instancia real y se
-   * cargan acá — no hay mapeo dinámico de la prioridad local (`Ticket.priority`,
-   * string libre) a un `priority_id` de InvGate todavía (ver deuda técnica).
+   * IDs de catálogo por defecto (categoría/prioridad/tipo/fuente), usados cuando la
+   * charla no recolectó un valor propio — ver `resolveCategoryId`/`resolvePriorityId`/
+   * `resolveTypeId`, que intentan matchear por NOMBRE contra `flowState` antes de caer
+   * acá. Son específicos de cada instancia (no hay un valor universal "soporte
+   * genérico"): se resuelven con `listCategories()`/`listPriorities()`/etc. contra la
+   * instancia real.
    */
-  private defaultCategoryId(): number | undefined {
+  private async defaultCategoryId(): Promise<number | undefined> {
     return this.parseId('INVGATE_DEFAULT_CATEGORY_ID');
   }
 
-  private defaultPriorityId(): number | undefined {
+  private async defaultPriorityId(): Promise<number | undefined> {
     return this.parseId('INVGATE_DEFAULT_PRIORITY_ID');
   }
 
-  private defaultTypeId(): number | undefined {
+  private async defaultTypeId(): Promise<number | undefined> {
     return this.parseId('INVGATE_DEFAULT_TYPE_ID');
   }
 
-  private defaultSourceId(): number | undefined {
+  private async defaultSourceId(): Promise<number | undefined> {
     return this.parseId('INVGATE_DEFAULT_SOURCE_ID');
   }
 
-  private parseId(key: string): number | undefined {
-    const raw = this.config.get<string>(key);
+  private async parseId(key: string): Promise<number | undefined> {
+    const raw = await this.appConfig.get(key);
     if (!raw) return undefined;
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
-  }
-
-  /** category/priority/type son obligatorios para crear un incidente; source es opcional. */
-  hasCreateDefaults(): boolean {
-    return (
-      this.defaultCategoryId() !== undefined &&
-      this.defaultPriorityId() !== undefined &&
-      this.defaultTypeId() !== undefined
-    );
   }
 
   // --- Catálogo (IDs válidos de esta instancia) -----------------------------------
@@ -138,8 +142,6 @@ export class InvgateService {
   async listStatuses(): Promise<InvgateCatalogEntry[]> {
     return this.asList(await this.get('incident.attributes.status'));
   }
-
-  private statusNameCache: Map<number, string> | null = null;
 
   /**
    * `GET incident` solo devuelve `status_id` (numérico) — para mostrarle al usuario un
@@ -170,6 +172,107 @@ export class InvgateService {
 
   async listSources(): Promise<InvgateCatalogEntry[]> {
     return this.asList(await this.get('incident.attributes.source'));
+  }
+
+  private categoryChildrenCache = new Map<number, InvgateCatalogEntry[]>();
+
+  /**
+   * Subcategorías directas de `parentId` — para acotar el selector de categoría del
+   * editor de flujos a una rama puntual del árbol en vez de mostrar el catálogo entero
+   * (pedido explícito del usuario 2026-08-14: la instancia real tiene ~700+ categorías
+   * organizacionales, la enorme mayoría no aplica a tickets que crea el chatbot).
+   *
+   * La API no tiene un filtro `parent_id` en `incident.attributes.category` — solo
+   * `search` (texto) e `id` (exacto) — así que hay que traer todo paginado y filtrar acá.
+   * Se cachea por `parentId`: las categorías organizacionales cambian rara vez, no vale
+   * la pena repaginar todo el catálogo en cada request del editor.
+   */
+  async listCategoriesByParent(parentId: number): Promise<InvgateCatalogEntry[]> {
+    const cached = this.categoryChildrenCache.get(parentId);
+    if (cached) return cached;
+
+    const all = await this.listAllCategories();
+    const children = all.filter((c) => Number(c.parent_category_id) === parentId);
+    this.categoryChildrenCache.set(parentId, children);
+    return children;
+  }
+
+  /** Lee `INVGATE_CATEGORY_PARENT_ID` y devuelve sus hijas — `[]` si no está configurado. */
+  async listTicketCategories(): Promise<InvgateCatalogEntry[]> {
+    const parentId = await this.parseId('INVGATE_CATEGORY_PARENT_ID');
+    if (parentId === undefined) return [];
+    return this.listCategoriesByParent(parentId);
+  }
+
+  /** Pagina `incident.attributes.category` hasta agotarla — sin filtro de búsqueda, trae todo. */
+  private async listAllCategories(): Promise<InvgateCatalogEntry[]> {
+    const pageSize = 200;
+    const maxPages = 20; // tope de seguridad: 4000 categorías, muy por arriba de lo real
+    const all: InvgateCatalogEntry[] = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const batch = this.asList(await this.get('incident.attributes.category', { page, page_size: pageSize }));
+      if (!batch.length) break;
+      all.push(...batch);
+      if (batch.length < pageSize) break;
+    }
+    return all;
+  }
+
+  // --- Resolución de campos del ticket por NOMBRE (dato recolectado en la charla) ---
+  //
+  // El flujo IVR no conoce (ni debería conocer) los IDs numéricos de InvGate — son de
+  // esta instancia puntual, no algo que un diseñador de flujos deba memorizar. En vez
+  // de eso, un nodo `input`/`menu` puede guardar en `flowState.category`,
+  // `flowState.priority` o `flowState.ticketType` el NOMBRE tal cual aparece en InvGate
+  // (ej. "Alta", "Incidente", "01 - ALGO NO ME FUNCIONA"), y acá se resuelve contra el
+  // catálogo real en el momento de crear el ticket. Sin match (o sin que la charla haya
+  // seteado nada), cae al default configurado — nunca rompe la creación del ticket por
+  // esto solo.
+
+  async resolveCategoryId(name?: string): Promise<number | undefined> {
+    if (name) {
+      // `search` es server-side: evita traer solo la primera página de un catálogo que
+      // puede tener miles de categorías y no encontrar la que en realidad existe.
+      const found = this.findByName(await this.listCategories(name), name);
+      if (found !== undefined) return found;
+      this.logger.warn(`Categoría de InvGate '${name}' (flowState.category) no matcheó ninguna real — uso el default.`);
+    }
+    return this.defaultCategoryId();
+  }
+
+  async resolvePriorityId(name?: string): Promise<number | undefined> {
+    if (name) {
+      if (!this.priorityCache) this.priorityCache = await this.listPriorities();
+      const found = this.findByName(this.priorityCache, name);
+      if (found !== undefined) return found;
+      this.logger.warn(`Prioridad de InvGate '${name}' (flowState.priority) no matcheó ninguna real — uso el default.`);
+    }
+    return this.defaultPriorityId();
+  }
+
+  async resolveTypeId(name?: string): Promise<number | undefined> {
+    if (name) {
+      if (!this.typeCache) this.typeCache = await this.listIncidentTypes();
+      const found = this.findByName(this.typeCache, name);
+      if (found !== undefined) return found;
+      this.logger.warn(`Tipo de InvGate '${name}' (flowState.ticketType) no matcheó ninguno real — uso el default.`);
+    }
+    return this.defaultTypeId();
+  }
+
+  /** Match exacto insensible a mayúsculas/acentos — no parcial, para no enrutar un ticket a la categoría equivocada. */
+  private findByName(entries: InvgateCatalogEntry[], name: string): number | undefined {
+    const normalized = this.normalizeName(name);
+    return entries.find((e) => this.normalizeName(e.name) === normalized)?.id;
+  }
+
+  /** Saca diacríticos (acentos) tras normalizar a NFD, para que "Crítica"/"critica" matcheen igual. */
+  private normalizeName(s: string): string {
+    return s
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
   }
 
   // --- Usuarios --------------------------------------------------------------------
@@ -203,7 +306,7 @@ export class InvgateService {
    */
   async resolveCreatorId(): Promise<number | null> {
     if (this.creatorIdCache !== undefined) return this.creatorIdCache;
-    const username = this.apiUser();
+    const username = await this.apiUser();
     if (!username) return (this.creatorIdCache = null);
     const user = await this.findUserByUsername(username).catch((err) => {
       this.logger.warn(`No se pudo resolver el usuario técnico de InvGate ('${username}'): ${err.message}`);
@@ -235,29 +338,45 @@ export class InvgateService {
 
   /**
    * Punto de entrada de alto nivel para el bot: resuelve `creator_id` (usuario técnico)
-   * y los defaults de catálogo internamente, así el llamador solo pasa lo específico del
-   * ticket. Devuelve `null` (en vez de tirar) si falta cualquier prerequisito de config
-   * — mismo criterio que WhatsAppService/TwilioWhatsAppService ante config incompleta:
+   * y category/priority/type — por nombre si la charla los recolectó (`fields`), si no
+   * por el default configurado — internamente, así el llamador solo pasa lo específico
+   * del ticket. Devuelve `null` (en vez de tirar) si falta cualquier prerequisito —
+   * mismo criterio que WhatsAppService/TwilioWhatsAppService ante config incompleta:
    * loguear y seguir, nunca romper la charla por un problema de configuración de InvGate.
    */
-  async createTicketForChat(customerId: number, title: string, description?: string): Promise<InvgateIncident | null> {
-    if (!this.hasCreateDefaults()) {
-      this.logger.warn(
-        'Faltan INVGATE_DEFAULT_CATEGORY_ID/PRIORITY_ID/TYPE_ID — no se puede crear el ticket en InvGate ' +
-          '(correr scripts/invgate-check.mjs para ver los IDs válidos de esta instancia).',
-      );
-      return null;
-    }
+  async createTicketForChat(
+    customerId: number,
+    title: string,
+    description?: string,
+    fields: TicketFieldNames = {},
+  ): Promise<InvgateIncident | null> {
     const creatorId = await this.resolveCreatorId();
     if (!creatorId) return null; // ya logueado en resolveCreatorId()
+
+    const [categoryId, priorityId, typeId, sourceId] = await Promise.all([
+      this.resolveCategoryId(fields.categoryName),
+      this.resolvePriorityId(fields.priorityName),
+      this.resolveTypeId(fields.typeName),
+      this.defaultSourceId(),
+    ]);
+
+    const missing = [
+      categoryId === undefined && 'categoría (flowState.category o INVGATE_DEFAULT_CATEGORY_ID)',
+      priorityId === undefined && 'prioridad (flowState.priority o INVGATE_DEFAULT_PRIORITY_ID)',
+      typeId === undefined && 'tipo (flowState.ticketType o INVGATE_DEFAULT_TYPE_ID)',
+    ].filter((m): m is string => !!m);
+    if (missing.length) {
+      this.logger.warn(`No se pudo crear el ticket en InvGate: falta ${missing.join(', ')}.`);
+      return null;
+    }
 
     return this.createIncident({
       creatorId,
       customerId,
-      categoryId: this.defaultCategoryId()!,
-      priorityId: this.defaultPriorityId()!,
-      typeId: this.defaultTypeId()!,
-      sourceId: this.defaultSourceId(),
+      categoryId: categoryId!,
+      priorityId: priorityId!,
+      typeId: typeId!,
+      sourceId,
       title,
       description,
     });
@@ -299,13 +418,14 @@ export class InvgateService {
 
   // --- HTTP client -------------------------------------------------------------------
 
-  private authHeader(): string {
-    const basic = Buffer.from(`${this.apiUser()}:${this.apiKey()}`).toString('base64');
+  private async authHeader(): Promise<string> {
+    const [user, key] = await Promise.all([this.apiUser(), this.apiKey()]);
+    const basic = Buffer.from(`${user}:${key}`).toString('base64');
     return `Basic ${basic}`;
   }
 
   private async get(endpoint: string, params: Record<string, unknown> = {}): Promise<unknown> {
-    const url = new URL(`${this.baseUrl()}${API_PREFIX}/${endpoint}`);
+    const url = new URL(`${await this.baseUrl()}${API_PREFIX}/${endpoint}`);
     for (const [key, value] of Object.entries(this.clean(params))) {
       url.searchParams.set(key, String(value));
     }
@@ -313,12 +433,12 @@ export class InvgateService {
   }
 
   private async post(endpoint: string, data: Record<string, unknown> = {}): Promise<unknown> {
-    const url = new URL(`${this.baseUrl()}${API_PREFIX}/${endpoint}`);
+    const url = new URL(`${await this.baseUrl()}${API_PREFIX}/${endpoint}`);
     return this.send('POST', url, this.formBody(data));
   }
 
   private async put(endpoint: string, data: Record<string, unknown> = {}): Promise<unknown> {
-    const url = new URL(`${this.baseUrl()}${API_PREFIX}/${endpoint}`);
+    const url = new URL(`${await this.baseUrl()}${API_PREFIX}/${endpoint}`);
     return this.send('PUT', url, this.formBody(data));
   }
 
@@ -350,7 +470,7 @@ export class InvgateService {
       res = await fetch(url, {
         method,
         headers: {
-          Authorization: this.authHeader(),
+          Authorization: await this.authHeader(),
           Accept: 'application/json',
           ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
         },
@@ -373,7 +493,7 @@ export class InvgateService {
 
     if (!res.ok) {
       const body = parsed as { error?: string; info?: string } | undefined;
-      const message = body?.error || body?.info || this.sanitize(text).slice(0, MAX_ERROR_LEN);
+      const message = body?.error || body?.info || (await this.sanitize(text)).slice(0, MAX_ERROR_LEN);
       throw new Error(`InvGate API error ${res.status}: ${message}`);
     }
 
@@ -381,8 +501,8 @@ export class InvgateService {
   }
 
   /** Nunca dejar que el token termine en un mensaje de error logueado. */
-  private sanitize(text: string): string {
-    const token = this.apiKey();
+  private async sanitize(text: string): Promise<string> {
+    const token = await this.apiKey();
     return token ? text.split(token).join('***REDACTED***') : text;
   }
 

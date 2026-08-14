@@ -1024,12 +1024,19 @@ export class ConversationsService implements OnModuleInit {
    * charla ni se le muestra un error al usuario por esto. Mismo criterio que
    * `confirmCancelIntent`/`confirmEndChatIntent`: ante una falla del proveedor externo,
    * seguir con el camino local en vez de romper la conversación.
+   *
+   * `fields` son NOMBRES (no IDs) de categoría/prioridad/tipo recolectados durante la
+   * charla — típicamente `flowState.category`/`flowState.priority`/`flowState.ticketType`,
+   * seteados por un nodo `input`/`menu` del flujo. `InvgateService.createTicketForChat`
+   * los resuelve contra el catálogo real de esta instancia; sin match (o sin que la
+   * charla haya seteado nada) cae al default configurado en `/settings`.
    */
   private async syncTicketToInvgate(
     ticket: { id: string; userId: string; subject: string; description: string | null },
     from: string,
+    fields: { categoryName?: string; priorityName?: string; typeName?: string } = {},
   ): Promise<void> {
-    if (!this.invgateService.isConfigured()) return;
+    if (!(await this.invgateService.isConfigured())) return;
 
     try {
       const customerId = await this.resolveInvgateCustomerId(ticket.userId, from);
@@ -1039,6 +1046,7 @@ export class ConversationsService implements OnModuleInit {
         customerId,
         ticket.subject,
         ticket.description ?? undefined,
+        fields,
       );
       if (!incident) return;
 
@@ -1057,7 +1065,7 @@ export class ConversationsService implements OnModuleInit {
    * `invgateId` (o si InvGate no responde), devuelve el estado local tal cual.
    */
   private async refreshInvgateStatus(ticket: { id: string; invgateId: string | null; status: string }): Promise<string> {
-    if (!ticket.invgateId || !this.invgateService.isConfigured()) return ticket.status;
+    if (!ticket.invgateId || !(await this.invgateService.isConfigured())) return ticket.status;
 
     try {
       const incident = await this.invgateService.getIncident(ticket.invgateId);
@@ -1123,7 +1131,11 @@ export class ConversationsService implements OnModuleInit {
         },
       });
       flowState.lastTicketId = ticket.id;
-      await this.syncTicketToInvgate(ticket, user.phone);
+      await this.syncTicketToInvgate(ticket, user.phone, {
+        categoryName: flowState.category,
+        priorityName: flowState.priority,
+        typeName: flowState.ticketType,
+      });
     }
 
     if (methods.includes('email')) {
@@ -1156,6 +1168,39 @@ export class ConversationsService implements OnModuleInit {
     // `data.message` es una nota interna para el agente (va al mail y al ticket, arriba),
     // no un texto para el chat: si el flujo necesita avisarle algo al usuario acá, se
     // pone un nodo `message` antes de este. Sin responseText, sigue a la próxima arista.
+    return { flowState };
+  }
+
+  /**
+   * Nodo `sms`: manda un SMS por Twilio a una lista de destinatarios elegidos en el editor
+   * de un `<select>` de usuarios (mismo criterio que `transfer_agent.watchers`/`collaborators`)
+   * — `data.recipients` son userIds, no números escritos a mano, así que no hace falta validar
+   * formato ni confiar en que alguien tipee bien un E.164. Se les manda al `user.phone` que
+   * tengan cargado; sin teléfono, se los salta. Publica directo a `sms.outgoing`:
+   * `TwilioSmsService` ya está suscripto ahí y hace la llamada real a la API de Twilio, así que
+   * no hace falta inyectarlo acá.
+   */
+  private async executeSmsNode(
+    data: any,
+    flowState: Record<string, any>,
+    tenantId: string,
+  ): Promise<NodeExecutionResult> {
+    const recipientIds: string[] = Array.isArray(data.recipients) ? data.recipients : [];
+    const text = data.message ? this.interpolate(data.message, flowState) : '';
+
+    if (text && recipientIds.length) {
+      const recipients = await this.prisma.user.findMany({ where: { id: { in: recipientIds } } });
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
+        await this.broker.publish('sms.outgoing', {
+          pattern: 'message.send',
+          data: { to: recipient.phone, body: text },
+          tenantId,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
     return { flowState };
   }
 
@@ -1417,7 +1462,11 @@ export class ConversationsService implements OnModuleInit {
           },
         });
         flowState.lastTicketId = ticket.id;
-        await this.syncTicketToInvgate(ticket, from);
+        await this.syncTicketToInvgate(ticket, from, {
+          categoryName: data.category || flowState.category,
+          priorityName: data.priority || flowState.priority,
+          typeName: data.ticketType || flowState.ticketType,
+        });
         return {
           responseText: `Ticket #${ticket.id} creado. Un agente te contactará pronto.`,
           flowState,
@@ -1440,6 +1489,9 @@ export class ConversationsService implements OnModuleInit {
 
       case 'transfer_agent':
         return this.executeTransferAgentNode(node, data, user, tenantId, body, flowState, flowId);
+
+      case 'sms':
+        return this.executeSmsNode(data, flowState, tenantId);
 
       case 'llm_query': {
         const recentMessages = await this.prisma.message.findMany({

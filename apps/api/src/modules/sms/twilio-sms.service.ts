@@ -6,15 +6,9 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 const TIMEOUT_MS = 10_000;
 
 /**
- * Conector de SMS vía Twilio. A diferencia de `TwilioWhatsAppService`, este no es un
- * reemplazo intercambiable de otro canal — SMS es un canal propio, con sus propias
- * `Conversation` (ver `channel` en `ConversationsService.handleMessage`), así que siempre
- * está activo si está configurado (no hay equivalente a `WHATSAPP_PROVIDER` acá: no compite
- * con nadie por la cola `sms.outgoing`).
- *
- * Reusa `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` del grupo de WhatsApp (Twilio) — es la misma
- * cuenta, solo cambia el número (`TWILIO_SMS_FROM`) y el canal en el `To`/`From` de la API
- * (sin el prefijo `whatsapp:`).
+ * Conector de SMS vía Twilio. Reusa `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` del grupo de
+ * WhatsApp (Twilio) — es la misma cuenta, solo cambia el número (`TWILIO_SMS_FROM`) y el canal
+ * en el `To`/`From` de la API (sin el prefijo `whatsapp:`).
  *
  * Sin plantillas ni interactivo: SMS no tiene noción de botones/listas en la API de Twilio —
  * un `interactive` que llegue se degrada siempre a texto numerado (mismo mecanismo que el
@@ -29,7 +23,20 @@ export class TwilioSmsService implements OnModuleInit {
     private readonly broker: BrokerService,
   ) {}
 
+  /**
+   * Solo se suscribe si es el proveedor activo (`SMS_PROVIDER`, default 'twilio') — con
+   * `GupshupSmsService` también escuchando la misma cola, dos consumers activos a la vez se la
+   * repartirían por competencia (round robin de RabbitMQ) en vez de que uno solo la maneje.
+   * Mismo mecanismo que `WHATSAPP_PROVIDER`; ver el chequeo invertido en
+   * `GupshupSmsService.onModuleInit`. Antes de este setting (que no existía) Twilio era el
+   * único conector de SMS y se suscribía sin preguntar nada.
+   */
   async onModuleInit() {
+    const provider = (await this.appConfig.get('SMS_PROVIDER', 'twilio'))?.toLowerCase() || 'twilio';
+    if (provider !== 'twilio') {
+      this.logger.log(`SMS_PROVIDER=${provider}: conector de Twilio inactivo, no se suscribe a sms.outgoing.`);
+      return;
+    }
     await this.broker.subscribe('sms.outgoing', this.handleOutgoing.bind(this));
   }
 

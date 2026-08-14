@@ -24,13 +24,20 @@ export class FlowNodeDataDto {
   @IsOptional()
   defaultTargetNodeId?: string;
 
+  /** Nodo `ticket_create`: nombre real de la categoría en InvGate (ver InvgateService.resolveCategoryId). */
   @IsString()
   @IsOptional()
   category?: string;
 
+  /** Nodo `ticket_create`: nombre real de la prioridad en InvGate (ej. "Media", "Alta") — no low/medium/high. */
   @IsString()
   @IsOptional()
   priority?: string;
+
+  /** Nodo `ticket_create`: nombre real del tipo de incidente en InvGate (ej. "Incidente", "Pregunta"). */
+  @IsString()
+  @IsOptional()
+  ticketType?: string;
 
   @IsString()
   @IsOptional()
@@ -125,6 +132,11 @@ export class FlowNodeDataDto {
   @IsArray()
   @IsOptional()
   collaborators?: string[];
+
+  /** Nodo `sms`: userId de cada destinatario — se les manda al `user.phone` que tengan cargado. */
+  @IsArray()
+  @IsOptional()
+  recipients?: string[];
 }
 
 export class FlowNodeDto {

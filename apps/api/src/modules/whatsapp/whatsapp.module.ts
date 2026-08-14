@@ -3,19 +3,21 @@ import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppWebhookController } from './whatsapp-webhook.controller';
 import { TwilioWhatsAppService } from './twilio-whatsapp.service';
 import { TwilioWebhookController } from './twilio-webhook.controller';
+import { GupshupWhatsAppService } from './gupshup-whatsapp.service';
+import { GupshupWebhookController } from './gupshup-webhook.controller';
 import { BrokerModule } from '../broker/broker.module';
 
 /**
- * Agrupa los dos conectores de WhatsApp (Meta y Twilio) más sus webhooks. Ambos quedan
- * registrados siempre — cuál de los dos `*Service` realmente se suscribe a
+ * Agrupa los tres conectores de WhatsApp (Meta, Twilio y Gupshup) más sus webhooks. Los tres
+ * quedan registrados siempre — cuál de los tres `*Service` realmente se suscribe a
  * `whatsapp.outgoing` lo decide el setting `WHATSAPP_PROVIDER` en cada `onModuleInit`
- * (ver el comentario ahí). Los dos webhooks también quedan siempre montados: solo importa
- * cuál URL se configuró del lado de Meta/Twilio.
+ * (ver el comentario ahí). Los tres webhooks también quedan siempre montados: solo importa
+ * cuál URL se configuró del lado de Meta/Twilio/Gupshup.
  */
 @Module({
   imports: [BrokerModule],
-  controllers: [WhatsAppWebhookController, TwilioWebhookController],
-  providers: [WhatsAppService, TwilioWhatsAppService],
-  exports: [WhatsAppService, TwilioWhatsAppService],
+  controllers: [WhatsAppWebhookController, TwilioWebhookController, GupshupWebhookController],
+  providers: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],
+  exports: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],
 })
 export class WhatsAppModule {}
