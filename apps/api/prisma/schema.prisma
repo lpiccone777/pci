@@ -76,6 +76,7 @@ model Tenant {
   settings       Setting[]
   tenantFlows    TenantFlow[]
   contextSources ContextSource[]
+  skills         Skill[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -304,6 +305,12 @@ model Flow {
   // posterior — ver docs/plan-de-trabajo.md, sección "Fuentes de verdad".
   contextSourceId String?
   contextSource   ContextSource?       @relation(fields: [contextSourceId], references: [id], onDelete: SetNull)
+  // Skill (texto de contexto libre) que se concatena al system prompt base
+  // (LLM_SYSTEM_PROMPT de /settings) cuando este flujo ejecuta un nodo `llm_query`
+  // o cae al orquestador. Nullable: no todos los flujos necesitan uno. Ver
+  // ConversationsService.buildBasePrompt.
+  skillId         String?
+  skill           Skill?               @relation(fields: [skillId], references: [id], onDelete: SetNull)
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   tenantFlows     TenantFlow[]
@@ -314,6 +321,29 @@ model Flow {
   @@index([isDefault])
   @@index([context])
   @@index([contextSourceId])
+  @@index([skillId])
+}
+
+/// Texto de contexto libre ("skill") que se agrega al system prompt base de un
+/// flujo. A diferencia de ContextSource (conexión a un servicio externo que se
+/// CONSULTA en tiempo real), un Skill es texto estático que se concatena
+/// directamente al prompt — sin red, sin broker. Por tenant, como ContextSource
+/// y Area: cada empresa arma los suyos. Ver Flow.skillId y
+/// ConversationsService.buildBasePrompt.
+model Skill {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name       String
+  promptText String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  flows Flow[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
 }
 
 /// Fuente de verdad externa que un flujo puede consultar para dar contexto a sus

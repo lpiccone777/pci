@@ -23,6 +23,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { SmsModule } from './modules/sms/sms.module';
 import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
+import { SkillsModule } from './modules/skills/skills.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { ContextSourcesModule } from './modules/context-sources/context-sources.
     WhatsAppModule,
     SmsModule,
     ContextSourcesModule,
+    SkillsModule,
   ],
   controllers: [AppController],
   providers: [AppService, TenantGuard],

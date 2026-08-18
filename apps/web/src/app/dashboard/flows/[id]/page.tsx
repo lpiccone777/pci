@@ -59,6 +59,11 @@ interface ContextSourceOption {
   type: string;
 }
 
+interface SkillOption {
+  id: string;
+  name: string;
+}
+
 /** Entrada de catálogo de InvGate (categoría/prioridad/tipo) — ver GET /invgate/catalog/*. */
 interface InvgateCatalogOption {
   id: number;
@@ -104,16 +109,6 @@ const customEdgeTypes = {
   default: DeletableEdge,
 };
 
-// Misma lista que apps/api/src/modules/flow/flow-context.ts (FLOW_CONTEXT_OPTIONS).
-// Son 4 valores fijos, así que se duplica acá en vez de exponer un endpoint solo
-// para esto — igual que nodeTypeList, más abajo, no viene del backend.
-const contextOptions = [
-  { value: 'none', label: 'Ninguna / genérico' },
-  { value: 'invgate', label: 'Invgate (tickets)' },
-  { value: 'internal_kb', label: 'Base de conocimiento interna' },
-  { value: 'other', label: 'Otro' },
-];
-
 const nodeTypeList = [
   { type: 'start', label: 'Inicio', color: '#10b981' },
   { type: 'message', label: 'Mensaje', color: '#3b82f6' },
@@ -142,9 +137,10 @@ function FlowEditorInner() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [flowName, setFlowName] = useState('Nuevo Flujo');
   const [flowDescription, setFlowDescription] = useState('');
-  const [flowContext, setFlowContext] = useState('none');
   const [contextSourceId, setContextSourceId] = useState<string>('');
   const [contextSources, setContextSources] = useState<ContextSourceOption[]>([]);
+  const [skillId, setSkillId] = useState<string>('');
+  const [skills, setSkills] = useState<SkillOption[]>([]);
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [flowOptions, setFlowOptions] = useState<FlowOption[]>([]);
@@ -184,6 +180,7 @@ function FlowEditorInner() {
     loadTenants();
     loadUsers();
     loadContextSources();
+    loadSkills();
     loadFlowOptions();
     loadInvgateCatalog();
 
@@ -243,6 +240,17 @@ function FlowEditorInner() {
     }
   }
 
+  /** Skills del tenant activo, para el dropdown que reemplaza al viejo "context". */
+  async function loadSkills() {
+    try {
+      const data = await apiFetch('/skills');
+      setSkills(data.filter((s: any) => s.isActive));
+    } catch {
+      // Sin permiso `skills:read` en el tenant actual: el selector queda vacío.
+      setSkills([]);
+    }
+  }
+
   /** Flujos del tenant activo, para el dropdown "ID del flujo" del nodo `subflow`. */
   async function loadFlowOptions() {
     try {
@@ -276,8 +284,8 @@ function FlowEditorInner() {
       const flow = await apiFetch(`/flows/${id}`);
       setFlowName(flow.name);
       setFlowDescription(flow.description || '');
-      setFlowContext(flow.context || 'none');
       setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
+      setSkillId(flow.skillId || flow.skill?.id || '');
       const tenantFlows = flow.tenantFlows || [];
       const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
         tenantId: tf.tenant.id,
@@ -510,8 +518,8 @@ function FlowEditorInner() {
       const payload = {
         name: flowName,
         description: flowDescription,
-        context: flowContext,
         contextSourceId: contextSourceId || null,
+        skillId: skillId || null,
         // Solo lo que define el flujo. ReactFlow agrega estado de runtime a nodos y
         // aristas (`measured` con el tamaño calculado, `selected`, `dragging`) que no
         // es parte del flujo y que el ValidationPipe del backend rechaza.
@@ -597,31 +605,44 @@ function FlowEditorInner() {
             className="text-gray-600 border rounded px-2 py-1 text-sm"
             placeholder="Descripción"
           />
-          <select
-            value={flowContext}
-            onChange={(e) => setFlowContext(e.target.value)}
-            className="text-gray-600 border rounded px-2 py-1 text-sm"
-            title="Fuente de datos que respalda las respuestas de este flujo"
-          >
-            {contextOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={contextSourceId}
-            onChange={(e) => setContextSourceId(e.target.value)}
-            className="text-gray-600 border rounded px-2 py-1 text-sm"
-            title="Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar"
-          >
-            <option value="">Sin fuente de verdad</option>
-            {contextSources.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.type})
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-col gap-0.5">
+            <label htmlFor="flow-skill" className="text-[11px] text-gray-400">
+              Skill
+            </label>
+            <select
+              id="flow-skill"
+              value={skillId}
+              onChange={(e) => setSkillId(e.target.value)}
+              className="text-gray-600 border rounded px-2 py-1 text-sm"
+              title="Skill: texto de contexto que se agrega al system prompt base de este flujo"
+            >
+              <option value="">Sin skill</option>
+              {skills.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <label htmlFor="flow-context-source" className="text-[11px] text-gray-400">
+              Fuente de verdad
+            </label>
+            <select
+              id="flow-context-source"
+              value={contextSourceId}
+              onChange={(e) => setContextSourceId(e.target.value)}
+              className="text-gray-600 border rounded px-2 py-1 text-sm"
+              title="Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar"
+            >
+              <option value="">Sin fuente de verdad</option>
+              {contextSources.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.type})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <button
           onClick={saveFlow}
@@ -1308,6 +1329,35 @@ function NodeProperties({
               rows={3}
             />
           </div>
+          {data.systemPrompt && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Prompt base</label>
+              <div className="flex gap-4 text-sm text-gray-600">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name={`systemPromptMode-${node.id}`}
+                    checked={(data.systemPromptMode || 'replace') === 'replace'}
+                    onChange={() => onUpdate('systemPromptMode', 'replace')}
+                  />
+                  Reemplaza
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name={`systemPromptMode-${node.id}`}
+                    checked={data.systemPromptMode === 'append'}
+                    onChange={() => onUpdate('systemPromptMode', 'append')}
+                  />
+                  Agrega
+                </label>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1">
+                Cómo combina este System Prompt con el prompt base (settings + Skill del
+                flujo): lo reemplaza entero, o se agrega a continuación.
+              </p>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium mb-1">Mensajes de contexto</label>
             <input

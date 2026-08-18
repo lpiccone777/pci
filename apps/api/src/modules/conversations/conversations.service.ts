@@ -59,8 +59,13 @@ const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
 
-/** Texto exacto que `orchestratorLlm` le pide al LLM para señalar "necesito la fuente de verdad". */
-const NEEDS_SOURCE_SENTINEL = 'NECESITA_FUENTE';
+/**
+ * System prompt de arranque cuando no hay nada configurado en /settings
+ * (`LLM_SYSTEM_PROMPT`) — ver `ConversationsService.buildBasePrompt`. Mismo texto
+ * que ya se usaba como fallback hardcodeado del nodo `llm_query`: se conserva acá
+ * para que una instalación sin ese setting cargado no cambie de comportamiento.
+ */
+const DEFAULT_SYSTEM_PROMPT = 'Eres un asistente de soporte técnico amable y conciso. Responde en español.';
 
 /**
  * `maxTokens` de los clasificadores binarios/de opción (`confirmEndChatIntent`,
@@ -150,8 +155,25 @@ export class ConversationsService implements OnModuleInit {
       { timeoutMs: SIMULATE_TIMEOUT_MS },
     );
 
-    const { body: replyText } = reply.data as { to: string; body: string };
-    return replyText;
+    // `interactive` viaja en la respuesta real (ver el publish de `handleMessage`),
+    // pero Postman no tiene forma de renderizar botones/lista de WhatsApp — sin esto
+    // `/simulate` devolvía solo el header del menú (el texto numerado completo se arma
+    // a propósito nada más que como fallback cuando NO hay interactivo, ver el case
+    // `'menu'` de `executeNode`) y las opciones quedaban "cortadas" para quien prueba
+    // por acá. Se agrega como texto plano nada más que para esta respuesta HTTP; el
+    // pipeline real de WhatsApp no se toca.
+    const { body: replyText, interactive } = reply.data as {
+      to: string;
+      body: string;
+      interactive?: WhatsAppInteractive;
+    };
+    return interactive ? `${replyText}\n\n${this.formatInteractiveAsText(interactive)}` : replyText;
+  }
+
+  /** Ver el comentario de `simulateIncomingMessage`. */
+  private formatInteractiveAsText(interactive: WhatsAppInteractive): string {
+    const items = interactive.type === 'button' ? interactive.buttons : interactive.rows;
+    return items.map((item, i) => `${i + 1}. ${item.title}`).join('\n');
   }
 
   /** Devuelve el texto con el que respondió el bot, para que `simulate` pueda mostrarlo. */
@@ -302,7 +324,7 @@ export class ConversationsService implements OnModuleInit {
       interactive = flowResult.interactive;
     } else {
       // Fallback: orquestador LLM para mensajes fuera de flujo
-      responseText = await this.orchestratorLlm(conversation, body, tenantId, null);
+      responseText = await this.orchestratorLlm(conversation, body, tenantId, null, null);
     }
 
     // 6. Guardar respuesta del asistente
@@ -404,6 +426,7 @@ export class ConversationsService implements OnModuleInit {
         identity,
         flowId,
         flow.contextSourceId,
+        (flow as any).skill?.promptText ?? null,
       );
 
       // Actualizar flowState ANTES de interpolar: si este mismo nodo acaba de
@@ -1234,6 +1257,7 @@ export class ConversationsService implements OnModuleInit {
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
     flowId: string,
     contextSourceId: string | null,
+    skillPromptText: string | null,
   ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
@@ -1306,7 +1330,7 @@ export class ConversationsService implements OnModuleInit {
         // Si el flujo tiene una fuente de verdad vinculada, `orchestratorLlm` la
         // consulta antes de responder — ver ese método.
         if (flowState.__llmFallback === node.id) {
-          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId);
+          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
           return { responseText, waitForInput: true, flowState };
         }
 
@@ -1382,7 +1406,7 @@ export class ConversationsService implements OnModuleInit {
         // de `__llmFallback` al principio del case).
         delete flowState.__awaiting;
         flowState.__llmFallback = node.id;
-        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId);
+        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
         return { responseText: fallbackResponse, waitForInput: true, flowState };
       }
 
@@ -1505,11 +1529,35 @@ export class ConversationsService implements OnModuleInit {
           content: m.content,
         }));
 
-        const responseText = await this.llmService.chat(llmMessages, {
-          systemPrompt:
-            data.systemPrompt ||
-            'Eres un asistente de soporte técnico amable y conciso. Responde en español.',
-        });
+        // Fuente de verdad vinculada al flujo: igual que en `orchestratorLlm`, se
+        // consulta siempre que esté presente, antes de generar la respuesta —
+        // este nodo antes la ignoraba por completo aunque `executeNode` ya la
+        // recibía como parámetro.
+        if (contextSourceId) {
+          const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
+          if (knowledge.ok && knowledge.answer) {
+            llmMessages.push({
+              role: 'system',
+              content:
+                `Contexto de la fuente de verdad vinculada a este flujo (información autoritativa, ` +
+                `priorizala si contradice lo que ya sabés):\n${knowledge.answer}`,
+            });
+          } else {
+            this.logger.warn(`Fuente de verdad ${contextSourceId} sin respuesta útil: ${knowledge.message}`);
+          }
+        }
+
+        // Prompt base = LLM_SYSTEM_PROMPT de /settings + Skill del flujo. El
+        // systemPrompt propio del nodo (si lo trae) lo REEMPLAZA por default —
+        // mismo comportamiento que antes de sumar Skills — o se le AGREGA a
+        // continuación si el nodo eligió 'append' (ver systemPromptMode).
+        const basePrompt = await this.buildBasePrompt(skillPromptText);
+        const systemPrompt =
+          data.systemPrompt && data.systemPromptMode === 'append'
+            ? [basePrompt, data.systemPrompt].filter(Boolean).join('\n\n')
+            : data.systemPrompt || basePrompt;
+
+        const responseText = await this.llmService.chat(llmMessages, { systemPrompt });
 
         return { responseText };
       }
@@ -1562,16 +1610,35 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
+   * Arma el system prompt base: `LLM_SYSTEM_PROMPT` de /settings (con
+   * `DEFAULT_SYSTEM_PROMPT` como piso si no hay nada cargado ni en BD ni en env,
+   * cascada de `AppConfigService`) seguido del texto del Skill del flujo en curso,
+   * si tiene uno vinculado (`Flow.skillId`). Es el punto único donde se combinan
+   * ambos — tanto el nodo `llm_query` como `orchestratorLlm` parten de acá.
+   */
+  private async buildBasePrompt(skillPromptText: string | null): Promise<string> {
+    const settingsPrompt = await this.appConfig.get('LLM_SYSTEM_PROMPT', DEFAULT_SYSTEM_PROMPT);
+    return [settingsPrompt, skillPromptText]
+      .map((s) => s?.trim())
+      .filter((s): s is string => !!s)
+      .join('\n\n');
+  }
+
+  /**
    * Orquestador LLM para mensajes fuera de flujo o cuando no hay flujo activo.
    * Interpreta intenciones, detecta referencias a tickets, y genera respuestas completas.
    * `contextSourceId`: fuente de verdad vinculada al `Flow` en curso (null si no
-   * hay flujo activo o el flujo no tiene ninguna vinculada) — ver más abajo.
+   * hay flujo activo o el flujo no tiene ninguna vinculada) — si está presente, se
+   * consulta siempre antes de generar la respuesta (ver más abajo).
+   * `skillPromptText`: texto del Skill vinculado al `Flow` en curso (null si no hay
+   * flujo activo o no tiene ninguno vinculado) — ver `buildBasePrompt`.
    */
   private async orchestratorLlm(
     conversation: any,
     body: string,
     tenantId: string,
     contextSourceId: string | null,
+    skillPromptText: string | null,
   ): Promise<string> {
     // `sessionStartedAt` acota el historial a la sesión actual: si la charla
     // se cerró y se reanudó (mismo Conversation.id, ver `handleMessage`), los
@@ -1586,25 +1653,46 @@ export class ConversationsService implements OnModuleInit {
       take: 10,
     });
 
+    // Fuente de verdad vinculada al flujo: se consulta siempre que esté presente,
+    // antes de generar la respuesta — no queda a criterio del LLM pedirla (eso
+    // dependía de que el modelo devolviera un sentinel exacto, y con proveedores
+    // poco confiables o modelos de razonamiento el sentinel no siempre llegaba
+    // tal cual, así que la fuente terminaba sin consultarse). `queryKnowledge`
+    // nunca tira (atrapa timeout/error internamente y devuelve `ok:false`).
+    let knowledgeContext: string | null = null;
+    if (contextSourceId) {
+      const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
+      if (knowledge.ok && knowledge.answer) {
+        knowledgeContext = knowledge.answer;
+      } else {
+        this.logger.warn(`Fuente de verdad ${contextSourceId} sin respuesta útil: ${knowledge.message}`);
+      }
+    }
+
+    // Prompt base (LLM_SYSTEM_PROMPT de /settings + Skill del flujo, si tiene uno)
+    // antepuesto a las instrucciones propias del orquestador — no las reemplaza.
+    const basePrompt = await this.buildBasePrompt(skillPromptText);
+    const orchestratorInstructions =
+      'Eres un orquestador de soporte técnico. Tu trabajo es:\n' +
+      '1. Entender la consulta del usuario\n' +
+      '2. Si menciona un ticket existente, analizarlo para dar contexto\n' +
+      '3. Si necesita crear un ticket, hacer las preguntas necesarias para completarlo\n' +
+      '4. Si es una pregunta simple, responder directamente\n' +
+      '5. Siempre ser amable, conciso y en español.' +
+      (knowledgeContext
+        ? '\n6. Abajo tenés el contexto de la fuente de verdad vinculada a este flujo — ' +
+          'es información autoritativa: si contradice lo que ya sabés, priorizala a ella. ' +
+          'Si ni con ese contexto podés responder, decilo con honestidad en vez de inventar.'
+        : '');
+
     const llmMessages: LlmMessage[] = [
       {
         role: 'system',
-        content:
-          'Eres un orquestador de soporte técnico. Tu trabajo es:\n' +
-          '1. Entender la consulta del usuario\n' +
-          '2. Si menciona un ticket existente, analizarlo para dar contexto\n' +
-          '3. Si necesita crear un ticket, hacer las preguntas necesarias para completarlo\n' +
-          '4. Si es una pregunta simple, responder directamente\n' +
-          '5. Siempre ser amable, conciso y en español.' +
-          (contextSourceId
-            ? '\n6. Hay una fuente de verdad externa disponible para lo que no puedas responder ' +
-              'con lo que ya sabés o con el historial de esta charla. Si la necesitás, respondé ' +
-              `ÚNICAMENTE con el texto exacto "${NEEDS_SOURCE_SENTINEL}" — sin nada más, sin ` +
-              'inventar una respuesta ni pedir disculpas. Si ya podés responder sin consultarla, ' +
-              'respondé normalmente: no la necesitás para todos los mensajes, solo cuando de ' +
-              'verdad haga falta.'
-            : ''),
+        content: [basePrompt, orchestratorInstructions].filter(Boolean).join('\n\n'),
       },
+      ...(knowledgeContext
+        ? [{ role: 'system' as const, content: `Contexto de la fuente de verdad vinculada a este flujo:\n${knowledgeContext}` }]
+        : []),
       ...recentMessages.map((m) => ({
         role: (m.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
         content: m.content,
@@ -1626,46 +1714,8 @@ export class ConversationsService implements OnModuleInit {
       }
     }
 
-    const chatOptions = {
-      systemPrompt:
-        'Eres un asistente de soporte técnico amable y conciso. Responde en español. Si no sabes la respuesta, indícalo honestamente.',
-    };
-
     try {
-      let responseText = await this.llmService.chat(llmMessages, chatOptions);
-
-      // Fuente de verdad vinculada al flujo: se consulta solo cuando el LLM pidió
-      // el sentinel de arriba, no en cada turno — antes se consultaba siempre que
-      // el flujo tuviera una `contextSourceId`, así que una charla que ya había
-      // resuelto su pregunta seguía pagando la latencia del RAG (~10-30s) en cada
-      // mensaje siguiente, aunque fuera un simple "gracias" o un tema nuevo que el
-      // LLM podía responder solo. Con el sentinel, se intenta responder local
-      // primero y solo se va al RAG cuando el propio LLM señala que lo necesita —
-      // el próximo turno vuelve a intentar local. `queryKnowledge` nunca tira
-      // (atrapa timeout/error internamente y devuelve `ok:false`).
-      if (contextSourceId && responseText.trim() === NEEDS_SOURCE_SENTINEL) {
-        const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
-        if (knowledge.ok && knowledge.answer) {
-          llmMessages.push({
-            role: 'system',
-            content: `Contexto de la fuente de verdad vinculada a este flujo:\n${knowledge.answer}`,
-          });
-          responseText = await this.llmService.chat(llmMessages, chatOptions);
-          // Verificado en producción: con proveedores poco confiables (ej. OpenCode Go en
-          // modo `plan`), a veces el LLM repite el sentinel tal cual incluso ya con el
-          // contexto de la fuente en el mensaje — sin este chequeo, el usuario recibía el
-          // texto crudo "NECESITA_FUENTE" como respuesta. Si vuelve a pasar, se le manda
-          // directamente la respuesta de la fuente en vez de nada.
-          if (responseText.trim() === NEEDS_SOURCE_SENTINEL) {
-            responseText = knowledge.answer;
-          }
-        } else {
-          this.logger.warn(`Fuente de verdad ${contextSourceId} sin respuesta útil: ${knowledge.message}`);
-          responseText =
-            'No tengo esa información disponible en este momento. ¿Podés reformular tu consulta o preguntar otra cosa?';
-        }
-      }
-
+      const responseText = await this.llmService.chat(llmMessages);
       return responseText;
     } catch (err) {
       // A diferencia de `interpretMenuChoice` (que tiene un fallback silencioso

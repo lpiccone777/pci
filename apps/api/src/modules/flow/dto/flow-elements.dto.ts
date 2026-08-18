@@ -63,6 +63,16 @@ export class FlowNodeDataDto {
   @IsOptional()
   systemPrompt?: string;
 
+  /**
+   * Cómo combina este `systemPrompt` de nodo con el prompt base (LLM_SYSTEM_PROMPT
+   * de /settings + el Skill del flujo, si tiene uno): 'replace' lo reemplaza entero
+   * (default, mismo comportamiento que antes de sumar Skills), 'append' lo agrega a
+   * continuación. Ver ConversationsService.buildBasePrompt.
+   */
+  @IsString()
+  @IsOptional()
+  systemPromptMode?: 'replace' | 'append';
+
   @IsOptional()
   contextMessages?: number;
 

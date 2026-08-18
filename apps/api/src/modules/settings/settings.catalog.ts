@@ -175,7 +175,9 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     label: 'System prompt por defecto',
     defaultValue: '',
     description:
-      'System prompt base. Los nodos de flujo pueden sobrescribirlo por nodo.',
+      'Prompt base para toda charla. Cada flujo puede sumarle un Skill (ver Fuentes de ' +
+      'verdad → Skills) que se concatena a continuación, y el nodo `llm_query` puede a su vez ' +
+      'reemplazarlo o agregarle su propio texto (ver systemPromptMode en el editor de flujos).',
     multiline: true,
   },
 
