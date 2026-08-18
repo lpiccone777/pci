@@ -2,10 +2,9 @@
 
 import { useState, useEffect, useCallback, useMemo, createContext, useContext, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, clearSession } from '@/lib/api';
 import {
   ALL_TENANTS,
-  ALL_TENANTS_CACHE_KEY,
   FALLBACK_TENANT_ID_KEY,
   SYSTEM_TENANT_ID_KEY,
   SYSTEM_TENANT_SLUG,
@@ -132,15 +131,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('activeTenant');
-    localStorage.removeItem(ALL_TENANTS_CACHE_KEY);
-    localStorage.removeItem(SYSTEM_TENANT_ID_KEY);
-    localStorage.removeItem(FALLBACK_TENANT_ID_KEY);
     setToken(null);
     setUser(null);
     setActiveTenantState(null);
-    window.location.href = '/login';
+    // Limpia localStorage y redirige a /login — misma función que usa `apiFetch` cuando un
+    // 401 en un request autenticado detecta la sesión caída, así no hay dos lugares
+    // borrando (y potencialmente desincronizando) la misma lista de keys.
+    clearSession();
   }, []);
 
   const setActiveTenant = useCallback((id: string) => {

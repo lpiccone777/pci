@@ -50,6 +50,9 @@ export class FlowService {
         contextSource: {
           select: { id: true, name: true, type: true },
         },
+        skill: {
+          select: { id: true, name: true, promptText: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -71,6 +74,9 @@ export class FlowService {
         },
         contextSource: {
           select: { id: true, name: true, type: true },
+        },
+        skill: {
+          select: { id: true, name: true, promptText: true },
         },
       },
     });

@@ -139,13 +139,139 @@
   - Lee `LLM_PROVIDER` de BD (Setting) primero, fallback a env var
   - Soporta: `openai`, `gemini`, `claude`, `openrouter`, `opencodego`, `minimax`
   - Default: OpenAI si el proveedor es desconocido
+- [x] **Fix: el `<think>` de MiniMax-M2.x se filtraba al chat** (pedido 2026-08-14)
+  - Reportado por el usuario después de pasar `LLM_PROVIDER` a `minimax` con
+    `MiniMax-M2.7-highspeed` (2026-08-12): las respuestas le llegaban con el bloque de
+    razonamiento del modelo pegado adelante
+  - Confirmado contra el repo de MiniMax (issues #68/#121/#626 de `MiniMax-AI/MiniMax-M2`):
+    los modelos M2.x **no permiten apagar el razonamiento** — `thinking: {type: "disabled"}`
+    se acepta pero no hace nada. Sin el parámetro `reasoning_split`, el razonamiento queda
+    embebido en `content` como `<think>...</think>` en vez de en un campo aparte
+  - `MiniMaxProvider` ahora manda `reasoning_split: true` (específico de MiniMax, sin tipar
+    en el SDK de OpenAI — `as any`) para que el razonamiento salga en `reasoning_content`
+    en vez de mezclado con la respuesta
+  - Red de seguridad en `LlmService.chat()` (no en cada provider — cualquier modelo detrás
+    de cualquier proveedor puede ser "razonador", ej. DeepSeek R1 vía OpenRouter): saca
+    cualquier `<think>...</think>` que se cuele igual, y si `max_tokens` cortó la respuesta a
+    mitad de un razonamiento sin cerrar (bug conocido de M2.7 en streaming, issue #105 del
+    mismo repo — acá no se usa streaming pero por las dudas), corta desde el `<think>` abierto
+    en vez de mostrar el razonamiento crudo a medias
+  - Nota para si empiezan a verse respuestas cortadas o vacías: `LLM_MAX_TOKENS` sigue en el
+    default de 1024 — un modelo que razona siempre antes de responder puede necesitar más
+    presupuesto que uno que no
+- [x] **Fix: la nota de arriba se cumplió — clasificadores de intención se quedaban sin
+      presupuesto pensando y nunca contestaban** (pedido 2026-08-14, mismo día)
+  - Reportado por el usuario: el bot respondía "¡Charla cerrada!" (texto generado por el LLM,
+    no el texto fijo de `closeConversation()`) a cualquier mensaje, incluso "Hola", sin cerrar
+    la charla de verdad — la `Conversation` seguía `active`, con `currentNodeId` parada en el
+    mismo nodo `menu`
+  - Causa real: `confirmEndChatIntent`, `confirmCancelIntent` e `interpretMenuChoice` piden al
+    LLM una sola palabra de respuesta (CERRAR/SEGUIR, CANCELAR/CONTINUAR, o el valor de una
+    opción) con `maxTokens: 10` o `20` — de sobra para un modelo normal, pero MiniMax M2.x
+    **tiene que razonar antes de esa palabra sin poder evitarlo** (mismo bug de arriba), y el
+    razonamiento consume ese presupuesto entero antes de llegar a escribirla. `content` volvía
+    vacío, y los tres clasificadores devolvían su default "no" en silencio — nunca cerraban la
+    charla, nunca cancelaban, nunca matcheaban una opción de menú, pasara lo que pasara
+  - Esto también explica por qué la charla había caído en el fallback libre del LLM en el
+    `menu` en primer lugar: `interpretMenuChoice` nunca pudo matchear ninguna opción desde que
+    `minimax` es el proveedor activo (2026-08-12), así que cualquier respuesta que no calzara
+    **literal** con el texto de una opción terminaba ahí — y una vez adentro, `__llmFallback`
+    no tiene vuelta atrás por diseño (ver el código): la única salida es
+    `confirmEndChatIntent`, que estaba rota por la misma causa. Trampa perfecta
+  - Fix: nueva constante `CLASSIFIER_MAX_TOKENS = 300` en `ConversationsService`, usada por
+    los tres — le da lugar al razonamiento obligatorio sin costo real para un proveedor no
+    razonador, que corta apenas emite la palabra igual
+  - No hizo falta tocar la conversación de prueba a mano: una vez reiniciado el backend con
+    este fix, el próximo "cerrar"/"chau" del usuario debería cerrarla de verdad
 
-### Integración Invgate ⏳ PENDIENTE
-- [ ] Conexión API con usuario técnico dedicado
-- [ ] Crear tickets automáticos desde conversaciones
-- [ ] Consultar estado de tickets existentes
-- [ ] Actualizar tickets con respuestas del usuario
-- [ ] Mapeo de campos Invgate ↔ nuestro modelo `Ticket`
+### Integración Invgate ✅ COMPLETADO — token real cargado y funcionando (2026-08-14)
+- [x] **`InvgateService`** (`apps/api/src/modules/invgate/invgate.service.ts`) — cliente HTTP contra
+      `{INVGATE_API_URL}/api/v1`, Basic Auth con el usuario técnico. Contrato de la API (paths,
+      payloads form-encoded en los writes, no JSON) relevado contra el código fuente de
+      `tracegazer/invgate-service-desk-mcp` (cliente MCP open-source de esta misma API, no la
+      documentación oficial de InvGate — puede desactualizarse si InvGate cambia el contrato)
+  - Catálogo: `listPriorities/listStatuses/listIncidentTypes/listCategories/listSources`
+  - Usuarios: `findUserByPhone/findUserByUsername/findUserByEmail`, `resolveCreatorId()` (cachea
+    en memoria el id de InvGate del usuario técnico, usado como `creator_id` de todo ticket)
+  - Incidentes: `createIncident/getIncident/updateIncident/addComment`, más
+    `createTicketForChat()` (alto nivel: resuelve `creator_id` + category/priority/type, devuelve
+    `null` en vez de tirar si falta algo — mismo criterio que WhatsAppService/TwilioWhatsAppService)
+- [x] **Credenciales reales verificadas** (2026-08-14): usuario técnico dedicado `chatbot_test`
+      con token de API (no la contraseña de portal, que fue el problema del intento anterior con
+      `mavalos.ext` — devolvía 401). `pnpm --filter api invgate:check` confirmó autenticación OK
+      y listó el catálogo real de esta instancia (5 prioridades, 6 tipos, 16 fuentes, categorías
+      muy específicas de la organización — hospitales, laboratorio, guardia IT, etc.)
+- [x] **Credenciales movidas a `/settings`** (pedido explícito del usuario, mismo día) — nuevo
+      grupo "Integración: InvGate": `INVGATE_API_URL`, `INVGATE_API_USER`,
+      `INVGATE_API_KEY` (secret, cifrado) y los 4 defaults de catálogo. Reemplaza la constraint
+      original de spec §5 ("Invgate solo env var") — administrar esto editando `.env` a mano era
+      engorroso; ahora sigue el mismo patrón cifrado/solo-escritura que WhatsApp/Twilio/LLM.
+      `.env` queda como fallback de la cascada BD→env→default, no como la forma normal de cargarlo
+- [x] **Crear tickets automáticos desde conversaciones** — `ConversationsService.syncTicketToInvgate()`,
+      llamado desde el nodo `transfer_agent` (método `'ticket'`) y desde el nodo `ticket_create`. Best-effort:
+      si InvGate está mal configurado, caído, o el usuario no matchea ningún `customer_id`, el `Ticket`
+      local ya existe igual — nunca corta la charla ni le muestra un error al usuario
+  - `customer_id` se resuelve por `User.invgateUserId` si ya está cargado, o por teléfono
+    (`InvgateService.findUserByPhone`) — y ahí mismo se **backfillea** `invgateUserId` para no
+    repetir la búsqueda la próxima vez
+- [x] **Categoría/prioridad/tipo del ticket resueltos por NOMBRE desde `flowState`** (pedido
+      explícito del usuario, mismo día — reemplaza el default único global que tenía antes)
+  - Un nodo `input`/`menu` del flujo puede guardar en `flowState.category` /
+    `flowState.priority` / `flowState.ticketType` el nombre tal cual aparece en InvGate (ej.
+    "Alta", "Incidente", "01 - ALGO NO ME FUNCIONA") — `InvgateService.resolveCategoryId/
+    resolvePriorityId/resolveTypeId` lo matchean contra el catálogo real (exacto, insensible a
+    mayúsculas/acentos) en el momento de crear el ticket. El nodo `ticket_create` respeta además
+    `data.category`/`data.priority`/`data.ticketType` fijados en el editor, con `flowState` como
+    fallback — mismo criterio que ya usaba `subject`/`description`
+  - Sin match (o sin que la charla haya seteado nada), cae al default configurado en `/settings`
+    (`INVGATE_DEFAULT_CATEGORY_ID`/etc.) — nunca rompe la creación del ticket por esto
+  - Categoría usa `search` server-side de la API (no solo la primera página) para no perderse un
+    match real en una lista de miles
+- [x] **Editor de flujos: nodo "Generar ticket" con catálogo real de InvGate** (pedido explícito
+      del usuario, mismo día — antes solo tenía `subject` y un `priority` hardcodeado en inglés
+      low/medium/high, que nunca matcheaba nada real)
+  - Nuevo `InvgateController` (`GET /invgate/catalog/{categories,priorities,types}`, mismos
+    guards que `/flows` — `flows:read`, no un permiso nuevo) para que el editor consulte el
+    catálogo real en vez de que alguien memorice IDs numéricos
+  - **Categoría acotada a una rama del árbol**, no las ~700+ categorías organizacionales de la
+    instancia real: nuevo setting `INVGATE_CATEGORY_PARENT_ID` (`/settings`, cargado en
+    `1601` = "Chatbot", bajo "DEPTO. SISTEMAS > Soporte" — encontrado por búsqueda contra la
+    API real) + `InvgateService.listCategoriesByParent()`/`listTicketCategories()`, que paginan
+    todo el catálogo una vez (sin filtro `parent_id` en la API) y cachean las subcategorías de
+    ese padre en memoria. El selector del editor muestra solo esas 12 categorías reales
+  - Prioridad y tipo de incidente: dropdowns con los valores reales completos (5 prioridades,
+    6 tipos) — reemplaza el `low`/`medium`/`high` inventado
+  - Nodo agregó `description` (el backend ya la usaba, la UI no la pedía) — los tres selectores
+    de catálogo caen a un `<input>` de texto libre si InvGate no está configurado o el catálogo
+    no cargó, para no bloquear la edición del flujo
+  - `ticketType` sumado a `FlowNodeDataDto` (backend) — no existía como campo validado
+  - Verificado en el browser real contra el backend: las tres listas muestran los valores reales
+    de la instancia (categorías de "Chatbot", Baja/Media/Alta/Urgente/Crítica, los 6 tipos)
+- [x] **Consultar estado de tickets existentes** — `ConversationsService.refreshInvgateStatus()`,
+      llamado desde el nodo `ticket_query`: si el `Ticket` tiene `invgateId`, trae el estado real
+      (`status_id` → nombre, resuelto contra el catálogo de estados cacheado) y lo escribe de
+      vuelta en `Ticket.status` local. Sin `invgateId` (o si InvGate no responde), muestra el
+      estado local tal cual — pull-based, no hay webhook de InvGate hacia nosotros todavía
+- [~] **Actualizar tickets con respuestas del usuario** — `InvgateService.addComment()`/
+      `updateIncident()` existen y funcionan, pero **deliberadamente sin gancho automático**
+      todavía: el único lugar donde el bot detecta que el usuario habla de un ticket existente
+      en charla libre es la detección por regex de `orchestratorLlm` (`/\b(\d{3,})\b/` +
+      `id: {contains: ...}`, ver deuda técnica ítem 3 más abajo) — ya señalada como frágil
+      (puede traer el ticket equivocado por match parcial de substring sobre un cuid). Escribir
+      comentarios reales en InvGate a partir de ESA detección arriesgaba postear en el ticket
+      equivocado de un sistema real. Conviene resolver esa detección primero (ítem 3) y recién
+      ahí conectar `addComment`
+- ⚠️ **Deuda técnica**: se evaluó explorar la API primero con un MCP de InvGate Service Desk
+  (`tracegazer/invgate-service-desk-mcp`, comunitario, no oficial) para probar antes de escribir
+  el conector — descartado por ahora (2026-08-13), se pasa directo a integrar la API real con
+  `INVGATE_API_URL`/`INVGATE_API_USER`/`INVGATE_API_KEY`. Retomar la idea del MCP si en algún
+  punto hace falta explorar la API de forma exploratoria sin tocar código (ej. antes de mapear
+  un endpoint nuevo)
+- ⚠️ **Pendiente**: todavía no se cargaron los 4 defaults de catálogo en `/settings` (el usuario
+  decidió priorizar la resolución dinámica por `flowState` en vez de fijar un default único) — sin
+  ellos, un ticket creado por una charla que no seteó categoría/prioridad/tipo falla en silencio
+  (se loguea, el `Ticket` local queda igual, pero no llega a InvGate). Conviene cargarlos como red
+  de seguridad aunque el flujo real siempre los setee
 
 ### Procesamiento de Conversaciones ✅ COMPLETADO
 - [x] `BrokerModule` suscrito a cola `whatsapp.incoming`
@@ -467,6 +593,159 @@
       claves de LLM. Los tokens quedaron cargados en BD durante las pruebas, cifrados con
       `SecretsCipher`
 
+### Conector alternativo de WhatsApp vía Twilio ✅ COMPLETADO (pedido 2026-08-13)
+- [x] **`TwilioWhatsAppService` — envío por la API de Twilio, como alternativa a Meta**
+  - Pensado como reemplazo intercambiable de `WhatsAppService`, no como canal simultáneo:
+    ambos consumen la misma cola `whatsapp.outgoing` con el mismo shape
+    (`{to, body, interactive}`), así `ConversationsService`, `ChannelsService` y el resto
+    del motor de flujos no se tocaron ni necesitan saber cuál proveedor está activo
+  - Cuál se suscribe lo decide el setting nuevo `WHATSAPP_PROVIDER` (`meta` | `twilio`,
+    default `meta` — no rompe ninguna instalación existente). Se lee una sola vez en
+    `onModuleInit`, no en cada mensaje como el resto de la config: dos consumers activos a
+    la vez en la misma cola RabbitMQ se la repartirían por competencia en vez de que uno
+    solo la maneje, así que el cambio requiere reiniciar el backend (a diferencia de
+    `LLM_PROVIDER`)
+  - Sin plantillas HSM para mensajes fuera de la ventana de 24hs — mismo alcance que Meta
+    (ver deuda técnica)
+  - Verificado end-to-end contra el sandbox real de Twilio (2026-08-13): mensaje entrante por
+    `/webhooks/twilio` → `ConversationsService.handleMessage` → respuesta real por Twilio,
+    reemplazando el eco default del sandbox
+- [x] **Botones/listas nativos vía Twilio Content API** (pedido 2026-08-13, "los menus deben
+      tener botones") — antes se degradaban a texto numerado; ahora `sendInteractive()` manda
+      un `twilio/quick-reply` (≤3 botones) o `twilio/list-picker` (≤10 filas) real
+  - **Por qué hace falta un paso extra acá y no en Meta**: la Cloud API de Meta manda el
+    payload de botones inline en cada mensaje; Twilio exige un Content Template pre-creado
+    (`ContentSid`) y esos templates **no admiten variables en el título de los botones/filas**
+    (relevado contra la documentación oficial de Twilio, 2026-08-13) — solo en el body. Como
+    los menús del editor de flujos son 100% dinámicos, la solución es cachear un template por
+    CADA FORMA de menú (mismos botones/filas — `hashInteractiveShape()`, sin el body) la
+    primera vez que aparece, y mandar el body variable como `ContentVariables: {"1": ...}` en
+    vez de texto fijo — así "Hola {{userName}}, elegí:" con el mismo menú reusa un único
+    template para todos los usuarios
+  - Confirmado (docs de Twilio): un template de este tipo se puede usar dentro de la ventana
+    de 24hs **sin pedirle aprobación a WhatsApp** — alcanza con crearlo. Es justo nuestro caso,
+    `sendText` solo responde a mensajes entrantes. Un `list-picker` ni siquiera se puede
+    enviar a aprobación (siempre es de sesión)
+  - Verificado end-to-end contra WhatsApp real (2026-08-13): un menú con botones respondió
+    con botones tocables, no con la lista numerada de fallback
+  - **Cache de `ContentSid` persistida en BD** (pedido explícito, mismo día): tabla
+    `TwilioContentTemplate` (`shapeHash` único → `contentSid`), con un `Map` en memoria como
+    caché L1 delante — resuelve la deuda técnica original (antes se perdía en cada reinicio y
+    forzaba recrear el Content Template). Orden de resolución en `resolveContentSid`:
+    memoria → BD → Twilio, cada nivel repuebla el de arriba
+  - Ante dos mensajes con el mismo menú NUEVO llegando casi simultáneos (dos usuarios tocando
+    el mismo nodo `menu` por primera vez a la vez), el `create` del que pierde la carrera
+    contra el `@unique` de `shapeHash` (Prisma P2002) se descarta sin romper el envío — queda
+    un Content Template huérfano sin uso en la cuenta de Twilio, costo aceptable de una carrera
+    de baja probabilidad
+  - Ante cualquier error de la Content API (creación o Twilio caído), `sendText` sigue
+    degradando a texto numerado en vez de perder el mensaje
+- [x] **`TwilioWebhookController` — recepción real**
+  - `POST /webhooks/twilio`: a diferencia de Meta, Twilio no tiene handshake de
+    verificación (`GET` con `hub.challenge`) — la URL se pega directo en la consola de
+    Twilio y ya empieza a mandar mensajes. Extrae `From`/`Body` del payload
+    `application/x-www-form-urlencoded`, le saca el prefijo `whatsapp:` al remitente, y
+    publica a `whatsapp.incoming` con el mismo shape que ya esperaba `handleMessage` —
+    misma cola que usa el webhook de Meta, cero cambios en `ConversationsService`
+  - ⚠️ **Sin verificación de firma** (`X-Twilio-Signature`): mismo tipo de deuda que el
+    webhook de Meta
+  - ⚠️ **Un solo tenant por número de Twilio**: mismo criterio y misma limitación que
+    `WHATSAPP_TENANT_ID`, ahora `TWILIO_TENANT_ID`
+- [x] **Nueva sección en `/settings`**: "Mensajería: WhatsApp (Twilio)" (`TWILIO_ACCOUNT_SID`,
+      `TWILIO_AUTH_TOKEN` secret, `TWILIO_WHATSAPP_FROM`, `TWILIO_TENANT_ID`), más
+      `WHATSAPP_PROVIDER` (enum) agregado al principio del grupo "Mensajería: WhatsApp"
+      existente
+
+### Canal de SMS (Twilio) ✅ COMPLETADO — bloqueado por falta de número (pedido 2026-08-14)
+- [x] **`ConversationsService` se volvió channel-aware** — cambio de base necesario antes de
+      poder sumar SMS: a diferencia de Twilio-WhatsApp (que reusa las mismas colas que Meta
+      porque es el MISMO canal, solo otro proveedor), SMS es un canal distinto que tiene que
+      coexistir con WhatsApp, no reemplazarlo — un mismo usuario puede tener una `Conversation`
+      activa por WhatsApp y otra por SMS al mismo tiempo, independientes
+  - `handleMessage` ahora lee `channel` del payload del mensaje entrante (lo fija cada
+    webhook: `'whatsapp'` para Meta/Twilio-WhatsApp, `'sms'` para Twilio-SMS; default
+    `'whatsapp'` para `/simulate` y cualquier publisher que no lo mande)
+  - Se usa para dos cosas que antes estaban hardcodeadas a `'whatsapp'`: el filtro de
+    `Conversation` (`channel: 'whatsapp'` → `channel`) y la cola de salida de la respuesta
+    (`msg.replyTo ?? 'whatsapp.outgoing'` → `msg.replyTo ?? \`${channel}.outgoing\``)
+  - El resto del motor de flujos/orquestador LLM no se tocó — sigue sin saber nada de
+    canales, cumple "Desacople de canales" (AGENTS.md)
+- [x] **`TwilioSmsService`** (`apps/api/src/modules/sms/`) — envío por la API de Twilio, sin
+      canal `whatsapp:` en el `To`/`From`. Reusa `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` del
+      grupo de WhatsApp (Twilio): misma cuenta de Twilio, distinto número emisor
+      (`TWILIO_SMS_FROM`)
+  - Siempre activo si está configurado — a diferencia de Twilio-WhatsApp, no hay switch de
+    proveedor: SMS no compite con nadie por su propia cola `sms.outgoing`
+  - Sin interactivo en absoluto (la API de Twilio no tiene noción de botones/listas para SMS):
+    un `interactive` que llegue se degrada siempre a texto numerado, mismo mecanismo que el
+    fallback de `TwilioWhatsAppService`
+- [x] **`TwilioSmsWebhookController`** — `POST /webhooks/twilio-sms`, mismo criterio que el de
+      Twilio-WhatsApp (sin handshake de verificación, sin firma verificada todavía). El `From`
+      ya viene en E.164 plano, sin prefijo de canal que sacarle
+- [x] **Nueva sección en `/settings`**: "Mensajería: SMS (Twilio)" (`TWILIO_SMS_FROM`,
+      `TWILIO_SMS_TENANT_ID`)
+- ⚠️ **Bloqueado**: falta un número de Twilio habilitado para SMS — el sandbox de WhatsApp
+  (`+14155238886`) no sirve para esto, hace falta comprar/asignar un número real en la
+  consola de Twilio y cargarlo en `TWILIO_SMS_FROM`
+
+### Editor de flujos: nuevo nodo "SMS" ✅ COMPLETADO (pedido 2026-08-14)
+- [x] **Nodo `sms`** — manda un SMS por Twilio a una lista de destinatarios configurados a mano
+      en el editor, no al usuario de la conversación actual (a diferencia de la respuesta normal
+      del flujo). Pensado para avisos salientes (ej. "se generó el ticket #123") a números que no
+      son necesariamente el que está chateando
+  - **Destinatarios por dropdown de usuarios** (`data.recipients: string[]` = userIds), mismo
+    criterio que `transfer_agent.watchers`/`collaborators` (reusa el componente `UserPickerList`
+    tal cual). Primer corte fue un campo de texto libre para el número, pero el pedido explícito
+    del usuario (2026-08-14, tras probarlo) fue no confiar en que alguien tipee bien un E.164 a
+    mano — un dropdown de usuarios existentes es menos propenso a error
+  - `executeSmsNode` resuelve cada userId contra `user.phone` y publica a la cola `sms.outgoing`
+    (una vez por destinatario que tenga teléfono cargado, salteando los que no) —
+    `TwilioSmsService` ya está suscripto ahí y hace la llamada real a la API de Twilio, así que
+    el nodo no necesita inyectarlo ni conocer credenciales
+  - `recipients?: string[]` sumado a `FlowNodeDataDto` (reusa el campo `message` ya existente
+    para el cuerpo del SMS, que sigue admitiendo `{{variable}}` vía
+    `ConversationsService.interpolate`)
+
+### Gupshup como alternativa de WhatsApp y SMS ✅ WHATSAPP FUNCIONAL — SMS bloqueado (pedido 2026-08-14)
+- [x] **`GupshupWhatsAppService`/`GupshupWebhookController`** — tercer conector de WhatsApp
+      (`WHATSAPP_PROVIDER=gupshup`), mismo contrato de colas que Meta/Twilio
+      (`whatsapp.outgoing`/`whatsapp.incoming`). Spec verificado contra la documentación
+      pública de Gupshup (`docs.gupshup.io`, 2026-08-14): `POST api.gupshup.io/wa/api/v1/msg`,
+      auth por header `apikey`, form-encoded
+  - **Interactivo (botones/listas) inline en el mismo request** — a diferencia de Twilio, que
+    exige pre-registrar un Content Template por cada forma de menú (`TwilioContentTemplate` en
+    BD + llamada extra a su Content API), Gupshup lo manda todo junto como el resto del
+    mensaje, igual de simple que la Cloud API de Meta. Sin caché, sin tabla nueva
+  - `postbackText` de cada botón/fila lleva el `id` de la opción (no el título) — mismo criterio
+    que `WhatsAppWebhookController.extractBody`, para que el nodo `menu` la matchee sin cambios
+  - ⚠️ Un campo (`title` a nivel de mensaje `list`, el header sobre el body) no tiene
+    equivalente en `WhatsAppInteractive` — se reusa `buttonText` ahí, cosmético nada más. A
+    confirmar contra tráfico real del sandbox antes de depender de esto en producción
+  - Nuevo grupo en `/settings`: "Mensajería: WhatsApp (Gupshup)" (`GUPSHUP_API_KEY` secret,
+    `GUPSHUP_WHATSAPP_SOURCE`, `GUPSHUP_APP_NAME`, `GUPSHUP_WHATSAPP_TENANT_ID`) — número
+    emisor y nombre de app ya cargados (WABA real, activa: `+15553788248` / app "dasyBot"),
+    falta el `apikey` para poder activar el proveedor
+- [x] **`SMS_PROVIDER` (setting nuevo)** — hasta ahora Twilio era el único conector de SMS y
+      `TwilioSmsService.onModuleInit` se suscribía a `sms.outgoing` sin preguntar nada (a
+      diferencia de WhatsApp, que ya tenía `WHATSAPP_PROVIDER` desde el conector de Twilio).
+      Gatear un segundo proveedor de SMS obligó a introducir ese mismo mecanismo acá por
+      primera vez
+- [x] **`GupshupSmsService`/`GupshupSmsWebhookController`** (`SMS_PROVIDER=gupshup`) —
+      **API completamente distinta de la de WhatsApp**: el "Enterprise SMS" de Gupshup
+      (`enterprise.smsgupshup.com/GatewayAPI/rest`) es un producto legacy con su propia cuenta
+      (`userid`/`password`, no el `apikey` de WhatsApp), request por query params (no JSON) y
+      respuesta en texto plano (`"success | numero | msgid"`, no JSON)
+  - ⚠️ **El shape del webhook de SMS ENTRANTE no se pudo verificar** contra documentación
+    pública (Gupshup documenta bien el callback de *reporte de entrega*, no el de respuesta de
+    un usuario) — el controller acepta varios nombres de campo candidatos como mejor esfuerzo y
+    loguea los campos recibidos en cada intento fallido, para poder ajustar el mapeo rápido en
+    cuanto haya tráfico real
+  - ⚠️ **Bloqueado**: el usuario no tiene todavía la cuenta de Enterprise SMS de Gupshup (es
+    una cuenta separada de la app de WhatsApp) — parametrizado (`GUPSHUP_SMS_USERID`,
+    `GUPSHUP_SMS_PASSWORD`, `GUPSHUP_SMS_TENANT_ID` en `/settings`) para cuando la consiga,
+    mismo criterio que `TWILIO_SMS_FROM` cuando faltaba el número. Mientras tanto sigue
+    funcionando con el sandbox/Twilio existente (`SMS_PROVIDER` default `'twilio'`)
+
 ---
 
 ## Hito 3 - Multitenant y Menús ⏳ PENDIENTE
@@ -500,6 +779,34 @@
 - [x] Sistema de autenticación en frontend
   - `AuthContext` + `useAuth` hook con localStorage para JWT
   - Flujo completo: credenciales → OTP → fingerprint → dashboard
+- [x] **Fix: sesión caída no redirigía a `/login` sola** (pedido 2026-08-14)
+  - Antes, un JWT inválido/vencido en cualquier pantalla dejaba la UI mostrando datos viejos o
+    fallando en silencio — recién se notaba al recargar la página a mano, porque solo ahí
+    `AuthProvider` volvía a llamar `GET /auth/me` en su `useEffect` de montaje, ese fallaba con
+    401, y su `catch` disparaba `logout()`. Ningún otro `apiFetch` de la app reaccionaba a un 401
+  - `apiFetch` (`lib/api.ts`) ahora detecta esto en un solo lugar: si la respuesta es 401 Y el
+    request mandaba `Authorization` (o sea, no es el intento de login/OTP en sí — esos no mandan
+    token, y su propio 401 de "credenciales inválidas" lo sigue manejando la pantalla de login
+    como error inline, sin este cambio), limpia la sesión y redirige a `/login` de inmediato
+  - `clearSession()` (nueva, en `lib/api.ts`) es la única fuente de verdad de qué se borra de
+    `localStorage` al cerrar sesión — antes esa lista vivía duplicada dentro de
+    `useAuth().logout`, con riesgo de que alguien actualizara una copia y no la otra. Ahora
+    `logout()` la llama en vez de repetirla
+- [x] **Sesión deslizante** (pedido 2026-08-14, mismo día — el fix de arriba hizo notar que el
+      `accessToken` vencía a los 15 minutos **sin importar la actividad**)
+  - El JWT siempre fue un techo duro de 15 min (`AuthModule`, `signOptions: { expiresIn: '15m'
+    }`). `AuthService.buildTokens()` también genera un `refreshToken` de 7 días, pero **nunca
+    se usó**: no existe `/auth/refresh`, y el frontend nunca lo guardaba — quedó descartado en
+    vez de conectarlo, la sesión deslizante no lo necesita
+  - `SlidingSessionInterceptor` (nuevo, `apps/api/src/modules/auth/interceptors/`), registrado
+    global vía `APP_INTERCEPTOR` en `AuthModule`: en cada request que `JwtAuthGuard` ya
+    autenticó (`request.user` poblado — en rutas públicas como `/auth/login` o los webhooks no
+    hace nada), reemite un JWT fresco de 15 min en el header `X-Access-Token`. Con actividad
+    real la sesión no vence nunca; sin actividad, sigue venciendo a los 15 min como antes
+  - `main.ts` necesitó `exposedHeaders: ['X-Access-Token']` en el CORS — sin eso el browser no
+    deja leer un header custom de la respuesta desde JS aunque el server lo mande
+  - `apiFetch` (`lib/api.ts`) guarda el header en `localStorage` si viene; no hace falta tocar
+    el estado de React, el próximo `apiFetch` ya lee el token nuevo
 - [x] Sidebar dinámico según permisos de `/auth/me`
   - `hasPermission(resource, action)` filtra items de menú
   - Selector de tenant activo si el usuario pertenece a varios
@@ -662,6 +969,17 @@
     todos los proveedores menos ese
   - Ahora cambiar de pestaña dispara la carga de modelos de ese proveedor automáticamente
     (una vez, cacheada) — el dropdown aparece solo en cualquier pestaña de LLM
+- [x] **Fix: la página no aprovechaba el ancho de la pantalla** (pedido 2026-08-14)
+  - El contenedor principal tenía `max-w-4xl` (896px) fijo — único lugar de toda la app con
+    un tope de ancho a nivel de página (el resto de `/dashboard/*` no lo tiene; los únicos
+    otros `max-w-*` del código son de modales). Sacado
+  - Las tarjetas de settings pasaron de una columna apilada (`space-y-4`) a una grilla
+    responsiva (`grid-cols-1 lg:grid-cols-2`), mismo patrón que ya usa
+    `/dashboard/context-sources` — usa el espacio de sobra en vez de dejarlo vacío a la
+    derecha de tarjetas angostas
+  - Verificado en el browser real a 1920px (grilla de 2 columnas, todo el ancho aprovechado)
+    y a 900px (cae a 1 columna, sin apretarse — por debajo del breakpoint `lg` de Tailwind,
+    1024px)
 
 ---
 
@@ -850,6 +1168,13 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 - [x] ~~WhatsApp Business API: webhooks y envío de mensajes~~ — implementado 2026-08-05,
       ver "Conector real de WhatsApp y Email" en el Hito 2. Falta cerrar la firma del
       webhook y verificar el número en la allow-list del sandbox antes de ir a producción
+- [x] ~~WhatsApp vía Twilio, como alternativa a la Cloud API de Meta~~ — implementado
+      2026-08-13, ver "Conector alternativo de WhatsApp vía Twilio" en el Hito 2. Mismo
+      pendiente de firma del webhook que Meta, y sin plantillas (deuda técnica compartida)
+- [x] ~~SMS vía Twilio~~ — implementado 2026-08-14, ver "Canal de SMS (Twilio)" en el Hito 2.
+      A diferencia de Twilio-WhatsApp, no es una alternativa de otro canal — es un canal
+      propio, con sus propias `Conversation`. Bloqueado por falta de un número de Twilio
+      habilitado para SMS (`TWILIO_SMS_FROM`)
 - [ ] Web chat (widget embebible)
 - [ ] Email como canal de entrada
 
@@ -873,8 +1198,10 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 | RBAC | Dinámico (datos, no código) | Roles/permisos creados desde backend, nunca hardcoded |
 | LLM | Provider-agnostic | Business logic nunca llama OpenAI/Gemini/Claude directamente |
 | Secrets de LLM | BD cifrada + solo escritura | Desvío acotado de spec §5 para configurar proveedores desde el backoffice (2026-08-03) |
-| Secrets de Invgate | Env var únicamente | Sin necesidad de configurarlo desde la UI, se mantiene la regla original |
+| Secrets de Invgate | ~~Env var únicamente~~ → BD vía `/settings`, cifrado (SUPERADA 2026-08-14) | Administrar credenciales editando `.env` a mano era engorroso — mismo patrón que LLM/WhatsApp/Twilio, decisión explícita del usuario |
+| Campos de ticket de InvGate (categoría/prioridad/tipo) | Resueltos por NOMBRE desde `flowState`, con default de `/settings` como fallback | Reemplaza el default único global (2026-08-13): la charla recolecta el dato real, no hace falta que un flujo memorice IDs numéricos de una instancia puntual (2026-08-14) |
 | Tenant activo | Header `X-Tenant-Id`, no JWT | Un usuario pertenece a varios tenants; con el tenant en el token, cambiar de empresa exigía reemitirlo |
+| WhatsApp vs SMS de Gupshup | Dos productos y dos cuentas separadas, no una | La API moderna de WhatsApp (`api.gupshup.io`, auth `apikey`) y la de SMS (`enterprise.smsgupshup.com`, legacy, auth `userid`/`password`) no comparten credenciales ni formato de request/response — a diferencia de Twilio, donde WhatsApp y SMS son la misma cuenta con distinto número (2026-08-14) |
 | Nombre de usuario | `firstName` + `lastName` | Campos separados, pedido explícito |
 | Baja de usuario | Baja del tenant, no borrado físico | Conversaciones, tickets y métricas lo referencian |
 | Acceso a `/settings` | Tenant de sistema + `settings:*` | Corte por tenant, no por nombre de rol, para no romper RBAC dinámico |
@@ -884,6 +1211,13 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 | Fuentes de verdad (`ContextSource`) | Por tenant, FK simple desde `Flow` | Reusable entre flujos de la misma empresa sin duplicar credenciales; el dropdown del editor pidió una relación 1 valor por flujo, no N:N (2026-08-06) |
 | I/O de fuentes de verdad | Vía broker (RPC RabbitMQ), no HTTP directo desde el controller | Mismo constraint que WhatsApp: el core no depende de detalles de un canal/integración externa (AGENTS.md, "Desacople de canales") |
 | Punto de consulta de la fuente de verdad en el flujo | Fallback `__llmFallback` de `menu` (charla fuera de flujo), no cada `llm_query` | Coincide con el pedido ya cerrado el 2026-08-05 de qué hacer sin match de menú; un `llm_query` explícito ya tiene su propio `systemPrompt` armado a mano (2026-08-11) |
+| WhatsApp: Meta vs Twilio | Conectores intercambiables por setting (`WHATSAPP_PROVIDER`), no coexistencia simultánea | Ambos consumen las mismas colas (`whatsapp.outgoing`/`whatsapp.incoming`) — `ConversationsService` no se modificó ni sabe cuál está activo; dos consumers a la vez en la misma cola competirían por los mensajes en vez de que uno solo la maneje (2026-08-13) |
+| Categoría/prioridad/tipo de los tickets de InvGate | ~~Un único default global por instalación~~ → resuelto por nombre desde `flowState` (SUPERADA, ver fila de arriba) | Decisión original del primer corte (2026-08-13), reemplazada al día siguiente a pedido del usuario |
+| Categorías visibles en el editor de flujos | Acotadas a las subcategorías de `INVGATE_CATEGORY_PARENT_ID` (1601 = "Chatbot"), no el catálogo completo | La instancia real tiene ~700+ categorías organizacionales — la enorme mayoría no aplica a tickets del chatbot, pedido explícito del usuario (2026-08-14) |
+| `InvgateService.addComment` desde charla libre | Implementado pero sin gancho automático | La única detección de "el usuario habla de un ticket existente" es la búsqueda por regex + `id: {contains}` de `orchestratorLlm`, ya señalada como frágil (deuda técnica ítem 3) — postear en InvGate a partir de esa detección arriesgaba escribir en el ticket equivocado (2026-08-13) |
+| Botones de Twilio | Content Template por forma de menú, cacheado por hash, body como variable | Twilio no admite variables en títulos de botones/filas (solo en el body) — un template por forma de menú es la única manera de mantener menús 100% dinámicos como en Meta (2026-08-13) |
+| Cache de `ContentSid` de Twilio | Tabla `TwilioContentTemplate` (BD) + `Map` en memoria como L1 | Pedido explícito para sobrevivir reinicios del backend sin recrear Content Templates ya existentes (2026-08-13) |
+| SMS vs WhatsApp | Canal propio (`channel: 'sms'`), no alternativa de proveedor | A diferencia de Twilio-WhatsApp (mismo canal, otro proveedor), SMS coexiste con WhatsApp — un usuario puede tener charlas activas en ambos a la vez; forzó volver `ConversationsService.handleMessage` channel-aware (2026-08-14) |
 
 ---
 
@@ -893,7 +1227,6 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 
 | Módulo | Estado real |
 |--------|-------------|
-| `invgate/` | Sin implementar. Los tickets se crean solo en la tabla local `Ticket` |
 | `metrics/` | Sin implementar. La tabla `Metric` existe pero nada la escribe |
 | `devices/` | Vacío — la lógica de fingerprint vive en `auth/device.service.ts` |
 
@@ -922,7 +1255,10 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 1. Cerrar `POST /conversations/simulate` antes de exponer el API
 2. `GET /flows/:id` no filtra por tenant (a diferencia de `findAll`)
 3. Búsqueda de tickets con `id: { contains: ... }` en el orquestador LLM: match parcial de
-   substring sobre un cuid, puede traer el ticket equivocado
+   substring sobre un cuid, puede traer el ticket equivocado. Bloquea además conectar
+   `InvgateService.addComment()` a esa detección (ver "Integración Invgate" en el Hito 2):
+   escribir en InvGate a partir de un match de ticket potencialmente equivocado es peor que no
+   escribir nada
 4. Implementar el nodo `webhook` (hoy stub)
 5. Webhook de WhatsApp sin verificar `X-Hub-Signature-256` (App Secret de Meta) — cualquiera
    que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`
@@ -936,6 +1272,14 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
    `Flow.contextSourceId` (fuente de verdad real) — no se migró ni se sacó del editor.
    Decidir si se termina deprecando del todo una vez que la ejecución real de fuentes de
    verdad esté andando (ver Hito "Fuentes de verdad")
+9. Plantillas aprobadas de WhatsApp (mensajes iniciados por el negocio fuera de la ventana
+   de 24hs) sin implementar para **ningún** proveedor, ni Meta ni Twilio — decisión explícita
+   (2026-08-13), sin caso de uso real todavía. Ojo al retomarlo: Meta y Twilio tienen
+   registros de plantillas separados y no intercambiables (`name`+`language` en Meta vs
+   `ContentSid` de Content API en Twilio) — aprobar una plantilla de un lado no la habilita
+   del otro
+10. Webhook de Twilio (`POST /webhooks/twilio`) sin verificar `X-Twilio-Signature` — mismo
+    tipo de deuda que el punto 5, ahora también para el conector de Twilio
 
 **E. Fuentes de verdad — segunda etapa (ejecución real)**
 1. Ver "Fuentes de verdad (context sources)" arriba, sección "Ejecución real — PENDIENTE":

@@ -64,6 +64,15 @@ export class CreateFlowDto {
   contextSourceId?: string | null;
 
   /**
+   * Skill (texto de contexto libre) que este flujo concatena al system prompt
+   * base — ver Skill en schema.prisma y ConversationsService.buildBasePrompt.
+   * `null` desvincula. Reemplaza al dropdown viejo de `context` en el editor.
+   */
+  @IsString()
+  @IsOptional()
+  skillId?: string | null;
+
+  /**
    * En qué empresas está disponible el flujo y, dentro de cada una, qué roles lo
    * reciben. Reemplaza al viejo `tenantIds: string[]`: ahora la asignación lleva
    * roles. Ausente = el flujo nace sin empresas asignadas.
@@ -135,4 +144,9 @@ export class UpdateFlowDto {
   @IsString()
   @IsOptional()
   contextSourceId?: string | null;
+
+  /** Ver el comentario equivalente en CreateFlowDto. */
+  @IsString()
+  @IsOptional()
+  skillId?: string | null;
 }

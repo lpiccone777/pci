@@ -7,9 +7,10 @@ import { UsersModule } from '../users/users.module';
 import { FlowModule } from '../flow/flow.module';
 import { AuthModule } from '../auth/auth.module';
 import { ContextSourcesModule } from '../context-sources/context-sources.module';
+import { InvgateModule } from '../invgate/invgate.module';
 
 @Module({
-  imports: [LlmModule, BrokerModule, UsersModule, FlowModule, AuthModule, ContextSourcesModule],
+  imports: [LlmModule, BrokerModule, UsersModule, FlowModule, AuthModule, ContextSourcesModule, InvgateModule],
   providers: [ConversationsService],
   controllers: [ConversationsController],
 })

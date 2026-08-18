@@ -1,5 +1,6 @@
 import {
   ALL_TENANTS,
+  ALL_TENANTS_CACHE_KEY,
   FALLBACK_TENANT_ID_KEY,
   SYSTEM_TENANT_ID_KEY,
 } from './system-tenant';
@@ -9,6 +10,21 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:300
 function getToken(): string | null {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem('token');
+}
+
+/**
+ * Limpia toda la sesión guardada y manda a `/login`. Única fuente de verdad de qué se borra
+ * (antes duplicado acá y en `useAuth().logout`) — la usan tanto el logout manual (botón
+ * "Cerrar sesión") como `apiFetch` cuando detecta que el token dejó de servir (ver más abajo).
+ */
+export function clearSession() {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem('token');
+  localStorage.removeItem('activeTenant');
+  localStorage.removeItem(ALL_TENANTS_CACHE_KEY);
+  localStorage.removeItem(SYSTEM_TENANT_ID_KEY);
+  localStorage.removeItem(FALLBACK_TENANT_ID_KEY);
+  window.location.href = '/login';
 }
 
 /**
@@ -49,6 +65,23 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
     ...options,
     headers,
   });
+
+  // Sesión deslizante: en cada request autenticado, `SlidingSessionInterceptor` (backend)
+  // reemite un JWT fresco de 15 minutos en este header — mientras haya actividad real, la
+  // sesión nunca vence. Guardarlo acá alcanza: el próximo `apiFetch` ya lee el nuevo de
+  // `localStorage` vía `getToken()`, no hace falta tocar el estado de React.
+  const refreshedToken = res.headers.get('X-Access-Token');
+  if (refreshedToken && typeof window !== 'undefined') localStorage.setItem('token', refreshedToken);
+
+  // Sesión inválida/expirada: el 401 llegó respondiendo a un request que SÍ mandaba token, así
+  // que no es un intento de login/OTP con credenciales mal escritas (esas requests no mandan
+  // Authorization, y su propio 401 lo maneja la pantalla de login como error de credenciales,
+  // no como sesión caída). Antes esto quedaba sin manejar: la pantalla en uso seguía mostrando
+  // datos viejos o fallando en silencio hasta que el usuario recargaba la página a mano — recién
+  // ahí `AuthProvider` volvía a llamar `/auth/me`, fallaba, y se disparaba el logout.
+  if (res.status === 401 && token) {
+    clearSession();
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ message: 'Error desconocido' }));

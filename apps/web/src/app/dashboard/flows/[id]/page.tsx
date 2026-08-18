@@ -29,6 +29,7 @@ import {
   TicketCreateNode,
   TicketQueryNode,
   TransferAgentNode,
+  SmsNode,
   LlmQueryNode,
   DelayNode,
   VariableNode,
@@ -58,6 +59,17 @@ interface ContextSourceOption {
   type: string;
 }
 
+interface SkillOption {
+  id: string;
+  name: string;
+}
+
+/** Entrada de catálogo de InvGate (categoría/prioridad/tipo) — ver GET /invgate/catalog/*. */
+interface InvgateCatalogOption {
+  id: number;
+  name: string;
+}
+
 interface FlowOption {
   id: string;
   name: string;
@@ -83,6 +95,7 @@ const customNodeTypes = {
   ticket_create: TicketCreateNode,
   ticket_query: TicketQueryNode,
   transfer_agent: TransferAgentNode,
+  sms: SmsNode,
   llm_query: LlmQueryNode,
   delay: DelayNode,
   variable: VariableNode,
@@ -96,16 +109,6 @@ const customEdgeTypes = {
   default: DeletableEdge,
 };
 
-// Misma lista que apps/api/src/modules/flow/flow-context.ts (FLOW_CONTEXT_OPTIONS).
-// Son 4 valores fijos, así que se duplica acá en vez de exponer un endpoint solo
-// para esto — igual que nodeTypeList, más abajo, no viene del backend.
-const contextOptions = [
-  { value: 'none', label: 'Ninguna / genérico' },
-  { value: 'invgate', label: 'Invgate (tickets)' },
-  { value: 'internal_kb', label: 'Base de conocimiento interna' },
-  { value: 'other', label: 'Otro' },
-];
-
 const nodeTypeList = [
   { type: 'start', label: 'Inicio', color: '#10b981' },
   { type: 'message', label: 'Mensaje', color: '#3b82f6' },
@@ -115,6 +118,7 @@ const nodeTypeList = [
   { type: 'ticket_create', label: 'Crear Ticket', color: '#ec4899' },
   { type: 'ticket_query', label: 'Consultar Ticket', color: '#ec4899' },
   { type: 'transfer_agent', label: 'Transferir Agente', color: '#6366f1' },
+  { type: 'sms', label: 'SMS', color: '#22c55e' },
   { type: 'llm_query', label: 'Consultar LLM', color: '#14b8a6' },
   { type: 'delay', label: 'Delay', color: '#6b7280' },
   { type: 'variable', label: 'Variable', color: '#84cc16' },
@@ -133,12 +137,20 @@ function FlowEditorInner() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [flowName, setFlowName] = useState('Nuevo Flujo');
   const [flowDescription, setFlowDescription] = useState('');
-  const [flowContext, setFlowContext] = useState('none');
   const [contextSourceId, setContextSourceId] = useState<string>('');
   const [contextSources, setContextSources] = useState<ContextSourceOption[]>([]);
+  const [skillId, setSkillId] = useState<string>('');
+  const [skills, setSkills] = useState<SkillOption[]>([]);
   const [allTenants, setAllTenants] = useState<TenantOption[]>([]);
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [flowOptions, setFlowOptions] = useState<FlowOption[]>([]);
+  // Catálogo real de InvGate para el nodo "Generar ticket" — categorías acotadas a
+  // INVGATE_CATEGORY_PARENT_ID (ver /settings), prioridades y tipos completos (son pocos).
+  // Vacío si InvGate no está configurado o el usuario no tiene permiso `flows:read`: el
+  // campo cae a un input de texto libre, no bloquea la edición del flujo.
+  const [invgateCategories, setInvgateCategories] = useState<InvgateCatalogOption[]>([]);
+  const [invgatePriorities, setInvgatePriorities] = useState<InvgateCatalogOption[]>([]);
+  const [invgateTypes, setInvgateTypes] = useState<InvgateCatalogOption[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   // Cache de roles por empresa: se traen de GET /roles con el header de esa empresa (así
   // el superadmin los lee parado en cualquier otra, igual que el alta de usuarios). Se
@@ -168,7 +180,9 @@ function FlowEditorInner() {
     loadTenants();
     loadUsers();
     loadContextSources();
+    loadSkills();
     loadFlowOptions();
+    loadInvgateCatalog();
 
     if (!isNew) {
       loadFlow();
@@ -226,6 +240,17 @@ function FlowEditorInner() {
     }
   }
 
+  /** Skills del tenant activo, para el dropdown que reemplaza al viejo "context". */
+  async function loadSkills() {
+    try {
+      const data = await apiFetch('/skills');
+      setSkills(data.filter((s: any) => s.isActive));
+    } catch {
+      // Sin permiso `skills:read` en el tenant actual: el selector queda vacío.
+      setSkills([]);
+    }
+  }
+
   /** Flujos del tenant activo, para el dropdown "ID del flujo" del nodo `subflow`. */
   async function loadFlowOptions() {
     try {
@@ -236,13 +261,31 @@ function FlowEditorInner() {
     }
   }
 
+  /** Catálogo de InvGate para el nodo `ticket_create` — ver comentario de los `useState`. */
+  async function loadInvgateCatalog() {
+    try {
+      const [categories, priorities, types] = await Promise.all([
+        apiFetch('/invgate/catalog/categories'),
+        apiFetch('/invgate/catalog/priorities'),
+        apiFetch('/invgate/catalog/types'),
+      ]);
+      setInvgateCategories(categories);
+      setInvgatePriorities(priorities);
+      setInvgateTypes(types);
+    } catch {
+      setInvgateCategories([]);
+      setInvgatePriorities([]);
+      setInvgateTypes([]);
+    }
+  }
+
   async function loadFlow() {
     try {
       const flow = await apiFetch(`/flows/${id}`);
       setFlowName(flow.name);
       setFlowDescription(flow.description || '');
-      setFlowContext(flow.context || 'none');
       setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
+      setSkillId(flow.skillId || flow.skill?.id || '');
       const tenantFlows = flow.tenantFlows || [];
       const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
         tenantId: tf.tenant.id,
@@ -416,7 +459,11 @@ function FlowEditorInner() {
       case 'condition':
         return { conditions: [], defaultTargetNodeId: '' };
       case 'ticket_create':
-        return { subject: '', priority: 'medium' };
+        // Vacío a propósito (no 'medium' como antes): category/priority/ticketType van por
+        // nombre real de InvGate — un valor en inglés inventado no matchea nada y termina
+        // cayendo al default de /settings igual, pero mostraba "Prioridad: medium" en el
+        // nodo como si fuera un valor real elegido.
+        return { subject: '', description: '', category: '', priority: '', ticketType: '' };
       case 'ticket_query':
         return { ticketIdVariable: '' };
       case 'transfer_agent':
@@ -427,6 +474,8 @@ function FlowEditorInner() {
           watchers: [],
           collaborators: [],
         };
+      case 'sms':
+        return { message: '', recipients: [] };
       case 'llm_query':
         return { systemPrompt: '', contextMessages: 10 };
       case 'delay':
@@ -469,8 +518,8 @@ function FlowEditorInner() {
       const payload = {
         name: flowName,
         description: flowDescription,
-        context: flowContext,
         contextSourceId: contextSourceId || null,
+        skillId: skillId || null,
         // Solo lo que define el flujo. ReactFlow agrega estado de runtime a nodos y
         // aristas (`measured` con el tamaño calculado, `selected`, `dragging`) que no
         // es parte del flujo y que el ValidationPipe del backend rechaza.
@@ -556,31 +605,44 @@ function FlowEditorInner() {
             className="text-gray-600 border rounded px-2 py-1 text-sm"
             placeholder="Descripción"
           />
-          <select
-            value={flowContext}
-            onChange={(e) => setFlowContext(e.target.value)}
-            className="text-gray-600 border rounded px-2 py-1 text-sm"
-            title="Fuente de datos que respalda las respuestas de este flujo"
-          >
-            {contextOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={contextSourceId}
-            onChange={(e) => setContextSourceId(e.target.value)}
-            className="text-gray-600 border rounded px-2 py-1 text-sm"
-            title="Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar"
-          >
-            <option value="">Sin fuente de verdad</option>
-            {contextSources.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.type})
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-col gap-0.5">
+            <label htmlFor="flow-skill" className="text-[11px] text-gray-400">
+              Skill
+            </label>
+            <select
+              id="flow-skill"
+              value={skillId}
+              onChange={(e) => setSkillId(e.target.value)}
+              className="text-gray-600 border rounded px-2 py-1 text-sm"
+              title="Skill: texto de contexto que se agrega al system prompt base de este flujo"
+            >
+              <option value="">Sin skill</option>
+              {skills.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <label htmlFor="flow-context-source" className="text-[11px] text-gray-400">
+              Fuente de verdad
+            </label>
+            <select
+              id="flow-context-source"
+              value={contextSourceId}
+              onChange={(e) => setContextSourceId(e.target.value)}
+              className="text-gray-600 border rounded px-2 py-1 text-sm"
+              title="Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar"
+            >
+              <option value="">Sin fuente de verdad</option>
+              {contextSources.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.type})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <button
           onClick={saveFlow}
@@ -711,6 +773,9 @@ function FlowEditorInner() {
               onUpdate={updateNodeData}
               users={allUsers}
               flows={flowOptions.filter((f) => f.id !== id)}
+              invgateCategories={invgateCategories}
+              invgatePriorities={invgatePriorities}
+              invgateTypes={invgateTypes}
             />
             <button
               onClick={() => {
@@ -902,11 +967,17 @@ function NodeProperties({
   onUpdate,
   users,
   flows,
+  invgateCategories,
+  invgatePriorities,
+  invgateTypes,
 }: {
   node: Node;
   onUpdate: (key: string, value: any) => void;
   users: UserOption[];
   flows: FlowOption[];
+  invgateCategories: InvgateCatalogOption[];
+  invgatePriorities: InvgateCatalogOption[];
+  invgateTypes: InvgateCatalogOption[];
 }) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
@@ -1148,18 +1219,101 @@ function NodeProperties({
               onChange={(e) => onUpdate('subject', e.target.value)}
               className="w-full border rounded p-2 text-sm"
             />
+            <p className="text-xs text-gray-400 mt-1">
+              Vacío: usa <code>{'{{subject}}'}</code> de la charla o los primeros 100 caracteres del mensaje.
+            </p>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Prioridad</label>
-            <select
-              value={data.priority || 'medium'}
-              onChange={(e) => onUpdate('priority', e.target.value)}
+            <label className="block text-sm font-medium mb-1">Descripción</label>
+            <textarea
+              value={data.description || ''}
+              onChange={(e) => onUpdate('description', e.target.value)}
               className="w-full border rounded p-2 text-sm"
-            >
-              <option value="low">Baja</option>
-              <option value="medium">Media</option>
-              <option value="high">Alta</option>
-            </select>
+              rows={3}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Vacío: usa <code>{'{{description}}'}</code> de la charla o el mensaje del usuario.
+            </p>
+          </div>
+          {/* Categoría/prioridad/tipo van por NOMBRE real de InvGate (no un id) — el bot
+              los resuelve contra el catálogo al crear el ticket (InvgateService.resolveCategoryId/
+              resolvePriorityId/resolveTypeId). Vacío en cualquiera de los tres: usa el default
+              de /settings > "Integración: InvGate". Si el catálogo no cargó (InvGate sin
+              configurar, o sin permiso), cae a un campo de texto libre para no bloquear la edición. */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Categoría (InvGate)</label>
+            {invgateCategories.length > 0 ? (
+              <select
+                value={data.category || ''}
+                onChange={(e) => onUpdate('category', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+              >
+                <option value="">(usar default de /settings)</option>
+                {invgateCategories.map((c) => (
+                  <option key={c.id} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={data.category || ''}
+                onChange={(e) => onUpdate('category', e.target.value)}
+                placeholder="Nombre exacto de la categoría en InvGate"
+                className="w-full border rounded p-2 text-sm"
+              />
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Prioridad (InvGate)</label>
+            {invgatePriorities.length > 0 ? (
+              <select
+                value={data.priority || ''}
+                onChange={(e) => onUpdate('priority', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+              >
+                <option value="">(usar default de /settings)</option>
+                {invgatePriorities.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={data.priority || ''}
+                onChange={(e) => onUpdate('priority', e.target.value)}
+                placeholder="Nombre exacto de la prioridad en InvGate"
+                className="w-full border rounded p-2 text-sm"
+              />
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Tipo de incidente (InvGate)</label>
+            {invgateTypes.length > 0 ? (
+              <select
+                value={data.ticketType || ''}
+                onChange={(e) => onUpdate('ticketType', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+              >
+                <option value="">(usar default de /settings)</option>
+                {invgateTypes.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={data.ticketType || ''}
+                onChange={(e) => onUpdate('ticketType', e.target.value)}
+                placeholder="Nombre exacto del tipo en InvGate"
+                className="w-full border rounded p-2 text-sm"
+              />
+            )}
           </div>
         </>
       )}
@@ -1175,6 +1329,35 @@ function NodeProperties({
               rows={3}
             />
           </div>
+          {data.systemPrompt && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Prompt base</label>
+              <div className="flex gap-4 text-sm text-gray-600">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name={`systemPromptMode-${node.id}`}
+                    checked={(data.systemPromptMode || 'replace') === 'replace'}
+                    onChange={() => onUpdate('systemPromptMode', 'replace')}
+                  />
+                  Reemplaza
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name={`systemPromptMode-${node.id}`}
+                    checked={data.systemPromptMode === 'append'}
+                    onChange={() => onUpdate('systemPromptMode', 'append')}
+                  />
+                  Agrega
+                </label>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1">
+                Cómo combina este System Prompt con el prompt base (settings + Skill del
+                flujo): lo reemplaza entero, o se agrega a continuación.
+              </p>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium mb-1">Mensajes de contexto</label>
             <input
@@ -1457,6 +1640,31 @@ function NodeProperties({
             values={data.collaborators || []}
             users={users}
             onChange={(next) => onUpdate('collaborators', next)}
+          />
+        </>
+      )}
+
+      {type === 'sms' && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1">Mensaje</label>
+            <p className="text-xs text-gray-400 mb-1">
+              Admite variables del flujo, ej. {'{{userName}}'}.
+            </p>
+            <textarea
+              value={data.message || ''}
+              onChange={(e) => onUpdate('message', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              placeholder="Ej: Hola {{userName}}, tu ticket #{{lastTicketId}} fue actualizado."
+            />
+          </div>
+
+          <UserPickerList
+            label="Destinatarios"
+            values={data.recipients || []}
+            users={users}
+            onChange={(next) => onUpdate('recipients', next)}
           />
         </>
       )}

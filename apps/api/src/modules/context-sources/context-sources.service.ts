@@ -174,9 +174,10 @@ export class ContextSourcesService {
 
   /**
    * Consulta real durante una conversación en curso (a diferencia de
-   * `testConnection`, pensado para el botón de admin): usada por
-   * `ConversationsService.orchestratorLlm` cuando la charla se sale del flujo
-   * armado y el `Flow` tiene una fuente de verdad vinculada. Mismo patrón RPC por
+   * `testConnection`, pensado para el botón de admin): usada tanto por
+   * `ConversationsService.orchestratorLlm` (charla fuera del flujo armado) como
+   * por el nodo `llm_query` dentro de un flujo — en ambos casos, siempre que el
+   * `Flow` en curso tenga una fuente de verdad vinculada. Mismo patrón RPC por
    * el broker, cola separada (`CONTEXT_SOURCE_QUERY_QUEUE`) — ver
    * `ContextSourceConnectorService.query`.
    */

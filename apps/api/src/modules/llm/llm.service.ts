@@ -34,6 +34,26 @@ export class LlmService {
       messages = [{ role: 'system', content: merged.systemPrompt }, ...messages];
     }
 
-    return provider.generateCompletion(messages, merged);
+    const raw = await provider.generateCompletion(messages, merged);
+    return this.stripThinking(raw);
+  }
+
+  /**
+   * Saca el bloque de razonamiento (`<think>...</think>`) que algunos modelos devuelven
+   * mezclado con la respuesta final en vez de en un campo separado — confirmado con
+   * MiniMax-M2.x (no se puede apagar el razonamiento en esos modelos, y sin el parámetro
+   * `reasoning_split` de esa API el texto queda embebido en `content`; ver
+   * `MiniMaxProvider`). Va acá y no en cada provider porque cualquier modelo detrás de
+   * cualquier proveedor puede ser "razonador" (ej. DeepSeek R1 vía OpenRouter) — un solo
+   * lugar, provider-agnostic, en vez de repetir la limpieza en cada uno.
+   */
+  private stripThinking(text: string): string {
+    let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    // Si `max_tokens` se agotó a mitad del razonamiento, no hay tag de cierre y el regex de
+    // arriba no lo agarra — cortar desde el `<think>` abierto es mejor que mostrarle al
+    // usuario el razonamiento interno crudo (aunque la respuesta quede corta o vacía).
+    const openIdx = cleaned.search(/<think>/i);
+    if (openIdx !== -1) cleaned = cleaned.slice(0, openIdx);
+    return cleaned.trim();
   }
 }

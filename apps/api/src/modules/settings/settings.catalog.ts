@@ -6,8 +6,12 @@
  * cualquier key que no esté acá, para que nadie inyecte configuración arbitraria
  * en la tabla `Setting`.
  *
- * Los secrets (API keys de LLM e Invgate) NO van acá: van por env vars / vault,
- * nunca por BD ni por endpoint (constraint de spec §5).
+ * Los secrets marcados `secret: true` (API keys de LLM, WhatsApp/Twilio e InvGate) SÍ
+ * pueden vivir acá — se guardan cifrados (`SecretsCipher`, AES-256-GCM) y son de solo
+ * escritura, nunca en texto plano ni devueltos por la API. Decisión explícita del
+ * usuario (LLM: 2026-08-03; InvGate: 2026-08-14, reemplaza la constraint original de
+ * spec §5 de "solo env var" — administrar credenciales editando `.env` a mano era
+ * engorroso). `.env` sigue funcionando como fallback de la cascada BD→env→default.
  */
 
 export type SettingType = 'number' | 'string' | 'boolean' | 'enum';
@@ -35,7 +39,13 @@ export type SettingGroup =
   | 'LLM: OpenCode Go'
   | 'LLM: MiniMax'
   | 'Mensajería: WhatsApp'
-  | 'Mensajería: Email';
+  | 'Mensajería: WhatsApp (Twilio)'
+  | 'Mensajería: WhatsApp (Gupshup)'
+  | 'Mensajería: SMS'
+  | 'Mensajería: SMS (Twilio)'
+  | 'Mensajería: SMS (Gupshup)'
+  | 'Mensajería: Email'
+  | 'Integración: InvGate';
 
 export interface SettingDefinition {
   key: string;
@@ -165,7 +175,9 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     label: 'System prompt por defecto',
     defaultValue: '',
     description:
-      'System prompt base. Los nodos de flujo pueden sobrescribirlo por nodo.',
+      'Prompt base para toda charla. Cada flujo puede sumarle un Skill (ver Fuentes de ' +
+      'verdad → Skills) que se concatena a continuación, y el nodo `llm_query` puede a su vez ' +
+      'reemplazarlo o agregarle su propio texto (ver systemPromptMode en el editor de flujos).',
     multiline: true,
   },
 
@@ -368,6 +380,20 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
 
   // --- Mensajería: WhatsApp ---
   {
+    key: 'WHATSAPP_PROVIDER',
+    type: 'enum',
+    group: 'Mensajería: WhatsApp',
+    label: 'Proveedor activo',
+    defaultValue: 'meta',
+    description:
+      'Qué conector se suscribe a la cola de envío saliente: "meta" (Cloud API de Meta, ' +
+      'grupo de abajo), "twilio" (grupo "Mensajería: WhatsApp (Twilio)") o "gupshup" (grupo ' +
+      '"Mensajería: WhatsApp (Gupshup)"). Solo uno puede estar activo a la vez — se lee una ' +
+      'sola vez al arrancar el backend, así que un cambio acá requiere reiniciarlo para tomar ' +
+      'efecto (a diferencia de LLM_PROVIDER, que se relee en cada request).',
+    allowedValues: ['meta', 'twilio', 'gupshup'],
+  },
+  {
     key: 'WHATSAPP_API_TOKEN',
     type: 'string',
     group: 'Mensajería: WhatsApp',
@@ -425,6 +451,182 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'antiguo del sistema.',
   },
 
+  // --- Mensajería: WhatsApp (Twilio) ---
+  {
+    key: 'TWILIO_ACCOUNT_SID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Account SID',
+    defaultValue: '',
+    placeholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    description: 'SID de la cuenta de Twilio (Console > Account Info). No es secreto, pero es solo escritura por consistencia con el resto de las credenciales.',
+  },
+  {
+    key: 'TWILIO_AUTH_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Auth Token',
+    defaultValue: '',
+    secret: true,
+    placeholder: '32 caracteres',
+    description: 'Auth Token de la cuenta de Twilio (Console > Account Info). Se guarda cifrado.',
+  },
+  {
+    key: 'TWILIO_WHATSAPP_FROM',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Número emisor de WhatsApp',
+    defaultValue: '',
+    placeholder: '+14155238886',
+    description:
+      'Número habilitado para WhatsApp en Twilio, en formato E.164 con "+" (el sandbox de ' +
+      'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
+      'automáticamente, no incluirlo acá.',
+  },
+  {
+    key: 'TWILIO_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número de Twilio. Misma ' +
+      'limitación que WHATSAPP_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
+      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
+  },
+
+  // --- Mensajería: WhatsApp (Gupshup) ---
+  // API moderna de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey` — NO
+  // confundir con la API legacy "Enterprise SMS" (grupo "Mensajería: SMS (Gupshup)", más
+  // abajo), que es un producto y una cuenta totalmente distintos (userid/password propios).
+  {
+    key: 'GUPSHUP_API_KEY',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'API Key',
+    defaultValue: '',
+    secret: true,
+    placeholder: '092707e8296649xxxx94c0fxxx818ad',
+    description: 'API key de la app de WhatsApp en Gupshup (pestaña "Cuenta" del panel). Se guarda cifrada.',
+  },
+  {
+    key: 'GUPSHUP_WHATSAPP_SOURCE',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'Número emisor (source)',
+    defaultValue: '',
+    placeholder: '15553788248',
+    description:
+      'Número de WhatsApp Business registrado en Gupshup ("ID del número de teléfono" en la ' +
+      'pestaña "Cuenta"), sin "+" ni separadores.',
+  },
+  {
+    key: 'GUPSHUP_APP_NAME',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'Nombre de la app (src.name)',
+    defaultValue: '',
+    placeholder: 'dasyBot',
+    description: 'Nombre de la app registrada en Gupshup contra ese número (breadcrumb del panel, ej. "dasyBot").',
+  },
+  {
+    key: 'GUPSHUP_WHATSAPP_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número. Misma limitación que ' +
+      'WHATSAPP_TENANT_ID/TWILIO_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
+      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
+  },
+
+  // --- Mensajería: SMS ---
+  {
+    key: 'SMS_PROVIDER',
+    type: 'enum',
+    group: 'Mensajería: SMS',
+    label: 'Proveedor activo',
+    defaultValue: 'twilio',
+    description:
+      'Qué conector se suscribe a la cola de envío saliente de SMS: "twilio" (grupo ' +
+      '"Mensajería: SMS (Twilio)") o "gupshup" (grupo "Mensajería: SMS (Gupshup)" — API ' +
+      'legacy "Enterprise SMS", cuenta separada de la de WhatsApp). Solo uno puede estar ' +
+      'activo a la vez — se lee una sola vez al arrancar el backend, igual que WHATSAPP_PROVIDER.',
+    allowedValues: ['twilio', 'gupshup'],
+  },
+
+  // --- Mensajería: SMS (Twilio) ---
+  // Reusa TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN del grupo de WhatsApp (Twilio) — es la misma
+  // cuenta de Twilio, solo cambia el número emisor. SMS no es un reemplazo de WhatsApp
+  // (a diferencia de Twilio vs Meta): es un canal aparte, con sus propias conversaciones.
+  {
+    key: 'TWILIO_SMS_FROM',
+    type: 'string',
+    group: 'Mensajería: SMS (Twilio)',
+    label: 'Número emisor de SMS',
+    defaultValue: '',
+    placeholder: '+15551234567',
+    description:
+      'Número de Twilio habilitado para SMS, en formato E.164 con "+". A diferencia del ' +
+      'número de WhatsApp, va SIN el prefijo "whatsapp:" (Twilio lo distingue por el canal, ' +
+      'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
+      'WhatsApp no sirve para esto.',
+  },
+  {
+    key: 'TWILIO_SMS_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Twilio)',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número de SMS. Misma ' +
+      'limitación que el resto de los canales: un solo número sirve a un solo tenant ' +
+      'mientras los settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
+  },
+
+  // --- Mensajería: SMS (Gupshup) ---
+  // API LEGACY "Enterprise SMS" (enterprise.smsgupshup.com) — cuenta y producto totalmente
+  // distintos de la API de WhatsApp de Gupshup (grupo de arriba): auth por userid/password
+  // propios, no el API Key de WhatsApp. Bloqueado hasta tener esa cuenta — parametrizado para
+  // cuando esté disponible, mismo criterio que TWILIO_SMS_FROM cuando faltaba el número.
+  {
+    key: 'GUPSHUP_SMS_USERID',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'User ID (Enterprise SMS)',
+    defaultValue: '',
+    placeholder: '2000xxxxxx',
+    description:
+      'Usuario de la cuenta de Enterprise SMS de Gupshup (enterprise.smsgupshup.com) — NO es ' +
+      'el mismo login que la app de WhatsApp de Gupshup.',
+  },
+  {
+    key: 'GUPSHUP_SMS_PASSWORD',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'Password (Enterprise SMS)',
+    defaultValue: '',
+    secret: true,
+    placeholder: '••••••••',
+    description: 'Contraseña de la cuenta de Enterprise SMS de Gupshup. Se guarda cifrada.',
+  },
+  {
+    key: 'GUPSHUP_SMS_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'Tenant que recibe los mensajes',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se asignan los mensajes entrantes por este número. Misma limitación que ' +
+      'TWILIO_SMS_TENANT_ID: un solo número sirve a un solo tenant mientras los settings sean ' +
+      'globales. Sin definir, usa el tenant más antiguo del sistema.',
+  },
+
   // --- Mensajería: Email ---
   {
     key: 'EMAIL_SMTP_HOST',
@@ -479,6 +681,98 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     placeholder: '"Plataforma Conversacional Inteligente Soporte" <soporte@tuempresa.com>',
     description: 'Se usa como remitente en los emails salientes (ej. el código OTP).',
   },
+
+  // --- Integración: InvGate ---
+  // Antes solo por env var (constraint original de spec §5) — movido a /settings a
+  // pedido explícito del usuario (2026-08-14): editar `.env` a mano para administrar
+  // el vínculo con InvGate era engorroso. Mismo patrón cifrado/solo-escritura que el
+  // resto de las credenciales de proveedor.
+  {
+    key: 'INVGATE_API_URL',
+    type: 'string',
+    group: 'Integración: InvGate',
+    label: 'URL base de la instancia',
+    defaultValue: '',
+    placeholder: 'https://tuempresa.sd.cloud.invgate.net',
+    description: 'Sin el sufijo /api/v1 — se agrega solo. Es la URL de tu instancia de InvGate Service Desk.',
+  },
+  {
+    key: 'INVGATE_API_USER',
+    type: 'string',
+    group: 'Integración: InvGate',
+    label: 'Usuario técnico de API',
+    defaultValue: '',
+    placeholder: 'chatbot_test',
+    description:
+      'Usuario técnico dedicado para la API (AGENTS.md: nunca con credenciales del usuario final). ' +
+      'No es secreto, pero es solo escritura por consistencia con el resto de las credenciales.',
+  },
+  {
+    key: 'INVGATE_API_KEY',
+    type: 'string',
+    group: 'Integración: InvGate',
+    label: 'Token de API',
+    defaultValue: '',
+    secret: true,
+    placeholder: 'Token del usuario técnico, no su contraseña de portal',
+    description:
+      'Token de API del usuario técnico (Settings > Integraciones > API en InvGate, o pedírselo al ' +
+      'admin). Ojo: no es la contraseña de login al portal, son cosas distintas — cargar la ' +
+      'contraseña por error da 401. Se guarda cifrado.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_CATEGORY_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Categoría por defecto',
+    defaultValue: '',
+    placeholder: '1653',
+    description:
+      'Id de categoría a usar cuando la charla no recolectó una (flowState.category, sin match, o ' +
+      'sin setear) — obligatoria para InvGate, no hay un default universal. Correr ' +
+      '`node scripts/invgate-check.mjs` para ver las categorías reales de esta instancia.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_PRIORITY_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Prioridad por defecto',
+    defaultValue: '',
+    placeholder: '2',
+    description: 'Id de prioridad por defecto (fallback de flowState.priority). Ej. 2 = Media, según el catálogo de esta instancia.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_TYPE_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Tipo por defecto',
+    defaultValue: '',
+    placeholder: '1',
+    description: 'Id de tipo de incidente por defecto (fallback de flowState.ticketType). Ej. 1 = Incidente, según el catálogo de esta instancia.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_SOURCE_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Fuente por defecto (opcional)',
+    defaultValue: '',
+    placeholder: '8',
+    description: 'Id de fuente del ticket — opcional, InvGate lo acepta sin definir. Ej. 8 = API.',
+  },
+  {
+    key: 'INVGATE_CATEGORY_PARENT_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Categoría padre para el selector de tickets',
+    defaultValue: '',
+    placeholder: '1601',
+    description:
+      'Id de la categoría cuyas SUBCATEGORÍAS aparecen como opciones al armar un ticket en el ' +
+      'editor de flujos (nodo "Generar ticket"). Acota el selector a una rama puntual del árbol ' +
+      'en vez de mostrar el catálogo entero de la organización (puede tener cientos de ' +
+      'categorías que no aplican a tickets del chatbot). Ej.: 1601 = "Chatbot", bajo ' +
+      '"DEPTO. SISTEMAS > Soporte".',
+  },
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -493,7 +787,13 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'LLM: OpenCode Go',
   'LLM: MiniMax',
   'Mensajería: WhatsApp',
+  'Mensajería: WhatsApp (Twilio)',
+  'Mensajería: WhatsApp (Gupshup)',
+  'Mensajería: SMS',
+  'Mensajería: SMS (Twilio)',
+  'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
+  'Integración: InvGate',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));

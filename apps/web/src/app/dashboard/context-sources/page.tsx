@@ -45,8 +45,17 @@ interface TestResult {
   statusCode?: number;
 }
 
+interface SkillData {
+  id: string;
+  name: string;
+  promptText: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
 export default function ContextSourcesPage() {
   const { hasPermission } = useAuth();
+  const [tab, setTab] = useState<'connections' | 'skills'>('connections');
   const [types, setTypes] = useState<TypeDef[]>([]);
   const [sources, setSources] = useState<ContextSourceData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,14 +79,28 @@ export default function ContextSourcesPage() {
 
   const typeDef = types.find((t) => t.type === type);
 
+  // --- Skills ---
+  const [skills, setSkills] = useState<SkillData[]>([]);
+  const [skillEditingId, setSkillEditingId] = useState<string | null>(null);
+  const [skillName, setSkillName] = useState('');
+  const [skillPromptText, setSkillPromptText] = useState('');
+  const [skillIsActive, setSkillIsActive] = useState(true);
+  const [skillBusy, setSkillBusy] = useState(false);
+
+  const canCreateSkill = hasPermission('skills', 'create');
+  const canUpdateSkill = hasPermission('skills', 'update');
+  const canDeleteSkill = hasPermission('skills', 'delete');
+
   async function load() {
     try {
-      const [typesData, sourcesData] = await Promise.all([
+      const [typesData, sourcesData, skillsData] = await Promise.all([
         apiFetch('/context-sources/types'),
         apiFetch('/context-sources'),
+        apiFetch('/skills').catch(() => []), // sin permiso `skills:read`: pestaña vacía, no rompe la principal
       ]);
       setTypes(typesData);
       setSources(sourcesData);
+      setSkills(skillsData);
       setType((current) => current || typesData[0]?.type || '');
       setError('');
     } catch (err: any) {
@@ -90,6 +113,65 @@ export default function ContextSourcesPage() {
   useEffect(() => {
     load();
   }, []);
+
+  function resetSkillForm() {
+    setSkillEditingId(null);
+    setSkillName('');
+    setSkillPromptText('');
+    setSkillIsActive(true);
+  }
+
+  function startEditSkill(s: SkillData) {
+    setNotice('');
+    setSkillEditingId(s.id);
+    setSkillName(s.name);
+    setSkillPromptText(s.promptText);
+    setSkillIsActive(s.isActive);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function submitSkill(e: React.FormEvent) {
+    e.preventDefault();
+    setSkillBusy(true);
+    setError('');
+    try {
+      if (skillEditingId) {
+        await apiFetch(`/skills/${skillEditingId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name: skillName, promptText: skillPromptText, isActive: skillIsActive }),
+        });
+        setNotice('Skill actualizado.');
+      } else {
+        await apiFetch('/skills', {
+          method: 'POST',
+          body: JSON.stringify({ name: skillName, promptText: skillPromptText, isActive: skillIsActive }),
+        });
+        setNotice('Skill creado.');
+      }
+      resetSkillForm();
+      await load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSkillBusy(false);
+    }
+  }
+
+  async function removeSkill(s: SkillData) {
+    if (!confirm(`¿Eliminar el skill "${s.name}"?`)) return;
+    setSkillBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const res = await apiFetch(`/skills/${s.id}`, { method: 'DELETE' });
+      setNotice(res.message || 'Skill eliminado.');
+      await load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSkillBusy(false);
+    }
+  }
 
   function resetForm() {
     setEditingId(null);
@@ -228,16 +310,43 @@ export default function ContextSourcesPage() {
   return (
     <div>
       <h1 className="text-2xl font-bold mb-2 text-gray-800">Fuentes de Verdad</h1>
-      <p className="text-sm text-gray-500 mb-6">
-        Conexiones a fuentes de contexto externas (MCP, RAG, n8n, broker) que los flujos pueden
-        consultar. No se instala nada acá: son parámetros de conexión a un servicio que ya
-        corre en otro lado.
+      <p className="text-sm text-gray-500 mb-4">
+        {tab === 'connections'
+          ? 'Conexiones a fuentes de contexto externas (MCP, RAG, n8n, broker) que los flujos pueden ' +
+            'consultar. No se instala nada acá: son parámetros de conexión a un servicio que ya ' +
+            'corre en otro lado.'
+          : 'Skills: texto de contexto libre que se concatena al system prompt base de un flujo ' +
+            '(ver el selector "Skill" en el editor de flujos). A diferencia de las conexiones, no ' +
+            'consultan nada en tiempo real — es texto fijo.'}
       </p>
+
+      <div className="flex gap-1 mb-6 border-b">
+        <button
+          onClick={() => setTab('connections')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            tab === 'connections'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Conexiones
+        </button>
+        <button
+          onClick={() => setTab('skills')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            tab === 'skills'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Skills
+        </button>
+      </div>
 
       {error && <p className="text-red-500 mb-4">{error}</p>}
       {notice && <p className="text-green-600 mb-4">{notice}</p>}
 
-      {showForm && (
+      {tab === 'connections' && showForm && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 space-y-3">
           <h2 className="font-semibold text-gray-700">
             {editingId ? 'Editar fuente de verdad' : 'Nueva fuente de verdad'}
@@ -397,10 +506,11 @@ export default function ContextSourcesPage() {
         </form>
       )}
 
-      {!editingId && !canCreate && sources.length === 0 && (
+      {tab === 'connections' && !editingId && !canCreate && sources.length === 0 && (
         <p className="text-gray-400 text-sm mb-4">No tenés permiso para crear fuentes de verdad.</p>
       )}
 
+      {tab === 'connections' && (
       <div className="bg-white rounded shadow overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-100 text-gray-700">
@@ -477,6 +587,139 @@ export default function ContextSourcesPage() {
           </tbody>
         </table>
       </div>
+      )}
+
+      {tab === 'skills' && (
+        <>
+          {(skillEditingId ? canUpdateSkill : canCreateSkill) && (
+            <form onSubmit={submitSkill} className="bg-white p-4 rounded shadow mb-6 space-y-3">
+              <h2 className="font-semibold text-gray-700">
+                {skillEditingId ? 'Editar skill' : 'Nuevo skill'}
+              </h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
+                  <label className="block text-xs text-gray-500 mb-1">Nombre *</label>
+                  <input
+                    placeholder="Soporte nivel 1"
+                    value={skillName}
+                    onChange={(e) => setSkillName(e.target.value)}
+                    className="border px-3 py-2 rounded w-full"
+                    maxLength={80}
+                    required
+                  />
+                </div>
+                <div className="flex items-end">
+                  <label className="flex items-center gap-2 text-sm text-gray-600 pb-2">
+                    <input
+                      type="checkbox"
+                      checked={skillIsActive}
+                      onChange={(e) => setSkillIsActive(e.target.checked)}
+                    />
+                    Activo
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Texto (se concatena al system prompt base) *
+                </label>
+                <textarea
+                  value={skillPromptText}
+                  onChange={(e) => setSkillPromptText(e.target.value)}
+                  className="border px-3 py-2 rounded w-full"
+                  rows={5}
+                  maxLength={8000}
+                  required
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={skillBusy}
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300"
+                >
+                  {skillBusy ? 'Guardando...' : skillEditingId ? 'Guardar cambios' : 'Crear'}
+                </button>
+                {skillEditingId && (
+                  <button
+                    type="button"
+                    onClick={resetSkillForm}
+                    className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100"
+                  >
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
+
+          {!skillEditingId && !canCreateSkill && skills.length === 0 && (
+            <p className="text-gray-400 text-sm mb-4">No tenés permiso para crear skills.</p>
+          )}
+
+          <div className="bg-white rounded shadow overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100 text-gray-700">
+                <tr>
+                  <th className="text-left px-4 py-2">Nombre</th>
+                  <th className="text-left px-4 py-2">Texto</th>
+                  <th className="text-left px-4 py-2">Estado</th>
+                  {(canUpdateSkill || canDeleteSkill) && <th className="px-4 py-2"></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {skills.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-6 text-center text-gray-400">
+                      No hay skills configurados en esta empresa.
+                    </td>
+                  </tr>
+                )}
+                {skills.map((s) => (
+                  <tr key={s.id} className="border-t hover:bg-gray-50">
+                    <td className="px-4 py-2">{s.name}</td>
+                    <td className="px-4 py-2 text-gray-500 max-w-xs truncate" title={s.promptText}>
+                      {s.promptText}
+                    </td>
+                    <td className="px-4 py-2">
+                      {s.isActive ? (
+                        <span className="text-green-600">Activo</span>
+                      ) : (
+                        <span className="text-gray-400">Inactivo</span>
+                      )}
+                    </td>
+                    {(canUpdateSkill || canDeleteSkill) && (
+                      <td className="px-4 py-2 text-right whitespace-nowrap">
+                        {canUpdateSkill && (
+                          <button
+                            onClick={() => startEditSkill(s)}
+                            disabled={skillBusy}
+                            className="text-blue-600 hover:text-blue-800 text-sm px-2"
+                          >
+                            Editar
+                          </button>
+                        )}
+                        {canDeleteSkill && (
+                          <button
+                            onClick={() => removeSkill(s)}
+                            disabled={skillBusy}
+                            className="text-red-600 hover:text-red-800 text-sm px-2"
+                          >
+                            Eliminar
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
     </div>
   );
