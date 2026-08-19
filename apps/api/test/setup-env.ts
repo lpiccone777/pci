@@ -10,10 +10,23 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const HANDOFF_FILE = path.join(os.tmpdir(), 'pci-e2e-db.json');
+/**
+ * Resuelve el archivo de handoff que dejó global-setup, nombrado con el PID del proceso raíz de
+ * jest. Con `maxWorkers: 1` los tests corren in-band, así que este setupFile corre en ESE mismo
+ * proceso y el PID coincide. Si algún día corriera en un worker aparte, su proceso padre es el
+ * raíz: por eso probamos primero el PID propio y, si no está, el del padre.
+ */
+function resolveHandoffFile(): string | undefined {
+  const candidates = [
+    path.join(os.tmpdir(), `pci-e2e-db.${process.pid}.json`),
+    path.join(os.tmpdir(), `pci-e2e-db.${process.ppid}.json`),
+  ];
+  return candidates.find((file) => fs.existsSync(file));
+}
 
-if (fs.existsSync(HANDOFF_FILE)) {
-  const { dbUrl, rabbitUrl } = JSON.parse(fs.readFileSync(HANDOFF_FILE, 'utf8'));
+const handoffFile = resolveHandoffFile();
+if (handoffFile) {
+  const { dbUrl, rabbitUrl } = JSON.parse(fs.readFileSync(handoffFile, 'utf8'));
   if (dbUrl) process.env.DATABASE_URL = dbUrl;
   // Ausente si el vhost efímero no se pudo crear: en ese caso se conserva el del `.env`.
   if (rabbitUrl) process.env.RABBITMQ_URL = rabbitUrl;

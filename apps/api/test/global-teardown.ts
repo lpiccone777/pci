@@ -9,7 +9,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const HANDOFF_FILE = path.join(os.tmpdir(), 'pci-e2e-db.json');
+// Mismo criterio que global-setup: el handoff se nombra con el PID del proceso raíz de jest.
+// globalSetup y globalTeardown corren en ese mismo proceso, así que este PID coincide con el
+// que usó el setup para escribirlo.
+const HANDOFF_FILE = path.join(os.tmpdir(), `pci-e2e-db.${process.pid}.json`);
 
 export default async function globalTeardown(): Promise<void> {
   if (!fs.existsSync(HANDOFF_FILE)) return;

@@ -17,7 +17,12 @@ import * as os from 'os';
 import * as path from 'path';
 
 const API_DIR = path.resolve(__dirname, '..');
-const HANDOFF_FILE = path.join(os.tmpdir(), 'pci-e2e-db.json');
+// El handoff se nombra con el PID del proceso raíz de jest (este mismo). Con `maxWorkers: 1`
+// los tests corren in-band, así que globalSetup, los setupFiles y el globalTeardown comparten
+// este PID y llegan todos al mismo archivo. Meter el PID en el nombre evita que dos corridas
+// simultáneas en la misma máquina (cada `pnpm test:e2e` es un proceso jest distinto) se pisen
+// el archivo compartido.
+const HANDOFF_FILE = path.join(os.tmpdir(), `pci-e2e-db.${process.pid}.json`);
 
 /** Lee una variable primero del entorno y, si no está, del `.env` de apps/api (parseo mínimo,
  *  sin depender de dotenv). */
@@ -198,6 +203,29 @@ async function assertNoCompetingSimulateConsumer(): Promise<void> {
   }
 }
 
+/**
+ * Dropea (best-effort) la base efímera. Se usa cuando la preparación falla DESPUÉS de haber
+ * creado la base: como Jest no corre el globalTeardown si el globalSetup tira, la limpieza tiene
+ * que pasar acá mismo o la base queda huérfana. Nunca lanza: un fallo de limpieza no debe tapar
+ * el error real que llevó hasta acá.
+ */
+async function dropEphemeralDatabaseQuietly(maintenanceUrl: string, dbName: string): Promise<void> {
+  const admin = new PrismaClient({ datasources: { db: { url: maintenanceUrl } } });
+  try {
+    await admin.$executeRawUnsafe(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}' AND pid <> pg_backend_pid()`,
+    );
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${dbName}"`);
+  } catch (err) {
+    const motivo = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[e2e] No se pudo limpiar la base efímera ${dbName} tras un fallo de preparación (${motivo}).`,
+    );
+  } finally {
+    await admin.$disconnect();
+  }
+}
+
 export default async function globalSetup(): Promise<void> {
   const baseUrl = readEnvVar('DATABASE_URL');
   if (!baseUrl) {
@@ -237,34 +265,49 @@ export default async function globalSetup(): Promise<void> {
     await admin.$disconnect();
   }
 
-  // 2. Migraciones + seed base contra la efímera (Prisma CLI, ya presente en el proyecto).
-  const childEnv = { ...process.env, DATABASE_URL: ephemeralUrl.toString() };
-  execSync('npx prisma migrate deploy', { cwd: API_DIR, env: childEnv, stdio: 'inherit' });
-  execSync('npx prisma db seed', { cwd: API_DIR, env: childEnv, stdio: 'inherit' });
+  // A partir de acá la base efímera YA existe. Si cualquier paso siguiente falla, hay que
+  // dropearla ANTES de propagar el error: Jest no corre el globalTeardown cuando el globalSetup
+  // falla, así que sin esta limpieza quedaría una base de prueba huérfana por cada corrida fallida.
+  try {
+    // 2. Migraciones + seed base contra la efímera (Prisma CLI, ya presente en el proyecto).
+    const childEnv = { ...process.env, DATABASE_URL: ephemeralUrl.toString() };
+    execSync('npx prisma migrate deploy', { cwd: API_DIR, env: childEnv, stdio: 'inherit' });
+    execSync('npx prisma db seed', { cwd: API_DIR, env: childEnv, stdio: 'inherit' });
 
-  // 2.5 Vhost de RabbitMQ efímero para aislar el broker (best-effort; ver la función).
-  const rabbit = await setupEphemeralVhost(suffix);
+    // 2.5 Vhost de RabbitMQ efímero para aislar el broker (best-effort; ver la función).
+    const rabbit = await setupEphemeralVhost(suffix);
 
-  // 2.6 Si NO se pudo aislar, fallar rápido y claro ante un consumidor competidor (ver función),
-  //     en vez de dejar que los CHAT-* se cuelguen hasta el timeout del simulate.
-  if (!rabbit) {
-    await assertNoCompetingSimulateConsumer();
+    // 2.6 Si NO se pudo aislar, fallar rápido y claro ante un consumidor competidor (ver función),
+    //     en vez de dejar que los CHAT-* se cuelguen hasta el timeout del simulate.
+    if (!rabbit) {
+      await assertNoCompetingSimulateConsumer();
+    }
+
+    // 3. Handoff para los workers (setup-env.ts) y el teardown.
+    fs.writeFileSync(
+      HANDOFF_FILE,
+      JSON.stringify({
+        dbName,
+        dbUrl: ephemeralUrl.toString(),
+        maintenanceUrl: maintenanceUrl.toString(),
+        ...(rabbit ?? {}),
+      }),
+      'utf8',
+    );
+    process.env.DATABASE_URL = ephemeralUrl.toString();
+    if (rabbit) process.env.RABBITMQ_URL = rabbit.rabbitUrl;
+
+    console.log(`\n[e2e] Base de datos efímera creada: ${dbName}`);
+    if (rabbit) console.log(`[e2e] Vhost de RabbitMQ efímero creado: ${rabbit.vhost}`);
+  } catch (err) {
+    // Limpieza best-effort: borrar el handoff (si se llegó a escribir) y dropear la base efímera,
+    // para no dejar residuos de una preparación a medias. No enmascaramos el error original.
+    try {
+      if (fs.existsSync(HANDOFF_FILE)) fs.unlinkSync(HANDOFF_FILE);
+    } catch {
+      /* la limpieza del handoff no debe tapar el error real */
+    }
+    await dropEphemeralDatabaseQuietly(maintenanceUrl.toString(), dbName);
+    throw err;
   }
-
-  // 3. Handoff para los workers (setup-env.ts) y el teardown.
-  fs.writeFileSync(
-    HANDOFF_FILE,
-    JSON.stringify({
-      dbName,
-      dbUrl: ephemeralUrl.toString(),
-      maintenanceUrl: maintenanceUrl.toString(),
-      ...(rabbit ?? {}),
-    }),
-    'utf8',
-  );
-  process.env.DATABASE_URL = ephemeralUrl.toString();
-  if (rabbit) process.env.RABBITMQ_URL = rabbit.rabbitUrl;
-
-  console.log(`\n[e2e] Base de datos efímera creada: ${dbName}`);
-  if (rabbit) console.log(`[e2e] Vhost de RabbitMQ efímero creado: ${rabbit.vhost}`);
 }
