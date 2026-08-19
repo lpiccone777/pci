@@ -1,0 +1,828 @@
+/**
+ * 2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sms
+ * (CHAT-N-TKC-*, CHAT-N-TKQ-*, CHAT-N-TRF-*, CHAT-N-SMS-*)
+ *
+ * Vía: `POST /conversations/simulate` (mismo patrón que `chat-start.e2e-spec.ts`), salvo
+ * CHAT-N-TKC-04 que llama a `ConversationsService.handleMessage` directo (ver el comentario en
+ * ese test — evita colgar 300s esperando una respuesta RPC que, ante una excepción no
+ * capturada, `BrokerService` nunca llega a publicar).
+ *
+ * Fronteras mockeadas:
+ * - `LlmService` → `FakeLlmService` (ninguno de estos flujos debería necesitarlo: los mensajes
+ *   de prueba evitan a propósito las palabras de `CANCEL_HINT_WORDS`, así que no se dispara
+ *   ningún clasificador).
+ * - `EmailService` → grabador (`t.email`, por default de `createTestApp`).
+ * - InvGate (CHAT-N-TKC-05/06, CHAT-N-TKQ-04) → `fetch` global mockeado con `installFetchMock`
+ *   y un router propio (`makeInvgateMock`) que simula la API real de InvGate contra la que
+ *   pega `InvgateService`.
+ * - `BrokerService.publish` (nodo `sms`) → spy PASSTHROUGH (`jest.spyOn`, sin
+ *   `mockImplementation`): dejamos que el publish real ocurra (para no vaciar el test de
+ *   sentido) y solo observamos con qué argumentos se llamó. Suscribir un consumer propio a
+ *   `sms.outgoing` no sirve acá: `TwilioSmsService` ya está suscripto ahí por default
+ *   (`SMS_PROVIDER` por defecto es 'twilio'), y dos consumers en la misma cola compiten por
+ *   round robin de RabbitMQ (ver BE-BRK-12) — nos quedaríamos sin ver la mitad de los mensajes.
+ *
+ * El motor de flujos, Prisma y el broker NO se mockean (salvo el spy passthrough de arriba, que
+ * no reemplaza comportamiento). Única excepción puntual: CHAT-N-TKC-04 mockea
+ * `prisma.ticket.create` con `mockRejectedValueOnce` — no para simular lógica de negocio, sino
+ * para forzar el único borde que el propio caso pide observar (una falla de BD real dentro del
+ * nodo), documentado como límite conocido del código. Se restaura inmediatamente después.
+ *
+ * Invertidos (`it.failing`, comportamiento SEGURO que hoy no existe):
+ * - CHAT-N-TKQ-03 (SEC-08): `ticket_query` de un ticket de otro tenant no debería devolverlo.
+ * - CHAT-N-SMS-04 (SEC-18): `sms` con un recipient de otra empresa no debería mandarle nada.
+ */
+import { LlmService } from '../src/modules/llm/llm.service';
+import { BrokerService } from '../src/modules/broker/broker.service';
+import { ConversationsService } from '../src/modules/conversations/conversations.service';
+import {
+  createTestApp,
+  TestApp,
+  http,
+  createTenant,
+  createRole,
+  createUser,
+  createFlow,
+  uniqueSlug,
+  uniqueEmail,
+  uniquePhone,
+  setSetting,
+  deleteSetting,
+  installFetchMock,
+  FakeLlmService,
+  FetchRouter,
+  startNode,
+  endNode,
+  variableNode,
+  ticketCreateNode,
+  ticketQueryNode,
+  transferAgentNode,
+  smsNode,
+  edge,
+  FlowNode,
+  FlowEdge,
+} from './support';
+
+/** Catálogo mínimo que arma `makeInvgateMock` para simular la API real de InvGate. */
+interface InvgateMockCatalog {
+  categories?: { id: number; name: string }[];
+  priorities?: { id: number; name: string }[];
+  types?: { id: number; name: string }[];
+  statuses?: { id: number; name: string }[];
+  /** Teléfono (tal cual llega a `resolveInvgateCustomerId`) → `customer_id` de InvGate. */
+  customerIdByPhone?: Record<string, number>;
+  /** `INVGATE_API_USER` → id de InvGate del usuario técnico (`creator_id`). */
+  creatorIdByUsername?: Record<string, number>;
+  /** `status_id` con el que nace cada incidente creado (default: el primero del catálogo). */
+  initialStatusId?: number;
+  /** Si `true`, el `GET incident` puntual (no el de catálogo) siempre falla — InvGate "caído". */
+  failGetIncident?: boolean;
+}
+
+/**
+ * Router de `installFetchMock` que responde como la API real de InvGate Service Desk
+ * (`{baseUrl}/api/v1/<endpoint>`, ver `invgate.service.ts`) para los endpoints que estos tests
+ * ejercitan: `users.by`, `incident.attributes.{category,priority,type,status}` e `incident`
+ * (GET puntual y POST de alta). No pagina ni valida el payload — alcanza con lo que
+ * `InvgateService` necesita para resolver nombres → ids y crear/consultar el incidente.
+ */
+function makeInvgateMock(catalog: InvgateMockCatalog) {
+  const incidents = new Map<number, { id: number; status_id: number }>();
+  let nextId = 9000 + Math.floor(Math.random() * 100000);
+
+  const router: FetchRouter = (url, init) => {
+    const u = new URL(url);
+    const path = u.pathname.replace(/^\/api\/v1\//, '');
+    const method = (init?.method || 'GET').toUpperCase();
+
+    if (method === 'GET' && path === 'users.by') {
+      const phones = u.searchParams.get('phones');
+      const username = u.searchParams.get('username');
+      if (phones) {
+        const id = catalog.customerIdByPhone?.[phones];
+        return { body: { data: id ? { '1': { id } } : {} } };
+      }
+      if (username) {
+        const id = catalog.creatorIdByUsername?.[username];
+        return { body: { data: id ? { '1': { id } } : {} } };
+      }
+      return { body: { data: {} } };
+    }
+    if (method === 'GET' && path === 'incident.attributes.category') return { body: catalog.categories ?? [] };
+    if (method === 'GET' && path === 'incident.attributes.priority') return { body: catalog.priorities ?? [] };
+    if (method === 'GET' && path === 'incident.attributes.type') return { body: catalog.types ?? [] };
+    if (method === 'GET' && path === 'incident.attributes.status') return { body: catalog.statuses ?? [] };
+    if (method === 'POST' && path === 'incident') {
+      const id = nextId++;
+      const incident = { id, status_id: catalog.initialStatusId ?? catalog.statuses?.[0]?.id ?? 1 };
+      incidents.set(id, incident);
+      return { body: incident };
+    }
+    if (method === 'GET' && path === 'incident') {
+      if (catalog.failGetIncident) throw new Error('InvGate caído (simulado para el test)');
+      const id = Number(u.searchParams.get('id'));
+      const incident = incidents.get(id);
+      return incident ? { body: incident } : { status: 404, body: { error: 'not found' } };
+    }
+    return { status: 404, body: { error: `sin mock para ${method} ${path}` } };
+  };
+
+  return { router, incidents };
+}
+
+describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sms', () => {
+  let t: TestApp;
+  let llm: FakeLlmService;
+  let broker: BrokerService;
+  let service: ConversationsService;
+
+  let tenantTkc: { id: string };
+  let tenantTrf: { id: string };
+  let tenantSms: { id: string };
+
+  function simulate(from: string, tenantId: string, body = 'hola') {
+    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+  }
+
+  /** Tenant + rol + usuario conocido con un flujo de inicio propio armado con `nodes`/`edges`. */
+  async function setupKnownFlow(tenantId: string, label: string, nodes: FlowNode[], edges: FlowEdge[]) {
+    const role = await createRole(t.prisma, { tenantId, name: label });
+    const phone = uniquePhone();
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail(label.toLowerCase()),
+      phone,
+      firstName: label,
+      memberships: [{ tenantId, roleId: role.id }],
+    });
+    await createFlow(t.prisma, {
+      name: label,
+      nodes,
+      edges,
+      assign: [{ tenantId, isStart: true, roleIds: [role.id] }],
+    });
+    return { phone, user, role };
+  }
+
+  beforeAll(async () => {
+    llm = new FakeLlmService();
+    t = await createTestApp({
+      customize: (b) => b.overrideProvider(LlmService).useValue(llm),
+    });
+    broker = t.moduleRef.get(BrokerService);
+    service = t.moduleRef.get(ConversationsService);
+
+    tenantTkc = await createTenant(t.prisma, { slug: uniqueSlug('tkc') });
+    tenantTrf = await createTenant(t.prisma, { slug: uniqueSlug('trf') });
+    tenantSms = await createTenant(t.prisma, { slug: uniqueSlug('sms') });
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  beforeEach(() => {
+    llm.reset();
+    t.email.reset();
+  });
+
+  afterEach(async () => {
+    // Settings globales (Setting.key es único): limpiar siempre, aunque el test que las usó
+    // ya haya hecho su propio cleanup — red de seguridad si un assert corta antes de tiempo.
+    await deleteSetting(t.prisma, 'INVGATE_API_URL');
+    await deleteSetting(t.prisma, 'INVGATE_API_USER');
+    await deleteSetting(t.prisma, 'INVGATE_API_KEY');
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // ticket_create (CHAT-N-TKC-01..06)
+  // ---------------------------------------------------------------------------------------
+  describe('ticket_create (CHAT-N-TKC-*)', () => {
+    it('CHAT-N-TKC-01: subject/description explícitos en data crean el ticket y responde "Ticket #… creado"', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-01',
+        [startNode('s'), ticketCreateNode('tc', { subject: 'Falla de VPN', description: 'No puedo conectarme a la VPN corporativa' }), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id);
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+      expect(ticket).not.toBeNull();
+      expect(ticket!.subject).toBe('Falla de VPN');
+      expect(ticket!.description).toBe('No puedo conectarme a la VPN corporativa');
+      expect(ticket!.priority).toBe('medium'); // data.priority no seteado → default del nodo
+      expect(ticket!.userId).toBe(user.id);
+      expect(ticket!.tenantId).toBe(tenantTkc.id);
+      expect(res.body.reply).toContain(`Ticket #${ticket!.id} creado. Un agente te contactará pronto.`);
+    });
+
+    it('CHAT-N-TKC-02: sin data.subject, usa los primeros 100 caracteres del mensaje (la description NO se trunca)', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-02',
+        [startNode('s'), ticketCreateNode('tc', {}), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'e')],
+      );
+
+      const longBody =
+        'Hola, tengo un problema con el sistema de facturación de la sucursal norte. El problema ' +
+        'empezó esta mañana y los clientes siguen esperando en el mostrador.';
+      expect(longBody.length).toBeGreaterThan(100);
+
+      const res = await simulate(phone, tenantTkc.id, longBody);
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+      expect(ticket!.subject).toBe(longBody.substring(0, 100));
+      expect(ticket!.description).toBe(longBody);
+    });
+
+    it('CHAT-N-TKC-03a: sin data.description, usa flowState.description por sobre el mensaje', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-03-desc',
+        [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'description', value: 'Descripción cargada por un nodo anterior' }),
+          ticketCreateNode('tc', {}),
+          endNode('e'),
+        ],
+        [edge('s', 'v', 'known'), edge('v', 'tc'), edge('tc', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id, 'necesito soporte técnico');
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+      expect(ticket!.description).toBe('Descripción cargada por un nodo anterior');
+    });
+
+    it('CHAT-N-TKC-03b: data.priority explícito prevalece sobre el default "medium"', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-03-prio',
+        [startNode('s'), ticketCreateNode('tc', { priority: 'high' }), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id, 'necesito soporte técnico');
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+      expect(ticket!.priority).toBe('high');
+    });
+
+    it('CHAT-N-TKC-04: si prisma.ticket.create falla (BD caída), la excepción se propaga y corta la charla', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-04',
+        [startNode('s'), ticketCreateNode('tc', {}), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'e')],
+      );
+
+      // Se llama a `handleMessage` (privado) directo en vez de pasar por /conversations/simulate:
+      // cuando el handler que recibe `BrokerService.subscribe()` tira una excepción no capturada,
+      // `setupConsumer` la loguea y hace `nack` (ver broker.service.ts) — nunca publica la
+      // respuesta RPC. `broker.request()` colgaría hasta su propio timeout de 300s
+      // (SIMULATE_TIMEOUT_MS). Llamar directo al método real (nada mockeado del motor) deja ver
+      // la excepción de inmediato, sin ese cuelgue artificial.
+      const createSpy = jest
+        .spyOn(t.prisma.ticket, 'create')
+        .mockRejectedValueOnce(new Error('DB caída (simulada para el test)'));
+
+      try {
+        await expect(
+          (service as unknown as { handleMessage: (msg: unknown) => Promise<string> }).handleMessage({
+            pattern: 'message.received',
+            data: { from: phone, body: 'necesito soporte técnico' },
+            tenantId: tenantTkc.id,
+            timestamp: new Date().toISOString(),
+          }),
+        ).rejects.toThrow('DB caída (simulada para el test)');
+      } finally {
+        createSpy.mockRestore();
+      }
+
+      // Filtrado por `userId` (no por `description`): otro caso de este mismo archivo
+      // (TKC-03b) comparte tenant y el mismo texto de body/description ("necesito soporte
+      // técnico"), así que filtrar por texto contaría también SU ticket.
+      const count = await t.prisma.ticket.count({ where: { tenantId: tenantTkc.id, userId: user.id } });
+      expect(count).toBe(0); // la excepción cortó antes de que el ticket quedara creado
+    });
+
+    it(
+      'CHAT-N-TKC-05 / CHAT-N-TKQ-04: category/priority/type por NOMBRE sincronizan con InvGate; ticket_query trae y traduce el estado real',
+      async () => {
+        const { phone, user } = await setupKnownFlow(
+          tenantTkc.id,
+          'TKC-05-TKQ-04A',
+          [
+            startNode('s'),
+            ticketCreateNode('tc', { subject: 'Problema de red', category: 'Redes', priority: 'Alta', ticketType: 'Incidente' }),
+            ticketQueryNode('tq', {}),
+            endNode('e'),
+          ],
+          [edge('s', 'tc', 'known'), edge('tc', 'tq'), edge('tq', 'e')],
+        );
+
+        await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
+        await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
+        await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
+
+        const mock = makeInvgateMock({
+          categories: [{ id: 501, name: 'Redes' }],
+          priorities: [{ id: 2, name: 'Alta' }],
+          types: [{ id: 7, name: 'Incidente' }],
+          statuses: [
+            { id: 1, name: 'Abierto' },
+            { id: 2, name: 'Resuelto' },
+          ],
+          creatorIdByUsername: { chatbot_test: 42 },
+          customerIdByPhone: { [phone]: 777 },
+          initialStatusId: 1,
+        });
+        const fetchMock = installFetchMock(mock.router);
+
+        try {
+          const res = await simulate(phone, tenantTkc.id, 'tengo un problema de red');
+          expect(res.status).toBe(201);
+          expect(res.body.reply).toContain('creado. Un agente te contactará pronto.');
+          expect(res.body.reply).toContain('Estado: Abierto');
+
+          const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+          expect(ticket!.invgateId).not.toBeNull();
+          expect(mock.incidents.has(Number(ticket!.invgateId))).toBe(true);
+          expect(ticket!.status).toBe('Abierto'); // refreshInvgateStatus actualiza el estado local
+        } finally {
+          fetchMock.restore();
+        }
+      },
+      20000,
+    );
+
+    it('CHAT-N-TKC-06: si el teléfono no matchea ningún customer_id de InvGate, el ticket local se crea igual y el sync se saltea', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-06',
+        [startNode('s'), ticketCreateNode('tc', { subject: 'Problema sin cliente en InvGate' }), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'e')],
+      );
+
+      await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
+      await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
+      await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
+
+      // customerIdByPhone vacío a propósito: ningún usuario de InvGate matchea este teléfono.
+      const mock = makeInvgateMock({ creatorIdByUsername: { chatbot_test: 42 } });
+      const fetchMock = installFetchMock(mock.router);
+
+      try {
+        const res = await simulate(phone, tenantTkc.id, 'tengo un problema');
+        expect(res.status).toBe(201);
+
+        const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+        expect(ticket).not.toBeNull();
+        expect(ticket!.invgateId).toBeNull(); // sync salteado, best-effort
+        expect(res.body.reply).toContain(`Ticket #${ticket!.id} creado. Un agente te contactará pronto.`); // la charla sigue normal
+      } finally {
+        fetchMock.restore();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // ticket_query (CHAT-N-TKQ-01..04)
+  // ---------------------------------------------------------------------------------------
+  describe('ticket_query (CHAT-N-TKQ-*)', () => {
+    it('CHAT-N-TKQ-01: con lastTicketId del propio tenant devuelve asunto y estado', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKQ-01',
+        [startNode('s'), ticketCreateNode('tc', { subject: 'Consulta simple' }), ticketQueryNode('tq', {}), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'tq'), edge('tq', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id, 'necesito ayuda');
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+      expect(res.body.reply).toContain(`Ticket #${ticket!.id}: Consulta simple - Estado: open`);
+    });
+
+    it('CHAT-N-TKQ-02: sin ticket disponible responde "No encontré el ticket solicitado."', async () => {
+      const { phone } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKQ-02',
+        [startNode('s'), ticketQueryNode('tq', {}), endNode('e')],
+        [edge('s', 'tq', 'known'), edge('tq', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id, 'quiero ver mi ticket');
+      expect(res.status).toBe(201);
+      expect(res.body.reply).toContain('No encontré el ticket solicitado.');
+    });
+
+    it.failing('CHAT-N-TKQ-03: una variable que apunta a un ticket de OTRO tenant no debería devolverlo (SEC-08)', async () => {
+      const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('tkc-other') });
+      const owner = await createUser(t.prisma, { email: uniqueEmail('owner-other'), phone: uniquePhone(), firstName: 'Owner' });
+      const foreignTicket = await t.prisma.ticket.create({
+        data: {
+          userId: owner.id,
+          tenantId: tenantOther.id,
+          subject: 'Ticket confidencial de otra empresa',
+          description: 'No debería verse desde otro tenant',
+          priority: 'medium',
+        },
+      });
+
+      const { phone } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKQ-03',
+        [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'ticketRef', value: foreignTicket.id }),
+          ticketQueryNode('tq', { ticketIdVariable: 'ticketRef' }),
+          endNode('e'),
+        ],
+        [edge('s', 'v', 'known'), edge('v', 'tq'), edge('tq', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id, 'quiero ver el ticket');
+
+      // Comportamiento SEGURO esperado: el motor debería filtrar por tenant y no encontrar nada.
+      // Hoy `ticket.findUnique({ where: { id } })` (executeNode, case 'ticket_query') no filtra
+      // por tenantId, así que devuelve el ticket de la otra empresa con su subject real — este
+      // assert falla contra el código actual y `it.failing` lo marca verde. Cuando se agregue el
+      // filtro de tenant, este test empieza a pasar de verdad y `it.failing` grita para sacar el
+      // marcador.
+      expect(res.body.reply).toContain('No encontré el ticket solicitado.');
+    });
+
+    it('CHAT-N-TKQ-04b: si InvGate no responde al consultar el ticket, cae al estado local sin romper la charla', async () => {
+      const owner = await createUser(t.prisma, { email: uniqueEmail('tkq04b'), phone: uniquePhone(), firstName: 'Owner' });
+      const ticket = await t.prisma.ticket.create({
+        data: {
+          userId: owner.id,
+          tenantId: tenantTkc.id,
+          subject: 'Ticket ya sincronizado con InvGate',
+          description: 'Consulta previa',
+          priority: 'medium',
+          invgateId: '4242',
+          status: 'open',
+        },
+      });
+
+      const { phone } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKQ-04B',
+        [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'ticketRef', value: ticket.id }),
+          ticketQueryNode('tq', { ticketIdVariable: 'ticketRef' }),
+          endNode('e'),
+        ],
+        [edge('s', 'v', 'known'), edge('v', 'tq'), edge('tq', 'e')],
+      );
+
+      await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
+      await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
+      await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
+
+      const mock = makeInvgateMock({ failGetIncident: true });
+      const fetchMock = installFetchMock(mock.router);
+
+      try {
+        const res = await simulate(phone, tenantTkc.id, 'quiero el estado de mi ticket');
+        expect(res.status).toBe(201);
+        expect(res.body.reply).toContain(`Ticket #${ticket.id}: Ticket ya sincronizado con InvGate - Estado: open`);
+
+        const refreshed = await t.prisma.ticket.findUnique({ where: { id: ticket.id } });
+        expect(refreshed!.status).toBe('open'); // sin cambios: InvGate no respondió, se mantuvo el local
+      } finally {
+        fetchMock.restore();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // transfer_agent (CHAT-N-TRF-01..07)
+  // ---------------------------------------------------------------------------------------
+  describe('transfer_agent (CHAT-N-TRF-*)', () => {
+    it('CHAT-N-TRF-01: methods incluye "ticket" y hay assignee → crea el ticket asignado (round robin) y guarda lastTicketId', async () => {
+      const agent = await createUser(t.prisma, { email: uniqueEmail('trf01-agent'), phone: uniquePhone(), firstName: 'Agente Uno' });
+      const { phone, user } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-01',
+        [startNode('s'), transferAgentNode('ta', { methods: ['ticket'], assignees: [agent.id] }), endNode('e')],
+        [edge('s', 'ta', 'known'), edge('ta', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTrf.id, 'necesito hablar con un humano');
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTrf.id } });
+      expect(ticket).not.toBeNull();
+      expect(ticket!.assignedToId).toBe(agent.id);
+      expect(ticket!.subject).toBe('necesito hablar con un humano'); // sin flowState.subject, usa el body (recortado a 100)
+      expect(ticket!.priority).toBe('medium');
+    });
+
+    it('CHAT-N-TRF-02: methods incluye "email" → notifica a assignee + watchers + collaborators, deduplicados', async () => {
+      const agent = await createUser(t.prisma, { email: uniqueEmail('trf02-agent'), phone: uniquePhone(), firstName: 'Agente' });
+      const watcher = await createUser(t.prisma, { email: uniqueEmail('trf02-watcher'), phone: uniquePhone(), firstName: 'Watcher' });
+      const collab = await createUser(t.prisma, { email: uniqueEmail('trf02-collab'), phone: uniquePhone(), firstName: 'Colaborador' });
+
+      const { phone } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-02',
+        [
+          startNode('s'),
+          transferAgentNode('ta', {
+            methods: ['email'],
+            assignees: [agent.id],
+            watchers: [agent.id, watcher.id], // agent.id repetido a propósito: prueba el dedup
+            collaborators: [watcher.id, collab.id], // watcher.id repetido también
+          }),
+          endNode('e'),
+        ],
+        [edge('s', 'ta', 'known'), edge('ta', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTrf.id, 'necesito hablar con un humano');
+      expect(res.status).toBe(201);
+
+      expect(t.email.sent).toHaveLength(3); // agent + watcher + collab, sin duplicados
+      const recipients = t.email.sent.map((m) => m.to).sort();
+      expect(recipients).toEqual([agent.email, collab.email, watcher.email].sort());
+      expect(t.email.lastTo(agent.email)!.text).toContain('fue transferido a soporte humano');
+      expect(t.email.lastTo(agent.email)!.text).not.toContain('Ticket:'); // methods no incluye 'ticket': no hay lastTicketId
+    });
+
+    it('CHAT-N-TRF-03: methods incluye "ticket" pero sin assignees → no crea ticket', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-03',
+        [startNode('s'), transferAgentNode('ta', { methods: ['ticket'], assignees: [] }), endNode('e')],
+        [edge('s', 'ta', 'known'), edge('ta', 'e')],
+      );
+
+      const before = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, userId: user.id } });
+      const res = await simulate(phone, tenantTrf.id, 'necesito hablar con un humano');
+      expect(res.status).toBe(201);
+      const after = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, userId: user.id } });
+      expect(after).toBe(before); // sin assignees, `assignee` da null → el bloque 'ticket' no corre
+    });
+
+    it(
+      'CHAT-N-TRF-04: el round robin de assignees es GLOBAL por nodo, no por conversación',
+      async () => {
+        const agentA = await createUser(t.prisma, { email: uniqueEmail('trf04-a'), phone: uniquePhone(), firstName: 'A' });
+        const agentB = await createUser(t.prisma, { email: uniqueEmail('trf04-b'), phone: uniquePhone(), firstName: 'B' });
+
+        const role = await createRole(t.prisma, { tenantId: tenantTrf.id, name: 'TRF-04' });
+        await createFlow(t.prisma, {
+          name: 'TRF-04',
+          nodes: [startNode('s'), transferAgentNode('ta', { methods: ['ticket'], assignees: [agentA.id, agentB.id] }), endNode('e')],
+          edges: [edge('s', 'ta', 'known'), edge('ta', 'e')],
+          assign: [{ tenantId: tenantTrf.id, isStart: true, roleIds: [role.id] }],
+        });
+
+        async function knownUser(label: string) {
+          const phone = uniquePhone();
+          const user = await createUser(t.prisma, {
+            email: uniqueEmail(label),
+            phone,
+            firstName: label,
+            memberships: [{ tenantId: tenantTrf.id, roleId: role.id }],
+          });
+          return { phone, user };
+        }
+
+        const x = await knownUser('trf04-x');
+        const y = await knownUser('trf04-y');
+        const z = await knownUser('trf04-z');
+
+        await simulate(x.phone, tenantTrf.id, 'transferime');
+        await simulate(y.phone, tenantTrf.id, 'transferime');
+        await simulate(z.phone, tenantTrf.id, 'transferime');
+
+        const ticketX = await t.prisma.ticket.findFirst({ where: { tenantId: tenantTrf.id, userId: x.user.id } });
+        const ticketY = await t.prisma.ticket.findFirst({ where: { tenantId: tenantTrf.id, userId: y.user.id } });
+        const ticketZ = await t.prisma.ticket.findFirst({ where: { tenantId: tenantTrf.id, userId: z.user.id } });
+
+        expect(ticketX!.assignedToId).toBe(agentA.id); // lastIndex -1 → 0 → A
+        expect(ticketY!.assignedToId).toBe(agentB.id); // lastIndex 0 → 1 → B
+        expect(ticketZ!.assignedToId).toBe(agentA.id); // lastIndex 1 → 0 (%2) → A de nuevo: da la vuelta
+      },
+      20000,
+    );
+
+    it('CHAT-N-TRF-05: methods incluye "phone" (sin implementar) → no rompe el flujo', async () => {
+      const agent = await createUser(t.prisma, { email: uniqueEmail('trf05-agent'), phone: uniquePhone(), firstName: 'Agente' });
+      const { phone, user } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-05',
+        [startNode('s'), transferAgentNode('ta', { methods: ['phone'], assignees: [agent.id] }), endNode('e')],
+        [edge('s', 'ta', 'known'), edge('ta', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTrf.id, 'necesito que me llamen');
+      expect(res.status).toBe(201); // no explota
+
+      const ticketCount = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, userId: user.id } });
+      expect(ticketCount).toBe(0); // 'phone' no está contemplado en el nodo: no crea ticket
+      expect(t.email.sent).toHaveLength(0); // tampoco manda mail
+    });
+
+    it('CHAT-N-TRF-06: data.message con {{variables}} se interpola antes de armar el mail y el ticket', async () => {
+      const agent = await createUser(t.prisma, { email: uniqueEmail('trf06-agent'), phone: uniquePhone(), firstName: 'Agente' });
+      const { phone, user } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-06',
+        [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'urgencia', value: 'alta' }),
+          transferAgentNode('ta', { methods: ['ticket', 'email'], assignees: [agent.id], message: 'Urgencia: {{urgencia}}' }),
+          endNode('e'),
+        ],
+        [edge('s', 'v', 'known'), edge('v', 'ta'), edge('ta', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTrf.id, 'necesito ayuda urgente');
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTrf.id } });
+      expect(ticket!.description).toContain('Urgencia: alta');
+      expect(ticket!.description).not.toContain('{{urgencia}}');
+
+      expect(t.email.lastTo(agent.email)!.text).toContain('Nota: Urgencia: alta');
+      expect(t.email.lastTo(agent.email)!.text).not.toContain('{{urgencia}}');
+    });
+
+    it('CHAT-N-TRF-07: methods incluye "email" pero sin assignee/watchers/collaborators → no manda mail, no rompe, sigue', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-07',
+        [startNode('s'), transferAgentNode('ta', { methods: ['email'], assignees: [], watchers: [], collaborators: [] }), endNode('e')],
+        [edge('s', 'ta', 'known'), edge('ta', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTrf.id, 'hola');
+      expect(res.status).toBe(201);
+      expect(t.email.sent).toHaveLength(0);
+
+      const ticketCount = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, userId: user.id } });
+      expect(ticketCount).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // sms (CHAT-N-SMS-01..04)
+  // ---------------------------------------------------------------------------------------
+  describe('sms (CHAT-N-SMS-*)', () => {
+    it('CHAT-N-SMS-01: interpola el message y publica en sms.outgoing por cada recipient con teléfono; saltea a los que no tienen', async () => {
+      const agentWithPhone = await createUser(t.prisma, { email: uniqueEmail('sms01-a'), phone: uniquePhone(), firstName: 'Con teléfono' });
+      const agentNoPhone = await createUser(t.prisma, { email: uniqueEmail('sms01-b'), phone: null, firstName: 'Sin teléfono' });
+
+      const { phone } = await setupKnownFlow(
+        tenantSms.id,
+        'SMS-01',
+        [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'urgencia', value: 'crítica' }),
+          smsNode('sm', { recipients: [agentWithPhone.id, agentNoPhone.id], message: 'Alerta: {{urgencia}}' }),
+          endNode('e'),
+        ],
+        [edge('s', 'v', 'known'), edge('v', 'sm'), edge('sm', 'e')],
+      );
+
+      const publishSpy = jest.spyOn(broker, 'publish');
+      try {
+        const res = await simulate(phone, tenantSms.id, 'hola');
+        expect(res.status).toBe(201);
+
+        const smsCalls = publishSpy.mock.calls.filter(([queue]) => queue === 'sms.outgoing');
+        expect(smsCalls).toHaveLength(1); // solo el que tiene teléfono cargado
+        const [, message] = smsCalls[0] as [string, { pattern: string; data: { to: string; body: string }; tenantId: string }];
+        expect(message.data).toEqual({ to: agentWithPhone.phone, body: 'Alerta: crítica' });
+        expect(message.pattern).toBe('message.send');
+        expect(message.tenantId).toBe(tenantSms.id);
+      } finally {
+        publishSpy.mockRestore();
+      }
+    });
+
+    it('CHAT-N-SMS-02a: sin recipients → no publica nada, el flujo sigue', async () => {
+      const { phone } = await setupKnownFlow(
+        tenantSms.id,
+        'SMS-02A',
+        [startNode('s'), smsNode('sm', { recipients: [], message: 'Alerta' }), endNode('e')],
+        [edge('s', 'sm', 'known'), edge('sm', 'e')],
+      );
+
+      const publishSpy = jest.spyOn(broker, 'publish');
+      try {
+        const res = await simulate(phone, tenantSms.id, 'hola');
+        expect(res.status).toBe(201);
+        expect(publishSpy.mock.calls.filter(([q]) => q === 'sms.outgoing')).toHaveLength(0);
+      } finally {
+        publishSpy.mockRestore();
+      }
+    });
+
+    it('CHAT-N-SMS-02b: sin message → no publica nada, el flujo sigue', async () => {
+      const agent = await createUser(t.prisma, { email: uniqueEmail('sms02b'), phone: uniquePhone(), firstName: 'Agente' });
+      const { phone } = await setupKnownFlow(
+        tenantSms.id,
+        'SMS-02B',
+        [startNode('s'), smsNode('sm', { recipients: [agent.id] }), endNode('e')], // sin data.message
+        [edge('s', 'sm', 'known'), edge('sm', 'e')],
+      );
+
+      const publishSpy = jest.spyOn(broker, 'publish');
+      try {
+        const res = await simulate(phone, tenantSms.id, 'hola');
+        expect(res.status).toBe(201);
+        expect(publishSpy.mock.calls.filter(([q]) => q === 'sms.outgoing')).toHaveLength(0);
+      } finally {
+        publishSpy.mockRestore();
+      }
+    });
+
+    it(
+      'CHAT-N-SMS-03: sin credenciales de Twilio configuradas, el nodo publica igual en sms.outgoing pero el SMS se pierde en silencio',
+      async () => {
+        // Discrepancia con el plan: dice "SMS_PROVIDER sin configurar → nadie consume
+        // sms.outgoing", pero `twilio-sms.service.ts` muestra que el default de SMS_PROVIDER
+        // ES 'twilio' — TwilioSmsService SÍ está suscripto por default. El efecto observable es
+        // el mismo que describe el plan igual: sin TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/
+        // TWILIO_SMS_FROM en /settings, `sendText()` resuelve con un warn y un `return` (nunca
+        // llega a llamar `fetch`) — el SMS se pierde en silencio.
+        const agent = await createUser(t.prisma, { email: uniqueEmail('sms03'), phone: uniquePhone(), firstName: 'Agente' });
+        const { phone } = await setupKnownFlow(
+          tenantSms.id,
+          'SMS-03',
+          [startNode('s'), smsNode('sm', { recipients: [agent.id], message: 'Aviso de prueba' }), endNode('e')],
+          [edge('s', 'sm', 'known'), edge('sm', 'e')],
+        );
+
+        const fetchMock = installFetchMock(() => ({ status: 200, body: { sid: 'SM_no_deberia_llamarse' } }));
+        const publishSpy = jest.spyOn(broker, 'publish');
+        try {
+          const res = await simulate(phone, tenantSms.id, 'hola');
+          expect(res.status).toBe(201);
+
+          const smsCalls = publishSpy.mock.calls.filter(([q]) => q === 'sms.outgoing');
+          expect(smsCalls).toHaveLength(1); // el nodo publicó igual
+
+          await new Promise((r) => setTimeout(r, 500)); // deja que TwilioSmsService (competidor real) procese
+          expect(fetchMock.requests).toHaveLength(0); // pero nunca llegó a pegarle a la API de Twilio
+        } finally {
+          publishSpy.mockRestore();
+          fetchMock.restore();
+        }
+      },
+      10000,
+    );
+
+    it.failing('CHAT-N-SMS-04: un recipient de OTRA empresa no debería recibir el SMS (SEC-18)', async () => {
+      const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('sms-other') });
+      const roleOther = await createRole(t.prisma, { tenantId: tenantOther.id, name: 'Agente externo' });
+      const foreignPhone = uniquePhone();
+      const foreignAgent = await createUser(t.prisma, {
+        email: uniqueEmail('sms04-foreign'),
+        phone: foreignPhone,
+        firstName: 'Externo',
+        memberships: [{ tenantId: tenantOther.id, roleId: roleOther.id }],
+      });
+
+      const { phone } = await setupKnownFlow(
+        tenantSms.id,
+        'SMS-04',
+        [startNode('s'), smsNode('sm', { recipients: [foreignAgent.id], message: 'Aviso interno' }), endNode('e')],
+        [edge('s', 'sm', 'known'), edge('sm', 'e')],
+      );
+
+      const publishSpy = jest.spyOn(broker, 'publish');
+      try {
+        const res = await simulate(phone, tenantSms.id, 'hola');
+        expect(res.status).toBe(201);
+
+        const toForeignPhone = publishSpy.mock.calls.filter(
+          ([queue, message]) => queue === 'sms.outgoing' && (message as { data?: { to?: string } }).data?.to === foreignPhone,
+        );
+        // Comportamiento SEGURO esperado: `sms.recipients` debería scopearse por tenantId, así
+        // que un userId de otra empresa no debería resolver ningún destinatario acá. Hoy
+        // `prisma.user.findMany({ where: { id: { in: recipientIds } } })` (executeSmsNode) no
+        // filtra por tenant, así que SÍ le manda el SMS — este assert falla contra el código
+        // actual y `it.failing` lo marca verde. Al agregar el filtro de tenant, este test
+        // empieza a pasar de verdad.
+        expect(toForeignPhone).toHaveLength(0);
+      } finally {
+        publishSpy.mockRestore();
+      }
+    });
+  });
+});
