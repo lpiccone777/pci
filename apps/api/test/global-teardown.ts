@@ -13,8 +13,35 @@ const HANDOFF_FILE = path.join(os.tmpdir(), 'pci-e2e-db.json');
 
 export default async function globalTeardown(): Promise<void> {
   if (!fs.existsSync(HANDOFF_FILE)) return;
-  const { dbName, maintenanceUrl } = JSON.parse(fs.readFileSync(HANDOFF_FILE, 'utf8'));
-  if (!dbName || !maintenanceUrl) return;
+  const { dbName, maintenanceUrl, vhost, rabbitMgmt } = JSON.parse(
+    fs.readFileSync(HANDOFF_FILE, 'utf8'),
+  );
+
+  // Borrar el vhost efímero de RabbitMQ (si se creó). El DELETE cierra de una las conexiones
+  // que hubiera abiertas contra él. Best-effort: un fallo acá no debe tumbar el teardown de la
+  // base; a lo sumo queda un vhost vacío huérfano, inocuo.
+  if (vhost && rabbitMgmt) {
+    try {
+      const auth = Buffer.from(`${rabbitMgmt.user}:${rabbitMgmt.pass}`).toString('base64');
+      const res = await fetch(
+        `${rabbitMgmt.baseUrl}/api/vhosts/${encodeURIComponent(vhost)}`,
+        { method: 'DELETE', headers: { Authorization: `Basic ${auth}` } },
+      );
+      if (res.ok) {
+        console.log(`\n[e2e] Vhost de RabbitMQ efímero eliminado: ${vhost}`);
+      } else {
+        console.warn(`[e2e] No se pudo eliminar el vhost efímero ${vhost} (HTTP ${res.status}).`);
+      }
+    } catch (err) {
+      const motivo = err instanceof Error ? err.message : String(err);
+      console.warn(`[e2e] No se pudo eliminar el vhost efímero ${vhost} (${motivo}).`);
+    }
+  }
+
+  if (!dbName || !maintenanceUrl) {
+    fs.unlinkSync(HANDOFF_FILE);
+    return;
+  }
 
   const admin = new PrismaClient({ datasources: { db: { url: maintenanceUrl } } });
   try {

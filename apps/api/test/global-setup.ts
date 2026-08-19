@@ -44,6 +44,160 @@ function readEnvVar(name: string): string | undefined {
   return undefined;
 }
 
+/** Llama al management API de RabbitMQ con basic auth. Lanza si la respuesta no es 2xx. */
+async function rabbitMgmtRequest(
+  mgmt: { baseUrl: string; user: string; pass: string },
+  method: string,
+  apiPath: string,
+  body?: unknown,
+): Promise<void> {
+  const auth = Buffer.from(`${mgmt.user}:${mgmt.pass}`).toString('base64');
+  const res = await fetch(`${mgmt.baseUrl}${apiPath}`, {
+    method,
+    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`${method} ${apiPath} → ${res.status} ${await res.text()}`);
+  }
+}
+
+/**
+ * Crea un vhost de RabbitMQ EFÍMERO para aislar el broker de los tests de cualquier otra
+ * instancia de la API conectada al mismo servidor. La cola del simulate
+ * (`whatsapp.simulate.incoming`) pasa a vivir dentro de ese vhost, así que un `dev:api`
+ * corriendo en el vhost por defecto (`/`) ya no compite por sus mensajes: el problema de
+ * "varias instancias contra el mismo broker" que documenta `BrokerService.request` queda
+ * resuelto para la corrida de tests, sin tocar el código de producción (el nombre de la cola
+ * no cambia; cambia el vhost donde vive, y eso viaja en `RABBITMQ_URL`).
+ *
+ * Es best-effort: si no se puede crear (p. ej. sin plugin de management), devuelve `null` y
+ * los tests caen al comportamiento previo (vhost compartido `/`), sin romperse.
+ */
+async function setupEphemeralVhost(suffix: string): Promise<{
+  vhost: string;
+  rabbitUrl: string;
+  rabbitMgmt: { baseUrl: string; user: string; pass: string };
+} | null> {
+  const baseRabbitUrl = readEnvVar('RABBITMQ_URL');
+  if (!baseRabbitUrl) {
+    console.warn(
+      '[e2e] RABBITMQ_URL no encontrada; los tests que usan el broker corren sobre el vhost compartido.',
+    );
+    return null;
+  }
+
+  let amqpUrl: URL;
+  try {
+    amqpUrl = new URL(baseRabbitUrl);
+  } catch {
+    console.warn('[e2e] RABBITMQ_URL no es una URL válida; se omite el aislamiento del broker.');
+    return null;
+  }
+
+  const user = amqpUrl.username ? decodeURIComponent(amqpUrl.username) : 'guest';
+  const pass = amqpUrl.password ? decodeURIComponent(amqpUrl.password) : 'guest';
+  const baseUrl = process.env.RABBITMQ_MANAGEMENT_URL || `http://${amqpUrl.hostname}:15672`;
+  const vhost = `pci_test_${suffix}`;
+  const rabbitMgmt = { baseUrl, user, pass };
+
+  try {
+    // Crear el vhost y darle permisos totales al usuario: un vhost recién creado no tiene
+    // permisos para nadie, así que sin esto el BrokerService no podría declarar colas.
+    await rabbitMgmtRequest(rabbitMgmt, 'PUT', `/api/vhosts/${encodeURIComponent(vhost)}`);
+    await rabbitMgmtRequest(
+      rabbitMgmt,
+      'PUT',
+      `/api/permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(user)}`,
+      { configure: '.*', write: '.*', read: '.*' },
+    );
+  } catch (err) {
+    const motivo = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[e2e] No se pudo crear el vhost de RabbitMQ efímero (${motivo}).\n` +
+        '      Los tests que usan el broker corren sobre el vhost compartido: si hay otra\n' +
+        '      instancia de la API conectada al mismo RabbitMQ, los casos CHAT-* pueden fallar\n' +
+        '      por competencia de consumidores (round-robin sobre la cola del simulate).',
+    );
+    return null;
+  }
+
+  // Misma URL del broker, pero apuntando al vhost efímero (viaja en el path del amqp://).
+  const ephemeralRabbit = new URL(baseRabbitUrl);
+  ephemeralRabbit.pathname = `/${vhost}`;
+
+  return { vhost, rabbitUrl: ephemeralRabbit.toString(), rabbitMgmt };
+}
+
+/**
+ * Fail-fast del MODO DEGRADADO: cuando no se pudo aislar el broker en un vhost efímero, los
+ * tests caen al vhost compartido (`/`). Si en ese vhost ya hay otra instancia de la API
+ * consumiendo la cola del simulate, los casos CHAT-* se colgarían hasta el timeout de
+ * `simulateIncomingMessage` (300s) antes de fallar sin decir por qué. Este chequeo lo detecta
+ * y aborta la corrida de una, con un mensaje accionable, en vez de dejar que se cuelgue.
+ *
+ * Solo tiene sentido en modo degradado: con vhost efímero, su cola nace vacía y no puede haber
+ * competidor. La verificación en sí es best-effort — si el management API no se puede consultar,
+ * avisa y sigue, para no convertir un problema de diagnóstico en un falso impedimento.
+ */
+async function assertNoCompetingSimulateConsumer(): Promise<void> {
+  // Nombre de la cola del simulate en producción (ConversationsService.SIMULATE_QUEUE). Es un
+  // literal estable; no se importa para no acoplar el setup de test al código de producción.
+  const SIMULATE_QUEUE_NAME = 'whatsapp.simulate.incoming';
+
+  const baseRabbitUrl = readEnvVar('RABBITMQ_URL');
+  if (!baseRabbitUrl) return;
+
+  let amqpUrl: URL;
+  try {
+    amqpUrl = new URL(baseRabbitUrl);
+  } catch {
+    return;
+  }
+
+  const user = amqpUrl.username ? decodeURIComponent(amqpUrl.username) : 'guest';
+  const pass = amqpUrl.password ? decodeURIComponent(amqpUrl.password) : 'guest';
+  const baseUrl = process.env.RABBITMQ_MANAGEMENT_URL || `http://${amqpUrl.hostname}:15672`;
+  // El vhost donde correrían los tests en modo degradado: el del `.env` (por defecto, `/`).
+  const vhost =
+    amqpUrl.pathname && amqpUrl.pathname !== '/' ? decodeURIComponent(amqpUrl.pathname.slice(1)) : '/';
+
+  let consumers: number;
+  try {
+    const auth = Buffer.from(`${user}:${pass}`).toString('base64');
+    const res = await fetch(
+      `${baseUrl}/api/queues/${encodeURIComponent(vhost)}/${encodeURIComponent(SIMULATE_QUEUE_NAME)}`,
+      { headers: { Authorization: `Basic ${auth}` } },
+    );
+    // 404 = la cola todavía no existe en ese vhost → no hay competidor posible.
+    if (res.status === 404) return;
+    if (!res.ok) {
+      console.warn(
+        `[e2e] No pude verificar consumidores de ${SIMULATE_QUEUE_NAME} (HTTP ${res.status}); sigo sin chequear.`,
+      );
+      return;
+    }
+    const body = (await res.json()) as { consumers?: number };
+    consumers = body.consumers ?? 0;
+  } catch (err) {
+    const motivo = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[e2e] No pude verificar consumidores de ${SIMULATE_QUEUE_NAME} (${motivo}); sigo sin chequear.`,
+    );
+    return;
+  }
+
+  if (consumers > 0) {
+    throw new Error(
+      `[e2e] El broker no se pudo aislar en un vhost efímero y la cola ${SIMULATE_QUEUE_NAME} del ` +
+        `vhost "${vhost}" ya tiene ${consumers} consumidor(es) — probablemente otra instancia de la ` +
+        `API (p. ej. un dev:api). Los casos CHAT-* se colgarían hasta 300s antes de fallar.\n` +
+        `      Solución: frená esa instancia, o habilitá el plugin de management de RabbitMQ para ` +
+        `que los tests se aíslen solos en un vhost propio.`,
+    );
+  }
+}
+
 export default async function globalSetup(): Promise<void> {
   const baseUrl = readEnvVar('DATABASE_URL');
   if (!baseUrl) {
@@ -52,7 +206,8 @@ export default async function globalSetup(): Promise<void> {
     );
   }
 
-  const dbName = `pci_test_${Date.now()}_${process.pid}`;
+  const suffix = `${Date.now()}_${process.pid}`;
+  const dbName = `pci_test_${suffix}`;
 
   // Mantenimiento: mismo servidor/credenciales, base `postgres` (para poder crear/dropear otra).
   const maintenanceUrl = new URL(baseUrl);
@@ -87,6 +242,15 @@ export default async function globalSetup(): Promise<void> {
   execSync('npx prisma migrate deploy', { cwd: API_DIR, env: childEnv, stdio: 'inherit' });
   execSync('npx prisma db seed', { cwd: API_DIR, env: childEnv, stdio: 'inherit' });
 
+  // 2.5 Vhost de RabbitMQ efímero para aislar el broker (best-effort; ver la función).
+  const rabbit = await setupEphemeralVhost(suffix);
+
+  // 2.6 Si NO se pudo aislar, fallar rápido y claro ante un consumidor competidor (ver función),
+  //     en vez de dejar que los CHAT-* se cuelguen hasta el timeout del simulate.
+  if (!rabbit) {
+    await assertNoCompetingSimulateConsumer();
+  }
+
   // 3. Handoff para los workers (setup-env.ts) y el teardown.
   fs.writeFileSync(
     HANDOFF_FILE,
@@ -94,10 +258,13 @@ export default async function globalSetup(): Promise<void> {
       dbName,
       dbUrl: ephemeralUrl.toString(),
       maintenanceUrl: maintenanceUrl.toString(),
+      ...(rabbit ?? {}),
     }),
     'utf8',
   );
   process.env.DATABASE_URL = ephemeralUrl.toString();
+  if (rabbit) process.env.RABBITMQ_URL = rabbit.rabbitUrl;
 
   console.log(`\n[e2e] Base de datos efímera creada: ${dbName}`);
+  if (rabbit) console.log(`[e2e] Vhost de RabbitMQ efímero creado: ${rabbit.vhost}`);
 }
