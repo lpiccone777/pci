@@ -96,7 +96,7 @@ export default function FlowsPage() {
         <h1 className="text-2xl font-bold">Flujos IVR</h1>
         {hasPermission('flows', 'create') && (
           <button
-            onClick={() => router.push('/dashboard/flows/new')}
+            onClick={() => router.push('/dashboard/flows/edit?id=new')}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
           >
             Nuevo Flujo
@@ -148,7 +148,7 @@ export default function FlowsPage() {
                 {hasPermission('flows', 'update') && (
                   <>
                     <button
-                      onClick={() => router.push(`/dashboard/flows/${flow.id}`)}
+                      onClick={() => router.push(`/dashboard/flows/edit?id=${flow.id}`)}
                       className="text-blue-600 hover:text-blue-800 text-sm"
                     >
                       Editar
@@ -181,7 +181,7 @@ export default function FlowsPage() {
             No hay flujos configurados.{' '}
             {hasPermission('flows', 'create') && (
               <button
-                onClick={() => router.push('/dashboard/flows/new')}
+                onClick={() => router.push('/dashboard/flows/edit?id=new')}
                 className="text-blue-600 hover:underline"
               >
                 Crear el primero

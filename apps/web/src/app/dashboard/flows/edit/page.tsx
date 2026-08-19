@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ReactFlow,
   Background,
@@ -129,7 +129,8 @@ const nodeTypeList = [
 ];
 
 function FlowEditorInner() {
-  const { id } = useParams();
+  const searchParams = useSearchParams();
+  const id = searchParams.get('id');
   const router = useRouter();
   const isNew = id === 'new';
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -550,7 +551,7 @@ function FlowEditorInner() {
             isStart: isStartFlow,
           }),
         });
-        router.replace(`/dashboard/flows/${created.id}`);
+        router.replace(`/dashboard/flows/edit?id=${created.id}`);
       } else {
         await apiFetch(`/flows/${id}`, {
           method: 'PATCH',
@@ -1738,8 +1739,13 @@ function UserPickerList({
 
 export default function FlowEditorPage() {
   return (
-    <ReactFlowProvider>
-      <FlowEditorInner />
-    </ReactFlowProvider>
+    // useSearchParams() opts the tree below it into client-side rendering — Next
+    // requires a Suspense boundary around it (matters for `output: 'export'`, ver
+    // apps/web/next.config.ts).
+    <Suspense fallback={null}>
+      <ReactFlowProvider>
+        <FlowEditorInner />
+      </ReactFlowProvider>
+    </Suspense>
   );
 }
