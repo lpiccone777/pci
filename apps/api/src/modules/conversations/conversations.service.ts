@@ -1088,17 +1088,24 @@ export class ConversationsService implements OnModuleInit {
    * los resuelve contra el catálogo real de esta instancia; sin match (o sin que la
    * charla haya seteado nada) cae al default configurado en `/settings`.
    */
+  /**
+   * Devuelve el número de incidente de InvGate (`incident.id` — mismo número que su
+   * `pretty_id`, ej. 33 → "#33") cuando sincroniza, o `null` si no (InvGate sin
+   * configurar, customer_id sin resolver, o cualquier error) — así el que llama puede
+   * mostrarle al usuario el ticket REAL de InvGate en vez del id interno (cuid, sin
+   * sentido para quien lo recibe) cuando está disponible, y caer al id local si no.
+   */
   private async syncTicketToInvgate(
     ticket: { id: string; userId: string; subject: string; description: string | null },
     from: string,
     fields: { categoryName?: string; priorityName?: string; typeName?: string } = {},
     attachments: IncidentAttachment[] = [],
-  ): Promise<void> {
-    if (!(await this.invgateService.isConfigured())) return;
+  ): Promise<number | null> {
+    if (!(await this.invgateService.isConfigured())) return null;
 
     try {
       const customerId = await this.resolveInvgateCustomerId(ticket.userId, from);
-      if (!customerId) return;
+      if (!customerId) return null;
 
       const incident = await this.invgateService.createTicketForChat(
         customerId,
@@ -1107,12 +1114,14 @@ export class ConversationsService implements OnModuleInit {
         fields,
         attachments,
       );
-      if (!incident) return;
+      if (!incident) return null;
 
       await this.prisma.ticket.update({ where: { id: ticket.id }, data: { invgateId: String(incident.id) } });
       this.logger.log(`Ticket local ${ticket.id} sincronizado con InvGate #${incident.id}`);
+      return incident.id;
     } catch (err) {
       this.logger.warn(`No se pudo sincronizar el ticket ${ticket.id} con InvGate: ${(err as Error).message}`);
+      return null;
     }
   }
 
@@ -1194,6 +1203,12 @@ export class ConversationsService implements OnModuleInit {
     // variables quedaban sin reemplazar en el mail y en el ticket.
     const note = data.message ? this.interpolate(data.message, flowState) : undefined;
 
+    // Número a mostrarle al agente en el mail (abajo) — el de InvGate si sincronizó
+    // (es el que realmente puede buscar/trabajar ahí), si no el id local como fallback.
+    // `flowState.lastTicketId` NO se toca para esto: lo usa `ticket_query` como clave real
+    // de búsqueda en la tabla `Ticket`, tiene que seguir siendo el cuid interno siempre.
+    let displayTicketId: string | number | undefined;
+
     if (methods.includes('ticket') && assignee) {
       const ticket = await this.prisma.ticket.create({
         data: {
@@ -1206,6 +1221,7 @@ export class ConversationsService implements OnModuleInit {
         },
       });
       flowState.lastTicketId = ticket.id;
+      displayTicketId = ticket.id;
 
       // Mismo criterio que en el nodo `ticket_create` — ver el comentario ahí.
       const pendingAttachments: StoredAttachment[] = Array.isArray(flowState.pendingAttachments)
@@ -1213,7 +1229,7 @@ export class ConversationsService implements OnModuleInit {
         : [];
       flowState.pendingAttachments = [];
 
-      await this.syncTicketToInvgate(
+      const invgateTicketId = await this.syncTicketToInvgate(
         ticket,
         user.phone,
         {
@@ -1223,6 +1239,7 @@ export class ConversationsService implements OnModuleInit {
         },
         await this.loadAttachments(pendingAttachments),
       );
+      if (invgateTicketId) displayTicketId = invgateTicketId;
     }
 
     if (methods.includes('email')) {
@@ -1247,7 +1264,7 @@ export class ConversationsService implements OnModuleInit {
             (note ? `Nota: ${note}\n\n` : '') +
             `Último mensaje: "${body}"\n\n` +
             (assigneeName ? `Asignado a: ${assigneeName}\n` : 'Sin colaborador asignado.\n') +
-            (flowState.lastTicketId ? `Ticket: #${flowState.lastTicketId}\n` : ''),
+            (displayTicketId ? `Ticket: #${displayTicketId}\n` : ''),
         });
       }
     }
@@ -1571,7 +1588,7 @@ export class ConversationsService implements OnModuleInit {
           : [];
         flowState.pendingAttachments = [];
 
-        await this.syncTicketToInvgate(
+        const invgateTicketId = await this.syncTicketToInvgate(
           ticket,
           from,
           {
@@ -1581,8 +1598,12 @@ export class ConversationsService implements OnModuleInit {
           },
           await this.loadAttachments(pendingAttachments),
         );
+        // Con InvGate sincronizado, el usuario ve el ticket REAL (el que va a poder
+        // consultar/que le va a llegar a un agente) en vez del id interno (un cuid sin
+        // sentido para quien lo recibe). Sin sync (InvGate caído, mal configurado, etc.)
+        // cae al id local — sigue siendo un ticket válido, solo que no llegó a InvGate.
         return {
-          responseText: `Ticket #${ticket.id} creado. Un agente te contactará pronto.`,
+          responseText: `Ticket #${invgateTicketId ?? ticket.id} creado. Un agente te contactará pronto.`,
           flowState,
         };
       }
