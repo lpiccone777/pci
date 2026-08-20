@@ -107,11 +107,18 @@ export default function Sidebar() {
   const tenantOptions: TenantOption[] =
     allTenants ?? user?.tenants?.map((t) => t.tenant) ?? [];
 
-  const visibleMenu = menuDefinition.filter(
-    (item) =>
-      hasPermission(item.resource, item.action) &&
-      (!item.systemTenantOnly || isSystemContext),
-  );
+  // El superusuario del sistema ve el menú COMPLETO, sin importar en qué empresa del selector
+  // esté parado: puede operar cualquier pantalla en cualquier empresa (los guards del backend
+  // lo dejan pasar por su vínculo de sistema), así que ninguna opción debe desaparecerle. Para
+  // el resto sigue mandando el permiso del rol, y los ítems solo-sistema exigen contexto de
+  // sistema.
+  const visibleMenu = isSystemUser
+    ? menuDefinition
+    : menuDefinition.filter(
+        (item) =>
+          hasPermission(item.resource, item.action) &&
+          (!item.systemTenantOnly || isSystemContext),
+      );
 
   return (
     <aside className="w-64 bg-gray-900 text-white min-h-screen flex flex-col">
