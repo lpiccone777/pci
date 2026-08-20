@@ -58,6 +58,63 @@ export class FlowService {
     });
   }
 
+  /**
+   * Flujos de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
+   * común, que no es superadmin). Una fila por flujo, deduplicado, con sus empresas — mismo
+   * shape que `findAll`, pero acotado a las empresas donde ESTE usuario puede ver flujos (su
+   * rol tiene `flows:read`).
+   *
+   * Es la contraparte no-privilegiada de `findAll()` sin tenant (que trae todo el sistema y va
+   * con `SystemTenantGuard`): el superadmin ve todos los flujos; el usuario común, solo los de
+   * sus empresas. El scope lo pone el propio userId, no el header, así que no necesita
+   * `SystemTenantGuard` ni un tenant activo — cada empresa se filtra por el permiso que el
+   * usuario tiene en ella. No trae los flujos sin ninguna empresa asignada (administración
+   * global del sistema): un usuario común no debe verlos.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some(
+          (p) => p.resource === 'flows' && p.action === 'read',
+        ),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    return this.prisma.flow.findMany({
+      where: {
+        tenantFlows: { some: { tenantId: { in: readableTenantIds } } },
+      },
+      include: {
+        tenantFlows: {
+          include: {
+            tenant: {
+              select: { id: true, name: true, slug: true },
+            },
+            roles: {
+              select: { roleId: true },
+            },
+          },
+        },
+        contextSource: {
+          select: { id: true, name: true, type: true },
+        },
+        skill: {
+          select: { id: true, name: true, promptText: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async findById(id: string) {
     const flow = await this.prisma.flow.findUnique({
       where: { id },

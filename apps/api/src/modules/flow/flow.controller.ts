@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { FlowService } from './flow.service';
@@ -53,6 +54,19 @@ export class FlowController {
   @RequirePermission('flows', 'read')
   async findAllSystem() {
     return this.flowService.findAll();
+  }
+
+  /**
+   * Flujos de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
+   * común). El scope lo pone el userId, no el header, así que no lleva `SystemTenantGuard`:
+   * cada empresa se filtra por el `flows:read` que el usuario tenga en ella (dentro del
+   * servicio). Contraparte no-privilegiada de `GET /flows/all`. Va antes de `@Get(':id')`
+   * para que 'mine' no entre como id.
+   */
+  @Get('mine')
+  @RequirePermission('flows', 'read')
+  async findMine(@Req() req: any) {
+    return this.flowService.findMine(req.user.userId);
   }
 
   @Get(':id')
