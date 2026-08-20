@@ -1203,12 +1203,6 @@ export class ConversationsService implements OnModuleInit {
     // variables quedaban sin reemplazar en el mail y en el ticket.
     const note = data.message ? this.interpolate(data.message, flowState) : undefined;
 
-    // Número a mostrarle al agente en el mail (abajo) — el de InvGate si sincronizó
-    // (es el que realmente puede buscar/trabajar ahí), si no el id local como fallback.
-    // `flowState.lastTicketId` NO se toca para esto: lo usa `ticket_query` como clave real
-    // de búsqueda en la tabla `Ticket`, tiene que seguir siendo el cuid interno siempre.
-    let displayTicketId: string | number | undefined;
-
     if (methods.includes('ticket') && assignee) {
       const ticket = await this.prisma.ticket.create({
         data: {
@@ -1220,8 +1214,6 @@ export class ConversationsService implements OnModuleInit {
           priority: flowState.priority || 'medium',
         },
       });
-      flowState.lastTicketId = ticket.id;
-      displayTicketId = ticket.id;
 
       // Mismo criterio que en el nodo `ticket_create` — ver el comentario ahí.
       const pendingAttachments: StoredAttachment[] = Array.isArray(flowState.pendingAttachments)
@@ -1239,7 +1231,10 @@ export class ConversationsService implements OnModuleInit {
         },
         await this.loadAttachments(pendingAttachments),
       );
-      if (invgateTicketId) displayTicketId = invgateTicketId;
+      // Mismo criterio que en 'ticket_create': preferí el número de InvGate, el cuid
+      // interno no le sirve a nadie fuera del sistema — `ticket_query` acepta cualquiera
+      // de los dos igual (busca por `id` O `invgateId`), así que esto no rompe nada viejo.
+      flowState.lastTicketId = invgateTicketId ?? ticket.id;
     }
 
     if (methods.includes('email')) {
@@ -1264,7 +1259,7 @@ export class ConversationsService implements OnModuleInit {
             (note ? `Nota: ${note}\n\n` : '') +
             `Último mensaje: "${body}"\n\n` +
             (assigneeName ? `Asignado a: ${assigneeName}\n` : 'Sin colaborador asignado.\n') +
-            (displayTicketId ? `Ticket: #${displayTicketId}\n` : ''),
+            (flowState.lastTicketId ? `Ticket: #${flowState.lastTicketId}\n` : ''),
         });
       }
     }
@@ -1578,7 +1573,6 @@ export class ConversationsService implements OnModuleInit {
             priority: priority || 'medium',
           },
         });
-        flowState.lastTicketId = ticket.id;
 
         // Imágenes que el usuario mandó en cualquier punto de esta charla (ver 2.5 en
         // handleMessage) — se consumen acá, tanto si el ticket termina sincronizando en
@@ -1598,24 +1592,31 @@ export class ConversationsService implements OnModuleInit {
           },
           await this.loadAttachments(pendingAttachments),
         );
-        // Con InvGate sincronizado, el usuario ve el ticket REAL (el que va a poder
-        // consultar/que le va a llegar a un agente) en vez del id interno (un cuid sin
-        // sentido para quien lo recibe). Sin sync (InvGate caído, mal configurado, etc.)
-        // cae al id local — sigue siendo un ticket válido, solo que no llegó a InvGate.
+        // `lastTicketId` (lo que consulta `ticket_query` después) y lo que ve el usuario
+        // acá: preferí SIEMPRE el número de InvGate — el cuid interno no le sirve a nadie
+        // fuera del sistema. Sin sync (InvGate caído, mal configurado, etc.) cae al id
+        // local — sigue siendo un ticket válido, solo que no llegó a InvGate todavía.
+        flowState.lastTicketId = invgateTicketId ?? ticket.id;
         return {
-          responseText: `Ticket #${invgateTicketId ?? ticket.id} creado. Un agente te contactará pronto.`,
+          responseText: `Ticket #${flowState.lastTicketId} creado. Un agente te contactará pronto.`,
           flowState,
         };
       }
 
       case 'ticket_query': {
+        // `ticketId` puede ser el cuid interno (tickets viejos, o uno nuevo que no llegó
+        // a sincronizar con InvGate) o el número de InvGate (lo normal ahora, ver
+        // `lastTicketId` en 'ticket_create'/executeTransferAgentNode) — se busca por
+        // cualquiera de los dos campos, sin necesidad de adivinar cuál es.
         const ticketId = data.ticketIdVariable ? flowState[data.ticketIdVariable] : flowState.lastTicketId;
         if (ticketId) {
-          const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
+          const ticket = await this.prisma.ticket.findFirst({
+            where: { OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
+          });
           if (ticket) {
             const status = await this.refreshInvgateStatus(ticket);
             return {
-              responseText: `Ticket #${ticket.id}: ${ticket.subject} - Estado: ${status}`,
+              responseText: `Ticket #${ticket.invgateId ?? ticket.id}: ${ticket.subject} - Estado: ${status}`,
             };
           }
         }
