@@ -76,6 +76,36 @@ export class FlowNodeDataDto {
   @IsOptional()
   contextMessages?: number;
 
+  /**
+   * Nodo `llm_query` en modo extracción: en vez de mandarle al usuario el texto del
+   * modelo, lo usa para decidir un valor puntual (ej. "sede") y ramifica por
+   * `foundTargetNodeId`/`missingTargetNodeId` en lugar de por edges — ver
+   * ConversationsService, case 'llm_query'.
+   */
+  @IsString()
+  @IsOptional()
+  extractVariable?: string;
+
+  /** Nombre humano del dato a extraer, para el prompt (ej. "sede"). Default: extractVariable. */
+  @IsString()
+  @IsOptional()
+  extractLabel?: string;
+
+  /** Universo cerrado de valores válidos para `extractVariable` — sin esto, el modelo devuelve lo que dijo el usuario tal cual. */
+  @IsArray()
+  @IsOptional()
+  allowedValues?: string[];
+
+  /** Nodo `llm_query` en modo extracción: a dónde ir si encontró el valor. */
+  @IsString()
+  @IsOptional()
+  foundTargetNodeId?: string;
+
+  /** Nodo `llm_query` en modo extracción: a dónde ir si NO lo encontró (ej. un `input` que lo pide). */
+  @IsString()
+  @IsOptional()
+  missingTargetNodeId?: string;
+
   @IsString()
   @IsOptional()
   url?: string;

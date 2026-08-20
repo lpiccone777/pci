@@ -11,7 +11,9 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService } from '../context-sources/context-sources.service';
-import { InvgateService } from '../invgate/invgate.service';
+import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
+import { stripArgentinaMobileNine } from '../../common/phone.util';
+import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
 import { createHash } from 'crypto';
 
 /**
@@ -121,6 +123,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly emailService: EmailService,
     private readonly contextSourcesService: ContextSourcesService,
     private readonly invgateService: InvgateService,
+    private readonly twilioMedia: TwilioMediaService,
   ) {}
 
   async onModuleInit() {
@@ -183,7 +186,12 @@ export class ConversationsService implements OnModuleInit {
     // viejo que todavía no lo mande. Determina de qué `Conversation` se habla (un mismo
     // usuario puede tener una charla activa por WhatsApp y otra por SMS al mismo tiempo,
     // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
-    const { from, body, channel = 'whatsapp' } = msg.data as { from: string; body: string; channel?: string };
+    const {
+      from,
+      body,
+      channel = 'whatsapp',
+      attachments = [],
+    } = msg.data as { from: string; body: string; channel?: string; attachments?: StoredAttachment[] };
     const tenantId = msg.tenantId!;
     const outgoingQueue = `${channel}.outgoing`;
 
@@ -277,12 +285,37 @@ export class ConversationsService implements OnModuleInit {
           });
     }
 
-    // 3. Guardar mensaje del usuario
+    // 2.5 Adjuntos (imágenes de WhatsApp/SMS vía Twilio, ver TwilioWebhookController/
+    // TwilioSmsWebhookController): se acumulan en flowState.pendingAttachments hasta que
+    // el flujo llegue a un nodo `ticket_create` — pueden ser varios mensajes después de
+    // este, así que no alcanza con tenerlos en memoria acá: hay que persistirlos ya mismo
+    // (no esperar al persist de fin de turno de executeFlow, que ni corre si todavía no
+    // hay flujo activo — ver el fallback al orquestador LLM más abajo).
+    if (attachments.length) {
+      const currentState = (conversation.flowState as Record<string, any>) || {};
+      const pending: StoredAttachment[] = Array.isArray(currentState.pendingAttachments)
+        ? currentState.pendingAttachments
+        : [];
+      conversation = await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          flowState: JSON.parse(
+            JSON.stringify({ ...currentState, pendingAttachments: [...pending, ...attachments] }),
+          ),
+        },
+      });
+      this.logger.log(
+        `[${tenantId}] ${attachments.length} adjunto(s) de ${from} guardados (pendingAttachments: ${pending.length + attachments.length}).`,
+      );
+    }
+
+    // 3. Guardar mensaje del usuario. Un mensaje solo-imagen (sin texto) llega con `body`
+    // vacío — placeholder legible en vez de una fila en blanco en el historial.
     await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         senderType: 'user',
-        content: body,
+        content: body || (attachments.length ? `[${attachments.length} imagen(es) adjunta(s)]` : ''),
       },
     });
 
@@ -1023,12 +1056,13 @@ export class ConversationsService implements OnModuleInit {
       if (Number.isFinite(parsed)) return parsed;
     }
 
-    const found = await this.invgateService.findUserByPhone(phone).catch((err) => {
-      this.logger.warn(`No se pudo buscar el usuario de InvGate por teléfono ${phone}: ${err.message}`);
+    const normalizedPhone = stripArgentinaMobileNine(phone);
+    const found = await this.invgateService.findUserByPhone(normalizedPhone).catch((err) => {
+      this.logger.warn(`No se pudo buscar el usuario de InvGate por teléfono ${normalizedPhone}: ${err.message}`);
       return null;
     });
     if (!found) {
-      this.logger.warn(`Ningún usuario de InvGate matchea el teléfono ${phone} — el ticket no se sincroniza.`);
+      this.logger.warn(`Ningún usuario de InvGate matchea el teléfono ${normalizedPhone} — el ticket no se sincroniza.`);
       return null;
     }
 
@@ -1058,6 +1092,7 @@ export class ConversationsService implements OnModuleInit {
     ticket: { id: string; userId: string; subject: string; description: string | null },
     from: string,
     fields: { categoryName?: string; priorityName?: string; typeName?: string } = {},
+    attachments: IncidentAttachment[] = [],
   ): Promise<void> {
     if (!(await this.invgateService.isConfigured())) return;
 
@@ -1070,6 +1105,7 @@ export class ConversationsService implements OnModuleInit {
         ticket.subject,
         ticket.description ?? undefined,
         fields,
+        attachments,
       );
       if (!incident) return;
 
@@ -1078,6 +1114,22 @@ export class ConversationsService implements OnModuleInit {
     } catch (err) {
       this.logger.warn(`No se pudo sincronizar el ticket ${ticket.id} con InvGate: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Lee en memoria los adjuntos pendientes de la charla (ver flowState.pendingAttachments,
+   * llenado en handleMessage) para mandarlos con el ticket, y borra el archivo temporal de
+   * cada uno apenas se lee — con o sin éxito en InvGate no tiene sentido conservarlos en
+   * disco después de este punto, los tickets acá son best-effort y sin reintento.
+   */
+  private async loadAttachments(pending: StoredAttachment[]): Promise<IncidentAttachment[]> {
+    const loaded: IncidentAttachment[] = [];
+    for (const att of pending) {
+      const data = await this.twilioMedia.read(att);
+      await this.twilioMedia.delete(att);
+      if (data) loaded.push({ filename: att.filename, contentType: att.contentType, data });
+    }
+    return loaded;
   }
 
   /**
@@ -1154,11 +1206,23 @@ export class ConversationsService implements OnModuleInit {
         },
       });
       flowState.lastTicketId = ticket.id;
-      await this.syncTicketToInvgate(ticket, user.phone, {
-        categoryName: flowState.category,
-        priorityName: flowState.priority,
-        typeName: flowState.ticketType,
-      });
+
+      // Mismo criterio que en el nodo `ticket_create` — ver el comentario ahí.
+      const pendingAttachments: StoredAttachment[] = Array.isArray(flowState.pendingAttachments)
+        ? flowState.pendingAttachments
+        : [];
+      flowState.pendingAttachments = [];
+
+      await this.syncTicketToInvgate(
+        ticket,
+        user.phone,
+        {
+          categoryName: flowState.category,
+          priorityName: flowState.priority,
+          typeName: flowState.ticketType,
+        },
+        await this.loadAttachments(pendingAttachments),
+      );
     }
 
     if (methods.includes('email')) {
@@ -1476,21 +1540,47 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'ticket_create': {
+        // Los 5 campos del nodo admiten `{{variable}}` (igual que `data.message` en
+        // transfer_agent) además del valor fijo elegido en el editor — así category/
+        // priority/ticketType pueden venir de CUALQUIER variable que la charla haya
+        // recolectado, no solo de las claves fijas `flowState.category`/`.priority`/
+        // `.ticketType` a las que ya caían como fallback. `interpolate` deja el
+        // placeholder tal cual si la variable no existe en flowState.
+        const subject = data.subject ? this.interpolate(data.subject, flowState) : undefined;
+        const description = data.description ? this.interpolate(data.description, flowState) : undefined;
+        const category = data.category ? this.interpolate(data.category, flowState) : undefined;
+        const priority = data.priority ? this.interpolate(data.priority, flowState) : undefined;
+        const ticketType = data.ticketType ? this.interpolate(data.ticketType, flowState) : undefined;
+
         const ticket = await this.prisma.ticket.create({
           data: {
             userId: user.id,
             tenantId,
-            subject: data.subject || flowState.subject || body.substring(0, 100),
-            description: data.description || flowState.description || body,
-            priority: data.priority || 'medium',
+            subject: subject || flowState.subject || body.substring(0, 100),
+            description: description || flowState.description || body,
+            priority: priority || 'medium',
           },
         });
         flowState.lastTicketId = ticket.id;
-        await this.syncTicketToInvgate(ticket, from, {
-          categoryName: data.category || flowState.category,
-          priorityName: data.priority || flowState.priority,
-          typeName: data.ticketType || flowState.ticketType,
-        });
+
+        // Imágenes que el usuario mandó en cualquier punto de esta charla (ver 2.5 en
+        // handleMessage) — se consumen acá, tanto si el ticket termina sincronizando en
+        // InvGate como si no: no quedan reservadas para un ticket futuro.
+        const pendingAttachments: StoredAttachment[] = Array.isArray(flowState.pendingAttachments)
+          ? flowState.pendingAttachments
+          : [];
+        flowState.pendingAttachments = [];
+
+        await this.syncTicketToInvgate(
+          ticket,
+          from,
+          {
+            categoryName: category || flowState.category,
+            priorityName: priority || flowState.priority,
+            typeName: ticketType || flowState.ticketType,
+          },
+          await this.loadAttachments(pendingAttachments),
+        );
         return {
           responseText: `Ticket #${ticket.id} creado. Un agente te contactará pronto.`,
           flowState,
@@ -1518,11 +1608,22 @@ export class ConversationsService implements OnModuleInit {
         return this.executeSmsNode(data, flowState, tenantId);
 
       case 'llm_query': {
-        const recentMessages = await this.prisma.message.findMany({
-          where: { conversationId: conversation.id },
-          orderBy: { createdAt: 'asc' },
-          take: data.contextMessages || 10,
-        });
+        // `sessionStartedAt` acota el historial a la sesión actual — mismo criterio
+        // que `orchestratorLlm` (ver ese comentario): si la charla se cerró y se
+        // reanudó (mismo Conversation.id), los mensajes de antes del cierre no son
+        // contexto de "la charla actual" y no deben mezclarse acá. Además, `desc` +
+        // `take` agarra los ÚLTIMOS N mensajes de esa sesión (no los primeros N) —
+        // con `asc` una sesión de más de `contextMessages` mensajes deja al modelo
+        // mirando el arranque de la charla en vez de lo último dicho. Se revierte
+        // después para mandarlos en orden cronológico, como los espera la API del LLM.
+        const sessionStart = conversation.sessionStartedAt ?? conversation.createdAt;
+        const recentMessages = (
+          await this.prisma.message.findMany({
+            where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
+            orderBy: { createdAt: 'desc' },
+            take: data.contextMessages || 10,
+          })
+        ).reverse();
 
         const llmMessages: LlmMessage[] = recentMessages.map((m) => ({
           role: m.senderType === 'user' ? 'user' : 'assistant',
@@ -1556,6 +1657,42 @@ export class ConversationsService implements OnModuleInit {
           data.systemPrompt && data.systemPromptMode === 'append'
             ? [basePrompt, data.systemPrompt].filter(Boolean).join('\n\n')
             : data.systemPrompt || basePrompt;
+
+        // Modo extracción: en vez de mandarle al usuario lo que diga el modelo, lo usamos
+        // para decidir un valor puntual (ej. "sede") y ramificar — así el nodo puede saltear
+        // el paso siguiente (ej. un `input` que lo pide) cuando el dato ya está en la charla,
+        // sin depender de que el modelo "decida" cortar el flujo (no puede: solo devuelve
+        // texto). `allowedValues` cierra el universo de respuestas válidas para no quedar a
+        // merced de que el modelo invente/alucine un valor que no está en la lista.
+        //
+        // Igual que `condition`, las ramas van por `data.foundTargetNodeId`/
+        // `missingTargetNodeId` (no por `sourceHandle` de un edge): este nodo usa
+        // `BaseNode` en el editor, que solo tiene un handle de salida genérico sin id,
+        // así que no hay forma de dibujar dos salidas nombradas en el canvas.
+        if (data.extractVariable) {
+          const allowedValues: string[] = data.allowedValues || [];
+          const label = data.extractLabel || data.extractVariable;
+          const extractPrompt =
+            `${systemPrompt}\n\nTu única tarea ahora: determinar si en la conversación el ` +
+            `usuario ya indicó su "${label}".` +
+            (allowedValues.length
+              ? `\nValores válidos (respondé EXACTAMENTE uno, calcado, o la palabra NONE si ninguno aplica):\n${allowedValues.join('\n')}`
+              : '\nRespondé el valor tal como lo dijo el usuario, o la palabra NONE si no lo mencionó.') +
+            '\nRespondé solo con el valor o con NONE. Nada de explicaciones ni texto adicional.';
+
+          const raw = (await this.llmService.chat(llmMessages, { systemPrompt: extractPrompt })).trim();
+          const match = allowedValues.length
+            ? allowedValues.find((v) => v.toLowerCase() === raw.toLowerCase())
+            : raw && raw.toUpperCase() !== 'NONE'
+              ? raw
+              : undefined;
+
+          if (match) {
+            flowState[data.extractVariable] = match;
+            return { nextNodeId: data.foundTargetNodeId, flowState };
+          }
+          return { nextNodeId: data.missingTargetNodeId };
+        }
 
         const responseText = await this.llmService.chat(llmMessages, { systemPrompt });
 
@@ -1647,11 +1784,16 @@ export class ConversationsService implements OnModuleInit {
     // de una sesión vieja seguía contaminando las respuestas nuevas después de
     // reanudar. Fallback a `createdAt` para filas de antes de esta migración.
     const sessionStart = conversation.sessionStartedAt ?? conversation.createdAt;
-    const recentMessages = await this.prisma.message.findMany({
-      where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
-      orderBy: { createdAt: 'asc' },
-      take: 10,
-    });
+    // `desc` + `take` para los ÚLTIMOS 10 de la sesión (no los primeros 10) — mismo
+    // motivo que en `case 'llm_query'`: con `asc` una sesión de más de 10 mensajes
+    // deja al modelo mirando el arranque de la charla en vez de lo último dicho.
+    const recentMessages = (
+      await this.prisma.message.findMany({
+        where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      })
+    ).reverse();
 
     // Fuente de verdad vinculada al flujo: se consulta siempre que esté presente,
     // antes de generar la respuesta — no queda a criterio del LLM pedirla (eso
