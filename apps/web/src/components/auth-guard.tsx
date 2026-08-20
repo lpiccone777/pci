@@ -10,7 +10,8 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isLoading && !token) {
-      router.replace('/login');
+      // Barra final: ver el comentario equivalente en `lib/api.ts` (clearSession).
+      router.replace('/login/');
     }
   }, [isLoading, token, router]);
 

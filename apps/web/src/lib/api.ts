@@ -24,7 +24,11 @@ export function clearSession() {
   localStorage.removeItem(ALL_TENANTS_CACHE_KEY);
   localStorage.removeItem(SYSTEM_TENANT_ID_KEY);
   localStorage.removeItem(FALLBACK_TENANT_ID_KEY);
-  window.location.href = '/login';
+  // Con barra final: coincide con cómo `next.config.ts` (trailingSlash: true) exporta la
+  // página (login/index.html) — sin la barra, un refresh en esta URL le pega a nginx, que
+  // redirige a la barra usando $host (sin puerto) y en un puerto no estándar (ej. :8100)
+  // te tira al puerto por defecto.
+  window.location.href = '/login/';
 }
 
 /**

@@ -551,7 +551,7 @@ function FlowEditorInner() {
             isStart: isStartFlow,
           }),
         });
-        router.replace(`/dashboard/flows/edit?id=${created.id}`);
+        router.replace(`/dashboard/flows/edit/?id=${created.id}`);
       } else {
         await apiFetch(`/flows/${id}`, {
           method: 'PATCH',
@@ -587,7 +587,7 @@ function FlowEditorInner() {
       <div className="bg-white border-b p-4 flex justify-between items-center">
         <div className="flex gap-4 items-center">
           <button
-            onClick={() => router.push('/dashboard/flows')}
+            onClick={() => router.push('/dashboard/flows/')}
             className="text-gray-600 hover:text-gray-900"
           >
             ← Volver
@@ -1218,10 +1218,12 @@ function NodeProperties({
               type="text"
               value={data.subject || ''}
               onChange={(e) => onUpdate('subject', e.target.value)}
+              placeholder="Ej: {{motivoConsulta}}"
               className="w-full border rounded p-2 text-sm"
             />
             <p className="text-xs text-gray-400 mt-1">
-              Vacío: usa <code>{'{{subject}}'}</code> de la charla o los primeros 100 caracteres del mensaje.
+              Admite <code>{'{{variable}}'}</code> de la charla. Vacío: usa <code>{'{{subject}}'}</code> o los
+              primeros 100 caracteres del mensaje.
             </p>
           </div>
           <div>
@@ -1233,88 +1235,88 @@ function NodeProperties({
               rows={3}
             />
             <p className="text-xs text-gray-400 mt-1">
-              Vacío: usa <code>{'{{description}}'}</code> de la charla o el mensaje del usuario.
+              Admite <code>{'{{variable}}'}</code> de la charla. Vacío: usa <code>{'{{description}}'}</code> o el
+              mensaje del usuario.
             </p>
           </div>
           {/* Categoría/prioridad/tipo van por NOMBRE real de InvGate (no un id) — el bot
               los resuelve contra el catálogo al crear el ticket (InvgateService.resolveCategoryId/
-              resolvePriorityId/resolveTypeId). Vacío en cualquiera de los tres: usa el default
-              de /settings > "Integración: InvGate". Si el catálogo no cargó (InvGate sin
-              configurar, o sin permiso), cae a un campo de texto libre para no bloquear la edición. */}
+              resolvePriorityId/resolveTypeId). El <select> es un atajo para elegir un nombre fijo
+              del catálogo real; el campo de texto de abajo es la misma variable de flujo (data.category/
+              priority/ticketType) y admite {{variable}} para usar lo que la charla haya recolectado
+              (ej. {{Urgencia}}) en vez de un valor fijo — típicamente uno u otro, no los dos a la vez.
+              Vacío en cualquiera: usa el default de /settings > "Integración: InvGate". */}
           <div>
             <label className="block text-sm font-medium mb-1">Categoría (InvGate)</label>
-            {invgateCategories.length > 0 ? (
+            {invgateCategories.length > 0 && (
               <select
-                value={data.category || ''}
+                value={invgateCategories.some((c) => c.name === data.category) ? data.category : ''}
                 onChange={(e) => onUpdate('category', e.target.value)}
-                className="w-full border rounded p-2 text-sm"
+                className="w-full border rounded p-2 text-sm mb-1"
               >
-                <option value="">(usar default de /settings)</option>
+                <option value="">(elegir del catálogo…)</option>
                 {invgateCategories.map((c) => (
                   <option key={c.id} value={c.name}>
                     {c.name}
                   </option>
                 ))}
               </select>
-            ) : (
-              <input
-                type="text"
-                value={data.category || ''}
-                onChange={(e) => onUpdate('category', e.target.value)}
-                placeholder="Nombre exacto de la categoría en InvGate"
-                className="w-full border rounded p-2 text-sm"
-              />
             )}
+            <input
+              type="text"
+              value={data.category || ''}
+              onChange={(e) => onUpdate('category', e.target.value)}
+              placeholder="Nombre exacto de la categoría en InvGate, o {{variable}}"
+              className="w-full border rounded p-2 text-sm"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">Prioridad (InvGate)</label>
-            {invgatePriorities.length > 0 ? (
+            {invgatePriorities.length > 0 && (
               <select
-                value={data.priority || ''}
+                value={invgatePriorities.some((p) => p.name === data.priority) ? data.priority : ''}
                 onChange={(e) => onUpdate('priority', e.target.value)}
-                className="w-full border rounded p-2 text-sm"
+                className="w-full border rounded p-2 text-sm mb-1"
               >
-                <option value="">(usar default de /settings)</option>
+                <option value="">(elegir del catálogo…)</option>
                 {invgatePriorities.map((p) => (
                   <option key={p.id} value={p.name}>
                     {p.name}
                   </option>
                 ))}
               </select>
-            ) : (
-              <input
-                type="text"
-                value={data.priority || ''}
-                onChange={(e) => onUpdate('priority', e.target.value)}
-                placeholder="Nombre exacto de la prioridad en InvGate"
-                className="w-full border rounded p-2 text-sm"
-              />
             )}
+            <input
+              type="text"
+              value={data.priority || ''}
+              onChange={(e) => onUpdate('priority', e.target.value)}
+              placeholder="Nombre exacto de la prioridad en InvGate, o {{variable}}"
+              className="w-full border rounded p-2 text-sm"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">Tipo de incidente (InvGate)</label>
-            {invgateTypes.length > 0 ? (
+            {invgateTypes.length > 0 && (
               <select
-                value={data.ticketType || ''}
+                value={invgateTypes.some((t) => t.name === data.ticketType) ? data.ticketType : ''}
                 onChange={(e) => onUpdate('ticketType', e.target.value)}
-                className="w-full border rounded p-2 text-sm"
+                className="w-full border rounded p-2 text-sm mb-1"
               >
-                <option value="">(usar default de /settings)</option>
+                <option value="">(elegir del catálogo…)</option>
                 {invgateTypes.map((t) => (
                   <option key={t.id} value={t.name}>
                     {t.name}
                   </option>
                 ))}
               </select>
-            ) : (
-              <input
-                type="text"
-                value={data.ticketType || ''}
-                onChange={(e) => onUpdate('ticketType', e.target.value)}
-                placeholder="Nombre exacto del tipo en InvGate"
-                className="w-full border rounded p-2 text-sm"
-              />
             )}
+            <input
+              type="text"
+              value={data.ticketType || ''}
+              onChange={(e) => onUpdate('ticketType', e.target.value)}
+              placeholder="Nombre exacto del tipo en InvGate, o {{variable}}"
+              className="w-full border rounded p-2 text-sm"
+            />
           </div>
         </>
       )}

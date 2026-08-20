@@ -828,7 +828,7 @@ function UsersModal({ area, onClose }: { area: AreaData; onClose: () => void }) 
             {people && people.length > 0 ? 'El área se cambia desde cada usuario.' : ''}
           </span>
           <button
-            onClick={() => router.push('/dashboard/users')}
+            onClick={() => router.push('/dashboard/users/')}
             className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100 whitespace-nowrap"
           >
             Ir a Usuarios
