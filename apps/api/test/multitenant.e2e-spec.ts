@@ -5,12 +5,19 @@
  * (`src/common/guards/`) tal cual corren en producción — son lógica pura contra Prisma, sin
  * ninguna frontera externa que mockear.
  *
- * Invertido: BE-MT-12. `SystemTenantGuard.canActivate` mira `request.tenantId` (la empresa
- * PEDIDA por el header) en vez de `request.userTenant` (el vínculo que dejó
- * `TenantGuard.resolveAsSystemUser`, siempre el del tenant de sistema cuando el superusuario
- * se para en una empresa ajena). Por eso hoy corta con 403 apenas el superusuario elige una
- * empresa común, aunque `RolesGuard` —que sí mira el vínculo— lo deje pasar sin problema
- * (BE-MT-06). Ver el comentario completo en `system-tenant.guard.ts`.
+ * BE-MT-12 comprueba que el superusuario parado en una empresa común sigue viendo la config
+ * global y todas las empresas. Intervienen dos cortes distintos:
+ *  - `TenantGuard.resolveAsSystemUser` decide quién puede pararse en una empresa de la que no
+ *    es miembro: SOLO el superusuario real (rol SuperAdmin en el tenant de sistema, ver
+ *    `isSystemSuperAdmin`). Un usuario común que además pertenece al tenant de sistema NO.
+ *  - `SystemTenantGuard` corta por el VÍNCULO resuelto (`request.userTenant`, que para el
+ *    superusuario parado en otra empresa sigue siendo el de sistema), no por la empresa activa
+ *    (`request.tenantId`). Ese corte es por membresía en el tenant de sistema + permiso RBAC,
+ *    no por nombre de rol.
+ *
+ * BE-MT-13 es el complemento adversarial: comprueba que un miembro del tenant de sistema con un
+ * rol COMÚN (no SuperAdmin) NO hereda el poder de pararse en cualquier empresa. El corte de
+ * `TenantGuard.resolveAsSystemUser` es por rol (`isProtectedRole`), no por mera pertenencia.
  */
 import {
   createTestApp,
@@ -279,29 +286,48 @@ describe('1.3 Multitenant (BE-MT-*)', () => {
     expect(leaked).toBeNull(); // no se creó en NINGÚN tenant, ni en el del header ni en `other`
   });
 
-  // --- BE-MT-12: el candado de superusuario debe leer el vínculo de sistema, no la empresa activa ---
-  it.failing(
-    'BE-MT-12: el superusuario parado en una empresa común sigue viendo la configuración global y todas las empresas',
-    async () => {
-      const { admin } = await getSystemContext(t.prisma);
-      const common = await createTenant(t.prisma, { slug: uniqueSlug('mt12') });
-      const token = tokenFor(t, admin);
+  // --- BE-MT-12: el candado de superusuario lee el vínculo de sistema, no la empresa activa ---
+  it('BE-MT-12: el superusuario parado en una empresa común sigue viendo la configuración global y todas las empresas', async () => {
+    const { admin } = await getSystemContext(t.prisma);
+    const common = await createTenant(t.prisma, { slug: uniqueSlug('mt12') });
+    const token = tokenFor(t, admin);
 
-      // SEGURO: `SystemTenantGuard` debería mirar `request.userTenant` (el vínculo de sistema
-      // que dejó `TenantGuard.resolveAsSystemUser`), igual que ya hace `RolesGuard` — no
-      // `request.tenantId` (la empresa pedida en el header). `/settings` es la config global,
-      // única en toda la base: tiene que responder igual sin importar dónde esté parado.
-      const settingsRes = await withAuth(http(t).get('/settings'), token, common.id);
-      expect(settingsRes.status).toBe(200);
+    // `SystemTenantGuard` mira `request.userTenant` (el vínculo de sistema que dejó
+    // `TenantGuard.resolveAsSystemUser`), igual que `RolesGuard` — no `request.tenantId`
+    // (la empresa pedida en el header). `/settings` es la config global, única en toda la
+    // base: responde igual sin importar en qué empresa esté parado el superusuario.
+    const settingsRes = await withAuth(http(t).get('/settings'), token, common.id);
+    expect(settingsRes.status).toBe(200);
 
-      // Mismo mecanismo, mismo síntoma en la otra pantalla que el plan señala: `GET /tenants/all`.
-      const tenantsRes = await withAuth(http(t).get('/tenants/all'), token, common.id);
-      expect(tenantsRes.status).toBe(200);
+    // Mismo mecanismo en la otra pantalla cross-tenant: `GET /tenants/all`.
+    const tenantsRes = await withAuth(http(t).get('/tenants/all'), token, common.id);
+    expect(tenantsRes.status).toBe(200);
+  });
 
-      // Hoy: `SystemTenantGuard` resuelve el tenant por `request.tenantId` (=`common.id`), cuyo
-      // slug no es el de sistema → 403 en ambas, aunque `RolesGuard` ya haya dejado pasar al
-      // superusuario por el mismo request (BE-MT-06). Sin corregir, este `it.failing` queda
-      // verde porque las dos aserciones de arriba fallan (403, no 200).
-    },
-  );
+  // --- BE-MT-13: ser miembro del tenant de sistema NO alcanza; hace falta el rol SuperAdmin ---
+  it('BE-MT-13: un miembro común del tenant de sistema (rol distinto de SuperAdmin) NO puede pararse en otra empresa (403)', async () => {
+    // Complemento adversarial de BE-MT-06: mismo escenario (header de una empresa de la que no
+    // se es miembro), pero el usuario tiene en el tenant de sistema un rol COMÚN, no SuperAdmin.
+    // `TenantGuard.resolveAsSystemUser` corta por el rol, no por la mera pertenencia al tenant de
+    // sistema (ver `isProtectedRole`): un rol común no hereda el poder de operar cualquier
+    // empresa, así que recibe el mismo 403 que un usuario ajeno (BE-MT-05).
+    const { tenant: systemTenant } = await getSystemContext(t.prisma);
+    const commonRole = await createRole(t.prisma, {
+      tenantId: systemTenant.id,
+      name: 'Miembro común de sistema',
+      permissions: ['areas:read'],
+    });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('mt13'),
+      password: DEFAULT_PASSWORD,
+      memberships: [{ tenantId: systemTenant.id, roleId: commonRole.id }],
+    });
+    const otra = await createTenant(t.prisma, { slug: uniqueSlug('mt13-otra') });
+    const token = tokenFor(t, user);
+
+    const res = await withAuth(http(t).get('/areas'), token, otra.id);
+
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('No tenés acceso a este tenant');
+  });
 });

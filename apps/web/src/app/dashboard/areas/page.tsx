@@ -26,7 +26,7 @@ interface AreaUser {
 type Feedback = { kind: 'ok' | 'error'; text: string };
 
 export default function AreasPage() {
-  const { hasPermission, hasPermissionInTenant, activeTenant, isSystemUser } = useAuth();
+  const { hasPermission, hasPermissionInTenant, activeTenant, isSuperAdmin } = useAuth();
   // Vista consolidada "Todas las empresas": el superadmin ve las de todo el sistema
   // (`/areas/all`); el usuario común con varias empresas, solo las suyas (`/areas/mine`).
   // Antes era exclusiva del superadmin y de solo lectura; ahora ambos pueden modificar y
@@ -85,7 +85,7 @@ export default function AreasPage() {
       // Consolidada: el superadmin trae todo el sistema; el usuario común, solo sus empresas.
       const endpoint = !isAllTenants
         ? '/areas'
-        : isSystemUser
+        : isSuperAdmin
           ? '/areas/all'
           : '/areas/mine';
       setAreas(await apiFetch(endpoint));
@@ -94,7 +94,7 @@ export default function AreasPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants, isSystemUser]);
+  }, [isAllTenants, isSuperAdmin]);
 
   useEffect(() => {
     load();
@@ -178,7 +178,7 @@ export default function AreasPage() {
       <p className="text-sm text-gray-500 mb-6">
         {isAllTenants
           ? `Áreas de ${
-              isSystemUser ? 'todas las empresas' : 'todas tus empresas'
+              isSuperAdmin ? 'todas las empresas' : 'todas tus empresas'
             }. Podés modificar o eliminar cada una en su empresa; para crear una nueva, elegí una empresa en el selector lateral.`
           : 'Agrupan a los usuarios de esta empresa para auditoría y métricas. No intervienen en los flujos IVR, que se resuelven por rol.'}
       </p>

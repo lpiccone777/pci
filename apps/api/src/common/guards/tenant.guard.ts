@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { systemTenantSlug } from '../system-tenant';
+import { isProtectedRole } from '../../modules/rbac/protected-role';
 
 export const TENANT_HEADER = 'x-tenant-id';
 
@@ -30,9 +31,9 @@ export const TENANT_HEADER = 'x-tenant-id';
  *
  * ## Excepción del tenant de sistema
  *
- * Quien pertenece al tenant de sistema puede pedir **cualquier** empresa en el header,
- * sin ser miembro de ella. A partir de ahí todo el backend cree que está trabajando en
- * esa empresa, así que el superusuario la administra igual que a la propia.
+ * El superusuario del sistema (rol `SuperAdmin` en el tenant de sistema) puede pedir
+ * **cualquier** empresa en el header, sin ser miembro de ella. A partir de ahí todo el
+ * backend cree que está trabajando en esa empresa, así que la administra igual que a la propia.
  *
  * Está acá y no repartida por módulo a propósito: es el único punto por el que pasan
  * todos los controladores con datos por tenant, así que un módulo nuevo la hereda por
@@ -40,9 +41,11 @@ export const TENANT_HEADER = 'x-tenant-id';
  * cada servicio— se rompe el día que alguien se olvida, que es exactamente como nació
  * el agujero de permisos cross-tenant que hubo que cerrar.
  *
- * El corte es por pertenencia al tenant de sistema, no por nombre de rol: mismo
- * criterio que `SystemTenantGuard`. Adentro de la empresa elegida sigue mandando el
- * RBAC, con los permisos del rol que el superusuario tiene en el tenant de sistema.
+ * El corte es por rol SuperAdmin en el tenant de sistema, no por mera pertenencia a ese
+ * tenant: mismo criterio que `SystemTenantGuard` (ver `isSystemSuperAdmin`). Un usuario
+ * común que además pertenece al tenant de sistema NO puede pararse en otra empresa.
+ * Adentro de la empresa elegida sigue mandando el RBAC, con los permisos del rol que el
+ * superusuario tiene en el tenant de sistema.
  */
 @Injectable()
 export class TenantGuard implements CanActivate {
@@ -108,10 +111,10 @@ export class TenantGuard implements CanActivate {
    * El vínculo del usuario con el tenant de sistema, si lo tiene. `null` si no, y en ese
    * caso quien llama corta con el 403 de siempre.
    *
-   * Las dos consultas corren solo cuando el usuario pidió una empresa de la que no es
-   * miembro — en el uso normal, nunca.
+   * Las consultas corren solo cuando el usuario pidió una empresa de la que no es miembro —
+   * en el uso normal, nunca.
    */
-  private async resolveAsSystemUser<T extends { tenantId: string }>(
+  private async resolveAsSystemUser<T extends { tenantId: string; roleId: string }>(
     memberships: T[],
     requestedTenantId: string,
   ): Promise<T | null> {
@@ -125,6 +128,24 @@ export class TenantGuard implements CanActivate {
       (m) => m.tenantId === systemTenant.id,
     );
     if (!systemMembership) return null;
+
+    // Pertenecer al tenant de sistema no alcanza: solo el rol SuperAdmin hereda el poder de
+    // pararse en una empresa de la que no se es miembro. Un usuario común que además está en
+    // el tenant de sistema no pasa (devuelve null → el 403 de siempre).
+    //
+    // El tenant de `systemMembership` ya lo resolvimos por slug (`this.systemSlug`) arriba, así
+    // que su slug es ese mismo: no hace falta volver a consultarlo. Solo falta el nombre del
+    // rol. (Por eso no se usa `isSystemSuperAdmin`, que re-consultaría el tenant que ya tenemos.)
+    const role = await this.prisma.role.findUnique({
+      where: { id: systemMembership.roleId },
+      select: { name: true },
+    });
+    const superAdmin = isProtectedRole(
+      role?.name ?? '',
+      this.systemSlug,
+      this.systemSlug,
+    );
+    if (!superAdmin) return null;
 
     // Sin este chequeo, un id inventado dejaría el tenant activo apuntando a la nada:
     // cada consulta devolvería vacío y parecería una empresa existente pero sin datos.

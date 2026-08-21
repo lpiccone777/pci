@@ -137,7 +137,7 @@ export default function UsersPage() {
     hasPermissionInTenant,
     user: currentUser,
     activeTenant,
-    isSystemUser,
+    isSuperAdmin,
   } = useAuth();
 
   // "Todas las empresas": vista consolidada (una fila por membresía, con columna Empresa).
@@ -162,7 +162,7 @@ export default function UsersPage() {
   // usuarios y de ver roles (el rol es obligatorio, así que sin verlos no podría completar).
   // Para el superadmin es `null`: el formulario trae la lista completa desde `/tenants/all`.
   const creatableTenants = useMemo<TenantOption[] | null>(() => {
-    if (isSystemUser) return null;
+    if (isSuperAdmin) return null;
     return (currentUser?.tenants ?? [])
       .filter(
         (m) =>
@@ -174,13 +174,13 @@ export default function UsersPage() {
           ),
       )
       .map((m) => ({ id: m.tenant.id, name: m.tenant.name, slug: m.tenant.slug }));
-  }, [currentUser, isSystemUser]);
+  }, [currentUser, isSuperAdmin]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       if (isAllTenants) {
-        setUsers(await apiFetch(isSystemUser ? '/users/all' : '/users/mine'));
+        setUsers(await apiFetch(isSuperAdmin ? '/users/all' : '/users/mine'));
       } else {
         setUsers(await apiFetch('/users'));
       }
@@ -189,7 +189,7 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants, isSystemUser]);
+  }, [isAllTenants, isSuperAdmin]);
 
   useEffect(() => {
     load();

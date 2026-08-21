@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AppConfigService } from '../../config/app-config.service';
 import { systemTenantSlug } from '../../common/system-tenant';
-import { effectivePermissions } from '../rbac/protected-role';
+import { effectivePermissions, isProtectedRole } from '../rbac/protected-role';
 import { EmailService } from './email.service';
 import { DeviceService } from './device.service';
 import { RegisterDto } from './dto/register.dto';
@@ -181,8 +181,20 @@ export class AuthService {
     // agregado después del último seed no le aparecería en pantalla aunque el API se lo
     // acepte igual.
     const slug = systemTenantSlug(this.configService);
+
+    // Superusuario del sistema: rol SuperAdmin en el tenant de sistema (misma definición que
+    // `isSystemSuperAdmin` en el backend). El frontend lo usa para las capacidades cross-tenant
+    // que ningún permiso RBAC gobierna: mostrar/seleccionar TODAS las empresas en el selector y
+    // consolidar la vista con `/all` en vez de `/mine`. Ser miembro del tenant de sistema con
+    // otro rol NO alcanza. (Los ítems solo-sistema del menú y los endpoints con permiso siguen
+    // rigiéndose por RBAC, no por este flag.)
+    const isSuperAdmin = result.tenants.some((ut) =>
+      isProtectedRole(ut.role.name, ut.tenant.slug, slug),
+    );
+
     return {
       ...result,
+      isSuperAdmin,
       tenants: result.tenants.map((ut) => ({
         ...ut,
         role: {

@@ -432,4 +432,53 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
     expect(unlinked.status).toBe(200);
     expect(unlinked.body.skill).toBeNull();
   });
+
+  it('BE-FLW-18: GET /flows/mine arma la lista por userId y devuelve los flujos de otra empresa aunque el header apunte a una donde no hay flows:read', async () => {
+    // Escenario deliberadamente más estricto que su hermano `BE-ARE-05`: el usuario tiene
+    // `flows:read` SOLO en la empresa B, y se para en la A (header) donde NO lo tiene. `/flows/mine`
+    // debe devolver igual los flujos de B, porque la autorización es por-empresa adentro del
+    // servicio, no sobre el tenant activo. Si alguien repusiera `@RequirePermission('flows','read')`
+    // en el controlador, `RolesGuard` lo evaluaría contra el rol de A (sin el permiso) y cortaría
+    // con 403: este caso rompería y avisaría de la regresión.
+    const tenantA = await createTenant(t.prisma, { slug: uniqueSlug('flw18-a') });
+    const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw18-b') });
+    const roleSinFlows = await createRole(t.prisma, { tenantId: tenantA.id, name: 'Rol sin flujos', permissions: ['users:read'] });
+    const roleConFlows = await createRole(t.prisma, { tenantId: tenantB.id, name: 'Rol con flujos', permissions: ['flows:read'] });
+    const flowA = await createFlow(t.prisma, { name: 'Flujo en A', assign: [{ tenantId: tenantA.id }] });
+    const flowB = await createFlow(t.prisma, { name: 'Flujo en B', assign: [{ tenantId: tenantB.id }] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('flw18'),
+      memberships: [
+        { tenantId: tenantA.id, roleId: roleSinFlows.id },
+        { tenantId: tenantB.id, roleId: roleConFlows.id },
+      ],
+    });
+    const token = tokenFor(t, user);
+
+    // Parado en A (donde NO tiene flows:read), pero la lista sale del userId.
+    const res = await withAuth(http(t).get('/flows/mine'), token, tenantA.id);
+
+    expect(res.status).toBe(200); // NO 403, aunque el rol de A no tenga flows:read
+    const ids = res.body.map((f: any) => f.id);
+    expect(ids).toContain(flowB.id); // los de la empresa donde SÍ tiene el permiso
+    expect(ids).not.toContain(flowA.id); // no los de A: ahí no tiene flows:read
+  });
+
+  it('BE-FLW-19: GET /flows/mine de un usuario sin flows:read en ninguna empresa devuelve [] (no 403)', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('flw19') });
+    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol sin flujos', permissions: ['users:read'] });
+    await createFlow(t.prisma, { name: 'Flujo de la empresa', assign: [{ tenantId: tenant.id }] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('flw19'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, user);
+
+    const res = await withAuth(http(t).get('/flows/mine'), token); // 1 sola membresía: header opcional
+
+    // Sin flows:read en ninguna empresa: lista vacía, no 403. Un `@RequirePermission` repuesto
+    // en el controlador daría 403 acá — otra red de seguridad del mismo cambio.
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
 });

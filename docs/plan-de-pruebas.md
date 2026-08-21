@@ -92,22 +92,22 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **565 casos** · Backend 309 · Chatbot 142 · Frontend 114 · de los cuales **274 son `P0`**
-(258 por la prioridad del bloque + los 16 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **568 casos** · Backend 312 · Chatbot 142 · Frontend 114 · de los cuales **275 son `P0`**
+(259 por la prioridad del bloque + los 16 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-WHK-08, BE-TWA-10, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-10, BE-IG-11, BE-SKL-08, BE-SKL-09,
 BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11 y CHAT-LLMF-12).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **309** |
+| **Backend (§1)** | | **312** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
-| 1.3 Multitenant | 🔴 P0 | 12 |
+| 1.3 Multitenant | 🔴 P0 | 13 |
 | 1.4 Tenants | 🟠 P1 | 11 |
 | 1.5 Usuarios | 🔴 P0 | 26 |
 | 1.6 Áreas | 🟠 P1 | 23 |
 | 1.7 Configuración y secretos | 🔴 P0 | 20 |
-| 1.8 Flujos | 🟠 P1 | 17 |
+| 1.8 Flujos | 🟠 P1 | 19 |
 | 1.9 Fuentes de verdad | 🟠 P1 | 19 |
 | 1.10 LLM | 🟠 P1 | 20 |
 | 1.11 Broker | 🟠 P1 | 13 |
@@ -150,7 +150,7 @@ BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11 y CHAT-LLMF-12).
 | 3.10 Flujos (editor) | 🟠 P1 | 21 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **565** |
+| **TOTAL** | | **568** |
 
 > **Nota:** 35 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro deseado, hoy
 > no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 26 están ligados a los
@@ -264,6 +264,7 @@ header `X-Tenant-Id`; `TenantGuard` valida la pertenencia contra `UserTenant` y 
 | BE-MT-10 | Membresía en un tenant que está dado de baja | No cuenta como pertenencia (queries filtran `tenant.deletedAt: null`) |
 | BE-MT-11 | Enviar `tenantId` en el body en lugar del header | Se ignora; el tenant sale de `@CurrentTenant()` |
 | BE-MT-12 | El **superusuario del sistema** parado en una empresa común (header con el id de esa empresa) llama a **todas** las operaciones con candado de superusuario: configuración, ABM de empresas, y las vistas de todas las empresas de usuarios, roles, áreas y flujos | **Debe** responder 200 en todas, **por el mismo mecanismo que ya deja pasar al resto del menú**: cuando el superusuario se para en una empresa de la que no es miembro, `TenantGuard` le deja como vínculo activo el de la **empresa de sistema** (BE-MT-06), y de ese vínculo salen sus permisos. El candado tiene que leer ese vínculo —igual que `RolesGuard` con todos los demás ítems—, no la empresa elegida en el selector. Un administrador de empresa común sigue recibiendo 403 aunque se auto-asigne el permiso: no tiene vínculo con la empresa de sistema y no puede dárselo. Todas son **globales por naturaleza** (la configuración es única en toda la base y las vistas de todas las empresas no dependen de cuál esté elegida), así que devuelven lo mismo esté parado donde esté. ⚠️ Hoy el candado es el único de la cadena que mira la **empresa activa** en vez del vínculo, y devuelve 403 en todas apenas el superusuario sale de la empresa de sistema: `❌` hasta que lea lo mismo que el resto. **Las dos pantallas del menú (Configuración y Tenants) son el síntoma visible; el resto viaja con el mismo cambio** porque el candado es una sola pieza compartida |
+| BE-MT-13 | Un usuario que **es miembro del tenant de sistema pero con un rol común** (no SuperAdmin) manda el header de una empresa de la que **no** es miembro | 403 "No tenés acceso a este tenant". Complemento adversarial de BE-MT-06: pertenecer al tenant de sistema **no** alcanza para pararse en cualquier empresa; solo el rol protegido `SuperAdmin` hereda ese poder. `TenantGuard.resolveAsSystemUser` corta por el **rol** (`isProtectedRole`), no por la mera pertenencia al tenant de sistema, así que este usuario recibe el mismo 403 que un usuario ajeno (BE-MT-05). Sin esta distinción, cualquier miembro de la empresa de sistema operaría como superusuario — exactamente el hueco que cerró el PR |
 
 ## 1.4 Tenants — gestión y doble candado de superusuario
 
@@ -410,6 +411,8 @@ transacción.
 | BE-FLW-15 | Crear/editar un flujo con `context` fuera de la lista (distinto de `none`/`invgate`/`internal_kb`/`other`) | 400 (`@IsIn(FLOW_CONTEXT_VALUES)`); un `context` válido se persiste |
 | BE-FLW-16 | `POST /flows/:id/assign-tenants` y `POST /flows/:id/default` con el id de un flujo de **otra** empresa | **Debe** cortar (mismo criterio que BE-FLW-14): operan por id sin scope de tenant. ⚠️ Hoy también operan **sin filtrar** (SEC-03): `❌` hasta gatearlas |
 | BE-FLW-17 | Vincular una Skill a un flujo con `skillId` (y desvincular con `skillId:null`) | 200; `findById` incluye `skill { id, name, promptText }` y en runtime el `promptText` se concatena al system prompt base (`buildBasePrompt`). Reemplaza en el editor al dropdown viejo `context` (que sobrevive `@IsIn(FLOW_CONTEXT_VALUES)`, DEPRECATED, sólo por compatibilidad — BE-FLW-15). El aislamiento por empresa del `skillId` se cubre en BE-SKL-08/09 |
+| BE-FLW-18 | `GET /flows/mine` (vista "Todas mis empresas") de un usuario con `flows:read` **solo en la empresa B**, parado en la **A** (header) donde **no** lo tiene | 200 con los flujos de B, **no 403**. La autorización es por-empresa adentro de `FlowService.findMine` (filtra cada empresa por su `flows:read`), no sobre el tenant activo — por eso `/flows/mine` **no** lleva `@RequirePermission`, igual que `/areas/mine` (BE-ARE-05), `/users/mine` (BE-USR-19) y `/roles/mine` (BE-RBAC-16). Reponer el decorator lo evaluaría contra el rol de A y cortaría con 403 a quien sí tiene el permiso en otra empresa: regresión que este caso detecta |
+| BE-FLW-19 | `GET /flows/mine` de un usuario **sin `flows:read` en ninguna** de sus empresas | 200 con `[]`, **no 403** (mismo criterio que BE-ARE-06 / BE-USR-19). La ausencia de permiso da lista vacía, no error: otra red de seguridad contra un `@RequirePermission` repuesto en el controlador |
 
 ## 1.9 Fuentes de verdad (context sources)
 

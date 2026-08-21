@@ -57,23 +57,32 @@ const menuDefinition: MenuItem[] = [
 ];
 
 export default function Sidebar() {
-  const { user, hasPermission, logout, activeTenant, setActiveTenant, isSystemUser } =
+  const { user, hasPermission, logout, activeTenant, setActiveTenant, isSuperAdmin } =
     useAuth();
   const pathname = usePathname();
   const [allTenants, setAllTenants] = useState<TenantOption[] | null>(null);
 
   const activeSlug = user?.tenants?.find((t) => t.tenantId === activeTenant)?.tenant?.slug;
   const isAllTenants = activeTenant === ALL_TENANTS;
-  // "Todas las empresas" ahora la tienen dos perfiles distintos: el superadmin (todas las del
-  // sistema) y el usuario común con varias empresas (solo las suyas). Solo el primero es
-  // contexto de sistema: es el único que ve los ítems solo-sistema (Tenants, Configuración) y
-  // el único que puede pedir `/tenants/all`. Para el usuario común, "Todas mis empresas" es
-  // una vista consolidada de las propias, no un pase a la administración global.
+  // Miembro del tenant de sistema (por membresía real, no por ser superadmin): un usuario
+  // común puede pertenecer a la empresa de sistema con un rol que le da `settings`/`tenants`.
+  const isSystemMember = !!user?.tenants?.some(
+    (t) => t.tenant.slug === SYSTEM_TENANT_SLUG,
+  );
+  // "Contexto de sistema" = estar operando dentro del tenant de sistema. Habilita los ítems
+  // solo-sistema del menú (Tenants, Configuración), que en el backend van con
+  // `SystemTenantGuard` (membresía en sistema) + permiso RBAC. Por eso el corte acá es estar
+  // PARADO en la empresa de sistema —no ser superadmin—: un usuario común miembro del tenant
+  // de sistema con el permiso correspondiente debe verlos y usarlos (manda el RBAC). En la
+  // vista consolidada "Todas las empresas" no hay una empresa puntual activa, así que ese
+  // contexto también aplica a quien es miembro del sistema (el superadmin lo es siempre; el
+  // usuario común, solo si pertenece a esa empresa) — para ellos `apiFetch` ya traduce el
+  // header al id de sistema, que es lo que exige `SystemTenantGuard`.
   const isSystemContext =
-    activeSlug === SYSTEM_TENANT_SLUG || (isAllTenants && isSystemUser);
+    activeSlug === SYSTEM_TENANT_SLUG || (isAllTenants && isSystemMember);
   // Puede consolidar varias empresas en el selector: el superadmin siempre; el usuario común
   // solo si pertenece a más de una.
-  const canSeeAllOption = isSystemUser || (user?.tenants?.length ?? 0) > 1;
+  const canSeeAllOption = isSuperAdmin || (user?.tenants?.length ?? 0) > 1;
 
   /**
    * El superusuario puede pararse en cualquier empresa, así que el selector no puede
@@ -82,7 +91,7 @@ export default function Sidebar() {
    * la copia guardada el selector se quedaría sin opciones y no habría cómo volver.
    */
   useEffect(() => {
-    if (!isSystemUser) return;
+    if (!isSuperAdmin) return;
 
     if (!isSystemContext) {
       try {
@@ -102,16 +111,23 @@ export default function Sidebar() {
       .catch(() => {
         // Sin la lista el selector muestra las membresías: se degrada, no se rompe.
       });
-  }, [isSystemUser, isSystemContext]);
+  }, [isSuperAdmin, isSystemContext]);
 
   const tenantOptions: TenantOption[] =
     allTenants ?? user?.tenants?.map((t) => t.tenant) ?? [];
 
-  const visibleMenu = menuDefinition.filter(
-    (item) =>
-      hasPermission(item.resource, item.action) &&
-      (!item.systemTenantOnly || isSystemContext),
-  );
+  // El superusuario del sistema ve el menú COMPLETO, sin importar en qué empresa del selector
+  // esté parado: puede operar cualquier pantalla en cualquier empresa (los guards del backend
+  // lo dejan pasar por su vínculo de sistema), así que ninguna opción debe desaparecerle. Para
+  // el resto sigue mandando el permiso del rol, y los ítems solo-sistema exigen contexto de
+  // sistema.
+  const visibleMenu = isSuperAdmin
+    ? menuDefinition
+    : menuDefinition.filter(
+        (item) =>
+          hasPermission(item.resource, item.action) &&
+          (!item.systemTenantOnly || isSystemContext),
+      );
 
   return (
     <aside className="w-64 bg-gray-900 text-white min-h-screen flex flex-col">
@@ -120,7 +136,7 @@ export default function Sidebar() {
         {user && (
           <div className="mt-2 text-sm text-gray-400">
             <p className="truncate">{user.email}</p>
-            {tenantOptions.length > 1 || isSystemUser ? (
+            {tenantOptions.length > 1 || isSuperAdmin ? (
               <select
                 value={activeTenant || ''}
                 onChange={(e) => setActiveTenant(e.target.value)}
@@ -130,7 +146,7 @@ export default function Sidebar() {
                     sistema; el usuario común con varias empresas, solo las suyas. */}
                 {canSeeAllOption && (
                   <option value={ALL_TENANTS}>
-                    {isSystemUser ? '🌐 Todas las empresas' : '🌐 Todas mis empresas'}
+                    {isSuperAdmin ? '🌐 Todas las empresas' : '🌐 Todas mis empresas'}
                   </option>
                 )}
                 {tenantOptions.map((t) => (

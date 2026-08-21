@@ -19,7 +19,7 @@ interface Flow {
 }
 
 export default function FlowsPage() {
-  const { hasPermission, activeTenant, isSystemUser } = useAuth();
+  const { hasPermission, activeTenant, isSuperAdmin } = useAuth();
   const router = useRouter();
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,7 +36,7 @@ export default function FlowsPage() {
     setLoading(true);
     try {
       let data: Flow[];
-      if (isSystemUser) {
+      if (isSuperAdmin) {
         // El superadmin administra los flujos de forma global: trae todos con el header de
         // sistema. En "Todas las empresas" se muestran tal cual; parado en una empresa
         // concreta se filtran a los asignados a esa empresa MÁS los que no tienen ninguna
@@ -53,8 +53,15 @@ export default function FlowsPage() {
                 f.tenantFlows.length === 0 ||
                 f.tenantFlows.some((tf) => tf.tenant.id === activeTenant),
             );
+      } else if (isAllTenants) {
+        // Usuario común en "Todas mis empresas": vista consolidada de los flujos de todas sus
+        // empresas (una fila por flujo, con sus chips de empresa). `/flows` scopearía a una sola
+        // empresa —la de respaldo a la que `apiFetch` traduce el centinela—, así que se usa el
+        // endpoint dedicado, que junta las empresas donde el usuario tiene `flows:read`.
+        data = await apiFetch('/flows/mine');
       } else {
-        // Usuario común: listado scopeado a su empresa activa (contrato de /flows sin cambios).
+        // Usuario común en una empresa concreta: listado scopeado a esa empresa (contrato de
+        // /flows sin cambios).
         data = await apiFetch('/flows');
       }
       setFlows(data);
@@ -63,7 +70,7 @@ export default function FlowsPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants, isSystemUser, systemTenantId, activeTenant]);
+  }, [isAllTenants, isSuperAdmin, systemTenantId, activeTenant]);
 
   useEffect(() => {
     loadFlows();
