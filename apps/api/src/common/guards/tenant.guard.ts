@@ -9,7 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { systemTenantSlug } from '../system-tenant';
-import { isSystemSuperAdmin } from '../system-superadmin';
+import { isProtectedRole } from '../../modules/rbac/protected-role';
 
 export const TENANT_HEADER = 'x-tenant-id';
 
@@ -111,8 +111,8 @@ export class TenantGuard implements CanActivate {
    * El vínculo del usuario con el tenant de sistema, si lo tiene. `null` si no, y en ese
    * caso quien llama corta con el 403 de siempre.
    *
-   * Las dos consultas corren solo cuando el usuario pidió una empresa de la que no es
-   * miembro — en el uso normal, nunca.
+   * Las consultas corren solo cuando el usuario pidió una empresa de la que no es miembro —
+   * en el uso normal, nunca.
    */
   private async resolveAsSystemUser<T extends { tenantId: string; roleId: string }>(
     memberships: T[],
@@ -132,10 +132,18 @@ export class TenantGuard implements CanActivate {
     // Pertenecer al tenant de sistema no alcanza: solo el rol SuperAdmin hereda el poder de
     // pararse en una empresa de la que no se es miembro. Un usuario común que además está en
     // el tenant de sistema no pasa (devuelve null → el 403 de siempre).
-    const superAdmin = await isSystemSuperAdmin(
-      this.prisma,
-      this.config,
-      systemMembership,
+    //
+    // El tenant de `systemMembership` ya lo resolvimos por slug (`this.systemSlug`) arriba, así
+    // que su slug es ese mismo: no hace falta volver a consultarlo. Solo falta el nombre del
+    // rol. (Por eso no se usa `isSystemSuperAdmin`, que re-consultaría el tenant que ya tenemos.)
+    const role = await this.prisma.role.findUnique({
+      where: { id: systemMembership.roleId },
+      select: { name: true },
+    });
+    const superAdmin = isProtectedRole(
+      role?.name ?? '',
+      this.systemSlug,
+      this.systemSlug,
     );
     if (!superAdmin) return null;
 

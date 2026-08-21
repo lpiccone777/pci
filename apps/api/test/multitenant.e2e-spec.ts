@@ -14,6 +14,10 @@
  *    superusuario parado en otra empresa sigue siendo el de sistema), no por la empresa activa
  *    (`request.tenantId`). Ese corte es por membresía en el tenant de sistema + permiso RBAC,
  *    no por nombre de rol.
+ *
+ * BE-MT-13 es el complemento adversarial: comprueba que un miembro del tenant de sistema con un
+ * rol COMÚN (no SuperAdmin) NO hereda el poder de pararse en cualquier empresa. El corte de
+ * `TenantGuard.resolveAsSystemUser` es por rol (`isProtectedRole`), no por mera pertenencia.
  */
 import {
   createTestApp,
@@ -298,5 +302,32 @@ describe('1.3 Multitenant (BE-MT-*)', () => {
     // Mismo mecanismo en la otra pantalla cross-tenant: `GET /tenants/all`.
     const tenantsRes = await withAuth(http(t).get('/tenants/all'), token, common.id);
     expect(tenantsRes.status).toBe(200);
+  });
+
+  // --- BE-MT-13: ser miembro del tenant de sistema NO alcanza; hace falta el rol SuperAdmin ---
+  it('BE-MT-13: un miembro común del tenant de sistema (rol distinto de SuperAdmin) NO puede pararse en otra empresa (403)', async () => {
+    // Complemento adversarial de BE-MT-06: mismo escenario (header de una empresa de la que no
+    // se es miembro), pero el usuario tiene en el tenant de sistema un rol COMÚN, no SuperAdmin.
+    // `TenantGuard.resolveAsSystemUser` corta por el rol, no por la mera pertenencia al tenant de
+    // sistema (ver `isProtectedRole`): un rol común no hereda el poder de operar cualquier
+    // empresa, así que recibe el mismo 403 que un usuario ajeno (BE-MT-05).
+    const { tenant: systemTenant } = await getSystemContext(t.prisma);
+    const commonRole = await createRole(t.prisma, {
+      tenantId: systemTenant.id,
+      name: 'Miembro común de sistema',
+      permissions: ['areas:read'],
+    });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('mt13'),
+      password: DEFAULT_PASSWORD,
+      memberships: [{ tenantId: systemTenant.id, roleId: commonRole.id }],
+    });
+    const otra = await createTenant(t.prisma, { slug: uniqueSlug('mt13-otra') });
+    const token = tokenFor(t, user);
+
+    const res = await withAuth(http(t).get('/areas'), token, otra.id);
+
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('No tenés acceso a este tenant');
   });
 });

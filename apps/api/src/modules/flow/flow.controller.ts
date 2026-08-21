@@ -58,13 +58,15 @@ export class FlowController {
 
   /**
    * Flujos de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
-   * común). El scope lo pone el userId, no el header, así que no lleva `SystemTenantGuard`:
-   * cada empresa se filtra por el `flows:read` que el usuario tenga en ella (dentro del
-   * servicio). Contraparte no-privilegiada de `GET /flows/all`. Va antes de `@Get(':id')`
-   * para que 'mine' no entre como id.
+   * común). El scope lo pone el userId, no el header, así que no lleva `SystemTenantGuard` ni
+   * `@RequirePermission` — la autorización es por-empresa, adentro del servicio: cada empresa
+   * se filtra por el `flows:read` que el usuario tenga en ella. Poner `@RequirePermission`
+   * acá lo evaluaría contra el rol del tenant ACTIVO (el del header) y tiraría 403 a quien
+   * tiene el permiso en otra empresa pero no en la activa — justo lo contrario de esta vista.
+   * Mismo criterio que `/areas/mine`, `/users/mine` y `/roles/mine`. Contraparte no-privilegiada
+   * de `GET /flows/all`. Va antes de `@Get(':id')` para que 'mine' no entre como id.
    */
   @Get('mine')
-  @RequirePermission('flows', 'read')
   async findMine(@Req() req: any) {
     return this.flowService.findMine(req.user.userId);
   }
