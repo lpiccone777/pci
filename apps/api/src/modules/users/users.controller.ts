@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
+  BulkImportUsersDto,
   CheckAvailabilityQueryDto,
   CreateUserDto,
   CreateUserMultiTenantDto,
@@ -117,6 +118,21 @@ export class UsersController {
   @Post('multi')
   async createMultiTenant(@Body() dto: CreateUserMultiTenantDto, @Req() req: any) {
     return this.usersService.createMultiTenant(req.user.userId, dto);
+  }
+
+  /**
+   * Carga masiva desde Excel: el frontend ya parseó el archivo y mapeó columna→campo, acá
+   * llega JSON limpio. Mismo criterio de alcance que `create` (tenant activo del header),
+   * no cross-tenant como `/users/multi`.
+   */
+  @Post('bulk-import')
+  @RequirePermission('users', 'create')
+  async bulkImport(
+    @Body() dto: BulkImportUsersDto,
+    @CurrentTenant() tenantId: string,
+    @Req() req: any,
+  ) {
+    return this.usersService.bulkImport(tenantId, req.user.userId, dto);
   }
 
   @Patch(':id')
