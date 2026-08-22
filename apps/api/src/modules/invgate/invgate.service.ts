@@ -347,6 +347,16 @@ export class InvgateService {
    * OK igual, pero `attached_files`/`attachments` queda vacío). Sin adjuntos, sigue
    * yendo form-urlencoded como siempre — no hay motivo para cambiarlo si no hace falta.
    */
+  /**
+   * `description`/`comment` de InvGate son campos HTML (editor WYSIWYG del lado de
+   * InvGate, no texto plano) — un `\n` literal no genera salto de línea ahí, queda
+   * todo corrido en una sola línea. Solo se usa para lo que viaja a la API; no toca
+   * `Ticket.description` en nuestra base, que sigue siendo texto plano con `\n` real.
+   */
+  private toInvgateHtml(text: string): string {
+    return text.replace(/\r\n|\r|\n/g, '<br>');
+  }
+
   async createIncident(input: CreateIncidentInput, attachments: IncidentAttachment[] = []): Promise<InvgateIncident> {
     const fields = {
       creator_id: input.creatorId,
@@ -355,7 +365,7 @@ export class InvgateService {
       priority_id: input.priorityId,
       type_id: input.typeId,
       title: input.title,
-      description: input.description,
+      description: input.description ? this.toInvgateHtml(input.description) : input.description,
       source_id: input.sourceId,
     };
     const raw = (
@@ -431,7 +441,7 @@ export class InvgateService {
     return this.put('incident', {
       id,
       title: input.title,
-      description: input.description,
+      description: input.description ? this.toInvgateHtml(input.description) : input.description,
       category_id: input.categoryId,
       priority_id: input.priorityId,
       type_id: input.typeId,
@@ -447,7 +457,7 @@ export class InvgateService {
   ): Promise<unknown> {
     return this.post('incident.comment', {
       request_id: requestId,
-      comment,
+      comment: this.toInvgateHtml(comment),
       author_id: authorId,
       customer_visible: opts.customerVisible ?? true,
     });

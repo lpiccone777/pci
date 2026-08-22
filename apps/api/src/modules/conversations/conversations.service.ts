@@ -62,6 +62,16 @@ const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_DELAY_SECONDS = 10;
 
 /**
+ * Nodo `llm_query` en modo extracción: cuántas veces se le pregunta al usuario un
+ * dato antes de darlo por "no definido" y seguir. Default cuando el nodo no trae
+ * `data.maxAttempts` — ver ConversationsService.executeLlmQueryExtraction.
+ */
+const DEFAULT_LLM_QUERY_MAX_ATTEMPTS = 2;
+
+/** Valor que `llm_query` en modo extracción guarda cuando el usuario se niega (o agota los intentos) a dar un dato. */
+const LLM_QUERY_UNDEFINED_VALUE = 'no definido';
+
+/**
  * System prompt de arranque cuando no hay nada configurado en /settings
  * (`LLM_SYSTEM_PROMPT`) — ver `ConversationsService.buildBasePrompt`. Mismo texto
  * que ya se usaba como fallback hardcodeado del nodo `llm_query`: se conserva acá
@@ -833,6 +843,19 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
+   * Los campos de config que declaran un nombre de variable (`input.variableName`,
+   * `variable.name`, `ticket_query.ticketIdVariable`, `llm_query.extractVariable`)
+   * a veces se cargan con el placeholder completo (`{{descripcion}}`) en vez del
+   * nombre pelado (`descripcion`) — error fácil de cometer copiando desde el texto
+   * de otro nodo. Sin esto, `flowState["{{descripcion}}"]` queda guardado bajo una
+   * clave que `interpolate()` nunca busca (busca `flowState["descripcion"]`), y el
+   * placeholder se ve tal cual en la respuesta al usuario en vez de reemplazarse.
+   */
+  private stripVariableBraces(name: string): string {
+    return name.trim().replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').trim();
+  }
+
+  /**
    * Reemplaza `{{variable}}` por `flowState[variable]` en el texto de un nodo
    * (ej. `Hola {{userName}}`, con `userName` seteado por el nodo `start`). Si la
    * variable no existe en `flowState`, deja el placeholder tal cual — mejor que
@@ -1512,7 +1535,7 @@ export class ConversationsService implements OnModuleInit {
         }
 
         if (data.variableName) {
-          flowState[data.variableName] = body;
+          flowState[this.stripVariableBraces(data.variableName)] = body;
         }
         delete flowState.__awaiting;
         return { flowState };
@@ -1608,7 +1631,9 @@ export class ConversationsService implements OnModuleInit {
         // a sincronizar con InvGate) o el número de InvGate (lo normal ahora, ver
         // `lastTicketId` en 'ticket_create'/executeTransferAgentNode) — se busca por
         // cualquiera de los dos campos, sin necesidad de adivinar cuál es.
-        const ticketId = data.ticketIdVariable ? flowState[data.ticketIdVariable] : flowState.lastTicketId;
+        const ticketId = data.ticketIdVariable
+          ? flowState[this.stripVariableBraces(data.ticketIdVariable)]
+          : flowState.lastTicketId;
         if (ticketId) {
           const ticket = await this.prisma.ticket.findFirst({
             where: { OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
@@ -1681,42 +1706,36 @@ export class ConversationsService implements OnModuleInit {
             : data.systemPrompt || basePrompt;
 
         // Modo extracción: en vez de mandarle al usuario lo que diga el modelo, lo usamos
-        // para decidir un valor puntual (ej. "sede") y ramificar — así el nodo puede saltear
-        // el paso siguiente (ej. un `input` que lo pide) cuando el dato ya está en la charla,
-        // sin depender de que el modelo "decida" cortar el flujo (no puede: solo devuelve
-        // texto). `allowedValues` cierra el universo de respuestas válidas para no quedar a
-        // merced de que el modelo invente/alucine un valor que no está en la lista.
+        // para resolver una o más variables (ej. "sede") y ramificar — así el nodo puede
+        // saltear los pasos que las piden cuando ya están en la charla. Si falta alguna,
+        // el nodo mismo se detiene a preguntarla (ver executeLlmQueryExtraction) en vez de
+        // ramificar directo a "no encontrado": solo cae a "no definido" si el usuario se
+        // niega a darla o se agotan los intentos.
         //
         // Igual que `condition`, las ramas van por `data.foundTargetNodeId`/
         // `missingTargetNodeId` (no por `sourceHandle` de un edge): este nodo usa
         // `BaseNode` en el editor, que solo tiene un handle de salida genérico sin id,
         // así que no hay forma de dibujar dos salidas nombradas en el canvas.
-        if (data.extractVariable) {
-          const allowedValues: string[] = data.allowedValues || [];
-          const label = data.extractLabel || data.extractVariable;
-          const extractPrompt =
-            `${systemPrompt}\n\nTu única tarea ahora: determinar si en la conversación el ` +
-            `usuario ya indicó su "${label}".` +
-            (allowedValues.length
-              ? `\nValores válidos (respondé EXACTAMENTE uno, calcado, o la palabra NONE si ninguno aplica):\n${allowedValues.join('\n')}`
-              : '\nRespondé el valor tal como lo dijo el usuario, o la palabra NONE si no lo mencionó.') +
-            '\nRespondé solo con el valor o con NONE. Nada de explicaciones ni texto adicional.';
-
-          const raw = (await this.llmService.chat(llmMessages, { systemPrompt: extractPrompt })).trim();
-          const match = allowedValues.length
-            ? allowedValues.find((v) => v.toLowerCase() === raw.toLowerCase())
-            : raw && raw.toUpperCase() !== 'NONE'
-              ? raw
-              : undefined;
-
-          if (match) {
-            flowState[data.extractVariable] = match;
-            return { nextNodeId: data.foundTargetNodeId, flowState };
-          }
-          return { nextNodeId: data.missingTargetNodeId };
+        if (data.extractVariables?.length) {
+          return this.executeLlmQueryExtraction(
+            node,
+            data,
+            data.extractVariables,
+            llmMessages,
+            systemPrompt,
+            flowState,
+            data.temperature,
+          );
         }
 
-        const responseText = await this.llmService.chat(llmMessages, { systemPrompt });
+        // `temperature` solo se manda si el nodo lo define — un `temperature: undefined`
+        // explícito pisaría el default de LlmService (LLM_TEMPERATURE de /settings) con
+        // `undefined` en el merge (`{...defaults, ...tenantConfig}`), perdiendo la cascada
+        // BD → env → default y cayendo al 0.7 hardcodeado de cada provider.
+        const responseText = await this.llmService.chat(llmMessages, {
+          systemPrompt,
+          ...(data.temperature !== undefined ? { temperature: data.temperature } : {}),
+        });
 
         return { responseText };
       }
@@ -1731,7 +1750,7 @@ export class ConversationsService implements OnModuleInit {
 
       case 'variable': {
         if (data.action === 'set' && data.name) {
-          flowState[data.name] = data.value ?? body;
+          flowState[this.stripVariableBraces(data.name)] = data.value ?? body;
         }
         return { flowState };
       }
@@ -1765,6 +1784,175 @@ export class ConversationsService implements OnModuleInit {
 
       default:
         return { responseText: data.text || 'Nodo no implementado.' };
+    }
+  }
+
+  /**
+   * Nodo `llm_query` en modo extracción (`data.extractVariables`). A diferencia del modo
+   * conversacional plano, este nodo puede detener el flujo para preguntarle al usuario los
+   * datos que falten (ej. "sede") en vez de ramificar directo a "no encontrado" — solo cae a
+   * `LLM_QUERY_UNDEFINED_VALUE` si el usuario se niega a darlo o se agota `data.maxAttempts`.
+   *
+   * Reusa `flowState.__awaiting` (mismo mecanismo que el nodo `input`) para saber si esta
+   * ejecución es la primera pasada (evalúa la charla tal cual llegó) o una respuesta a la
+   * pregunta que el nodo mismo hizo. Las variables ya resueltas (con valor real o con
+   * `LLM_QUERY_UNDEFINED_VALUE`) quedan en `flowState` entre turnos, así que una vuelta
+   * parcial (algunas encontradas, otras no) no las vuelve a preguntar.
+   */
+  private async executeLlmQueryExtraction(
+    node: any,
+    data: any,
+    variables: Array<{ variable: string; label?: string; allowedValues?: string[] }>,
+    llmMessages: LlmMessage[],
+    systemPrompt: string,
+    flowState: Record<string, any>,
+    temperature?: number,
+  ): Promise<NodeExecutionResult> {
+    const maxAttempts =
+      typeof data.maxAttempts === 'number' && data.maxAttempts > 0
+        ? data.maxAttempts
+        : DEFAULT_LLM_QUERY_MAX_ATTEMPTS;
+    // Cuántas veces ya se le preguntó al usuario por los datos que faltan, ANTES de esta
+    // pasada — 0 en la primera ejecución (todavía no se preguntó nada).
+    const attemptsSoFar = flowState.__awaiting === node.id ? flowState.__llmQueryAttempts || 0 : 0;
+
+    const pending = variables.filter((v) => {
+      const value = flowState[this.stripVariableBraces(v.variable)];
+      return value === undefined || value === null || value === '';
+    });
+
+    if (pending.length) {
+      const outcomes = await this.extractLlmQueryValues(llmMessages, systemPrompt, pending);
+      const stillMissing: typeof pending = [];
+
+      for (const v of pending) {
+        const key = this.stripVariableBraces(v.variable);
+        const outcome = outcomes[key];
+        if (outcome && outcome !== 'NONE' && outcome !== 'REFUSED') {
+          flowState[key] = outcome;
+        } else if (outcome === 'REFUSED' || attemptsSoFar >= maxAttempts) {
+          flowState[key] = LLM_QUERY_UNDEFINED_VALUE;
+        } else {
+          stillMissing.push(v);
+        }
+      }
+
+      if (stillMissing.length) {
+        flowState.__awaiting = node.id;
+        flowState.__llmQueryAttempts = attemptsSoFar + 1;
+        const question = await this.generateLlmQueryQuestion(systemPrompt, llmMessages, stillMissing, temperature);
+        return { responseText: question, waitForInput: true, flowState };
+      }
+    }
+
+    delete flowState.__awaiting;
+    delete flowState.__llmQueryAttempts;
+    const allResolved = variables.every(
+      (v) => flowState[this.stripVariableBraces(v.variable)] !== LLM_QUERY_UNDEFINED_VALUE,
+    );
+    return { nextNodeId: allResolved ? data.foundTargetNodeId : data.missingTargetNodeId, flowState };
+  }
+
+  /**
+   * Un llamado al LLM por turno para TODAS las variables pendientes de `llm_query` (en vez
+   * de uno por variable): le pasa la charla reciente y le pide una línea `variable: valor`
+   * por cada una, con NONE si todavía no se mencionó o REFUSED si el usuario se negó
+   * explícitamente a darla (así el nodo puede caer a "no definido" sin esperar a agotar
+   * `maxAttempts`). Ante una línea faltante o sin parsear, se trata como NONE — el peor caso
+   * es una pregunta de más, no un valor inventado.
+   *
+   * Siempre corre en `temperature: 0`, sin importar el `temperature` configurado en el nodo
+   * (igual que `confirmEndChatIntent` e `interpretMenuChoice`): es una clasificación
+   * (¿el usuario ya dijo esto o no?), no una redacción — dejarla "creativa" es lo que hacía
+   * que el nodo confundiera "no lo dijo" con inventar contexto extra.
+   */
+  private async extractLlmQueryValues(
+    llmMessages: LlmMessage[],
+    systemPrompt: string,
+    pending: Array<{ variable: string; label?: string; allowedValues?: string[] }>,
+  ): Promise<Record<string, string>> {
+    const items = pending.map((v) => {
+      const key = this.stripVariableBraces(v.variable);
+      const label = v.label || key;
+      const allowed = v.allowedValues?.length
+        ? ` Valores válidos (respondé EXACTAMENTE uno, calcado): ${v.allowedValues.join(', ')}.`
+        : '';
+      return { key, line: `- ${key} (${label}).${allowed}` };
+    });
+
+    const extractPrompt =
+      `${systemPrompt}\n\nTu única tarea ahora: para cada uno de estos datos, determinar si en ` +
+      `la conversación el usuario ya lo indicó:\n${items.map((i) => i.line).join('\n')}\n\n` +
+      'Respondé UNA línea por dato, en este formato exacto ("clave: valor"):\n' +
+      items.map((i) => `${i.key}: <valor, o NONE si no lo dijo, o REFUSED si se negó a darlo>`).join('\n') +
+      '\n\nNada de explicaciones ni texto adicional, solo esas líneas.';
+
+    const raw = await this.llmService.chat(llmMessages, {
+      systemPrompt: extractPrompt,
+      maxTokens: CLASSIFIER_MAX_TOKENS,
+      temperature: 0,
+    });
+
+    const outcomes: Record<string, string> = {};
+    for (const line of raw.split('\n')) {
+      const match = line.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+      if (!match) continue;
+      const item = items.find((i) => i.key.toLowerCase() === match[1].trim().toLowerCase());
+      if (!item) continue;
+      outcomes[item.key] = match[2].trim();
+    }
+
+    for (const { key } of items) {
+      const value = outcomes[key];
+      if (!value) {
+        outcomes[key] = 'NONE';
+        continue;
+      }
+      const upper = value.toUpperCase();
+      if (upper === 'NONE' || upper === 'REFUSED') {
+        outcomes[key] = upper;
+        continue;
+      }
+      const spec = pending.find((v) => this.stripVariableBraces(v.variable) === key);
+      if (spec?.allowedValues?.length) {
+        const matched = spec.allowedValues.find((v) => v.toLowerCase() === value.toLowerCase());
+        outcomes[key] = matched || 'NONE';
+      }
+    }
+
+    return outcomes;
+  }
+
+  /**
+   * Redacta la pregunta que `llm_query` le manda al usuario por los datos que faltan.
+   * Ante cualquier falla del proveedor, cae a una pregunta fija en vez de dejar el nodo sin
+   * responder — el peor caso es una pregunta menos natural, no un turno perdido.
+   *
+   * `temperature` viene del nodo (`data.temperature`); default 0 si no se configuró — a
+   * diferencia de dejarla caer en el `LLM_TEMPERATURE` global (pensado para charla libre,
+   * no para esta redacción acotada), 0 es lo que garantiza que respete "UNA pregunta, nada
+   * más" en vez de mezclar la pregunta con una respuesta libre tipo asistente.
+   */
+  private async generateLlmQueryQuestion(
+    systemPrompt: string,
+    llmMessages: LlmMessage[],
+    missing: Array<{ variable: string; label?: string }>,
+    temperature?: number,
+  ): Promise<string> {
+    const labels = missing.map((v) => v.label || this.stripVariableBraces(v.variable));
+    const fallback = `Para continuar, necesito que me indiques: ${labels.join(', ')}.`;
+    try {
+      const raw = await this.llmService.chat(llmMessages, {
+        systemPrompt:
+          `${systemPrompt}\n\nTodavía falta que el usuario indique: ${labels.join(', ')}. Redactá UNA ` +
+          'pregunta breve y amable pidiéndole ese dato (o esos datos, si son varios). Nada más que la ' +
+          'pregunta, sin saludos ni explicaciones.',
+        temperature: temperature ?? 0,
+      });
+      return raw.trim() || fallback;
+    } catch (err) {
+      this.logger.warn(`No se pudo generar la pregunta de llm_query (${labels.join(', ')}): ${(err as Error).message}`);
+      return fallback;
     }
   }
 
