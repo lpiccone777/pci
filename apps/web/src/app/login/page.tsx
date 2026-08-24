@@ -18,7 +18,8 @@ export default function LoginPage() {
   // Si ya está logueado, redirigir al dashboard
   useEffect(() => {
     if (!isLoading && token) {
-      router.replace('/dashboard');
+      // Barra final: ver el comentario equivalente en `lib/api.ts` (clearSession).
+      router.replace('/dashboard/');
     }
   }, [isLoading, token, router]);
 

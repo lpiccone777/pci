@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ReactFlow,
   Background,
@@ -129,7 +129,8 @@ const nodeTypeList = [
 ];
 
 function FlowEditorInner() {
-  const { id } = useParams();
+  const searchParams = useSearchParams();
+  const id = searchParams.get('id');
   const router = useRouter();
   const isNew = id === 'new';
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -477,7 +478,7 @@ function FlowEditorInner() {
       case 'sms':
         return { message: '', recipients: [] };
       case 'llm_query':
-        return { systemPrompt: '', contextMessages: 10 };
+        return { systemPrompt: '', contextMessages: 10, extractVariables: [] };
       case 'delay':
         return { seconds: 1 };
       case 'variable':
@@ -550,7 +551,7 @@ function FlowEditorInner() {
             isStart: isStartFlow,
           }),
         });
-        router.replace(`/dashboard/flows/${created.id}`);
+        router.replace(`/dashboard/flows/edit/?id=${created.id}`);
       } else {
         await apiFetch(`/flows/${id}`, {
           method: 'PATCH',
@@ -586,7 +587,7 @@ function FlowEditorInner() {
       <div className="bg-white border-b p-4 flex justify-between items-center">
         <div className="flex gap-4 items-center">
           <button
-            onClick={() => router.push('/dashboard/flows')}
+            onClick={() => router.push('/dashboard/flows/')}
             className="text-gray-600 hover:text-gray-900"
           >
             ← Volver
@@ -769,6 +770,7 @@ function FlowEditorInner() {
             <h3 className="font-semibold mb-4">Propiedades</h3>
             <p className="text-xs text-gray-500 mb-4">{selectedNode.type}</p>
             <NodeProperties
+              key={selectedNode.id}
               node={selectedNode}
               onUpdate={updateNodeData}
               users={allUsers}
@@ -957,6 +959,67 @@ function FlowEditorInner() {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Categoría/prioridad/tipo de InvGate: por default el catálogo (un <select> con los
+ * nombres reales de esta instancia); "Usar variable de flujo" cambia a un campo de
+ * texto libre para admitir {{variable}} en vez de mostrar ambos controles siempre —
+ * son la misma data.category/priority/ticketType, típicamente se usa uno u otro.
+ */
+function InvgateResolvedField({
+  label,
+  value,
+  onChange,
+  catalog,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  catalog: InvgateCatalogOption[];
+  placeholder: string;
+}) {
+  const matchesCatalog = catalog.some((c) => c.name === value);
+  const [variableMode, setVariableMode] = useState(!!value && !matchesCatalog);
+  const showSelect = catalog.length > 0 && !variableMode;
+
+  return (
+    <div>
+      <label className="block text-sm font-medium mb-1">{label}</label>
+      {showSelect ? (
+        <select
+          value={matchesCatalog ? value : ''}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full border rounded p-2 text-sm"
+        >
+          <option value="">(elegir del catálogo…)</option>
+          {catalog.map((c) => (
+            <option key={c.id} value={c.name}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type="text"
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full border rounded p-2 text-sm"
+        />
+      )}
+      {catalog.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setVariableMode((v) => !v)}
+          className="text-xs text-blue-600 mt-1 hover:underline"
+        >
+          {showSelect ? 'Usar variable de flujo ({{variable}})' : 'Elegir del catálogo'}
+        </button>
       )}
     </div>
   );
@@ -1217,10 +1280,12 @@ function NodeProperties({
               type="text"
               value={data.subject || ''}
               onChange={(e) => onUpdate('subject', e.target.value)}
+              placeholder="Ej: {{motivoConsulta}}"
               className="w-full border rounded p-2 text-sm"
             />
             <p className="text-xs text-gray-400 mt-1">
-              Vacío: usa <code>{'{{subject}}'}</code> de la charla o los primeros 100 caracteres del mensaje.
+              Admite <code>{'{{variable}}'}</code> de la charla. Vacío: usa <code>{'{{subject}}'}</code> o los
+              primeros 100 caracteres del mensaje.
             </p>
           </div>
           <div>
@@ -1232,89 +1297,37 @@ function NodeProperties({
               rows={3}
             />
             <p className="text-xs text-gray-400 mt-1">
-              Vacío: usa <code>{'{{description}}'}</code> de la charla o el mensaje del usuario.
+              Admite <code>{'{{variable}}'}</code> de la charla. Vacío: usa <code>{'{{description}}'}</code> o el
+              mensaje del usuario.
             </p>
           </div>
           {/* Categoría/prioridad/tipo van por NOMBRE real de InvGate (no un id) — el bot
               los resuelve contra el catálogo al crear el ticket (InvgateService.resolveCategoryId/
-              resolvePriorityId/resolveTypeId). Vacío en cualquiera de los tres: usa el default
-              de /settings > "Integración: InvGate". Si el catálogo no cargó (InvGate sin
-              configurar, o sin permiso), cae a un campo de texto libre para no bloquear la edición. */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Categoría (InvGate)</label>
-            {invgateCategories.length > 0 ? (
-              <select
-                value={data.category || ''}
-                onChange={(e) => onUpdate('category', e.target.value)}
-                className="w-full border rounded p-2 text-sm"
-              >
-                <option value="">(usar default de /settings)</option>
-                {invgateCategories.map((c) => (
-                  <option key={c.id} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={data.category || ''}
-                onChange={(e) => onUpdate('category', e.target.value)}
-                placeholder="Nombre exacto de la categoría en InvGate"
-                className="w-full border rounded p-2 text-sm"
-              />
-            )}
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Prioridad (InvGate)</label>
-            {invgatePriorities.length > 0 ? (
-              <select
-                value={data.priority || ''}
-                onChange={(e) => onUpdate('priority', e.target.value)}
-                className="w-full border rounded p-2 text-sm"
-              >
-                <option value="">(usar default de /settings)</option>
-                {invgatePriorities.map((p) => (
-                  <option key={p.id} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={data.priority || ''}
-                onChange={(e) => onUpdate('priority', e.target.value)}
-                placeholder="Nombre exacto de la prioridad en InvGate"
-                className="w-full border rounded p-2 text-sm"
-              />
-            )}
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Tipo de incidente (InvGate)</label>
-            {invgateTypes.length > 0 ? (
-              <select
-                value={data.ticketType || ''}
-                onChange={(e) => onUpdate('ticketType', e.target.value)}
-                className="w-full border rounded p-2 text-sm"
-              >
-                <option value="">(usar default de /settings)</option>
-                {invgateTypes.map((t) => (
-                  <option key={t.id} value={t.name}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={data.ticketType || ''}
-                onChange={(e) => onUpdate('ticketType', e.target.value)}
-                placeholder="Nombre exacto del tipo en InvGate"
-                className="w-full border rounded p-2 text-sm"
-              />
-            )}
-          </div>
+              resolvePriorityId/resolveTypeId). Por default el <select> del catálogo real; "Usar
+              variable de flujo" cambia a texto libre para admitir {{variable}} (ej. {{Urgencia}})
+              en vez de mostrar ambos controles siempre. Vacío en cualquiera: usa el default de
+              /settings > "Integración: InvGate". */}
+          <InvgateResolvedField
+            label="Categoría (InvGate)"
+            value={data.category || ''}
+            onChange={(v) => onUpdate('category', v)}
+            catalog={invgateCategories}
+            placeholder="Nombre exacto de la categoría en InvGate, o {{variable}}"
+          />
+          <InvgateResolvedField
+            label="Prioridad (InvGate)"
+            value={data.priority || ''}
+            onChange={(v) => onUpdate('priority', v)}
+            catalog={invgatePriorities}
+            placeholder="Nombre exacto de la prioridad en InvGate, o {{variable}}"
+          />
+          <InvgateResolvedField
+            label="Tipo de incidente (InvGate)"
+            value={data.ticketType || ''}
+            onChange={(v) => onUpdate('ticketType', v)}
+            catalog={invgateTypes}
+            placeholder="Nombre exacto del tipo en InvGate, o {{variable}}"
+          />
         </>
       )}
 
@@ -1367,6 +1380,157 @@ function NodeProperties({
               className="w-full border rounded p-2 text-sm"
             />
           </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Temperature</label>
+            <input
+              type="number"
+              min={0}
+              max={2}
+              step="0.1"
+              value={data.temperature ?? ''}
+              onChange={(e) =>
+                onUpdate('temperature', e.target.value === '' ? undefined : parseFloat(e.target.value))
+              }
+              className="w-full border rounded p-2 text-sm"
+              placeholder="Vacío: usa el default global de /settings"
+            />
+            <p className="text-[11px] text-gray-400 mt-1">
+              Solo afecta la respuesta libre de este nodo y la pregunta que redacta cuando falta
+              una variable. La clasificación interna (¿el usuario ya dijo el dato?) siempre corre
+              en 0, sin importar este valor.
+            </p>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-sm font-medium">Variables a extraer</label>
+              <button
+                type="button"
+                onClick={() => {
+                  const current = data.extractVariables || [];
+                  onUpdate('extractVariables', [...current, { variable: '', label: '', allowedValues: [] }]);
+                }}
+                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200"
+              >
+                + Agregar
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400 mb-2">
+              En vez de responderle al usuario, el nodo evalúa estas variables contra la charla. Si
+              falta alguna, se detiene a preguntarla; si el usuario se niega o se agotan los
+              intentos, queda en "no definido".
+            </p>
+            <div className="space-y-2">
+              {(data.extractVariables || []).map((v: any, idx: number) => (
+                <div key={idx} className="border rounded p-2 bg-gray-50">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-xs font-medium text-gray-500">Variable {idx + 1}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = data.extractVariables || [];
+                        onUpdate(
+                          'extractVariables',
+                          current.filter((_: any, i: number) => i !== idx),
+                        );
+                      }}
+                      className="text-xs text-red-500 hover:text-red-700"
+                    >
+                      × Quitar
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      value={v.variable || ''}
+                      onChange={(e) => {
+                        const current = [...(data.extractVariables || [])];
+                        current[idx] = { ...current[idx], variable: e.target.value };
+                        onUpdate('extractVariables', current);
+                      }}
+                      className="w-full border rounded px-2 py-1 text-sm font-mono"
+                      placeholder="Nombre de variable (ej: sede)"
+                    />
+                    <input
+                      type="text"
+                      value={v.label || ''}
+                      onChange={(e) => {
+                        const current = [...(data.extractVariables || [])];
+                        current[idx] = { ...current[idx], label: e.target.value };
+                        onUpdate('extractVariables', current);
+                      }}
+                      className="w-full border rounded px-2 py-1 text-sm"
+                      placeholder="Nombre humano (ej: sede donde está). Vacío: usa el nombre de variable"
+                    />
+                    <input
+                      type="text"
+                      value={(v.allowedValues || []).join(', ')}
+                      onChange={(e) => {
+                        const current = [...(data.extractVariables || [])];
+                        const allowedValues = e.target.value
+                          .split(',')
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        current[idx] = { ...current[idx], allowedValues };
+                        onUpdate('extractVariables', current);
+                      }}
+                      className="w-full border rounded px-2 py-1 text-sm"
+                      placeholder="Valores válidos separados por coma (opcional, ej: CABA, GBA, Interior)"
+                    />
+                  </div>
+                </div>
+              ))}
+              {(data.extractVariables || []).length === 0 && (
+                <p className="text-xs text-gray-400 italic text-center py-2">
+                  Sin variables. El nodo solo va a conversar libremente con el prompt de arriba.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {(data.extractVariables || []).length > 0 && (
+            <>
+              <div>
+                <label className="block text-sm font-medium mb-1">Intentos antes de "no definido"</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={data.maxAttempts || 2}
+                  onChange={(e) => onUpdate('maxAttempts', parseInt(e.target.value))}
+                  className="w-full border rounded p-2 text-sm"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Cuántas veces se le pregunta al usuario un dato faltante antes de darlo por "no
+                  definido" y seguir.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Nodo destino — todas encontradas
+                </label>
+                <input
+                  type="text"
+                  value={data.foundTargetNodeId || ''}
+                  onChange={(e) => onUpdate('foundTargetNodeId', e.target.value)}
+                  className="w-full border rounded p-2 text-sm font-mono"
+                  placeholder="ID nodo destino"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Nodo destino — alguna quedó "no definido"
+                </label>
+                <input
+                  type="text"
+                  value={data.missingTargetNodeId || ''}
+                  onChange={(e) => onUpdate('missingTargetNodeId', e.target.value)}
+                  className="w-full border rounded p-2 text-sm font-mono"
+                  placeholder="ID nodo destino"
+                />
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -1738,8 +1902,13 @@ function UserPickerList({
 
 export default function FlowEditorPage() {
   return (
-    <ReactFlowProvider>
-      <FlowEditorInner />
-    </ReactFlowProvider>
+    // useSearchParams() opts the tree below it into client-side rendering — Next
+    // requires a Suspense boundary around it (matters for `output: 'export'`, ver
+    // apps/web/next.config.ts).
+    <Suspense fallback={null}>
+      <ReactFlowProvider>
+        <FlowEditorInner />
+      </ReactFlowProvider>
+    </Suspense>
   );
 }

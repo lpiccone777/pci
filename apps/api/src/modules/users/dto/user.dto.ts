@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsEmail,
@@ -246,4 +247,62 @@ export class UpdateUserDto {
   @IsString()
   @MinLength(8, { message: 'La contraseña debe tener al menos 8 caracteres' })
   password?: string;
+}
+
+/**
+ * Una fila del Excel ya mapeada a campos de persona (el mapeo columna→campo lo resuelve el
+ * frontend antes de mandar el body). Sin `password` ni `roleId`: la contraseña se autogenera
+ * y el rol/área son un default único para todo el lote (ver `BulkImportUsersDto`) — un Excel
+ * de personal casi nunca trae una columna de rol utilizable tal cual.
+ */
+export class BulkImportUserRowDto {
+  @IsEmail({}, { message: 'El email no es válido' })
+  email: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'El nombre es obligatorio' })
+  @MaxLength(80)
+  firstName: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'El apellido es obligatorio' })
+  @MaxLength(80)
+  lastName: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  internalPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  invgateUserId?: string;
+}
+
+/**
+ * Carga masiva desde Excel: mismo rol y (opcional) área para todas las filas, elegidos una
+ * sola vez en el modal de importación — no por fila. Crea en el tenant activo (header), como
+ * `CreateUserDto`, no cross-tenant como el alta multiempresa.
+ */
+export class BulkImportUsersDto {
+  @IsString()
+  @IsNotEmpty({ message: 'El rol por defecto es obligatorio' })
+  defaultRoleId: string;
+
+  @IsOptional()
+  @IsString()
+  defaultAreaId?: string;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'El archivo no tiene filas para importar' })
+  @ArrayMaxSize(10000, { message: 'Máximo 10000 filas por importación' })
+  @ValidateNested({ each: true })
+  @Type(() => BulkImportUserRowDto)
+  rows: BulkImportUserRowDto[];
 }

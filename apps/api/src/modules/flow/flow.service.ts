@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateFlowDto, UpdateFlowDto, TenantAssignmentDto } from './dto/create-flow.dto';
 
@@ -199,6 +199,27 @@ export class FlowService {
       tenantId,
       roleIds: [...roles],
     }));
+
+    // Mismo criterio que `UsersService.assertRoleBelongsToTenant`: un roleId de otra
+    // empresa no puede colarse acá — si no, un flujo quedaría con su recepción atada
+    // a un rol sin ninguna relación real con el tenant al que se está asignando.
+    const allRoleIds = uniqueAssignments.flatMap((a) => a.roleIds);
+    if (allRoleIds.length) {
+      const roles = await this.prisma.role.findMany({
+        where: { id: { in: allRoleIds } },
+        select: { id: true, tenantId: true },
+      });
+      const tenantByRole = new Map(roles.map((r) => [r.id, r.tenantId]));
+      for (const { tenantId, roleIds } of uniqueAssignments) {
+        for (const roleId of roleIds) {
+          if (tenantByRole.get(roleId) !== tenantId) {
+            throw new BadRequestException(
+              `El rol ${roleId} no existe o no pertenece al tenant ${tenantId}`,
+            );
+          }
+        }
+      }
+    }
 
     await this.prisma.$transaction(async (tx) => {
       // Reemplazo total: borrar las asignaciones actuales de este flujo. El cascade

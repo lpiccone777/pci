@@ -1312,6 +1312,47 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 - ~~El dropdown de modelos "solo funcionaba" en OpenCode Go~~ — era el único proveedor
   precargado al entrar; ahora cualquier pestaña carga sus modelos sola
 
+**Resuelto (2026-08-21):**
+- ~~`llm_query` en modo extracción (`extractVariable`) no cumplía función alguna~~: sin UI en el
+  editor (solo configurable editando el JSON del flujo a mano) y, si el dato no estaba en la
+  charla, ramificaba directo a `missingTargetNodeId` sin darle al nodo la chance de preguntarlo.
+  Rediseñado: ahora admite **varias variables por nodo** (`data.extractVariables`, agregables
+  dinámicamente desde el editor), y si falta alguna el nodo se detiene a preguntarla (LLM
+  redacta la pregunta) hasta resolverla — si el usuario se niega o se agotan los intentos
+  (`data.maxAttempts`, default 2) queda en `"no definido"` y sigue. Ramas: `foundTargetNodeId`
+  si TODAS quedaron con valor real, `missingTargetNodeId` si alguna quedó en `"no definido"`
+- ~~Un `{{variable}}` cargado con las llaves incluidas (copiado del texto de otro nodo) quedaba
+  guardado bajo esa clave literal en `flowState`~~ — `interpolate()` busca la clave pelada, así
+  que el placeholder se veía tal cual en la respuesta al usuario. Nuevo helper
+  `ConversationsService.stripVariableBraces()`, aplicado a los cuatro campos que declaran
+  nombre de variable: `input.variableName`, `variable.name`, `ticket_query.ticketIdVariable`,
+  `llm_query.extractVariables[].variable`
+- ~~`description`/`comment` mandados a InvGate salían con los `\n` corridos en una sola
+  línea~~ — esos campos son HTML (editor WYSIWYG del lado de InvGate), no texto plano. Nuevo
+  `InvgateService.toInvgateHtml()` convierte `\n` a `<br>` solo en lo que viaja a la API; no
+  toca `Ticket.description` en la base, que sigue siendo texto plano
+- ~~Editor de flujos: los edges en ángulo recto (`smoothstep`) se pisaban entre sí cuando
+  varias opciones de un menú convergían al mismo nodo siguiente~~ — se cambió a
+  `getBezierPath`, y el edge seleccionado ahora se distingue con trazo punteado azul. También
+  se agregó `key={selectedNode.id}` al panel de propiedades (`NodeProperties`) para que
+  remonte al cambiar de nodo en vez de arrastrar estado del nodo anterior
+- Categoría/prioridad/tipo de InvGate en el nodo `ticket_create`: los tres bloques repetidos
+  (select del catálogo + input de texto siempre visibles) se unificaron en un componente
+  `InvgateResolvedField` con un toggle explícito "Usar variable de flujo" en vez de mostrar
+  ambos controles a la vez
+
+**Resuelto (2026-08-22):**
+- ~~`llm_query` improvisaba: mezclaba la pregunta por un dato faltante con una respuesta libre
+  tipo asistente (ej. tips de troubleshooting no pedidos), y no había forma de ajustarlo~~ —
+  causa: ninguna de las dos llamadas del modo extracción fijaba `temperature`, así que caían
+  al `LLM_TEMPERATURE` global (pensado para charla libre), a diferencia de los otros
+  clasificadores del archivo (`confirmEndChatIntent`, `interpretMenuChoice`) que sí corren en
+  `temperature: 0`. Fix: `extractLlmQueryValues` (clasifica si el dato ya fue dicho) ahora
+  siempre corre en `temperature: 0`, sin excepción — es clasificación, no redacción, y no debe
+  ser configurable. Nuevo campo `data.temperature` en el nodo (expuesto en el editor) para la
+  respuesta libre y para `generateLlmQueryQuestion` (redacción de la pregunta), default 0 en
+  esta última si el nodo no lo define
+
 ¿Por cuál seguimos?
 
 ---

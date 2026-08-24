@@ -11,7 +11,9 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService } from '../context-sources/context-sources.service';
-import { InvgateService } from '../invgate/invgate.service';
+import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
+import { stripArgentinaMobileNine } from '../../common/phone.util';
+import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
 import { createHash } from 'crypto';
 
 /**
@@ -58,6 +60,16 @@ const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
+
+/**
+ * Nodo `llm_query` en modo extracción: cuántas veces se le pregunta al usuario un
+ * dato antes de darlo por "no definido" y seguir. Default cuando el nodo no trae
+ * `data.maxAttempts` — ver ConversationsService.executeLlmQueryExtraction.
+ */
+const DEFAULT_LLM_QUERY_MAX_ATTEMPTS = 2;
+
+/** Valor que `llm_query` en modo extracción guarda cuando el usuario se niega (o agota los intentos) a dar un dato. */
+const LLM_QUERY_UNDEFINED_VALUE = 'no definido';
 
 /**
  * System prompt de arranque cuando no hay nada configurado en /settings
@@ -121,6 +133,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly emailService: EmailService,
     private readonly contextSourcesService: ContextSourcesService,
     private readonly invgateService: InvgateService,
+    private readonly twilioMedia: TwilioMediaService,
   ) {}
 
   async onModuleInit() {
@@ -183,7 +196,12 @@ export class ConversationsService implements OnModuleInit {
     // viejo que todavía no lo mande. Determina de qué `Conversation` se habla (un mismo
     // usuario puede tener una charla activa por WhatsApp y otra por SMS al mismo tiempo,
     // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
-    const { from, body, channel = 'whatsapp' } = msg.data as { from: string; body: string; channel?: string };
+    const {
+      from,
+      body,
+      channel = 'whatsapp',
+      attachments = [],
+    } = msg.data as { from: string; body: string; channel?: string; attachments?: StoredAttachment[] };
     const tenantId = msg.tenantId!;
     const outgoingQueue = `${channel}.outgoing`;
 
@@ -277,12 +295,37 @@ export class ConversationsService implements OnModuleInit {
           });
     }
 
-    // 3. Guardar mensaje del usuario
+    // 2.5 Adjuntos (imágenes de WhatsApp/SMS vía Twilio, ver TwilioWebhookController/
+    // TwilioSmsWebhookController): se acumulan en flowState.pendingAttachments hasta que
+    // el flujo llegue a un nodo `ticket_create` — pueden ser varios mensajes después de
+    // este, así que no alcanza con tenerlos en memoria acá: hay que persistirlos ya mismo
+    // (no esperar al persist de fin de turno de executeFlow, que ni corre si todavía no
+    // hay flujo activo — ver el fallback al orquestador LLM más abajo).
+    if (attachments.length) {
+      const currentState = (conversation.flowState as Record<string, any>) || {};
+      const pending: StoredAttachment[] = Array.isArray(currentState.pendingAttachments)
+        ? currentState.pendingAttachments
+        : [];
+      conversation = await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          flowState: JSON.parse(
+            JSON.stringify({ ...currentState, pendingAttachments: [...pending, ...attachments] }),
+          ),
+        },
+      });
+      this.logger.log(
+        `[${tenantId}] ${attachments.length} adjunto(s) de ${from} guardados (pendingAttachments: ${pending.length + attachments.length}).`,
+      );
+    }
+
+    // 3. Guardar mensaje del usuario. Un mensaje solo-imagen (sin texto) llega con `body`
+    // vacío — placeholder legible en vez de una fila en blanco en el historial.
     await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         senderType: 'user',
-        content: body,
+        content: body || (attachments.length ? `[${attachments.length} imagen(es) adjunta(s)]` : ''),
       },
     });
 
@@ -603,6 +646,11 @@ export class ConversationsService implements OnModuleInit {
   private looksLikeCancelAttempt(body: string): boolean {
     const normalized = body.trim().toLowerCase();
     if (!normalized) return false;
+    // El id sintético del botón "Volver" (`BACK_OPTION_VALUE`) contiene la palabra
+    // "volver" y matchearía por substring contra CANCEL_HINT_WORDS — pero es una
+    // navegación de menú, nunca un pedido de cancelar/cerrar la charla. Se excluye
+    // por igualdad exacta antes de aplicar la heurística de texto libre.
+    if (normalized === BACK_OPTION_VALUE) return false;
     return ConversationsService.CANCEL_HINT_WORDS.some((w) => normalized.includes(w));
   }
 
@@ -797,6 +845,19 @@ export class ConversationsService implements OnModuleInit {
         title: String(opt.label).slice(0, 24),
       })),
     };
+  }
+
+  /**
+   * Los campos de config que declaran un nombre de variable (`input.variableName`,
+   * `variable.name`, `ticket_query.ticketIdVariable`, `llm_query.extractVariable`)
+   * a veces se cargan con el placeholder completo (`{{descripcion}}`) en vez del
+   * nombre pelado (`descripcion`) — error fácil de cometer copiando desde el texto
+   * de otro nodo. Sin esto, `flowState["{{descripcion}}"]` queda guardado bajo una
+   * clave que `interpolate()` nunca busca (busca `flowState["descripcion"]`), y el
+   * placeholder se ve tal cual en la respuesta al usuario en vez de reemplazarse.
+   */
+  private stripVariableBraces(name: string): string {
+    return name.trim().replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').trim();
   }
 
   /**
@@ -1023,12 +1084,13 @@ export class ConversationsService implements OnModuleInit {
       if (Number.isFinite(parsed)) return parsed;
     }
 
-    const found = await this.invgateService.findUserByPhone(phone).catch((err) => {
-      this.logger.warn(`No se pudo buscar el usuario de InvGate por teléfono ${phone}: ${err.message}`);
+    const normalizedPhone = stripArgentinaMobileNine(phone);
+    const found = await this.invgateService.findUserByPhone(normalizedPhone).catch((err) => {
+      this.logger.warn(`No se pudo buscar el usuario de InvGate por teléfono ${normalizedPhone}: ${err.message}`);
       return null;
     });
     if (!found) {
-      this.logger.warn(`Ningún usuario de InvGate matchea el teléfono ${phone} — el ticket no se sincroniza.`);
+      this.logger.warn(`Ningún usuario de InvGate matchea el teléfono ${normalizedPhone} — el ticket no se sincroniza.`);
       return null;
     }
 
@@ -1054,30 +1116,57 @@ export class ConversationsService implements OnModuleInit {
    * los resuelve contra el catálogo real de esta instancia; sin match (o sin que la
    * charla haya seteado nada) cae al default configurado en `/settings`.
    */
+  /**
+   * Devuelve el número de incidente de InvGate (`incident.id` — mismo número que su
+   * `pretty_id`, ej. 33 → "#33") cuando sincroniza, o `null` si no (InvGate sin
+   * configurar, customer_id sin resolver, o cualquier error) — así el que llama puede
+   * mostrarle al usuario el ticket REAL de InvGate en vez del id interno (cuid, sin
+   * sentido para quien lo recibe) cuando está disponible, y caer al id local si no.
+   */
   private async syncTicketToInvgate(
     ticket: { id: string; userId: string; subject: string; description: string | null },
     from: string,
     fields: { categoryName?: string; priorityName?: string; typeName?: string } = {},
-  ): Promise<void> {
-    if (!(await this.invgateService.isConfigured())) return;
+    attachments: IncidentAttachment[] = [],
+  ): Promise<number | null> {
+    if (!(await this.invgateService.isConfigured())) return null;
 
     try {
       const customerId = await this.resolveInvgateCustomerId(ticket.userId, from);
-      if (!customerId) return;
+      if (!customerId) return null;
 
       const incident = await this.invgateService.createTicketForChat(
         customerId,
         ticket.subject,
         ticket.description ?? undefined,
         fields,
+        attachments,
       );
-      if (!incident) return;
+      if (!incident) return null;
 
       await this.prisma.ticket.update({ where: { id: ticket.id }, data: { invgateId: String(incident.id) } });
       this.logger.log(`Ticket local ${ticket.id} sincronizado con InvGate #${incident.id}`);
+      return incident.id;
     } catch (err) {
       this.logger.warn(`No se pudo sincronizar el ticket ${ticket.id} con InvGate: ${(err as Error).message}`);
+      return null;
     }
+  }
+
+  /**
+   * Lee en memoria los adjuntos pendientes de la charla (ver flowState.pendingAttachments,
+   * llenado en handleMessage) para mandarlos con el ticket, y borra el archivo temporal de
+   * cada uno apenas se lee — con o sin éxito en InvGate no tiene sentido conservarlos en
+   * disco después de este punto, los tickets acá son best-effort y sin reintento.
+   */
+  private async loadAttachments(pending: StoredAttachment[]): Promise<IncidentAttachment[]> {
+    const loaded: IncidentAttachment[] = [];
+    for (const att of pending) {
+      const data = await this.twilioMedia.read(att);
+      await this.twilioMedia.delete(att);
+      if (data) loaded.push({ filename: att.filename, contentType: att.contentType, data });
+    }
+    return loaded;
   }
 
   /**
@@ -1153,12 +1242,27 @@ export class ConversationsService implements OnModuleInit {
           priority: flowState.priority || 'medium',
         },
       });
-      flowState.lastTicketId = ticket.id;
-      await this.syncTicketToInvgate(ticket, user.phone, {
-        categoryName: flowState.category,
-        priorityName: flowState.priority,
-        typeName: flowState.ticketType,
-      });
+
+      // Mismo criterio que en el nodo `ticket_create` — ver el comentario ahí.
+      const pendingAttachments: StoredAttachment[] = Array.isArray(flowState.pendingAttachments)
+        ? flowState.pendingAttachments
+        : [];
+      flowState.pendingAttachments = [];
+
+      const invgateTicketId = await this.syncTicketToInvgate(
+        ticket,
+        user.phone,
+        {
+          categoryName: flowState.category,
+          priorityName: flowState.priority,
+          typeName: flowState.ticketType,
+        },
+        await this.loadAttachments(pendingAttachments),
+      );
+      // Mismo criterio que en 'ticket_create': preferí el número de InvGate, el cuid
+      // interno no le sirve a nadie fuera del sistema — `ticket_query` acepta cualquiera
+      // de los dos igual (busca por `id` O `invgateId`), así que esto no rompe nada viejo.
+      flowState.lastTicketId = invgateTicketId ?? ticket.id;
     }
 
     if (methods.includes('email')) {
@@ -1229,20 +1333,30 @@ export class ConversationsService implements OnModuleInit {
 
   /** Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en FlowNodeRoundRobin. */
   private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[]) {
+    // `data.assignees` es config del nodo (no se actualiza sola cuando alguien se da de
+    // baja), así que filtramos acá: un colaborador soft-deleted sale de la rotación en
+    // vez de seguir recibiendo tickets/transferencias. Orden estable según `assigneeIds`,
+    // no el que devuelva la DB.
+    const active = await this.prisma.user.findMany({
+      where: { id: { in: assigneeIds }, deletedAt: null },
+    });
+    if (!active.length) return null;
+    const activeIds = assigneeIds.filter((id) => active.some((u) => u.id === id));
+
     const state = await this.prisma.flowNodeRoundRobin.upsert({
       where: { flowId_nodeId: { flowId, nodeId } },
       update: {},
       create: { flowId, nodeId, lastIndex: -1 },
     });
 
-    const nextIndex = (state.lastIndex + 1) % assigneeIds.length;
+    const nextIndex = (state.lastIndex + 1) % activeIds.length;
     await this.prisma.flowNodeRoundRobin.update({
       where: { flowId_nodeId: { flowId, nodeId } },
       data: { lastIndex: nextIndex },
     });
 
-    const nextUserId = assigneeIds[nextIndex];
-    return this.prisma.user.findUnique({ where: { id: nextUserId } });
+    const nextUserId = activeIds[nextIndex];
+    return active.find((u) => u.id === nextUserId) ?? null;
   }
 
   private async executeNode(
@@ -1330,8 +1444,21 @@ export class ConversationsService implements OnModuleInit {
         // Si el flujo tiene una fuente de verdad vinculada, `orchestratorLlm` la
         // consulta antes de responder — ver ese método.
         if (flowState.__llmFallback === node.id) {
-          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
-          return { responseText, waitForInput: true, flowState };
+          const matchesOption = displayOptions.some(
+            (opt: any, idx: number) =>
+              body.trim() === opt.value || body.trim() === opt.label || body.trim() === String(idx + 1),
+          );
+          if (matchesOption) {
+            // El usuario volvió a tipear/tocar una opción válida del menú: sale del modo
+            // LLM libre y deja que el matching de más abajo procese la selección como
+            // de costumbre. Sin esto, __llmFallback nunca se limpiaba y la conversación
+            // quedaba pegada acá para siempre, aunque el usuario acertara la opción.
+            delete flowState.__llmFallback;
+            flowState.__awaiting = node.id;
+          } else {
+            const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
+            return { responseText, waitForInput: true, flowState };
+          }
         }
 
         // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
@@ -1436,7 +1563,7 @@ export class ConversationsService implements OnModuleInit {
         }
 
         if (data.variableName) {
-          flowState[data.variableName] = body;
+          flowState[this.stripVariableBraces(data.variableName)] = body;
         }
         delete flowState.__awaiting;
         return { flowState };
@@ -1476,35 +1603,77 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'ticket_create': {
+        // Los 5 campos del nodo admiten `{{variable}}` (igual que `data.message` en
+        // transfer_agent) además del valor fijo elegido en el editor — así category/
+        // priority/ticketType pueden venir de CUALQUIER variable que la charla haya
+        // recolectado, no solo de las claves fijas `flowState.category`/`.priority`/
+        // `.ticketType` a las que ya caían como fallback. `interpolate` deja el
+        // placeholder tal cual si la variable no existe en flowState.
+        const subject = data.subject ? this.interpolate(data.subject, flowState) : undefined;
+        const description = data.description ? this.interpolate(data.description, flowState) : undefined;
+        const category = data.category ? this.interpolate(data.category, flowState) : undefined;
+        const priority = data.priority ? this.interpolate(data.priority, flowState) : undefined;
+        const ticketType = data.ticketType ? this.interpolate(data.ticketType, flowState) : undefined;
+
         const ticket = await this.prisma.ticket.create({
           data: {
             userId: user.id,
             tenantId,
-            subject: data.subject || flowState.subject || body.substring(0, 100),
-            description: data.description || flowState.description || body,
-            priority: data.priority || 'medium',
+            subject: subject || flowState.subject || body.substring(0, 100),
+            description: description || flowState.description || body,
+            priority: priority || 'medium',
           },
         });
-        flowState.lastTicketId = ticket.id;
-        await this.syncTicketToInvgate(ticket, from, {
-          categoryName: data.category || flowState.category,
-          priorityName: data.priority || flowState.priority,
-          typeName: data.ticketType || flowState.ticketType,
-        });
+
+        // Imágenes que el usuario mandó en cualquier punto de esta charla (ver 2.5 en
+        // handleMessage) — se consumen acá, tanto si el ticket termina sincronizando en
+        // InvGate como si no: no quedan reservadas para un ticket futuro.
+        const pendingAttachments: StoredAttachment[] = Array.isArray(flowState.pendingAttachments)
+          ? flowState.pendingAttachments
+          : [];
+        flowState.pendingAttachments = [];
+
+        const invgateTicketId = await this.syncTicketToInvgate(
+          ticket,
+          from,
+          {
+            categoryName: category || flowState.category,
+            priorityName: priority || flowState.priority,
+            typeName: ticketType || flowState.ticketType,
+          },
+          await this.loadAttachments(pendingAttachments),
+        );
+        // `lastTicketId` (lo que consulta `ticket_query` después) y lo que ve el usuario
+        // acá: preferí SIEMPRE el número de InvGate — el cuid interno no le sirve a nadie
+        // fuera del sistema. Sin sync (InvGate caído, mal configurado, etc.) cae al id
+        // local — sigue siendo un ticket válido, solo que no llegó a InvGate todavía.
+        flowState.lastTicketId = invgateTicketId ?? ticket.id;
         return {
-          responseText: `Ticket #${ticket.id} creado. Un agente te contactará pronto.`,
+          responseText: `Ticket #${flowState.lastTicketId} creado. Un agente te contactará pronto.`,
           flowState,
         };
       }
 
       case 'ticket_query': {
-        const ticketId = data.ticketIdVariable ? flowState[data.ticketIdVariable] : flowState.lastTicketId;
+        // `ticketId` puede ser el cuid interno (tickets viejos, o uno nuevo que no llegó
+        // a sincronizar con InvGate) o el número de InvGate (lo normal ahora, ver
+        // `lastTicketId` en 'ticket_create'/executeTransferAgentNode) — se busca por
+        // cualquiera de los dos campos, sin necesidad de adivinar cuál es.
+        const ticketId = data.ticketIdVariable
+          ? flowState[this.stripVariableBraces(data.ticketIdVariable)]
+          : flowState.lastTicketId;
         if (ticketId) {
-          const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
+          // `tenantId` es obligatorio acá: `invgateId` es un correlativo global de
+          // InvGate (sistema externo, no tiene noción de tenant) y `id` es un cuid
+          // — sin este filtro, un tenant puede consultar (y ver subject/status de)
+          // tickets de otro tenant adivinando un número de InvGate bajo.
+          const ticket = await this.prisma.ticket.findFirst({
+            where: { tenantId, OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
+          });
           if (ticket) {
             const status = await this.refreshInvgateStatus(ticket);
             return {
-              responseText: `Ticket #${ticket.id}: ${ticket.subject} - Estado: ${status}`,
+              responseText: `Ticket #${ticket.invgateId ?? ticket.id}: ${ticket.subject} - Estado: ${status}`,
             };
           }
         }
@@ -1518,11 +1687,22 @@ export class ConversationsService implements OnModuleInit {
         return this.executeSmsNode(data, flowState, tenantId);
 
       case 'llm_query': {
-        const recentMessages = await this.prisma.message.findMany({
-          where: { conversationId: conversation.id },
-          orderBy: { createdAt: 'asc' },
-          take: data.contextMessages || 10,
-        });
+        // `sessionStartedAt` acota el historial a la sesión actual — mismo criterio
+        // que `orchestratorLlm` (ver ese comentario): si la charla se cerró y se
+        // reanudó (mismo Conversation.id), los mensajes de antes del cierre no son
+        // contexto de "la charla actual" y no deben mezclarse acá. Además, `desc` +
+        // `take` agarra los ÚLTIMOS N mensajes de esa sesión (no los primeros N) —
+        // con `asc` una sesión de más de `contextMessages` mensajes deja al modelo
+        // mirando el arranque de la charla en vez de lo último dicho. Se revierte
+        // después para mandarlos en orden cronológico, como los espera la API del LLM.
+        const sessionStart = conversation.sessionStartedAt ?? conversation.createdAt;
+        const recentMessages = (
+          await this.prisma.message.findMany({
+            where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
+            orderBy: { createdAt: 'desc' },
+            take: data.contextMessages || 10,
+          })
+        ).reverse();
 
         const llmMessages: LlmMessage[] = recentMessages.map((m) => ({
           role: m.senderType === 'user' ? 'user' : 'assistant',
@@ -1557,7 +1737,37 @@ export class ConversationsService implements OnModuleInit {
             ? [basePrompt, data.systemPrompt].filter(Boolean).join('\n\n')
             : data.systemPrompt || basePrompt;
 
-        const responseText = await this.llmService.chat(llmMessages, { systemPrompt });
+        // Modo extracción: en vez de mandarle al usuario lo que diga el modelo, lo usamos
+        // para resolver una o más variables (ej. "sede") y ramificar — así el nodo puede
+        // saltear los pasos que las piden cuando ya están en la charla. Si falta alguna,
+        // el nodo mismo se detiene a preguntarla (ver executeLlmQueryExtraction) en vez de
+        // ramificar directo a "no encontrado": solo cae a "no definido" si el usuario se
+        // niega a darla o se agotan los intentos.
+        //
+        // Igual que `condition`, las ramas van por `data.foundTargetNodeId`/
+        // `missingTargetNodeId` (no por `sourceHandle` de un edge): este nodo usa
+        // `BaseNode` en el editor, que solo tiene un handle de salida genérico sin id,
+        // así que no hay forma de dibujar dos salidas nombradas en el canvas.
+        if (data.extractVariables?.length) {
+          return this.executeLlmQueryExtraction(
+            node,
+            data,
+            data.extractVariables,
+            llmMessages,
+            systemPrompt,
+            flowState,
+            data.temperature,
+          );
+        }
+
+        // `temperature` solo se manda si el nodo lo define — un `temperature: undefined`
+        // explícito pisaría el default de LlmService (LLM_TEMPERATURE de /settings) con
+        // `undefined` en el merge (`{...defaults, ...tenantConfig}`), perdiendo la cascada
+        // BD → env → default y cayendo al 0.7 hardcodeado de cada provider.
+        const responseText = await this.llmService.chat(llmMessages, {
+          systemPrompt,
+          ...(data.temperature !== undefined ? { temperature: data.temperature } : {}),
+        });
 
         return { responseText };
       }
@@ -1572,7 +1782,7 @@ export class ConversationsService implements OnModuleInit {
 
       case 'variable': {
         if (data.action === 'set' && data.name) {
-          flowState[data.name] = data.value ?? body;
+          flowState[this.stripVariableBraces(data.name)] = data.value ?? body;
         }
         return { flowState };
       }
@@ -1606,6 +1816,175 @@ export class ConversationsService implements OnModuleInit {
 
       default:
         return { responseText: data.text || 'Nodo no implementado.' };
+    }
+  }
+
+  /**
+   * Nodo `llm_query` en modo extracción (`data.extractVariables`). A diferencia del modo
+   * conversacional plano, este nodo puede detener el flujo para preguntarle al usuario los
+   * datos que falten (ej. "sede") en vez de ramificar directo a "no encontrado" — solo cae a
+   * `LLM_QUERY_UNDEFINED_VALUE` si el usuario se niega a darlo o se agota `data.maxAttempts`.
+   *
+   * Reusa `flowState.__awaiting` (mismo mecanismo que el nodo `input`) para saber si esta
+   * ejecución es la primera pasada (evalúa la charla tal cual llegó) o una respuesta a la
+   * pregunta que el nodo mismo hizo. Las variables ya resueltas (con valor real o con
+   * `LLM_QUERY_UNDEFINED_VALUE`) quedan en `flowState` entre turnos, así que una vuelta
+   * parcial (algunas encontradas, otras no) no las vuelve a preguntar.
+   */
+  private async executeLlmQueryExtraction(
+    node: any,
+    data: any,
+    variables: Array<{ variable: string; label?: string; allowedValues?: string[] }>,
+    llmMessages: LlmMessage[],
+    systemPrompt: string,
+    flowState: Record<string, any>,
+    temperature?: number,
+  ): Promise<NodeExecutionResult> {
+    const maxAttempts =
+      typeof data.maxAttempts === 'number' && data.maxAttempts > 0
+        ? data.maxAttempts
+        : DEFAULT_LLM_QUERY_MAX_ATTEMPTS;
+    // Cuántas veces ya se le preguntó al usuario por los datos que faltan, ANTES de esta
+    // pasada — 0 en la primera ejecución (todavía no se preguntó nada).
+    const attemptsSoFar = flowState.__awaiting === node.id ? flowState.__llmQueryAttempts || 0 : 0;
+
+    const pending = variables.filter((v) => {
+      const value = flowState[this.stripVariableBraces(v.variable)];
+      return value === undefined || value === null || value === '';
+    });
+
+    if (pending.length) {
+      const outcomes = await this.extractLlmQueryValues(llmMessages, systemPrompt, pending);
+      const stillMissing: typeof pending = [];
+
+      for (const v of pending) {
+        const key = this.stripVariableBraces(v.variable);
+        const outcome = outcomes[key];
+        if (outcome && outcome !== 'NONE' && outcome !== 'REFUSED') {
+          flowState[key] = outcome;
+        } else if (outcome === 'REFUSED' || attemptsSoFar >= maxAttempts) {
+          flowState[key] = LLM_QUERY_UNDEFINED_VALUE;
+        } else {
+          stillMissing.push(v);
+        }
+      }
+
+      if (stillMissing.length) {
+        flowState.__awaiting = node.id;
+        flowState.__llmQueryAttempts = attemptsSoFar + 1;
+        const question = await this.generateLlmQueryQuestion(systemPrompt, llmMessages, stillMissing, temperature);
+        return { responseText: question, waitForInput: true, flowState };
+      }
+    }
+
+    delete flowState.__awaiting;
+    delete flowState.__llmQueryAttempts;
+    const allResolved = variables.every(
+      (v) => flowState[this.stripVariableBraces(v.variable)] !== LLM_QUERY_UNDEFINED_VALUE,
+    );
+    return { nextNodeId: allResolved ? data.foundTargetNodeId : data.missingTargetNodeId, flowState };
+  }
+
+  /**
+   * Un llamado al LLM por turno para TODAS las variables pendientes de `llm_query` (en vez
+   * de uno por variable): le pasa la charla reciente y le pide una línea `variable: valor`
+   * por cada una, con NONE si todavía no se mencionó o REFUSED si el usuario se negó
+   * explícitamente a darla (así el nodo puede caer a "no definido" sin esperar a agotar
+   * `maxAttempts`). Ante una línea faltante o sin parsear, se trata como NONE — el peor caso
+   * es una pregunta de más, no un valor inventado.
+   *
+   * Siempre corre en `temperature: 0`, sin importar el `temperature` configurado en el nodo
+   * (igual que `confirmEndChatIntent` e `interpretMenuChoice`): es una clasificación
+   * (¿el usuario ya dijo esto o no?), no una redacción — dejarla "creativa" es lo que hacía
+   * que el nodo confundiera "no lo dijo" con inventar contexto extra.
+   */
+  private async extractLlmQueryValues(
+    llmMessages: LlmMessage[],
+    systemPrompt: string,
+    pending: Array<{ variable: string; label?: string; allowedValues?: string[] }>,
+  ): Promise<Record<string, string>> {
+    const items = pending.map((v) => {
+      const key = this.stripVariableBraces(v.variable);
+      const label = v.label || key;
+      const allowed = v.allowedValues?.length
+        ? ` Valores válidos (respondé EXACTAMENTE uno, calcado): ${v.allowedValues.join(', ')}.`
+        : '';
+      return { key, line: `- ${key} (${label}).${allowed}` };
+    });
+
+    const extractPrompt =
+      `${systemPrompt}\n\nTu única tarea ahora: para cada uno de estos datos, determinar si en ` +
+      `la conversación el usuario ya lo indicó:\n${items.map((i) => i.line).join('\n')}\n\n` +
+      'Respondé UNA línea por dato, en este formato exacto ("clave: valor"):\n' +
+      items.map((i) => `${i.key}: <valor, o NONE si no lo dijo, o REFUSED si se negó a darlo>`).join('\n') +
+      '\n\nNada de explicaciones ni texto adicional, solo esas líneas.';
+
+    const raw = await this.llmService.chat(llmMessages, {
+      systemPrompt: extractPrompt,
+      maxTokens: CLASSIFIER_MAX_TOKENS,
+      temperature: 0,
+    });
+
+    const outcomes: Record<string, string> = {};
+    for (const line of raw.split('\n')) {
+      const match = line.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+      if (!match) continue;
+      const item = items.find((i) => i.key.toLowerCase() === match[1].trim().toLowerCase());
+      if (!item) continue;
+      outcomes[item.key] = match[2].trim();
+    }
+
+    for (const { key } of items) {
+      const value = outcomes[key];
+      if (!value) {
+        outcomes[key] = 'NONE';
+        continue;
+      }
+      const upper = value.toUpperCase();
+      if (upper === 'NONE' || upper === 'REFUSED') {
+        outcomes[key] = upper;
+        continue;
+      }
+      const spec = pending.find((v) => this.stripVariableBraces(v.variable) === key);
+      if (spec?.allowedValues?.length) {
+        const matched = spec.allowedValues.find((v) => v.toLowerCase() === value.toLowerCase());
+        outcomes[key] = matched || 'NONE';
+      }
+    }
+
+    return outcomes;
+  }
+
+  /**
+   * Redacta la pregunta que `llm_query` le manda al usuario por los datos que faltan.
+   * Ante cualquier falla del proveedor, cae a una pregunta fija en vez de dejar el nodo sin
+   * responder — el peor caso es una pregunta menos natural, no un turno perdido.
+   *
+   * `temperature` viene del nodo (`data.temperature`); default 0 si no se configuró — a
+   * diferencia de dejarla caer en el `LLM_TEMPERATURE` global (pensado para charla libre,
+   * no para esta redacción acotada), 0 es lo que garantiza que respete "UNA pregunta, nada
+   * más" en vez de mezclar la pregunta con una respuesta libre tipo asistente.
+   */
+  private async generateLlmQueryQuestion(
+    systemPrompt: string,
+    llmMessages: LlmMessage[],
+    missing: Array<{ variable: string; label?: string }>,
+    temperature?: number,
+  ): Promise<string> {
+    const labels = missing.map((v) => v.label || this.stripVariableBraces(v.variable));
+    const fallback = `Para continuar, necesito que me indiques: ${labels.join(', ')}.`;
+    try {
+      const raw = await this.llmService.chat(llmMessages, {
+        systemPrompt:
+          `${systemPrompt}\n\nTodavía falta que el usuario indique: ${labels.join(', ')}. Redactá UNA ` +
+          'pregunta breve y amable pidiéndole ese dato (o esos datos, si son varios). Nada más que la ' +
+          'pregunta, sin saludos ni explicaciones.',
+        temperature: temperature ?? 0,
+      });
+      return raw.trim() || fallback;
+    } catch (err) {
+      this.logger.warn(`No se pudo generar la pregunta de llm_query (${labels.join(', ')}): ${(err as Error).message}`);
+      return fallback;
     }
   }
 
@@ -1647,11 +2026,16 @@ export class ConversationsService implements OnModuleInit {
     // de una sesión vieja seguía contaminando las respuestas nuevas después de
     // reanudar. Fallback a `createdAt` para filas de antes de esta migración.
     const sessionStart = conversation.sessionStartedAt ?? conversation.createdAt;
-    const recentMessages = await this.prisma.message.findMany({
-      where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
-      orderBy: { createdAt: 'asc' },
-      take: 10,
-    });
+    // `desc` + `take` para los ÚLTIMOS 10 de la sesión (no los primeros 10) — mismo
+    // motivo que en `case 'llm_query'`: con `asc` una sesión de más de 10 mensajes
+    // deja al modelo mirando el arranque de la charla en vez de lo último dicho.
+    const recentMessages = (
+      await this.prisma.message.findMany({
+        where: { conversationId: conversation.id, createdAt: { gte: sessionStart } },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      })
+    ).reverse();
 
     // Fuente de verdad vinculada al flujo: se consulta siempre que esté presente,
     // antes de generar la respuesta — no queda a criterio del LLM pedirla (eso

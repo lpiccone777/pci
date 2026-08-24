@@ -5,7 +5,7 @@ import {
   BaseEdge,
   EdgeLabelRenderer,
   EdgeProps,
-  getSmoothStepPath,
+  getBezierPath,
   useReactFlow,
 } from '@xyflow/react';
 
@@ -33,12 +33,18 @@ export const DeletableEdge = memo((props: EdgeProps) => {
     label,
     markerEnd,
     markerStart,
+    selected,
   } = props;
 
   const { deleteElements } = useReactFlow();
   const [hovered, setHovered] = useState(false);
 
-  const [edgePath, labelX, labelY] = getSmoothStepPath({
+  // Bézier en vez de smoothstep: con varios nodos alineados vertical u
+  // horizontalmente (ej. varias opciones de un menú convergiendo al mismo nodo
+  // siguiente), los tramos en ángulo recto de smoothstep comparten carril y se
+  // pisan — la curva se separa visualmente incluso cuando origen/destino son
+  // parecidos, así se distingue a qué opción pertenece cada trazo.
+  const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -76,14 +82,16 @@ export const DeletableEdge = memo((props: EdgeProps) => {
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       />
-      {/* Visible edge */}
+      {/* Visible edge — seleccionada: punteada + azul fuerte, para distinguirla de
+          las demás cuando hay varios trazos cruzándose cerca uno del otro. */}
       <BaseEdge
         path={edgePath}
         markerEnd={markerEnd}
         markerStart={markerStart}
         style={{
-          strokeWidth: hovered ? 3 : 2,
-          stroke: hovered ? '#3b82f6' : '#94a3b8',
+          strokeWidth: selected ? 3 : hovered ? 3 : 2,
+          stroke: selected ? '#2563eb' : hovered ? '#3b82f6' : '#94a3b8',
+          strokeDasharray: selected ? '6 4' : undefined,
         }}
       />
       <EdgeLabelRenderer>

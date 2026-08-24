@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService, BrokerMessage } from '../broker/broker.service';
 import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
+import { stripArgentinaMobileNine } from '../../common/phone.util';
 
 const TIMEOUT_MS = 10_000;
 
@@ -67,7 +68,7 @@ export class TwilioSmsService implements OnModuleInit {
     const fullBody = interactive ? this.appendInteractiveAsText(body, interactive) : body;
 
     const params = new URLSearchParams({
-      To: this.normalizeRecipient(to),
+      To: stripArgentinaMobileNine(to),
       From: this.normalizeRecipient(from),
       Body: fullBody,
     });
