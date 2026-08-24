@@ -55,6 +55,124 @@ const SOURCE_BADGE: Record<Setting['source'], { text: string; className: string 
   default: { text: 'valor por defecto', className: 'bg-gray-100 text-gray-600' },
 };
 
+/**
+ * Agrupa las ~17 pestañas planas del catálogo (`Setting.group`) en pestañas
+ * por tema con sub-pestañas — sin tocar el catálogo del backend ni el
+ * contenido de cada grupo. Un nodo hoja tiene `group` (el string real que
+ * devuelve el API); un nodo rama tiene `children` y agrupa hojas u otras ramas.
+ */
+interface HierarchyNode {
+  key: string;
+  label: string;
+  group?: string;
+  children?: HierarchyNode[];
+}
+
+const GROUP_HIERARCHY: HierarchyNode[] = [
+  {
+    key: 'seguridad',
+    label: 'Seguridad',
+    children: [
+      { key: 'auth2fa', label: 'Autenticación y 2FA', group: 'Autenticación y 2FA' },
+      { key: 'dispositivos', label: 'Dispositivos', group: 'Dispositivos' },
+    ],
+  },
+  {
+    key: 'llm',
+    label: 'LLM',
+    children: [
+      { key: 'general', label: 'General', group: 'LLM' },
+      { key: 'openai', label: 'OpenAI', group: 'LLM: OpenAI' },
+      { key: 'gemini', label: 'Gemini', group: 'LLM: Gemini' },
+      { key: 'claude', label: 'Claude', group: 'LLM: Claude' },
+      { key: 'openrouter', label: 'OpenRouter', group: 'LLM: OpenRouter' },
+      { key: 'opencode', label: 'OpenCode Go', group: 'LLM: OpenCode Go' },
+      { key: 'minimax', label: 'MiniMax', group: 'LLM: MiniMax' },
+    ],
+  },
+  {
+    key: 'mensajeria',
+    label: 'Mensajería',
+    children: [
+      {
+        key: 'whatsapp',
+        label: 'WhatsApp',
+        children: [
+          { key: 'general', label: 'General', group: 'Mensajería: WhatsApp' },
+          { key: 'twilio', label: 'Twilio', group: 'Mensajería: WhatsApp (Twilio)' },
+          { key: 'gupshup', label: 'Gupshup', group: 'Mensajería: WhatsApp (Gupshup)' },
+        ],
+      },
+      {
+        key: 'sms',
+        label: 'SMS',
+        children: [
+          { key: 'general', label: 'General', group: 'Mensajería: SMS' },
+          { key: 'twilio', label: 'Twilio', group: 'Mensajería: SMS (Twilio)' },
+          { key: 'gupshup', label: 'Gupshup', group: 'Mensajería: SMS (Gupshup)' },
+        ],
+      },
+      { key: 'email', label: 'Email', group: 'Mensajería: Email' },
+    ],
+  },
+  {
+    key: 'integraciones',
+    label: 'Integraciones',
+    children: [{ key: 'invgate', label: 'InvGate', group: 'Integración: InvGate' }],
+  },
+];
+
+function firstLeafGroup(node: HierarchyNode): string | undefined {
+  if (node.group) return node.group;
+  for (const child of node.children ?? []) {
+    const found = firstLeafGroup(child);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function collectLeafGroups(node: HierarchyNode): string[] {
+  if (node.group) return [node.group];
+  return (node.children ?? []).flatMap(collectLeafGroups);
+}
+
+/** Deja solo los grupos que trae el catálogo: si el backend agrega o saca un
+ *  grupo, la pestaña aparece o desaparece sola en vez de romper el render. */
+function filterHierarchy(nodes: HierarchyNode[], availableGroups: string[]): HierarchyNode[] {
+  const out: HierarchyNode[] = [];
+  for (const node of nodes) {
+    if (node.group) {
+      if (availableGroups.includes(node.group)) out.push(node);
+    } else if (node.children) {
+      const children = filterHierarchy(node.children, availableGroups);
+      if (children.length) out.push({ ...node, children });
+    }
+  }
+  return out;
+}
+
+function findLeafPath(nodes: HierarchyNode[], targetGroup: string, path: string[] = []): string[] | null {
+  for (const node of nodes) {
+    if (node.group === targetGroup) return [...path, node.key];
+    if (node.children) {
+      const found = findLeafPath(node.children, targetGroup, [...path, node.key]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findLeafNode(nodes: HierarchyNode[], targetGroup: string): HierarchyNode | null {
+  for (const node of nodes) {
+    if (node.group === targetGroup) return node;
+    if (node.children) {
+      const found = findLeafNode(node.children, targetGroup);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 export default function SettingsPage() {
   const { hasPermission } = useAuth();
   const [settings, setSettings] = useState<Setting[]>([]);
@@ -67,7 +185,9 @@ export default function SettingsPage() {
   const [models, setModels] = useState<Record<string, ModelList>>({});
   const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
-  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const topTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const midTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const leafTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const canUpdate = hasPermission('settings', 'update');
   const canDelete = hasPermission('settings', 'delete');
@@ -91,6 +211,13 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  /** Solo el estado de proveedores (activo/listo), sin tocar `settings`/`drafts`. */
+  async function refreshStatus() {
+    const st: ProviderStatus = await apiFetch('/settings/providers/status');
+    setStatus(st);
+    return st;
   }
 
   /** Consulta al backend los modelos de un proveedor. */
@@ -132,17 +259,30 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeGroup]);
 
+  /**
+   * Aplica el resultado de guardar/borrar UNA key: mergea solo esa fila en
+   * `settings` y resetea solo su draft. Antes esto hacía un `load()` completo,
+   * que traía `settings` fresco de vuelta y pisaba `drafts` entero — cualquier
+   * campo que tuvieras tipeado sin guardar en OTRA fila desaparecía. Guardar
+   * ya no tiene ese efecto secundario sobre el resto del formulario.
+   */
+  function applyUpdatedSetting(updated: Setting) {
+    setSettings((prev) => prev.map((x) => (x.key === updated.key ? updated : x)));
+    setDrafts((prev) => ({ ...prev, [updated.key]: updated.secret ? '' : updated.value }));
+  }
+
   async function save(s: Setting) {
     setBusyKey(s.key);
     setNotice('');
     try {
-      await apiFetch(`/settings/${s.key}`, {
+      const updated: Setting = await apiFetch(`/settings/${s.key}`, {
         method: 'PATCH',
         body: JSON.stringify({ value: drafts[s.key] }),
       });
       setNotice(`${s.key} actualizado.`);
       setError('');
-      const st = await load();
+      applyUpdatedSetting(updated);
+      const st = await refreshStatus();
 
       // Al cargar la key o el host recién se puede consultar el catálogo:
       // refrescamos para que el dropdown deje de mostrar la lista de fallback.
@@ -151,7 +291,7 @@ export default function SettingsPage() {
       }
       // Si cambió el proveedor activo, traemos sus modelos.
       if (s.key === 'LLM_PROVIDER' && st?.active) {
-        await loadModels(drafts[s.key] || st.active);
+        await loadModels(updated.value || st.active);
       }
     } catch (err: any) {
       setError(err.message);
@@ -164,10 +304,11 @@ export default function SettingsPage() {
     setBusyKey(key);
     setNotice('');
     try {
-      await apiFetch(`/settings/${key}`, { method: 'DELETE' });
+      const updated: Setting = await apiFetch(`/settings/${key}`, { method: 'DELETE' });
       setNotice(`${key} volvió al valor de .env o al default.`);
       setError('');
-      await load();
+      applyUpdatedSetting(updated);
+      await refreshStatus();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -190,24 +331,78 @@ export default function SettingsPage() {
     }
   }, [groups, activeGroup]);
 
+  // Agrupa los `groups` planos del catálogo en la jerarquía por tema. Si algún
+  // grupo del backend no está mapeado arriba, cae en una pestaña "Otros" en vez
+  // de desaparecer.
+  const categories = useMemo(() => {
+    const filtered = filterHierarchy(GROUP_HIERARCHY, groups);
+    const mapped = new Set(filtered.flatMap(collectLeafGroups));
+    const unmapped = groups.filter((g) => !mapped.has(g));
+    if (unmapped.length) {
+      filtered.push({
+        key: 'otros',
+        label: 'Otros',
+        children: unmapped.map((g) => ({ key: g, label: g, group: g })),
+      });
+    }
+    return filtered;
+  }, [groups]);
+
+  const activePath = activeGroup ? findLeafPath(categories, activeGroup) : null;
+  const activeCategory = activePath ? categories.find((c) => c.key === activePath[0]) ?? null : null;
+  const activeMid =
+    activePath && activePath.length === 3
+      ? activeCategory?.children?.find((c) => c.key === activePath[1]) ?? null
+      : null;
+
+  const activeLeafNode = activeGroup ? findLeafNode(categories, activeGroup) : null;
+  const activeLeafLabel = activeLeafNode?.label ?? activeGroup ?? '';
+
+  /** Selecciona un nodo de la jerarquía: si es una hoja, activa su grupo
+   *  directamente; si es una rama (categoría o sub-tema), activa la primera
+   *  hoja debajo — así clickear "LLM" o "WhatsApp" abre algo sensato. */
+  function selectNode(node: HierarchyNode) {
+    const leaf = firstLeafGroup(node);
+    if (leaf) setActiveGroup(leaf);
+  }
+
+  /** ¿Alguna hoja bajo este nodo tiene un proveedor activo / incompleto? Sirve
+   *  para mostrar el mismo puntito de estado en pestañas agrupadas. */
+  function nodeProviderStatus(node: HierarchyNode): { active: boolean; incomplete: boolean } {
+    let active = false;
+    let incomplete = false;
+    for (const g of collectLeafGroups(node)) {
+      const provider = settings.find((s) => s.group === g && s.provider)?.provider;
+      const ps = provider ? status?.providers.find((p) => p.provider === provider) : undefined;
+      if (ps?.active) active = true;
+      else if (ps && !ps.ready) incomplete = true;
+    }
+    return { active, incomplete };
+  }
+
   /**
-   * Navegación por teclado del tablist (WAI-ARIA APG, "automatic activation"):
-   * flechas mueven el foco Y activan el panel al toque, Home/End van a los
-   * extremos. El resto de las teclas (Tab, Enter/Space en el botón) las maneja
-   * el browser solo.
+   * Navegación por teclado de un tablist (WAI-ARIA APG, "automatic
+   * activation"): flechas mueven el foco Y activan el panel al toque, Home/End
+   * van a los extremos. Genérica para los tres niveles (tema / sub-tema /
+   * proveedor) — cada uno pasa su propia lista de nodos y sus refs.
    */
-  function handleTabKeyDown(e: KeyboardEvent<HTMLButtonElement>, index: number) {
+  function handleTabKeyDown(
+    e: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+    items: HierarchyNode[],
+    refs: Record<string, HTMLButtonElement | null>,
+  ) {
     let nextIndex: number | null = null;
-    if (e.key === 'ArrowRight') nextIndex = (index + 1) % groups.length;
-    else if (e.key === 'ArrowLeft') nextIndex = (index - 1 + groups.length) % groups.length;
+    if (e.key === 'ArrowRight') nextIndex = (index + 1) % items.length;
+    else if (e.key === 'ArrowLeft') nextIndex = (index - 1 + items.length) % items.length;
     else if (e.key === 'Home') nextIndex = 0;
-    else if (e.key === 'End') nextIndex = groups.length - 1;
+    else if (e.key === 'End') nextIndex = items.length - 1;
     else return;
 
     e.preventDefault();
-    const nextGroup = groups[nextIndex];
-    setActiveGroup(nextGroup);
-    tabRefs.current[nextGroup]?.focus();
+    const nextNode = items[nextIndex];
+    selectNode(nextNode);
+    refs[nextNode.key]?.focus();
   }
 
   if (loading) return <p className="text-gray-500">Cargando configuración...</p>;
@@ -304,47 +499,46 @@ export default function SettingsPage() {
         </p>
       )}
 
-      {/* Tabs: una por grupo del catálogo. Patrón WAI-ARIA APG (tablist con
-          activación automática por flecha) — ver handleTabKeyDown más arriba. */}
+      {/* Tabs por tema, con sub-pestañas por proveedor adentro. Mismo patrón
+          WAI-ARIA APG (tablist con activación automática por flecha) que
+          antes, ahora en hasta 3 niveles — ver handleTabKeyDown más arriba. */}
       <div
         role="tablist"
         aria-label="Secciones de configuración"
         className="flex flex-wrap gap-1 border-b border-gray-200 mb-6"
       >
-        {groups.map((group, index) => {
-          const groupProvider = settings.find((s) => s.group === group && s.provider)?.provider;
-          const pStatus = status?.providers.find((p) => p.provider === groupProvider);
-          const selected = group === activeGroup;
+        {categories.map((cat, index) => {
+          const selected = cat.key === activeCategory?.key;
+          const { active, incomplete } = nodeProviderStatus(cat);
 
           return (
             <button
-              key={group}
+              key={cat.key}
               ref={(el) => {
-                tabRefs.current[group] = el;
+                topTabRefs.current[cat.key] = el;
               }}
               type="button"
               role="tab"
-              id={`tab-${group}`}
+              id={`tab-${cat.key}`}
               aria-selected={selected}
-              aria-controls={`panel-${group}`}
               tabIndex={selected ? 0 : -1}
-              onClick={() => setActiveGroup(group)}
-              onKeyDown={(e) => handleTabKeyDown(e, index)}
+              onClick={() => selectNode(cat)}
+              onKeyDown={(e) => handleTabKeyDown(e, index, categories, topTabRefs.current)}
               className={`flex items-center gap-1.5 px-3 py-2 -mb-px text-sm font-medium rounded-t border-b-2 whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
                 selected
                   ? 'border-blue-600 text-blue-700 bg-blue-50'
                   : 'border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50'
               }`}
             >
-              {group}
-              {pStatus?.active && (
+              {cat.label}
+              {active && (
                 <span
                   className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"
                   title="Proveedor activo"
                   aria-hidden="true"
                 />
               )}
-              {pStatus && !pStatus.ready && (
+              {!active && incomplete && (
                 <span
                   className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"
                   title="Configuración incompleta"
@@ -356,6 +550,113 @@ export default function SettingsPage() {
         })}
       </div>
 
+      {activeCategory && (activeCategory.children?.length ?? 0) > 1 && (
+        <div
+          role="tablist"
+          aria-label={`Sub-secciones de ${activeCategory.label}`}
+          className="flex flex-wrap gap-1 border-b border-gray-200 mb-4 pl-1"
+        >
+          {activeCategory.children!.map((mid, index) => {
+            const selected = mid.key === (activeMid?.key ?? activePath?.[1]);
+            const { active, incomplete } = nodeProviderStatus(mid);
+
+            return (
+              <button
+                key={mid.key}
+                ref={(el) => {
+                  midTabRefs.current[mid.key] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`tab-${activeCategory.key}-${mid.key}`}
+                aria-selected={selected}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => selectNode(mid)}
+                onKeyDown={(e) =>
+                  handleTabKeyDown(e, index, activeCategory.children!, midTabRefs.current)
+                }
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 -mb-px text-xs font-medium rounded-t border-b-2 whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                  selected
+                    ? 'border-blue-600 text-blue-700 bg-blue-50'
+                    : 'border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50'
+                }`}
+              >
+                {mid.label}
+                {active && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"
+                    title="Proveedor activo"
+                    aria-hidden="true"
+                  />
+                )}
+                {!active && incomplete && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"
+                    title="Configuración incompleta"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {activeMid && (activeMid.children?.length ?? 0) > 1 && (
+        <div
+          role="tablist"
+          aria-label={`Proveedores de ${activeMid.label}`}
+          className="flex flex-wrap gap-1.5 mb-4"
+        >
+          {activeMid.children!.map((leaf, index) => {
+            const selected = leaf.group === activeGroup;
+            const pStatus = status?.providers.find(
+              (p) => p.provider === settings.find((s) => s.group === leaf.group && s.provider)?.provider,
+            );
+
+            return (
+              <button
+                key={leaf.key}
+                ref={(el) => {
+                  leafTabRefs.current[leaf.key] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`tab-${leaf.group}`}
+                aria-selected={selected}
+                aria-controls={`panel-${leaf.group}`}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => selectNode(leaf)}
+                onKeyDown={(e) =>
+                  handleTabKeyDown(e, index, activeMid.children!, leafTabRefs.current)
+                }
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                  selected
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {leaf.label}
+                {pStatus?.active && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-blue-300 shrink-0"
+                    title="Proveedor activo"
+                    aria-hidden="true"
+                  />
+                )}
+                {pStatus && !pStatus.ready && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                    title="Configuración incompleta"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {activeGroup && (
         <section
           key={activeGroup}
@@ -365,7 +666,7 @@ export default function SettingsPage() {
           tabIndex={0}
         >
           <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-lg font-semibold text-gray-700">{activeGroup}</h2>
+            <h2 className="text-lg font-semibold text-gray-700">{activeLeafLabel}</h2>
             {activePanelStatus?.active && (
               <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">activo</span>
             )}
