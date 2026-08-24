@@ -87,7 +87,12 @@ export class TwilioSmsWebhookController {
     const configured = await this.appConfig.get('TWILIO_SMS_TENANT_ID');
     if (configured) return configured;
 
-    const first = await this.prisma.tenant.findFirst({ orderBy: { createdAt: 'asc' } });
+    // Sin esto, si la empresa más vieja se da de baja, los mensajes entrantes le siguen
+    // resolviendo a ella y `ConversationsService.handleMessage` los descarta en silencio.
+    const first = await this.prisma.tenant.findFirst({
+      where: { deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
     return first?.id ?? null;
   }
 }
