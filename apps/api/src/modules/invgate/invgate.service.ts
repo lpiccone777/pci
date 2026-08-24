@@ -309,24 +309,28 @@ export class InvgateService {
 
   /**
    * Id de InvGate del usuario técnico (`INVGATE_API_USER`), para usarlo como
-   * `creator_id` de los tickets que crea el bot. Se resuelve una sola vez por
-   * proceso — `null` en caché significa "ya se intentó y no se encontró", para no
-   * reintentar la búsqueda en cada ticket si el username no matchea a nadie.
+   * `creator_id` de los tickets que crea el bot. Solo se cachea el ÉXITO — una
+   * vez resuelto, no se vuelve a golpear InvGate en cada ticket. Un fallo (sin
+   * username configurado, InvGate caído, o el username no matchea a nadie) NO
+   * se cachea a propósito: `INVGATE_API_USER` es una Setting hot-reloadable
+   * desde /settings, así que un admin arreglándola tiene que surtir efecto en
+   * el próximo ticket, no recién en el próximo reinicio del proceso.
    */
   async resolveCreatorId(): Promise<number | null> {
     if (this.creatorIdCache !== undefined) return this.creatorIdCache;
     const username = await this.apiUser();
-    if (!username) return (this.creatorIdCache = null);
+    if (!username) return null;
     const user = await this.findUserByUsername(username).catch((err) => {
       this.logger.warn(`No se pudo resolver el usuario técnico de InvGate ('${username}'): ${err.message}`);
       return null;
     });
-    this.creatorIdCache = user?.id ?? null;
-    if (this.creatorIdCache === null) {
+    if (user?.id == null) {
       this.logger.warn(
         `INVGATE_API_USER ('${username}') no matcheó ningún usuario en InvGate — no se pueden crear tickets sin creator_id.`,
       );
+      return null;
     }
+    this.creatorIdCache = user.id;
     return this.creatorIdCache;
   }
 
