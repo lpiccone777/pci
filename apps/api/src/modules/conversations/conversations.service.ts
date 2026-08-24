@@ -1635,8 +1635,12 @@ export class ConversationsService implements OnModuleInit {
           ? flowState[this.stripVariableBraces(data.ticketIdVariable)]
           : flowState.lastTicketId;
         if (ticketId) {
+          // `tenantId` es obligatorio acá: `invgateId` es un correlativo global de
+          // InvGate (sistema externo, no tiene noción de tenant) y `id` es un cuid
+          // — sin este filtro, un tenant puede consultar (y ver subject/status de)
+          // tickets de otro tenant adivinando un número de InvGate bajo.
           const ticket = await this.prisma.ticket.findFirst({
-            where: { OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
+            where: { tenantId, OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
           });
           if (ticket) {
             const status = await this.refreshInvgateStatus(ticket);
