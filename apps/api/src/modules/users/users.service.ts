@@ -504,7 +504,14 @@ export class UsersService {
       // por fila: con archivos de miles de usuarios, N idas y vueltas secuenciales a la base
       // dentro de una misma transacción se comen el timeout de Prisma (5s por default) mucho
       // antes de terminar. Acá son 3 queries en total, no 2×N.
-      await this.prisma.$transaction(
+      //
+      // `skipDuplicates`: el pre-check contra la base (arriba) corrió en queries aparte, ANTES
+      // de esta transacción — hay un hueco TOCTOU (otra importación concurrente, un alta manual
+      // en el medio) donde una fila puede chocar contra un único (email/phone/internalPhone/
+      // invgateUserId) recién acá. Sin `skipDuplicates`, esa sola fila abortaba el `createMany`
+      // entero y con él las demás filas ya aceptadas — rompiendo la promesa de "reporte parcial"
+      // que este método arma con `failed[]`.
+      const idByEmail = await this.prisma.$transaction(
         async (tx) => {
           await tx.user.createMany({
             data: withHashes.map((c) => ({
@@ -516,6 +523,7 @@ export class UsersService {
               invgateUserId: c.data.invgateUserId || null,
               passwordHash: c.passwordHash,
             })),
+            skipDuplicates: true,
           });
 
           const createdUsers = await tx.user.findMany({
@@ -524,26 +532,42 @@ export class UsersService {
           });
           const idByEmail = new Map(createdUsers.map((u) => [u.email, u.id]));
 
-          await tx.userTenant.createMany({
-            data: withHashes.map((c) => ({
-              userId: idByEmail.get(c.data.email)!,
-              tenantId,
-              roleId: dto.defaultRoleId,
-              areaId,
-            })),
-          });
+          // Solo las filas que realmente se insertaron (`idByEmail` las tiene) generan
+          // membresía — una fila que `skipDuplicates` descartó no tiene `User.id` al que
+          // asociarla.
+          const toLink = withHashes.filter((c) => idByEmail.has(c.data.email));
+          if (toLink.length) {
+            await tx.userTenant.createMany({
+              data: toLink.map((c) => ({
+                userId: idByEmail.get(c.data.email)!,
+                tenantId,
+                roleId: dto.defaultRoleId,
+                areaId,
+              })),
+            });
+          }
+
+          return idByEmail;
         },
         { timeout: 30000 },
       );
 
-      created.push(
-        ...withHashes.map((c) => ({
-          email: c.data.email,
-          firstName: c.data.firstName,
-          lastName: c.data.lastName,
-          tempPassword: c.tempPassword,
-        })),
-      );
+      for (const c of withHashes) {
+        if (idByEmail.has(c.data.email)) {
+          created.push({
+            email: c.data.email,
+            firstName: c.data.firstName,
+            lastName: c.data.lastName,
+            tempPassword: c.tempPassword,
+          });
+        } else {
+          failed.push({
+            row: c.row,
+            email: c.data.email,
+            reason: 'Ya existe un usuario con esos datos (se creó mientras se procesaba la importación)',
+          });
+        }
+      }
     }
 
     this.logger.log(
