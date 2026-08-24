@@ -646,6 +646,11 @@ export class ConversationsService implements OnModuleInit {
   private looksLikeCancelAttempt(body: string): boolean {
     const normalized = body.trim().toLowerCase();
     if (!normalized) return false;
+    // El id sintético del botón "Volver" (`BACK_OPTION_VALUE`) contiene la palabra
+    // "volver" y matchearía por substring contra CANCEL_HINT_WORDS — pero es una
+    // navegación de menú, nunca un pedido de cancelar/cerrar la charla. Se excluye
+    // por igualdad exacta antes de aplicar la heurística de texto libre.
+    if (normalized === BACK_OPTION_VALUE) return false;
     return ConversationsService.CANCEL_HINT_WORDS.some((w) => normalized.includes(w));
   }
 
