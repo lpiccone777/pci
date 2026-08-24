@@ -1015,8 +1015,10 @@ export class UsersService {
   ): Promise<boolean> {
     if (isSuper ?? (await this.isSystemSuperUser(userId))) return true;
 
+    // `tenant: { deletedAt: null }` — mismo criterio que TenantGuard: una empresa dada de
+    // baja no cuenta como membresía operable, aunque el UserTenant siga en la base.
     const membership = await this.prisma.userTenant.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
+      where: { userId_tenantId: { userId, tenantId }, tenant: { deletedAt: null } },
       include: {
         role: { select: { permissions: { select: { resource: true, action: true } } } },
       },
@@ -1045,8 +1047,10 @@ export class UsersService {
   ) {
     if (await this.isSystemSuperUser(userId)) return;
 
+    // `tenant: { deletedAt: null }` — mismo criterio que TenantGuard: una empresa dada de
+    // baja no cuenta como membresía operable, aunque el UserTenant siga en la base.
     const membership = await this.prisma.userTenant.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
+      where: { userId_tenantId: { userId, tenantId }, tenant: { deletedAt: null } },
       include: {
         role: { select: { permissions: { select: { resource: true, action: true } } } },
       },
