@@ -1328,20 +1328,30 @@ export class ConversationsService implements OnModuleInit {
 
   /** Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en FlowNodeRoundRobin. */
   private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[]) {
+    // `data.assignees` es config del nodo (no se actualiza sola cuando alguien se da de
+    // baja), así que filtramos acá: un colaborador soft-deleted sale de la rotación en
+    // vez de seguir recibiendo tickets/transferencias. Orden estable según `assigneeIds`,
+    // no el que devuelva la DB.
+    const active = await this.prisma.user.findMany({
+      where: { id: { in: assigneeIds }, deletedAt: null },
+    });
+    if (!active.length) return null;
+    const activeIds = assigneeIds.filter((id) => active.some((u) => u.id === id));
+
     const state = await this.prisma.flowNodeRoundRobin.upsert({
       where: { flowId_nodeId: { flowId, nodeId } },
       update: {},
       create: { flowId, nodeId, lastIndex: -1 },
     });
 
-    const nextIndex = (state.lastIndex + 1) % assigneeIds.length;
+    const nextIndex = (state.lastIndex + 1) % activeIds.length;
     await this.prisma.flowNodeRoundRobin.update({
       where: { flowId_nodeId: { flowId, nodeId } },
       data: { lastIndex: nextIndex },
     });
 
-    const nextUserId = assigneeIds[nextIndex];
-    return this.prisma.user.findUnique({ where: { id: nextUserId } });
+    const nextUserId = activeIds[nextIndex];
+    return active.find((u) => u.id === nextUserId) ?? null;
   }
 
   private async executeNode(
