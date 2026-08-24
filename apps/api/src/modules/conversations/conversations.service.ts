@@ -1439,8 +1439,21 @@ export class ConversationsService implements OnModuleInit {
         // Si el flujo tiene una fuente de verdad vinculada, `orchestratorLlm` la
         // consulta antes de responder — ver ese método.
         if (flowState.__llmFallback === node.id) {
-          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
-          return { responseText, waitForInput: true, flowState };
+          const matchesOption = displayOptions.some(
+            (opt: any, idx: number) =>
+              body.trim() === opt.value || body.trim() === opt.label || body.trim() === String(idx + 1),
+          );
+          if (matchesOption) {
+            // El usuario volvió a tipear/tocar una opción válida del menú: sale del modo
+            // LLM libre y deja que el matching de más abajo procese la selección como
+            // de costumbre. Sin esto, __llmFallback nunca se limpiaba y la conversación
+            // quedaba pegada acá para siempre, aunque el usuario acertara la opción.
+            delete flowState.__llmFallback;
+            flowState.__awaiting = node.id;
+          } else {
+            const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
+            return { responseText, waitForInput: true, flowState };
+          }
         }
 
         // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
