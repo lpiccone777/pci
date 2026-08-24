@@ -29,7 +29,7 @@ Sección 3.
 ### Prioridad de un caso
 
 La prioridad se asigna **por bloque**, no caso por caso: dentro de un bloque los casos comparten
-riesgo, y una columna extra en 565 filas sería ruido más que ayuda. La columna **P** del tablero
+riesgo, y una columna extra en 577 filas sería ruido más que ayuda. La columna **P** del tablero
 la fija para cada bloque.
 
 - **`P0` — bloqueante.** Autenticación, permisos, aislamiento entre empresas, secretos, datos de
@@ -42,8 +42,9 @@ la fija para cada bloque.
 
 - **`P2` — deseable.** Comportamiento responsive. Se ejecuta si hay margen 🟢
 
-**Los 35 casos invertidos son `P0` por definición**, sin importar en qué bloque
-estén: describen el comportamiento seguro que hoy no existe. Liberar con alguno en `❌` es una
+**Los 46 casos invertidos son `P0` por definición**, sin importar en qué bloque
+estén: describen el comportamiento seguro o correcto que hoy no existe (incluye los 11 de la
+auditoría de frontend multiempresa del 2026-08-21). Liberar con alguno en `❌` es una
 decisión de riesgo tomada a propósito, no un descuido del tablero.
 
 ### Entorno de pruebas
@@ -92,10 +93,11 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **568 casos** · Backend 312 · Chatbot 142 · Frontend 114 · de los cuales **275 son `P0`**
-(259 por la prioridad del bloque + los 16 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **580 casos** · Backend 312 · Chatbot 142 · Frontend 126 · de los cuales **287 son `P0`**
+(261 por la prioridad del bloque + los 26 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-WHK-08, BE-TWA-10, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-10, BE-IG-11, BE-SKL-08, BE-SKL-09,
-BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11 y CHAT-LLMF-12).
+BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07, FE-CS-11,
+FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24 y FE-FLW-25).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
@@ -137,31 +139,35 @@ BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11 y CHAT-LLMF-12).
 | 2.11 Cierre por inactividad | 🟠 P1 | 4 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **114** |
-| 3.1 Infraestructura | 🔴 P0 | 15 |
+| **Frontend (§3)** | | **126** |
+| 3.1 Infraestructura | 🔴 P0 | 17 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
-| 3.4 Usuarios | 🟠 P1 | 14 |
+| 3.4 Usuarios | 🟠 P1 | 16 |
 | 3.5 Roles | 🟠 P1 | 10 |
-| 3.6 Tenants | 🟠 P1 | 5 |
+| 3.6 Tenants | 🟠 P1 | 7 |
 | 3.7 Áreas | 🟠 P1 | 5 |
 | 3.8 Configuración | 🟠 P1 | 15 |
-| 3.9 Fuentes de verdad | 🟠 P1 | 10 |
-| 3.10 Flujos (editor) | 🟠 P1 | 21 |
+| 3.9 Fuentes de verdad | 🟠 P1 | 12 |
+| 3.10 Flujos (editor) | 🟠 P1 | 25 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **568** |
+| **TOTAL** | | **580** |
 
-> **Nota:** 35 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro deseado, hoy
-> no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 26 están ligados a los
-> **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa BE-TWA-10 / BE-GUP-06 /
-> BE-SMS-09, y `SEC-17` agrupa BE-SKL-08 / BE-SKL-09). Los otros **9** son de **robustez o calidad**, sin
-> número de hallazgo: BE-EML-03 (canal de email caído), BE-MT-12 y FE-INF-13 (menú del superusuario),
-> CHAT-N-LLM-04 (nodo LLM sin blindar), BE-SMS-07 (Gupshup SMS descarta el menú), BE-IG-10 (cachés de
-> InvGate sin invalidar en caliente), BE-SKL-10 (`isActive` de Skill sin efecto en el motor) y
-> CHAT-LLMF-11 / CHAT-LLMF-12 (prompt injection y alucinación desde la fuente de verdad). El escenario de
-> datos sobre el que corre todo el plan está en el **Apéndice C**; las matrices de comprobación
-> transversales, en el **Apéndice B**.
+> **Nota:** 46 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
+> deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 26 están
+> ligados a los **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa BE-TWA-10 /
+> BE-GUP-06 / BE-SMS-09, y `SEC-17` agrupa BE-SKL-08 / BE-SKL-09). Los otros **20** son de **robustez,
+> calidad o UX**, sin número de hallazgo: BE-EML-03 (canal de email caído), BE-MT-12 y FE-INF-13 (menú del
+> superusuario), CHAT-N-LLM-04 (nodo LLM sin blindar), BE-SMS-07 (Gupshup SMS descarta el menú), BE-IG-10
+> (cachés de InvGate sin invalidar en caliente), BE-SKL-10 (`isActive` de Skill sin efecto en el motor),
+> CHAT-LLMF-11 / CHAT-LLMF-12 (prompt injection y alucinación desde la fuente de verdad), y los **11 de la
+> auditoría de frontend multiempresa** (2026-08-21): FE-INF-16 (no redirige al salir de una pantalla
+> solo-sistema), FE-USR-15 (falso "cambios sin guardar"), FE-USR-16 (`users:create` sin `roles:read`),
+> FE-TEN-06 / FE-TEN-07 (cache del sidebar stale), FE-CS-11 / FE-CS-12 (Fuentes de verdad ignora el modo
+> consolidado), FE-FLW-22 / FE-FLW-23 (editor de flujos: empresa activa vs. la del flujo), FE-FLW-24 (500
+> del catálogo InvGate) y FE-FLW-25 (Flujos oculta el 403). El escenario de datos sobre el que corre todo
+> el plan está en el **Apéndice C**; las matrices de comprobación transversales, en el **Apéndice B**.
 
 ---
 
@@ -1037,6 +1043,12 @@ permisos, validaciones en vivo), **responsive** (§3.11) y **seguridad de la UI*
 Recordatorio transversal: la UI ocultar/mostrar por permisos es **defensa en profundidad**, no la
 autorización real — esa la impone el backend (Sección 1). Ver §3.12.
 
+> Esta sección incluye además los hallazgos de la **auditoría de cambio de empresa en el sidebar**
+> (usuarios multiempresa, 2026-08-21): el manejo del modo consolidado "Todas las empresas", la
+> reactividad de las pantallas y del selector del sidebar al cambiar de empresa, y la coherencia de
+> los avisos de permiso. Están repartidos en §3.1, §3.4, §3.6, §3.9 y §3.10, marcados `❌` cuando
+> describen el comportamiento deseado que hoy falta.
+
 ## 3.1 Infraestructura transversal (sesión, tenant activo, menú)
 
 **Qué se prueba:** el cliente HTTP (`apiFetch`), el contexto de autenticación (`useAuth`), el
@@ -1060,6 +1072,8 @@ guard de rutas (`AuthGuard`) y el sidebar dinámico. El JWT y el tenant activo v
 | FE-INF-13 | **Superadmin recorriendo el selector de empresas:** sistema → una empresa común → otra empresa común → "🌐 Todas las empresas" | El menú muestra **siempre las mismas 8 opciones**, incluidas "Tenants" y "Configuración": el selector cambia **qué datos se ven**, nunca **qué opciones existen**. Entrar a esas dos pantallas parado en una empresa común funciona (ver BE-MT-12). ⚠️ Hoy ambas **desaparecen** apenas elige una empresa común y reaparecen al volver a la de sistema o al modo consolidado, porque su visibilidad depende de la empresa seleccionada y no de quién es la persona: `❌` hasta corregirlo |
 | FE-INF-14 | Cualquier respuesta de una request autenticada trae `X-Access-Token` | `apiFetch` lee el header y **pisa** `localStorage.token`; la próxima request ya usa el token nuevo (sesión deslizante del lado cliente, ver BE-AUTH-26). No toca el estado de React. Con actividad continua la sesión ya no se cae a los 15 min |
 | FE-INF-15 | Un **401 con token presente** en cualquier request del panel | `apiFetch` llama a `clearSession()` (única fuente de qué keys de `localStorage` borra) y redirige a `/login` de inmediato — antes la UI mostraba datos viejos o fallaba en silencio hasta recargar a mano. Un 401 de login/OTP (sin `Authorization`) **no** cae acá |
+| FE-INF-16 | Parado en **Tenants** o **Configuración** (pantallas solo-sistema), cambiar el selector del sidebar a una empresa **no-sistema** | **Debe** sacar al usuario de esa URL —que ya no figura en el menú— y llevarlo al dashboard. ⚠️ Hoy el reload lo deja en la **misma URL huérfana**: la pantalla lo maneja con elegancia ("Esta operación solo puede realizarse desde el tenant de sistema", no crashea) pero **no redirige**, dejando una página con error fuera del menú. UX menor (el error ya está bien manejado): `❌` hasta agregar la redirección |
+| FE-INF-17 | En modo consolidado, comparar el **selector de empresas del sidebar** con el filtro **"Empresa:" de la página** (ej. Usuarios) | El sidebar lista **todas** las empresas; el filtro de la página lista **sólo** las que tienen filas en ese listado, así que una empresa sin filas (ej. una recién creada, 0 usuarios) aparece en el sidebar pero **no** en el filtro. **No es un bug:** decisión de diseño aceptable (no tiene sentido filtrar hacia una empresa sin filas que mostrar); se documenta sólo porque genera una diferencia visible entre los dos selectores |
 
 ## 3.2 Login y OTP (2FA)
 
@@ -1105,6 +1119,8 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-USR-12 | Botones Editar/Eliminar por fila en consolidado | Habilitados según `hasPermissionInTenant` de la empresa de esa fila |
 | FE-USR-13 | Cerrar un modal con cambios sin guardar (Escape o click afuera) | Pide confirmación antes de descartar |
 | FE-USR-14 | Clic en una fila (fuera de los botones de acción) | Abre el modal de **detalle de solo lectura**, con botón "Editar" si el usuario tiene permiso |
+| FE-USR-15 | Abrir "Nuevo usuario" y cancelar (Escape o click afuera) **sin tocar nada** | **No debería** avisar de cambios sin guardar (no se editó nada). ⚠️ Hoy salta igual el confirm "Tenés cambios sin guardar. ¿Descartarlos?" porque el modal **pre-agrega la empresa activa** como membresía (`presetTenantId`) y eso ya cuenta como "cambio" en la comparación. Menor: `❌` hasta que el preset no dispare el aviso (complementa FE-USR-13, el confirm legítimo cuando sí hubo cambios) |
+| FE-USR-16 | Alta de usuarios con un rol que tiene `users:read` + `users:create` pero **sin** `roles:read` (rol `Alta sin roles`, ver Apéndice C) | **Debería** poder completar el alta, o al menos avisar con claridad. ⚠️ Hoy el desplegable **Rol** (obligatorio) se llena con `GET /roles` → **403** → queda vacío → "Crear" **deshabilitado**: el alta es imposible. Peor, dos mensajes engañosos: dice "Esta empresa no tiene roles" cuando **sí** los tiene (confunde "sin permiso" con "sin datos"), y muestra la empresa preseleccionada como **UUID crudo**. No es falla de seguridad (el backend enforce el 403), es una brecha de UX entre dos permisos acoplados: `❌` hasta distinguir el 403 de "sin roles" y resolver el nombre de la empresa |
 
 ## 3.5 Roles y matriz de permisos (`/dashboard/roles`)
 
@@ -1132,6 +1148,8 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-TEN-03 | Crear/editar una empresa | Nombre y slug (único, validación local); `POST /tenants` o `PATCH /tenants/:id` |
 | FE-TEN-04 | Empresa de sistema | Slug bloqueado (no editable) y sin opción de baja (botón gris con motivo) |
 | FE-TEN-05 | Baja lógica y reactivación por fila | Confirmación inline (roja para baja, verde para restaurar); `DELETE` / `POST /tenants/:id/restore` |
+| FE-TEN-06 | Crear una empresa desde Tenants y mirar el **selector de empresas del sidebar** | La empresa nueva **debería** aparecer también en el selector del sidebar. ⚠️ Hoy aparece de inmediato en la **tabla** de la pantalla pero **no** en el selector, que cachea `/tenants/all` al montar y queda con la lista vieja hasta **refrescar** la página (crear en Tenants sólo refresca la tabla local; no hay estado compartido ni evento que avise al sidebar): `❌` hasta que el alta refresque el selector |
+| FE-TEN-07 | **Renombrar**, dar de **baja** o **restaurar** una empresa y mirar el selector del sidebar | Igual que FE-TEN-06: el cambio **debería** reflejarse en el selector. ⚠️ Hoy la tabla se actualiza pero el selector del sidebar sigue con el valor viejo hasta recargar (mismo cache stale de `/tenants/all`; extiende FE-TEN-06 —que era sólo "crear"— a los otros tres disparadores): `❌` |
 
 ## 3.7 Áreas (`/dashboard/areas`)
 
@@ -1180,6 +1198,8 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-CS-08 | Botones de ABM según permisos | `context-sources:create/update/delete` |
 | FE-CS-09 | La pantalla se parte en dos pestañas: **Conexiones** / **Skills** | La pestaña Skills muestra el CRUD de skills; la de Conexiones es el listado de fuentes de siempre |
 | FE-CS-10 | Alta/edición de una **Skill** en la pestaña Skills | Formulario con `name` y `promptText` (texto libre) + toggle activa/inactiva; `POST`/`PATCH /skills`; los botones se gatean por `skills:create/update/delete` |
+| FE-CS-11 | Fuentes de verdad en modo consolidado (**Todas las empresas / Todas mis empresas**) | **Debería** consolidar como Usuarios/Áreas/Roles (columna Empresa, juntando las fuentes de todas las empresas) o, como mínimo, **esconder el alta** y pedir "elegí una empresa en el selector" (como hacen Áreas/Roles). ⚠️ Hoy **no consolida**: cae **en silencio** a una sola empresa (la de sistema para el superadmin; la primera membresía para el común), muestra "No hay fuentes de verdad configuradas en esta empresa" **aunque existan** en otras, y deja el formulario **"Crear" activo** — si se completa, guarda la fuente en esa empresa de respaldo **sin avisar en cuál**: `❌` hasta manejar el modo consolidado |
+| FE-CS-12 | La pestaña **Skills** de esta pantalla en el mismo modo consolidado | Mismo problema y mismo arreglo que FE-CS-11: hoy muestra vacío (empresa de sistema) y deja "Crear" activo. El hallazgo abarca **las dos pestañas** (Conexiones y Skills) de Fuentes de verdad: `❌` |
 
 ## 3.10 Flujos IVR — listado y editor (`/dashboard/flows`, `/dashboard/flows/[id]`)
 
@@ -1210,6 +1230,10 @@ puede listar todas las empresas.
 | FE-FLW-19 | Nodo **SMS** (verde) en la paleta | Se arrastra al canvas; su panel tiene `message` + selector de **destinatarios** (usuarios del tenant, mismo criterio que `transfer_agent`, no números a mano) |
 | FE-FLW-20 | Nodo **Generar Ticket** (`ticket_create`) con catálogo InvGate | `category`/`priority`/`ticketType` como dropdowns poblados desde `GET /invgate/catalog/*`; si el catálogo no cargó, **caen a input de texto libre**; más el campo descripción. La tarjeta del nodo muestra categoría y tipo |
 | FE-FLW-21 | Nodo `llm_query`: toggle `systemPromptMode` | "reemplaza" / "agrega" respecto del prompt base del flujo (ver CHAT-N-LLM-06) |
+| FE-FLW-22 | Dentro del editor de un flujo (`/dashboard/flows/[id]`), cambiar la empresa en el selector del sidebar | **Debería** sacar al usuario del editor y devolverlo al listado de flujos (el flujo abierto puede ser de otra empresa). ⚠️ Hoy el reload lo deja **en el mismo editor, con el flujo abierto y editable** aunque sea de otra empresa: el editor **no** recarga el flujo por la empresa nueva pero sus desplegables por-empresa **sí**, quedando un estado mezclado (flujo de una empresa, "Fuente de verdad" de **otra**) que permite **vincular la fuente de una empresa a un flujo de otra**. La barrera real la impone el backend (hoy también sin scope, ver SEC-03 / BE-FLW-14): `❌` hasta sacar del editor al cambiar de empresa |
+| FE-FLW-23 | Abrir un flujo (o "Nuevo Flujo") en "Todas las empresas" y revisar los dropdowns **Skill**, **Fuente de verdad**, **Sub-flujo** y los pickers de usuario de *Transferir Agente* | **Deberían** poblarse según la empresa **del flujo**, no la empresa **activa**. ⚠️ Hoy se pueblan con la empresa activa (o la traducida en consolidado): abrir un flujo de `tenant1` en "Todas las empresas" deja "Fuente de verdad" **vacío** aunque `tenant1` tenga fuente. Riesgo de integridad: una fuente/skill ya asignada se ve como "Sin fuente" y **puede borrarse al guardar**, y permite cruzar datos de una empresa a un flujo de otra. Complemento de FE-FLW-22 (aquél es la no-redirección; éste, el **contenido** cruzado de los dropdowns): `❌` |
+| FE-FLW-24 | Abrir cualquier flujo en el editor y mirar la red/consola | Los catálogos de InvGate **no deberían** dar 500. ⚠️ Hoy `GET /invgate/catalog/priorities` y `/invgate/catalog/types` responden **500** en cada apertura del editor (el de `categories` no falla). La UI **degrada bien** (el nodo Generar Ticket cae a texto libre por el `try/catch` de la carga del catálogo, ver FE-FLW-20), pero ensucia consola/logs. Causa (backend): InvGate sin configurar debería devolver lista vacía o un 4xx controlado, no un 500. Robustez: `❌` hasta que el catálogo no tire 500 |
+| FE-FLW-25 | Entrar a `/dashboard/flows` con un usuario **sin** `flows:read` (ej. el rol `Sin permisos`, por URL directa) | **Debería** mostrar "Permiso denegado: flows:read", como las pantallas hermanas (Áreas, Roles, Usuarios y Fuentes de verdad ante su propio 403). ⚠️ Hoy `GET /flows` da **403** y la pantalla muestra "No hay flujos configurados." —el `catch` sólo hace `console.error` y deja la lista vacía, sin estado de error—, así que el usuario **no distingue** "empresa sin flujos" de "no tengo acceso". Flujos es la **única** de su clase que oculta el 403: `❌` hasta igualar el aviso de las hermanas (misma postura que FE-SEC-05) |
 
 ## 3.11 Responsive
 
@@ -1627,6 +1651,7 @@ plan. Se arma una vez, sobre una base recién migrada y con el seed aplicado.
 | `acme` | `Sin permisos` | Ninguno (para los negativos de 403) |
 | `acme` | `Rol vacío` | Ninguno y **sin usuarios asignados** (para probar el borrado de un rol) |
 | `acme` | `Recepción inactiva` | Ninguno relevante; existe sólo para portar un flujo de inicio **inactivo** (`F-INACTIVO`) sin chocar con el par `(acme, Soporte N1)` que ya usa `F-PRINCIPAL` |
+| `acme` | `Alta sin roles` | `users:read` + `users:create`, **sin** `roles:read` (para FE-USR-16 / N7: el alta de usuarios queda rota porque el dropdown de rol obligatorio se llena con `GET /roles` → 403) |
 | `globex` | `Soporte N1` | Mismo nombre que el de Acme: verifica que el nombre es único **por empresa** |
 
 ## C.3 — Áreas
@@ -1647,6 +1672,7 @@ plan. Se arma una vez, sobre una base recién migrada y con el seed aplicado.
 | `caro@acme.test` | `acme` / Soporte N1 **y** `globex` / Soporte N1 | `+5491100000003` | Multiempresa: header obligatorio, modo consolidado |
 | `dario@acme.test` | `acme` / Sin permisos | `+5491100000004` | Todos los 403 de RBAC |
 | `eva@acme.test` | `acme` / Soporte N1, **dada de baja** | `+5491100000005` | Baja lógica, campos únicos liberados, sesión tras la baja |
+| `flor@acme.test` | `acme` / Alta sin roles | `+5491100000006` | Alta de usuarios sin poder leer los roles (FE-USR-16) |
 | — (sin usuario) | — | `+5491199999999` | Número **desconocido** del bot |
 
 > El interno telefónico y el id de Invgate se cargan sólo en `ana@acme.test`, para tener un

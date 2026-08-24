@@ -16,6 +16,7 @@ import { spawn, execSync, execFileSync, type ChildProcess } from 'child_process'
 import * as fs from 'fs';
 import * as path from 'path';
 import { API_PORT, WEB_PORT, API_URL, WEB_URL } from './ports';
+import { ensureApiLogDir } from './api-log';
 
 const SUPPORT_DIR = __dirname;
 // apps/web/e2e/support -> repo root (cuatro niveles arriba).
@@ -214,17 +215,35 @@ async function deleteVhostQuietly(rabbit: RabbitInfo): Promise<void> {
 // Procesos (API + web) y espera de disponibilidad
 // ---------------------------------------------------------------------------
 
-function startProcess(name: string, command: string, env: NodeJS.ProcessEnv): ChildProcess {
+function startProcess(
+  name: string,
+  command: string,
+  env: NodeJS.ProcessEnv,
+  logFile?: string,
+): ChildProcess {
   // El comando va como un único string (no como arreglo de args) para evitar el
   // DeprecationWarning de Node al combinar args con `shell: true`. El shell es necesario para
   // resolver `pnpm` (en Windows es `pnpm.cmd`); los comandos son literales fijos, sin datos
   // externos, así que la concatenación es segura.
+  //
+  // Con `logFile`, el stdout/stderr del proceso se vuelca al archivo ADEMÁS de a la consola
+  // (tee): lo usa la API para que los specs puedan leer el código OTP que el backend loguea
+  // (ver `api-log.ts` y FE-LOG-04). Sin `logFile`, se hereda la consola tal cual (`inherit`).
   const child = spawn(command, {
     cwd: REPO_ROOT,
     env,
     shell: true,
-    stdio: 'inherit',
+    stdio: logFile ? ['inherit', 'pipe', 'pipe'] : 'inherit',
   });
+  if (logFile && child.stdout && child.stderr) {
+    const stream = fs.createWriteStream(logFile, { flags: 'w' });
+    const tee = (chunk: Buffer, out: NodeJS.WriteStream) => {
+      out.write(chunk);
+      stream.write(chunk);
+    };
+    child.stdout.on('data', (c: Buffer) => tee(c, process.stdout));
+    child.stderr.on('data', (c: Buffer) => tee(c, process.stderr));
+  }
   child.on('error', (err) => {
     console.error(`[e2e] Falló el arranque de ${name}: ${err.message}`);
   });
@@ -293,12 +312,21 @@ export async function prepareStack(): Promise<Stack> {
     // `start:e2e` (no `start`) compila la API en un `dist` propio (`dist-e2e`) en vez del `dist`
     // que usa el dev server (`start:dev`, en watch). Con `deleteOutDir`, un `nest start` común
     // borraría ese `dist` compartido y tiraría abajo la API de desarrollo que corre en paralelo.
-    stack.apiProc = startProcess('api', 'pnpm --filter api run start:e2e', {
-      ...process.env,
-      PORT: String(API_PORT),
-      DATABASE_URL: db.dbUrl,
-      ...(rabbitUrl ? { RABBITMQ_URL: rabbitUrl } : {}),
-    });
+    //
+    // El stdout de la API se vuelca a `apiLogPath` además de a la consola: sin SMTP el backend
+    // loguea ahí el código OTP, y algún spec lo lee para probar el 2FA completo (ver api-log.ts).
+    const apiLogPath = ensureApiLogDir();
+    stack.apiProc = startProcess(
+      'api',
+      'pnpm --filter api run start:e2e',
+      {
+        ...process.env,
+        PORT: String(API_PORT),
+        DATABASE_URL: db.dbUrl,
+        ...(rabbitUrl ? { RABBITMQ_URL: rabbitUrl } : {}),
+      },
+      apiLogPath,
+    );
 
     // Next 16 (Turbopack) no deja correr un segundo `next dev` para el mismo proyecto cuando ya
     // hay uno (el dev server local en el 3000). Por eso el web aislado se COMPILA y se sirve en
