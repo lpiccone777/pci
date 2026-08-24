@@ -171,6 +171,19 @@ export class InvgateService {
     return name ?? `#${statusId}`;
   }
 
+  /**
+   * `GET incident` solo devuelve `priority_id` — mismo criterio que `getStatusName`
+   * para mostrarle al usuario el nombre legible.
+   */
+  async getPriorityName(priorityId: number, force = false): Promise<string> {
+    if (!this.priorityCache || force) {
+      this.priorityCache = await this.listPriorities();
+    }
+    const entry = this.priorityCache.find((p) => p.id === priorityId);
+    if (!entry && !force) return this.getPriorityName(priorityId, true);
+    return entry?.name ?? `#${priorityId}`;
+  }
+
   async listIncidentTypes(): Promise<InvgateCatalogEntry[]> {
     return this.asList(await this.get('incident.attributes.type'));
   }
@@ -308,6 +321,17 @@ export class InvgateService {
   }
 
   /**
+   * Persona de InvGate por id — usado para mostrar el nombre del agente asignado a
+   * un ticket (`incident.assigned_id` solo trae el id numérico). A diferencia de
+   * `findFirstUser`/`users.by`, `GET user?id=` devuelve el objeto directo, sin
+   * envolver en `data` (confirmado contra la instancia real 2026-08-24).
+   */
+  async getUserById(id: number): Promise<InvgateUser | null> {
+    const result = (await this.get('user', { id })) as InvgateUser | undefined;
+    return result?.id !== undefined ? result : null;
+  }
+
+  /**
    * Id de InvGate del usuario técnico (`INVGATE_API_USER`), para usarlo como
    * `creator_id` de los tickets que crea el bot. Solo se cachea el ÉXITO — una
    * vez resuelto, no se vuelve a golpear InvGate en cada ticket. Un fallo (sin
@@ -439,6 +463,23 @@ export class InvgateService {
       date_format: 'iso8601',
       comments: opts.includeComments || undefined,
     }) as Promise<InvgateIncident>;
+  }
+
+  /**
+   * Todos los incidentes de un cliente (`GET incidents.by.customer?id=`). Es el
+   * único endpoint de esta API que lista incidentes por cliente — no está en la
+   * doc pública que uso de referencia para el resto de este cliente (ver
+   * comentario de la clase); confirmado contra la instancia real 2026-08-24 al
+   * cruzarlo con https://releases.invgate.com/service-desk/api/. Ojo con el
+   * nombre: es plural "incidents", `incident.by.customer` (singular) no existe
+   * (404). No pagina (`limit`/`page_key` documentados pero no probados) — para
+   * el volumen de tickets de un cliente individual no hizo falta.
+   */
+  async listCustomerIncidents(customerId: number): Promise<InvgateIncident[]> {
+    const result = (await this.get('incidents.by.customer', { id: customerId, comments: false })) as
+      | { requests?: Record<string, InvgateIncident> }
+      | undefined;
+    return Object.values(result?.requests ?? {});
   }
 
   async updateIncident(id: number | string, input: UpdateIncidentInput): Promise<InvgateIncident> {

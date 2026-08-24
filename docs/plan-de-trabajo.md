@@ -247,11 +247,16 @@
   - `ticketType` sumado a `FlowNodeDataDto` (backend) — no existía como campo validado
   - Verificado en el browser real contra el backend: las tres listas muestran los valores reales
     de la instancia (categorías de "Chatbot", Baja/Media/Alta/Urgente/Crítica, los 6 tipos)
-- [x] **Consultar estado de tickets existentes** — `ConversationsService.refreshInvgateStatus()`,
-      llamado desde el nodo `ticket_query`: si el `Ticket` tiene `invgateId`, trae el estado real
-      (`status_id` → nombre, resuelto contra el catálogo de estados cacheado) y lo escribe de
-      vuelta en `Ticket.status` local. Sin `invgateId` (o si InvGate no responde), muestra el
-      estado local tal cual — pull-based, no hay webhook de InvGate hacia nosotros todavía
+- [x] **Consultar tickets existentes (rediseñado 2026-08-24)** — el nodo `ticket_query` ya no lee
+      la tabla local `Ticket` (su `status` cacheado podía estar desactualizado, sin webhook de
+      InvGate hacia nosotros). Ahora consulta EN VIVO: `InvgateService.listCustomerIncidents()`
+      (`GET incidents.by.customer` — único endpoint de esta API que lista por cliente, no está en
+      la doc pública de referencia, confirmado contra la instancia real) arma una lista
+      interactiva de los tickets abiertos del usuario (más recientes primero, tope 10 por el
+      límite de WhatsApp de filas por mensaje); al elegir uno, `buildTicketDetailText()` trae el
+      incidente puntual (`GET incident`) con estado/prioridad/fecha/agente asignado, verificando
+      que le pertenezca al mismo cliente antes de mostrarlo (si no, "no encontrado" — evita que
+      alguien vea el ticket de otra persona adivinando un id). Con botón "Volver a la lista"
 - [~] **Actualizar tickets con respuestas del usuario** — `InvgateService.addComment()`/
       `updateIncident()` existen y funcionan, pero **deliberadamente sin gancho automático**
       todavía: el único lugar donde el bot detecta que el usuario habla de un ticket existente

@@ -119,6 +119,37 @@ interface MenuStackEntry {
  * índices numéricos o slugs simples, nunca con este prefijo. */
 const BACK_OPTION_VALUE = '__volver';
 
+/** Tope duro de WhatsApp para un mensaje interactivo de lista: no admite más de
+ * 10 filas (ver `buildMenuInteractive` y `TwilioWhatsAppService`). */
+const MAX_TICKET_LIST_ROWS = 10;
+
+/** Nombres de estado de InvGate que cuentan como "cerrado" para el nodo
+ * `ticket_query`. InvGate no expone un flag booleano de cerrado/abierto — el
+ * catálogo de estados es texto libre configurable por cada instancia — así
+ * que se excluye por nombre conocido, case-insensitive. */
+const CLOSED_TICKET_STATUS_NAMES = new Set([
+  'cerrado',
+  'cerrada',
+  'closed',
+  'resuelto',
+  'resuelta',
+  'resolved',
+  'solucionado',
+  'solucionada',
+  'solved',
+  'cancelado',
+  'cancelada',
+  'cancelled',
+  'canceled',
+  'rechazado',
+  'rechazada',
+  'rejected',
+]);
+
+function isOpenTicketStatus(status: string): boolean {
+  return !CLOSED_TICKET_STATUS_NAMES.has(status.trim().toLowerCase());
+}
+
 @Injectable()
 export class ConversationsService implements OnModuleInit {
   private readonly logger = new Logger(ConversationsService.name);
@@ -1170,28 +1201,120 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
-   * Nodo `ticket_query`: si el ticket ya se sincronizó con InvGate, trae el estado
-   * real de ahí (InvGate es la fuente de verdad una vez sincronizado — el estado local
-   * solo se actualiza cuando el bot lo consulta, no hay webhook de InvGate todavía) y
-   * de paso actualiza `Ticket.status` local para que quede consistente. Sin
-   * `invgateId` (o si InvGate no responde), devuelve el estado local tal cual.
+   * Convierte el HTML de InvGate (editor WYSIWYG — ver `InvgateService.toInvgateHtml`)
+   * de vuelta a texto plano para WhatsApp. Best-effort, no un parser HTML real: alcanza
+   * para lo que InvGate genera (`<br>`, `<p>`, entidades básicas).
    */
-  private async refreshInvgateStatus(ticket: { id: string; invgateId: string | null; status: string }): Promise<string> {
-    if (!ticket.invgateId || !(await this.invgateService.isConfigured())) return ticket.status;
+  private stripInvgateHtml(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .trim();
+  }
 
-    try {
-      const incident = await this.invgateService.getIncident(ticket.invgateId);
-      if (incident.status_id === undefined) return ticket.status;
+  /**
+   * Nodo `ticket_query`, paso "elegir ticket": arma la lista interactiva con los
+   * tickets abiertos del usuario, más recientes primero, tope `MAX_TICKET_LIST_ROWS`
+   * por el límite de WhatsApp.
+   *
+   * Consulta InvGate EN VIVO (`incidents.by.customer`) en vez de la tabla local
+   * `Ticket` — la local solo tiene los tickets que el propio bot creó y su estado
+   * cacheado puede estar desactualizado (no hay webhook de InvGate). `incidents.by.customer`
+   * es el único endpoint de esta API que lista por cliente (no aparece en la doc
+   * pública que uso de referencia para el resto del cliente — confirmado contra la
+   * instancia real 2026-08-24; `incident.by.customer`, singular, no existe, 404).
+   *
+   * `customerId` ya viene resuelto (ver `resolveInvgateCustomerId`, llamado por
+   * quien invoca esto) — así se resuelve una sola vez por turno aunque este paso y
+   * el de detalle lo necesiten los dos. `interactive: null` significa que el
+   * cliente no tiene ningún ticket abierto.
+   */
+  private async buildOpenTicketsList(
+    customerId: number,
+  ): Promise<{ interactive: WhatsAppInteractive | null; truncated: boolean }> {
+    const incidents = await this.invgateService.listCustomerIncidents(customerId).catch((err) => {
+      this.logger.warn(`No se pudo listar los tickets de InvGate del cliente ${customerId}: ${err.message}`);
+      return [];
+    });
 
-      const statusName = await this.invgateService.getStatusName(incident.status_id);
-      if (statusName !== ticket.status) {
-        await this.prisma.ticket.update({ where: { id: ticket.id }, data: { status: statusName } });
-      }
-      return statusName;
-    } catch (err) {
-      this.logger.warn(`No se pudo refrescar el estado del ticket ${ticket.id} desde InvGate: ${(err as Error).message}`);
-      return ticket.status;
-    }
+    // `status_id` → nombre: `getStatusName` cachea el catálogo completo en memoria
+    // (una sola llamada real), así que resolver el de cada incidente acá es un
+    // lookup en un Map, no N llamadas a la API.
+    const withStatus = await Promise.all(
+      incidents.map(async (inc) => ({
+        inc,
+        statusName: inc.status_id !== undefined ? await this.invgateService.getStatusName(inc.status_id) : '',
+      })),
+    );
+    const open = withStatus
+      .filter((x) => isOpenTicketStatus(x.statusName))
+      .sort((a, b) => Number(b.inc.created_at ?? 0) - Number(a.inc.created_at ?? 0));
+    const shown = open.slice(0, MAX_TICKET_LIST_ROWS);
+    if (!shown.length) return { interactive: null, truncated: false };
+
+    const rows = shown.map(({ inc, statusName }) => {
+      const ref = (inc.pretty_id as string | undefined) ?? `#${inc.id}`;
+      return {
+        id: String(inc.id),
+        title: `${ref} ${inc.title ?? ''}`.trim().slice(0, 24),
+        description: statusName.slice(0, 72),
+      };
+    });
+
+    return {
+      interactive: { type: 'list', body: 'Elegí un ticket:', buttonText: 'Ver tickets', rows },
+      truncated: open.length > shown.length,
+    };
+  }
+
+  /**
+   * Nodo `ticket_query`, paso "ver detalle": trae el incidente puntual por id
+   * (`GET incident`, siempre en vivo) y arma el texto con estado, prioridad, fecha
+   * y agente asignado. `customerId` es el cliente de InvGate del USUARIO que está
+   * preguntando — si el incidente encontrado le pertenece a otro cliente, se
+   * considera "no encontrado" (mismo criterio que el filtro por `tenantId` en el
+   * resto de los accesos a `Ticket`: `body` puede ser cualquier texto tipeado a
+   * mano, no solo el id de una fila que se le mostró, así que sin este chequeo
+   * cualquiera podría ver el ticket de otra persona adivinando un id bajo).
+   */
+  private async buildTicketDetailText(incidentId: string, customerId: number): Promise<string | null> {
+    const incident = await this.invgateService.getIncident(incidentId).catch(() => null);
+    if (!incident || Number(incident.user_id) !== customerId) return null;
+
+    const [statusName, priorityName, assignedName] = await Promise.all([
+      incident.status_id !== undefined ? this.invgateService.getStatusName(incident.status_id) : Promise.resolve('sin definir'),
+      incident.priority_id !== undefined
+        ? this.invgateService.getPriorityName(Number(incident.priority_id))
+        : Promise.resolve('sin definir'),
+      this.resolveAssignedAgentName(incident.assigned_id),
+    ]);
+
+    const ref = (incident.pretty_id as string | undefined) ?? `#${incident.id}`;
+    const created = incident.created_at ? new Date(String(incident.created_at)).toLocaleDateString('es-AR') : 'sin dato';
+    const description = incident.description ? this.stripInvgateHtml(String(incident.description)) : null;
+
+    const lines = [
+      `Ticket ${ref}: ${incident.title ?? ''}`,
+      `Estado: ${statusName}`,
+      `Prioridad: ${priorityName}`,
+      `Creado: ${created}`,
+      `Asignado a: ${assignedName ?? 'sin asignar'}`,
+    ];
+    if (description) lines.push(`Descripción: ${description}`);
+    return lines.join('\n');
+  }
+
+  /** Nombre completo del agente de InvGate asignado a un incidente, o `null` sin asignar/sin resolver. */
+  private async resolveAssignedAgentName(assignedId: unknown): Promise<string | null> {
+    if (assignedId === undefined || assignedId === null) return null;
+    const agent = await this.invgateService.getUserById(Number(assignedId)).catch(() => null);
+    if (!agent) return null;
+    return [agent.name, agent.lastname].filter(Boolean).join(' ') || null;
   }
 
   /**
@@ -1655,29 +1778,90 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'ticket_query': {
-        // `ticketId` puede ser el cuid interno (tickets viejos, o uno nuevo que no llegó
-        // a sincronizar con InvGate) o el número de InvGate (lo normal ahora, ver
-        // `lastTicketId` en 'ticket_create'/executeTransferAgentNode) — se busca por
-        // cualquiera de los dos campos, sin necesidad de adivinar cuál es.
-        const ticketId = data.ticketIdVariable
-          ? flowState[this.stripVariableBraces(data.ticketIdVariable)]
-          : flowState.lastTicketId;
-        if (ticketId) {
-          // `tenantId` es obligatorio acá: `invgateId` es un correlativo global de
-          // InvGate (sistema externo, no tiene noción de tenant) y `id` es un cuid
-          // — sin este filtro, un tenant puede consultar (y ver subject/status de)
-          // tickets de otro tenant adivinando un número de InvGate bajo.
-          const ticket = await this.prisma.ticket.findFirst({
-            where: { tenantId, OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
-          });
-          if (ticket) {
-            const status = await this.refreshInvgateStatus(ticket);
+        // Tres pasos, mismo idioma que `menu`/`input` (`flowState.__awaiting` +
+        // `waitForInput`): (1) primera llegada, lista EN VIVO los tickets abiertos
+        // del usuario contra InvGate (no la tabla local `Ticket` — su estado
+        // cacheado puede estar desactualizado, ver `buildOpenTicketsList`); (2) elige
+        // uno, se muestra el detalle con un botón "Volver a la lista"; (3) si toca
+        // ese botón vuelve a (1), cualquier otra respuesta sigue de largo por la
+        // arista del nodo (igual que `input`).
+        const awaitingThisNode = flowState.__awaiting === node.id;
+        const step = flowState.__ticketQueryStep;
+
+        const resolveCustomerId = async (): Promise<number | null> => {
+          if (!(await this.invgateService.isConfigured())) return null;
+          return this.resolveInvgateCustomerId(user.id, from);
+        };
+
+        const renderTicketList = async (prefix?: string): Promise<NodeExecutionResult> => {
+          const customerId = await resolveCustomerId();
+          if (!customerId) {
+            delete flowState.__awaiting;
+            delete flowState.__ticketQueryStep;
             return {
-              responseText: `Ticket #${ticket.invgateId ?? ticket.id}: ${ticket.subject} - Estado: ${status}`,
+              responseText: 'No pude vincular tu usuario con InvGate para buscar tus tickets. Contactá a un administrador.',
+              flowState,
             };
           }
+
+          const { interactive, truncated } = await this.buildOpenTicketsList(customerId);
+          if (!interactive) {
+            delete flowState.__awaiting;
+            delete flowState.__ticketQueryStep;
+            return { responseText: 'No tenés tickets abiertos en este momento.', flowState };
+          }
+          flowState.__awaiting = node.id;
+          flowState.__ticketQueryStep = 'select';
+          const notice = truncated
+            ? `Tenés más de ${MAX_TICKET_LIST_ROWS} tickets abiertos, te muestro los ${MAX_TICKET_LIST_ROWS} más recientes.\n\n`
+            : '';
+          return {
+            responseText: (prefix ?? '') + notice + 'Elegí un ticket:',
+            interactive,
+            waitForInput: true,
+            flowState,
+          };
+        };
+
+        if (awaitingThisNode && step === 'detail') {
+          if (body.trim() === BACK_OPTION_VALUE) {
+            return renderTicketList();
+          }
+          delete flowState.__awaiting;
+          delete flowState.__ticketQueryStep;
+          return { flowState };
         }
-        return { responseText: 'No encontré el ticket solicitado.' };
+
+        if (awaitingThisNode) {
+          // Paso "elegir ticket": `body` es el id de InvGate de la fila tocada, o
+          // tipeado a mano — por eso `buildTicketDetailText` verifica que el
+          // incidente encontrado le pertenezca a ESTE `customerId` antes de
+          // mostrarlo (si no, cualquiera podría ver el ticket de otra persona
+          // adivinando un id bajo).
+          const customerId = await resolveCustomerId();
+          if (!customerId) return renderTicketList();
+
+          const selectedRef = body.trim();
+          const detailText = await this.buildTicketDetailText(selectedRef, customerId);
+          if (!detailText) {
+            return renderTicketList('No reconocí esa opción. ');
+          }
+
+          flowState.__ticketQueryStep = 'detail';
+          return {
+            responseText: detailText,
+            interactive: {
+              type: 'button',
+              body: detailText,
+              buttons: [{ id: BACK_OPTION_VALUE, title: 'Volver a la lista' }],
+            },
+            waitForInput: true,
+            flowState,
+          };
+        }
+
+        // Primera llegada.
+        return renderTicketList();
       }
 
       case 'transfer_agent':

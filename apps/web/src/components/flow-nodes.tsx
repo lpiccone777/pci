@@ -254,9 +254,7 @@ export const TicketCreateNode = memo(({ id, data }: any) => (
 
 export const TicketQueryNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="ticket_query">
-    {data?.ticketIdVariable && (
-      <div className="mt-1 text-xs text-gray-500">Var: {data.ticketIdVariable}</div>
-    )}
+    <div className="mt-1 text-xs text-gray-500">Lista los tickets abiertos del usuario</div>
   </BaseNode>
 ));
 

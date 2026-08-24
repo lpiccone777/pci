@@ -466,7 +466,7 @@ function FlowEditorInner() {
         // nodo como si fuera un valor real elegido.
         return { subject: '', description: '', category: '', priority: '', ticketType: '' };
       case 'ticket_query':
-        return { ticketIdVariable: '' };
+        return {};
       case 'transfer_agent':
         return {
           message: '',
@@ -1329,6 +1329,17 @@ function NodeProperties({
             placeholder="Nombre exacto del tipo en InvGate, o {{variable}}"
           />
         </>
+      )}
+
+      {type === 'ticket_query' && (
+        <p className="text-xs text-gray-400">
+          Sin configuración: consulta en vivo contra InvGate (no un caché local) y lista los
+          tickets abiertos del usuario que está escribiendo (los más recientes primero, hasta 10
+          por el límite de WhatsApp). Al elegir uno muestra su detalle con la opción de volver a
+          la lista. Al terminar, sigue por la arista de este nodo — dibujá a dónde va después (ej.
+          volver al menú). Requiere que InvGate esté configurado en /settings y que el usuario
+          tenga vinculado su id de InvGate (automático por teléfono, o cargado a mano).
+        </p>
       )}
 
       {type === 'llm_query' && (
