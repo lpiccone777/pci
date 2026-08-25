@@ -412,7 +412,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   // vez del de este caso, y la aserción (que busca el `subject` de ESTE ticket puntual) daba un
   // falso "no matcheó nada" sin que el bug se haya corregido. Con un único ticket en el tenant,
   // cualquier racha de dígitos que sea substring de su propio id matchea sin ambigüedad.
-  it.failing('CHAT-LLMF-03: mencionar dígitos de un ticket AJENO de la misma empresa no debe inyectar su contexto (SEC-11)', async () => {
+  it.failing('CHAT-LLMF-03: mencionar dígitos de un ticket AJENO de la misma empresa no debe inyectar su contexto (SEC-11) @invertido', async () => {
     const tenantSec11 = await createTenant(t.prisma, { slug: uniqueSlug('llmf03-sec11') });
     const userB = await createUser(t.prisma, { email: uniqueEmail('llmf03-b'), phone: uniquePhone(), firstName: 'Ajeno' });
     const { ticket, digits } = await createTicketWithDigits({
@@ -581,7 +581,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   // frase textual) — no prueba que el bot no vaya a obedecer el contenido adversarial, pero sí
   // que dejamos de regalarle el argumento de autoridad.
   it.failing(
-    'CHAT-LLMF-11: contenido adversarial de la fuente vinculada no debería inyectarse con el framing que lo vuelve prioritario',
+    'CHAT-LLMF-11: contenido adversarial de la fuente vinculada no debería inyectarse con el framing que lo vuelve prioritario @invertido',
     async () => {
       const phone = await knownUser(tenantAdvLlmQ.id, roleAdvLlmQ.id, 'llmf11');
 
@@ -603,7 +603,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   // servidor (nadie lo lee del lado del modelo): el mensaje le llega "limpio", sin ninguna
   // señal de que había una fuente vinculada y falló.
   it.failing(
-    'CHAT-LLMF-12: si la fuente falla y la pregunta solo ella podía responder, el LLM debería enterarse de que falló',
+    'CHAT-LLMF-12: si la fuente falla y la pregunta solo ella podía responder, el LLM debería enterarse de que falló @invertido',
     async () => {
       const phone = await knownUser(tenantFail.id, roleFail.id, 'llmf12');
       await simulate(phone, tenantFail.id, 'hola');

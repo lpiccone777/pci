@@ -191,7 +191,7 @@ describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP
     }
   });
 
-  it.failing('BE-GUP-06: POST webhooks/gupshup sin ninguna verificación de autenticidad debe rechazarse (SEC-16)', async () => {
+  it.failing('BE-GUP-06: POST webhooks/gupshup sin ninguna verificación de autenticidad debe rechazarse (SEC-16) @invertido', async () => {
     const rawNumber = uniquePhone().replace('+', '');
     const res = await http(t)
       .post('/webhooks/gupshup')

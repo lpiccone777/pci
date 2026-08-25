@@ -670,7 +670,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
   // --- BE-IG-10 (robustez, sin número de hallazgo): cachés en memoria que no se invalidan ---
   it.failing(
-    'BE-IG-10: corregir INVGATE_API_USER en caliente debería resolver el creator_id sin reiniciar (robustez)',
+    'BE-IG-10: corregir INVGATE_API_USER en caliente debería resolver el creator_id sin reiniciar (robustez) @invertido',
     async () => {
       // Nota de diseño: NO se usa una segunda `createTestApp()` (patrón de BE-AUTH-25) para
       // esto. `ConversationsService` se suscribe a `whatsapp.simulate.incoming` con
@@ -710,7 +710,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
   // --- BE-IG-11 (SEC-20): INVGATE_API_URL con http:// debería exigir HTTPS ---
   it.failing(
-    'BE-IG-11: con INVGATE_API_URL en http://, el Basic Auth no debe viajar en claro por la red (SEC-20)',
+    'BE-IG-11: con INVGATE_API_URL en http://, el Basic Auth no debe viajar en claro por la red (SEC-20) @invertido',
     async () => {
       await setSetting(t.prisma, 'INVGATE_API_URL', 'http://insecure.invgate.e2e.test');
       const before = requests.length;

@@ -243,7 +243,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
   });
 
   it.failing(
-    'CHAT-N-LLM-04 (robustez): si el proveedor LLM falla, el nodo debe degradar sin colgar la charla — HOY revienta sin try/catch y no responde',
+    'CHAT-N-LLM-04 (robustez): si el proveedor LLM falla, el nodo debe degradar sin colgar la charla — HOY revienta sin try/catch y no responde @invertido',
     async () => {
       const { tenant, role, phone } = await newKnownUser('llm04');
       llm.setFailure(new Error('LLM caído (simulado)'));
@@ -493,7 +493,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
   });
 
   it.failing(
-    'CHAT-N-SUB-03 (SEC-15): flowId inexistente debe dar un error controlado sin cortar la charla — HOY flowService.findById lanza NotFoundException sin capturar',
+    'CHAT-N-SUB-03 (SEC-15): flowId inexistente debe dar un error controlado sin cortar la charla — HOY flowService.findById lanza NotFoundException sin capturar @invertido',
     async () => {
       const { tenant, role, phone } = await newKnownUser('sub03');
       await startFlow(

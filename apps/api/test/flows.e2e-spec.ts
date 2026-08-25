@@ -311,7 +311,7 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
 
   // --- BE-FLW-14 (SEC-03): operar por id sobre un flujo de OTRA empresa debe cortar ---
   describe('BE-FLW-14 (SEC-03): acceso por id a un flujo de otra empresa', () => {
-    it.failing('BE-FLW-14: GET /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03)', async () => {
+    it.failing('BE-FLW-14: GET /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14geta');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14getb') });
       const flowB = await createFlow(t.prisma, { name: 'Flujo privado de B', assign: [{ tenantId: tenantB.id }] });
@@ -323,7 +323,7 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
       expect([403, 404]).toContain(res.status);
     });
 
-    it.failing('BE-FLW-14: PATCH /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03)', async () => {
+    it.failing('BE-FLW-14: PATCH /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14patcha');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14patchb') });
       const flowB = await createFlow(t.prisma, { name: 'Flujo privado de B (patch)', assign: [{ tenantId: tenantB.id }] });
@@ -337,7 +337,7 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
       expect([403, 404]).toContain(res.status);
     });
 
-    it.failing('BE-FLW-14: DELETE /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03)', async () => {
+    it.failing('BE-FLW-14: DELETE /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14dela');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14delb') });
       const flowB = await createFlow(t.prisma, { name: 'Flujo privado de B (delete)', assign: [{ tenantId: tenantB.id }] });
@@ -353,7 +353,7 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
   // --- BE-FLW-16 (SEC-03): mismo criterio para assign-tenants y default ---
   describe('BE-FLW-16 (SEC-03): assign-tenants/default sobre un flujo de otra empresa', () => {
     it.failing(
-      'BE-FLW-16: POST /flows/:id/assign-tenants con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03)',
+      'BE-FLW-16: POST /flows/:id/assign-tenants con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido',
       async () => {
         const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw16assigna');
         const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw16assignb') });
@@ -370,7 +370,7 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
     );
 
     it.failing(
-      'BE-FLW-16: POST /flows/:id/default con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03)',
+      'BE-FLW-16: POST /flows/:id/default con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido',
       async () => {
         const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw16defaulta');
         const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw16defaultb') });

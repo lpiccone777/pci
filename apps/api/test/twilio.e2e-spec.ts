@@ -245,7 +245,7 @@ describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-
     }
   });
 
-  it.failing('BE-TWA-10: POST webhooks/twilio sin X-Twilio-Signature válida debe rechazarse (SEC-16)', async () => {
+  it.failing('BE-TWA-10: POST webhooks/twilio sin X-Twilio-Signature válida debe rechazarse (SEC-16) @invertido', async () => {
     const phone = uniquePhone();
     const res = await http(t)
       .post('/webhooks/twilio')

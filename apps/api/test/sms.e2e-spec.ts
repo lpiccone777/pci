@@ -160,7 +160,7 @@ describe('1.21 Canal SMS, selección de proveedor — Gupshup (BE-SMS-03, BE-SMS
     }
   }, 15000);
 
-  it.failing('BE-SMS-07: un menú de flujo enviado por Gupshup SMS debe anexar las opciones numeradas (robustez)', async () => {
+  it.failing('BE-SMS-07: un menú de flujo enviado por Gupshup SMS debe anexar las opciones numeradas (robustez) @invertido', async () => {
     // Bug real documentado en el plan: `GupshupSmsService.handleOutgoing` desestructura
     // `{ to, body }` de `msg.data` e ignora `interactive` por completo — a diferencia de
     // `TwilioSmsService`, que si recibe `interactive` reconstruye la lista numerada
@@ -359,7 +359,7 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
     }
   });
 
-  it.failing('BE-SMS-09: POST webhooks/twilio-sms sin firma debe rechazarse (SEC-16)', async () => {
+  it.failing('BE-SMS-09: POST webhooks/twilio-sms sin firma debe rechazarse (SEC-16) @invertido', async () => {
     const phone = uniquePhone();
     const res = await http(t).post('/webhooks/twilio-sms').type('form').send({ From: phone, Body: 'sin firma' });
 
@@ -376,7 +376,7 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
     });
   });
 
-  it.failing('BE-SMS-09: POST webhooks/gupshup-sms sin autenticación debe rechazarse (SEC-16)', async () => {
+  it.failing('BE-SMS-09: POST webhooks/gupshup-sms sin autenticación debe rechazarse (SEC-16) @invertido', async () => {
     const phone = uniquePhone().replace('+', '');
     const res = await http(t).post('/webhooks/gupshup-sms').send({ phno: phone, text: 'sin autenticar' });
 
@@ -469,7 +469,7 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
     }
   });
 
-  it.failing('BE-SMS-10: Gupshup SMS legacy NO debe mandar userid/password en la query string de un GET (SEC-21)', async () => {
+  it.failing('BE-SMS-10: Gupshup SMS legacy NO debe mandar userid/password en la query string de un GET (SEC-21) @invertido', async () => {
     await setSetting(t.prisma, 'GUPSHUP_SMS_USERID', GUPSHUP_SMS_USERID);
     await setSetting(t.prisma, 'GUPSHUP_SMS_PASSWORD', GUPSHUP_SMS_PASSWORD);
     const { requests, restore } = installFetchMock((url) =>

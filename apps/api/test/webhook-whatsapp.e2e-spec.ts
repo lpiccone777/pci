@@ -236,7 +236,7 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
   );
 
   // --- BE-WHK-08 (SEC-04): el POST debe validar X-Hub-Signature-256 antes de encolar ---
-  it.failing('BE-WHK-08: POST sin X-Hub-Signature-256 válida debe rechazarse antes de encolar (SEC-04)', async () => {
+  it.failing('BE-WHK-08: POST sin X-Hub-Signature-256 válida debe rechazarse antes de encolar (SEC-04) @invertido', async () => {
     const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk08') });
     await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
 

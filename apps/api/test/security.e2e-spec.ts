@@ -36,7 +36,7 @@ describe('1.17 Seguridad transversal (BE-SEC-*)', () => {
   });
 
   it.failing(
-    'BE-SEC-01: POST /conversations/simulate sin autenticación debe rechazarse con 401, no tomar el tenant del body sin validar (SEC-02)',
+    'BE-SEC-01: POST /conversations/simulate sin autenticación debe rechazarse con 401, no tomar el tenant del body sin validar (SEC-02) @invertido',
     async () => {
       // tenantId inexistente a propósito: ConversationsService.handleMessage lo trata como
       // "empresa dada de baja o no existe" y responde rápido por el canal de reply de RabbitMQ
@@ -57,7 +57,7 @@ describe('1.17 Seguridad transversal (BE-SEC-*)', () => {
   );
 
   it.failing(
-    'BE-SEC-02: una ráfaga de requests a /auth/login debe cortar con 429 (rate limiting) (SEC-05)',
+    'BE-SEC-02: una ráfaga de requests a /auth/login debe cortar con 429 (rate limiting) (SEC-05) @invertido',
     async () => {
       // Email inexistente: AuthService.login falla en el primer findFirst, sin pasar por
       // bcrypt.compare (ver BE-AUTH-03) — la ráfaga corre rápido y no depende del costo de hash.
@@ -76,7 +76,7 @@ describe('1.17 Seguridad transversal (BE-SEC-*)', () => {
   );
 
   it.failing(
-    'BE-SEC-03: un Origin arbitrario con credenciales no debería reflejarse en Access-Control-Allow-Origin (SEC-12)',
+    'BE-SEC-03: un Origin arbitrario con credenciales no debería reflejarse en Access-Control-Allow-Origin (SEC-12) @invertido',
     async () => {
       // `main.ts` configura CORS dentro de `bootstrap()` (NestFactory.create → enableCors →
       // listen), función que no se puede invocar tal cual en un test (no hay puerto real ni

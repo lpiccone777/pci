@@ -424,7 +424,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       expect(res.body.reply).toContain('No encontré el ticket solicitado.');
     });
 
-    it.failing('CHAT-N-TKQ-03: una variable que apunta a un ticket de OTRO tenant no debería devolverlo (SEC-08)', async () => {
+    it.failing('CHAT-N-TKQ-03: una variable que apunta a un ticket de OTRO tenant no debería devolverlo (SEC-08) @invertido', async () => {
       const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('tkc-other') });
       const owner = await createUser(t.prisma, { email: uniqueEmail('owner-other'), phone: uniquePhone(), firstName: 'Owner' });
       const foreignTicket = await t.prisma.ticket.create({
@@ -787,7 +787,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       10000,
     );
 
-    it.failing('CHAT-N-SMS-04: un recipient de OTRA empresa no debería recibir el SMS (SEC-18)', async () => {
+    it.failing('CHAT-N-SMS-04: un recipient de OTRA empresa no debería recibir el SMS (SEC-18) @invertido', async () => {
       const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('sms-other') });
       const roleOther = await createRole(t.prisma, { tenantId: tenantOther.id, name: 'Agente externo' });
       const foreignPhone = uniquePhone();

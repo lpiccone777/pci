@@ -331,7 +331,7 @@ test('FE-INF-15: un 401 con token presente cierra la sesión y redirige de inmed
 });
 
 test.fail(
-  'FE-INF-16: parado en una pantalla solo-sistema, cambiar a una empresa no-sistema debería sacar al usuario al dashboard',
+  'FE-INF-16: parado en una pantalla solo-sistema, cambiar a una empresa no-sistema debería sacar al usuario al dashboard @invertido',
   async ({ page }) => {
     // Comportamiento SEGURO esperado (hoy NO implementado): al cambiar el selector a una empresa
     // que ya no tiene esta pantalla en el menú, la app debería redirigir al dashboard. Hoy la

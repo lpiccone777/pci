@@ -172,6 +172,15 @@ export async function createTenant(
   });
 }
 
+/** Da de baja lógica una empresa (`DELETE /tenants/:id`, solo SuperAdmin en contexto de sistema). */
+export async function deleteTenant(admin: AdminCtx, id: string): Promise<void> {
+  await req(`/tenants/${id}`, {
+    method: 'DELETE',
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+  });
+}
+
 /**
  * Crea un rol en la empresa `tenantId` (default: la de sistema) con los permisos indicados.
  * Funciona en CUALQUIER empresa por el bypass del superusuario en `TenantGuard` (se manda su id
@@ -263,6 +272,64 @@ export async function createUserWithPermissions(
   return { ...user, roleId: role.id, tenantId };
 }
 
+// --- Áreas ---
+
+export interface SeededArea {
+  id: string;
+  name: string;
+}
+
+/**
+ * Crea un área en la empresa `tenantId` (default: la de sistema). Como el resto de las altas,
+ * funciona en cualquier empresa por el bypass del superusuario en `TenantGuard` (se manda su id
+ * en `X-Tenant-Id`). El backend saca el tenant del header, nunca del body.
+ */
+export async function createArea(
+  admin: AdminCtx,
+  opts: { tenantId?: string; name?: string } = {},
+): Promise<SeededArea> {
+  const tenantId = opts.tenantId ?? admin.systemTenantId;
+  const name = opts.name ?? `Área ${uniqueSlug('a')}`;
+  return req('/areas', {
+    method: 'POST',
+    token: admin.token,
+    tenantId,
+    body: { name },
+  });
+}
+
+/**
+ * Resuelve el id de un usuario por su email, consultando `GET /users/all` (cross-tenant, solo
+ * SuperAdmin). Sirve para operar sobre un usuario recién sembrado cuyo id no se guardó al crearlo
+ * (ej. darlo de baja en FE-SEC-04). Devuelve el id o `null` si no aparece (ya dado de baja: el
+ * endpoint excluye a los `deletedAt`).
+ */
+export async function findUserIdByEmail(admin: AdminCtx, email: string): Promise<string | null> {
+  const rows: Array<{ id: string; email: string }> = await req('/users/all', {
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+  });
+  return rows.find((r) => r.email === email)?.id ?? null;
+}
+
+/**
+ * Da de baja a un usuario de la empresa `tenantId` (`DELETE /users/:id`, con el header de esa
+ * empresa). Si era su única membresía, el backend lo da de baja lógica (`deletedAt`): a partir de
+ * ahí `GET /auth/me` responde 401 y el frontend cierra sesión solo (ver FE-SEC-04). Corre como
+ * SuperAdmin por el bypass del superusuario en `TenantGuard`/`RolesGuard`.
+ */
+export async function deleteUserInTenant(
+  admin: AdminCtx,
+  userId: string,
+  tenantId: string,
+): Promise<void> {
+  await req(`/users/${userId}`, {
+    method: 'DELETE',
+    token: admin.token,
+    tenantId,
+  });
+}
+
 // --- Settings globales ---
 
 /** Fija un setting (`PATCH /settings/:key`, contexto de sistema + `settings:update`). */
@@ -279,6 +346,177 @@ export async function setSetting(admin: AdminCtx, key: string, value: string): P
 export async function deleteSetting(admin: AdminCtx, key: string): Promise<void> {
   await req(`/settings/${encodeURIComponent(key)}`, {
     method: 'DELETE',
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+  });
+}
+
+// --- Fuentes de verdad (context sources) ---
+
+export interface SeededContextSource {
+  id: string;
+  name: string;
+  type: string;
+}
+
+/**
+ * Config mínima válida por tipo, con las URLs apuntando a hosts `*.invalid` (RFC 6761: nunca
+ * resuelven). Sirve para el camino ✗ de "Probar conexión" sin depender de un servicio externo real:
+ * el connector hace un `fetch` que falla por DNS y devuelve `{ ok: false }`. Solo los campos
+ * requeridos del catálogo (`context-source-types.catalog.ts`).
+ */
+function defaultContextSourceConfig(type: string): Record<string, unknown> {
+  switch (type) {
+    case 'mcp':
+      return { serverUrl: 'https://mcp.e2e.invalid/sse' };
+    case 'rag':
+      return { endpointUrl: 'https://rag.e2e.invalid/query' };
+    case 'n8n':
+      return { webhookUrl: 'https://n8n.e2e.invalid/webhook/e2e' };
+    case 'broker':
+      return { queueName: `context.e2e.${uniqueSlug('q')}` };
+    default:
+      return {};
+  }
+}
+
+/**
+ * Crea una fuente de verdad en la empresa `tenantId` (default: la de sistema). Como el resto de las
+ * altas, funciona en cualquier empresa por el bypass del superusuario en `TenantGuard` (se manda su
+ * id en `X-Tenant-Id`); el backend saca el tenant del header, nunca del body. `type` sale del
+ * catálogo — default `n8n`, que tiene un campo secreto (`authToken`) y un `webhookUrl` inalcanzable
+ * útil para el test de "Probar conexión".
+ */
+export async function createContextSource(
+  admin: AdminCtx,
+  opts: {
+    tenantId?: string;
+    name?: string;
+    type?: string;
+    config?: Record<string, unknown>;
+    isActive?: boolean;
+  } = {},
+): Promise<SeededContextSource> {
+  const tenantId = opts.tenantId ?? admin.systemTenantId;
+  const type = opts.type ?? 'n8n';
+  const name = opts.name ?? `Fuente ${uniqueSlug('cs')}`;
+  return req('/context-sources', {
+    method: 'POST',
+    token: admin.token,
+    tenantId,
+    body: {
+      name,
+      type,
+      config: opts.config ?? defaultContextSourceConfig(type),
+      isActive: opts.isActive ?? true,
+    },
+  });
+}
+
+// --- Skills ---
+
+export interface SeededSkill {
+  id: string;
+  name: string;
+}
+
+/**
+ * Crea una Skill (texto de contexto que un flujo concatena al system prompt) en la empresa
+ * `tenantId` (default: la de sistema). Mismo bypass del superusuario que el resto de las altas.
+ */
+export async function createSkill(
+  admin: AdminCtx,
+  opts: { tenantId?: string; name?: string; promptText?: string; isActive?: boolean } = {},
+): Promise<SeededSkill> {
+  const tenantId = opts.tenantId ?? admin.systemTenantId;
+  const name = opts.name ?? `Skill ${uniqueSlug('sk')}`;
+  return req('/skills', {
+    method: 'POST',
+    token: admin.token,
+    tenantId,
+    body: {
+      name,
+      promptText: opts.promptText ?? 'Atendé como soporte técnico de nivel 1, con tono cordial.',
+      isActive: opts.isActive ?? true,
+    },
+  });
+}
+
+// --- Flujos ---
+
+export interface FlowNodeSeed {
+  id: string;
+  type: string;
+  data?: Record<string, unknown>;
+  position?: { x: number; y: number };
+}
+
+export interface FlowEdgeSeed {
+  id: string;
+  source: string;
+  target: string;
+  type?: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  label?: string;
+}
+
+export interface SeededFlow {
+  id: string;
+  name: string;
+}
+
+/**
+ * Crea un flujo (`POST /flows`, contexto de sistema + `flows:create`). Los flujos se administran de
+ * forma global desde el tenant de sistema (ver `FlowController`), así que va con el header de
+ * sistema. Por defecto arma un único nodo `start`; pasá `nodes`/`edges` para sembrar la topología
+ * que el test necesite. `assignments` asigna empresas + roles; `contextSourceId`/`skillId`/`isStart`/
+ * `isDefault` como en el editor.
+ */
+export async function createFlow(
+  admin: AdminCtx,
+  opts: {
+    name?: string;
+    description?: string;
+    nodes?: FlowNodeSeed[];
+    edges?: FlowEdgeSeed[];
+    isActive?: boolean;
+    isDefault?: boolean;
+    contextSourceId?: string | null;
+    skillId?: string | null;
+    assignments?: Array<{ tenantId: string; roleIds?: string[] }>;
+    isStart?: boolean;
+  } = {},
+): Promise<SeededFlow> {
+  const nodes = (
+    opts.nodes ?? [{ id: 'start_1', type: 'start', data: { text: 'Bienvenido' }, position: { x: 250, y: 50 } }]
+  ).map((n) => ({ id: n.id, type: n.type, data: n.data ?? {}, position: n.position ?? { x: 0, y: 0 } }));
+
+  const body: Record<string, unknown> = {
+    name: opts.name ?? `Flujo ${uniqueSlug('fl')}`,
+    nodes,
+    edges: opts.edges ?? [],
+  };
+  if (opts.description !== undefined) body.description = opts.description;
+  if (opts.isActive !== undefined) body.isActive = opts.isActive;
+  if (opts.isDefault !== undefined) body.isDefault = opts.isDefault;
+  if (opts.contextSourceId !== undefined) body.contextSourceId = opts.contextSourceId;
+  if (opts.skillId !== undefined) body.skillId = opts.skillId;
+  if (opts.assignments !== undefined) body.assignments = opts.assignments;
+  if (opts.isStart !== undefined) body.isStart = opts.isStart;
+
+  return req('/flows', {
+    method: 'POST',
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+    body,
+  });
+}
+
+/** Marca un flujo como default global (`POST /flows/:id/default`, contexto de sistema). */
+export async function setFlowDefault(admin: AdminCtx, flowId: string): Promise<void> {
+  await req(`/flows/${flowId}/default`, {
+    method: 'POST',
     token: admin.token,
     tenantId: admin.systemTenantId,
   });

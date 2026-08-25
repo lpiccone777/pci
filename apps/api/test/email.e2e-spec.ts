@@ -115,7 +115,7 @@ describe('1.14 Canal de email (SMTP) (BE-EML-*)', () => {
   });
 
   it.failing(
-    'BE-EML-03: login con 2FA y el servidor de correo configurado pero caído debe cortar con un error controlado, no un 500 crudo (SEC-10 / hallazgo de plan)',
+    'BE-EML-03: login con 2FA y el servidor de correo configurado pero caído debe cortar con un error controlado, no un 500 crudo (SEC-10 / hallazgo de plan) @invertido',
     async () => {
       await setSetting(t.prisma, 'OTP_ENABLED', 'true');
       await setSetting(t.prisma, 'EMAIL_SMTP_HOST', 'smtp.caida.be-eml-03.test');
