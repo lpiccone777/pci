@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
 import { ALL_TENANTS, SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
+import { ImportUsersModal } from './import-users-modal';
 
-interface RoleOption {
+export interface RoleOption {
   id: string;
   name: string;
 }
 
-interface AreaOption {
+export interface AreaOption {
   id: string;
   name: string;
 }
@@ -36,7 +37,7 @@ interface UserData {
   tenant?: { id: string; name: string; slug: string };
 }
 
-type Feedback = { kind: 'ok' | 'error'; text: string };
+export type Feedback = { kind: 'ok' | 'error'; text: string };
 
 /** El nombre visible de un usuario: nombre y apellido, o el email si no tiene. */
 function userLabel(u: { firstName: string | null; lastName: string | null; email: string }) {
@@ -55,7 +56,7 @@ function useSystemTenantId() {
  * y al usuario común (en las suyas), sin depender de los endpoints `/by-tenant`, que son solo
  * del tenant de sistema. Devuelve [] ante error (sin permiso, empresa vacía) para no romper.
  */
-async function fetchRolesForTenant(tenantId: string): Promise<RoleOption[]> {
+export async function fetchRolesForTenant(tenantId: string): Promise<RoleOption[]> {
   try {
     const data = await apiFetch('/roles', { headers: { 'X-Tenant-Id': tenantId } });
     return (data || []).map((r: any) => ({ id: r.id, name: r.name }));
@@ -64,7 +65,7 @@ async function fetchRolesForTenant(tenantId: string): Promise<RoleOption[]> {
   }
 }
 
-async function fetchAreasForTenant(tenantId: string): Promise<AreaOption[]> {
+export async function fetchAreasForTenant(tenantId: string): Promise<AreaOption[]> {
   try {
     const data = await apiFetch('/areas', { headers: { 'X-Tenant-Id': tenantId } });
     return (data || []).map((a: any) => ({ id: a.id, name: a.name }));
@@ -155,6 +156,8 @@ export default function UsersPage() {
   const [editing, setEditing] = useState<{ user: UserData | null } | null>(null);
   /** El usuario cuyo detalle se está viendo (clic en la fila). */
   const [viewing, setViewing] = useState<UserData | null>(null);
+  /** Modal de carga masiva desde Excel, abierto. */
+  const [importing, setImporting] = useState(false);
 
   const canCreate = hasPermission('users', 'create');
 
@@ -283,12 +286,22 @@ export default function UsersPage() {
       <div className="flex items-center justify-between gap-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Usuarios</h1>
         {canCreate && (
-          <button
-            onClick={() => openModal(null)}
-            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 whitespace-nowrap"
-          >
-            Nuevo usuario
-          </button>
+          <div className="flex items-center gap-2">
+            {!isAllTenants && (
+              <button
+                onClick={() => setImporting(true)}
+                className="border border-blue-600 text-blue-600 px-4 py-2 rounded hover:bg-blue-50 whitespace-nowrap"
+              >
+                Importar desde Excel
+              </button>
+            )}
+            <button
+              onClick={() => openModal(null)}
+              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 whitespace-nowrap"
+            >
+              Nuevo usuario
+            </button>
+          </div>
         )}
       </div>
 
@@ -518,6 +531,14 @@ export default function UsersPage() {
           canEdit={canUpdateRow(viewing)}
           onEdit={() => openModal(viewing)}
           onClose={() => setViewing(null)}
+        />
+      )}
+
+      {importing && !isAllTenants && activeTenant && (
+        <ImportUsersModal
+          tenantId={activeTenant}
+          onClose={() => setImporting(false)}
+          onImported={afterSave}
         />
       )}
     </div>
@@ -1540,7 +1561,7 @@ function PersonField({ label, children }: { label: string; children: React.React
   );
 }
 
-function ModalShell({
+export function ModalShell({
   title,
   subtitle,
   onRequestClose,

@@ -282,6 +282,11 @@ export const LlmQueryNode = memo(({ id, data }: any) => (
     {data?.systemPrompt && (
       <div className="mt-1 text-xs text-gray-500 line-clamp-1">Prompt configurado</div>
     )}
+    {data?.extractVariables?.length > 0 && (
+      <div className="mt-1 text-xs text-gray-500">
+        {data.extractVariables.length} variable(s) a extraer
+      </div>
+    )}
   </BaseNode>
 ));
 

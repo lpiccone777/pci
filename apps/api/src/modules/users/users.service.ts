@@ -11,12 +11,15 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { systemTenantSlug } from '../../common/system-tenant';
 import { isProtectedRole } from '../rbac/protected-role';
 import {
+  BulkImportUserRowDto,
+  BulkImportUsersDto,
   CreateUserDto,
   CreateUserMultiTenantDto,
   UpdateUserDto,
   UpdateUserFullDto,
 } from './dto/user.dto';
 import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 
 const USER_SELECT = {
   id: true,
@@ -361,6 +364,230 @@ export class UsersService {
       created: true,
       memberships: membershipData.length,
     };
+  }
+
+  /**
+   * Carga masiva desde Excel. El frontend ya parseó el archivo y mapeó columna→campo; acá
+   * llega una lista de filas de persona ya limpias, más un rol (y opcional área) ÚNICOS para
+   * todo el lote — un Excel de personal casi nunca trae una columna de rol usable tal cual.
+   *
+   * No es todo-o-nada: cada fila se valida por separado (duplicada dentro del mismo archivo,
+   * o algún campo único ya en uso en la base) y las que fallan se reportan sin bloquear a las
+   * demás. Las que pasan se crean todas juntas en una transacción, con una contraseña
+   * temporal autogenerada por persona (no viene en el Excel, y no hay flujo de invitación por
+   * email en el sistema) que se devuelve para que quien importa se la pase al usuario.
+   */
+  async bulkImport(tenantId: string, requesterId: string, dto: BulkImportUsersDto) {
+    await this.assertRoleBelongsToTenant(tenantId, dto.defaultRoleId);
+    const areaId = dto.defaultAreaId || null;
+    if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
+
+    const failed: { row: number; email: string | null; reason: string }[] = [];
+    const seenEmail = new Set<string>();
+    const seenPhone = new Set<string>();
+    const seenInternalPhone = new Set<string>();
+    const seenInvgateUserId = new Set<string>();
+    const candidates: { row: number; data: BulkImportUserRowDto }[] = [];
+
+    // La fila 1 del Excel original es la de headers, así que la primera fila de datos es la 2.
+    dto.rows.forEach((data, i) => {
+      const row = i + 2;
+      const email = data.email?.trim().toLowerCase();
+      if (!email) {
+        failed.push({ row, email: null, reason: 'Falta el email' });
+        return;
+      }
+      if (seenEmail.has(email)) {
+        failed.push({ row, email, reason: 'Email duplicado en el archivo' });
+        return;
+      }
+      if (data.phone && seenPhone.has(data.phone)) {
+        failed.push({ row, email, reason: 'Teléfono duplicado en el archivo' });
+        return;
+      }
+      if (data.internalPhone && seenInternalPhone.has(data.internalPhone)) {
+        failed.push({ row, email, reason: 'Interno duplicado en el archivo' });
+        return;
+      }
+      if (data.invgateUserId && seenInvgateUserId.has(data.invgateUserId)) {
+        failed.push({ row, email, reason: 'ID de Invgate duplicado en el archivo' });
+        return;
+      }
+      if (!data.firstName?.trim() || !data.lastName?.trim()) {
+        failed.push({ row, email, reason: 'Falta nombre o apellido' });
+        return;
+      }
+
+      seenEmail.add(email);
+      if (data.phone) seenPhone.add(data.phone);
+      if (data.internalPhone) seenInternalPhone.add(data.internalPhone);
+      if (data.invgateUserId) seenInvgateUserId.add(data.invgateUserId);
+      candidates.push({ row, data: { ...data, email } });
+    });
+
+    // Disponibilidad contra la base, en lote: una query por campo único para todo el archivo,
+    // no una por fila — importante para no volar el tiempo de respuesta con 500 filas.
+    const phones = candidates.map((c) => c.data.phone).filter((v): v is string => !!v);
+    const internalPhones = candidates
+      .map((c) => c.data.internalPhone)
+      .filter((v): v is string => !!v);
+    const invgateUserIds = candidates
+      .map((c) => c.data.invgateUserId)
+      .filter((v): v is string => !!v);
+
+    const [takenEmails, takenPhones, takenInternalPhones, takenInvgateUserIds] =
+      await Promise.all([
+        this.prisma.user.findMany({
+          where: { email: { in: candidates.map((c) => c.data.email) }, deletedAt: null },
+          select: { email: true },
+        }),
+        phones.length
+          ? this.prisma.user.findMany({
+              where: { phone: { in: phones }, deletedAt: null },
+              select: { phone: true },
+            })
+          : [],
+        internalPhones.length
+          ? this.prisma.user.findMany({
+              where: { internalPhone: { in: internalPhones }, deletedAt: null },
+              select: { internalPhone: true },
+            })
+          : [],
+        invgateUserIds.length
+          ? this.prisma.user.findMany({
+              where: { invgateUserId: { in: invgateUserIds }, deletedAt: null },
+              select: { invgateUserId: true },
+            })
+          : [],
+      ]);
+
+    const takenEmailSet = new Set(takenEmails.map((u) => u.email));
+    const takenPhoneSet = new Set(takenPhones.map((u) => u.phone));
+    const takenInternalPhoneSet = new Set(takenInternalPhones.map((u) => u.internalPhone));
+    const takenInvgateUserIdSet = new Set(takenInvgateUserIds.map((u) => u.invgateUserId));
+
+    const accepted: { row: number; data: BulkImportUserRowDto; tempPassword: string }[] = [];
+    for (const c of candidates) {
+      if (takenEmailSet.has(c.data.email)) {
+        failed.push({ row: c.row, email: c.data.email, reason: 'Ya existe un usuario con ese email' });
+      } else if (c.data.phone && takenPhoneSet.has(c.data.phone)) {
+        failed.push({ row: c.row, email: c.data.email, reason: 'Ya existe un usuario con ese teléfono' });
+      } else if (c.data.internalPhone && takenInternalPhoneSet.has(c.data.internalPhone)) {
+        failed.push({ row: c.row, email: c.data.email, reason: 'Ya existe un usuario con ese interno' });
+      } else if (c.data.invgateUserId && takenInvgateUserIdSet.has(c.data.invgateUserId)) {
+        failed.push({
+          row: c.row,
+          email: c.data.email,
+          reason: 'Ya existe un usuario con ese identificador de Invgate',
+        });
+      } else {
+        accepted.push({ row: c.row, data: c.data, tempPassword: this.generateTempPassword() });
+      }
+    }
+
+    const created: {
+      email: string;
+      firstName: string;
+      lastName: string;
+      tempPassword: string;
+    }[] = [];
+
+    if (accepted.length > 0) {
+      const withHashes = await Promise.all(
+        accepted.map(async (c) => ({
+          ...c,
+          passwordHash: await bcrypt.hash(c.tempPassword, 10),
+        })),
+      );
+
+      // `createMany` + un segundo `createMany` para las membresías, no un `create` anidado
+      // por fila: con archivos de miles de usuarios, N idas y vueltas secuenciales a la base
+      // dentro de una misma transacción se comen el timeout de Prisma (5s por default) mucho
+      // antes de terminar. Acá son 3 queries en total, no 2×N.
+      //
+      // `skipDuplicates`: el pre-check contra la base (arriba) corrió en queries aparte, ANTES
+      // de esta transacción — hay un hueco TOCTOU (otra importación concurrente, un alta manual
+      // en el medio) donde una fila puede chocar contra un único (email/phone/internalPhone/
+      // invgateUserId) recién acá. Sin `skipDuplicates`, esa sola fila abortaba el `createMany`
+      // entero y con él las demás filas ya aceptadas — rompiendo la promesa de "reporte parcial"
+      // que este método arma con `failed[]`.
+      const idByEmail = await this.prisma.$transaction(
+        async (tx) => {
+          await tx.user.createMany({
+            data: withHashes.map((c) => ({
+              email: c.data.email,
+              firstName: c.data.firstName,
+              lastName: c.data.lastName,
+              phone: c.data.phone || null,
+              internalPhone: c.data.internalPhone || null,
+              invgateUserId: c.data.invgateUserId || null,
+              passwordHash: c.passwordHash,
+            })),
+            skipDuplicates: true,
+          });
+
+          const createdUsers = await tx.user.findMany({
+            where: { email: { in: withHashes.map((c) => c.data.email) } },
+            select: { id: true, email: true },
+          });
+          const idByEmail = new Map(createdUsers.map((u) => [u.email, u.id]));
+
+          // Solo las filas que realmente se insertaron (`idByEmail` las tiene) generan
+          // membresía — una fila que `skipDuplicates` descartó no tiene `User.id` al que
+          // asociarla.
+          const toLink = withHashes.filter((c) => idByEmail.has(c.data.email));
+          if (toLink.length) {
+            await tx.userTenant.createMany({
+              data: toLink.map((c) => ({
+                userId: idByEmail.get(c.data.email)!,
+                tenantId,
+                roleId: dto.defaultRoleId,
+                areaId,
+              })),
+            });
+          }
+
+          return idByEmail;
+        },
+        { timeout: 30000 },
+      );
+
+      for (const c of withHashes) {
+        if (idByEmail.has(c.data.email)) {
+          created.push({
+            email: c.data.email,
+            firstName: c.data.firstName,
+            lastName: c.data.lastName,
+            tempPassword: c.tempPassword,
+          });
+        } else {
+          failed.push({
+            row: c.row,
+            email: c.data.email,
+            reason: 'Ya existe un usuario con esos datos (se creó mientras se procesaba la importación)',
+          });
+        }
+      }
+    }
+
+    this.logger.log(
+      `Importación masiva en tenant ${tenantId}: ${created.length} creados, ${failed.length} con error (de ${dto.rows.length} filas)`,
+    );
+
+    return {
+      summary: { total: dto.rows.length, created: created.length, failed: failed.length },
+      created,
+      failed,
+    };
+  }
+
+  /** Contraseña temporal legible (no se puede usar acento ni cero/O, que se confunden a mano). */
+  private generateTempPassword(): string {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    const bytes = randomBytes(12);
+    let out = '';
+    for (let i = 0; i < 12; i++) out += alphabet[bytes[i] % alphabet.length];
+    return out;
   }
 
   async update(tenantId: string, userId: string, requesterId: string, dto: UpdateUserDto) {
@@ -812,8 +1039,10 @@ export class UsersService {
   ): Promise<boolean> {
     if (isSuper ?? (await this.isSystemSuperUser(userId))) return true;
 
+    // `tenant: { deletedAt: null }` — mismo criterio que TenantGuard: una empresa dada de
+    // baja no cuenta como membresía operable, aunque el UserTenant siga en la base.
     const membership = await this.prisma.userTenant.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
+      where: { userId_tenantId: { userId, tenantId }, tenant: { deletedAt: null } },
       include: {
         role: { select: { permissions: { select: { resource: true, action: true } } } },
       },
@@ -842,8 +1071,10 @@ export class UsersService {
   ) {
     if (await this.isSystemSuperUser(userId)) return;
 
+    // `tenant: { deletedAt: null }` — mismo criterio que TenantGuard: una empresa dada de
+    // baja no cuenta como membresía operable, aunque el UserTenant siga en la base.
     const membership = await this.prisma.userTenant.findUnique({
-      where: { userId_tenantId: { userId, tenantId } },
+      where: { userId_tenantId: { userId, tenantId }, tenant: { deletedAt: null } },
       include: {
         role: { select: { permissions: { select: { resource: true, action: true } } } },
       },

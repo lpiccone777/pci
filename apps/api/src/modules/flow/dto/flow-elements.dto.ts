@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsJSON, IsArray, ValidateNested } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, IsJSON, IsArray, IsNumber, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class FlowNodeDataDto {
@@ -75,6 +75,50 @@ export class FlowNodeDataDto {
 
   @IsOptional()
   contextMessages?: number;
+
+  /**
+   * Nodo `llm_query`: temperature de las llamadas al LLM de este nodo (0-2, default:
+   * cae al `LLM_TEMPERATURE` global de /settings si no se define acá). Se aplica a la
+   * respuesta libre y a `generateLlmQueryQuestion` (redacción de la pregunta cuando
+   * falta una variable) — NO a `extractLlmQueryValues` (la clasificación de si una
+   * variable ya fue dicha), que siempre corre en 0 sin importar este valor: es una
+   * tarea de clasificación, no de redacción, y no debe ser "creativa".
+   */
+  @IsNumber()
+  @IsOptional()
+  temperature?: number;
+
+  /**
+   * Nodo `llm_query` en modo extracción: en vez de mandarle al usuario el texto del
+   * modelo, evalúa una o más variables contra la charla. Las que no estén en el
+   * mensaje se le preguntan al usuario (deteniendo el flujo hasta resolverlas o
+   * hasta que se niegue a darlas, en cuyo caso quedan en "no definido") — ver
+   * ConversationsService, case 'llm_query' / executeLlmQueryExtraction.
+   */
+  @IsArray()
+  @IsOptional()
+  extractVariables?: Array<{
+    /** Nombre de la variable de flowState a setear (ej. "sede" o "{{sede}}"). */
+    variable: string;
+    /** Nombre humano del dato, para el prompt y la pregunta al usuario. Default: variable. */
+    label?: string;
+    /** Universo cerrado de valores válidos — sin esto, el modelo/usuario puede dar cualquier valor. */
+    allowedValues?: string[];
+  }>;
+
+  /** Nodo `llm_query` en modo extracción: cuántas veces preguntarle al usuario un dato antes de darlo por "no definido". */
+  @IsOptional()
+  maxAttempts?: number;
+
+  /** Nodo `llm_query` en modo extracción: a dónde ir si se resolvieron todas las variables con un valor real. */
+  @IsString()
+  @IsOptional()
+  foundTargetNodeId?: string;
+
+  /** Nodo `llm_query` en modo extracción: a dónde ir si alguna variable quedó en "no definido". */
+  @IsString()
+  @IsOptional()
+  missingTargetNodeId?: string;
 
   @IsString()
   @IsOptional()

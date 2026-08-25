@@ -34,3 +34,7 @@ graphify-out/manifest.json
 # Docs internos, no versionar
 docs/*.pptx
 docs/informe-commits-*.md
+
+# Imágenes de WhatsApp/SMS descargadas temporalmente (ver TwilioMediaService),
+# guardadas hasta adjuntarse a un ticket de InvGate — no es contenido del repo.
+apps/api/uploads/

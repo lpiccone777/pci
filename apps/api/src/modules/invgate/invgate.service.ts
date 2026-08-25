@@ -3,6 +3,8 @@ import { AppConfigService } from '../../config/app-config.service';
 
 const API_PREFIX = '/api/v1';
 const TIMEOUT_MS = 15_000;
+/** Adjuntar una imagen tarda más que un POST de JSON/form chico — mismo endpoint, timeout aparte. */
+const UPLOAD_TIMEOUT_MS = 30_000;
 const MAX_ERROR_LEN = 500;
 
 export interface InvgateCatalogEntry {
@@ -35,6 +37,13 @@ export interface CreateIncidentInput {
   title: string;
   description?: string;
   sourceId?: number;
+}
+
+/** Imagen ya descargada y guardada temporalmente (ver `TwilioMediaService`), lista para adjuntar. */
+export interface IncidentAttachment {
+  filename: string;
+  contentType: string;
+  data: Buffer;
 }
 
 export interface UpdateIncidentInput {
@@ -300,40 +309,78 @@ export class InvgateService {
 
   /**
    * Id de InvGate del usuario técnico (`INVGATE_API_USER`), para usarlo como
-   * `creator_id` de los tickets que crea el bot. Se resuelve una sola vez por
-   * proceso — `null` en caché significa "ya se intentó y no se encontró", para no
-   * reintentar la búsqueda en cada ticket si el username no matchea a nadie.
+   * `creator_id` de los tickets que crea el bot. Solo se cachea el ÉXITO — una
+   * vez resuelto, no se vuelve a golpear InvGate en cada ticket. Un fallo (sin
+   * username configurado, InvGate caído, o el username no matchea a nadie) NO
+   * se cachea a propósito: `INVGATE_API_USER` es una Setting hot-reloadable
+   * desde /settings, así que un admin arreglándola tiene que surtir efecto en
+   * el próximo ticket, no recién en el próximo reinicio del proceso.
    */
   async resolveCreatorId(): Promise<number | null> {
     if (this.creatorIdCache !== undefined) return this.creatorIdCache;
     const username = await this.apiUser();
-    if (!username) return (this.creatorIdCache = null);
+    if (!username) return null;
     const user = await this.findUserByUsername(username).catch((err) => {
       this.logger.warn(`No se pudo resolver el usuario técnico de InvGate ('${username}'): ${err.message}`);
       return null;
     });
-    this.creatorIdCache = user?.id ?? null;
-    if (this.creatorIdCache === null) {
+    if (user?.id == null) {
       this.logger.warn(
         `INVGATE_API_USER ('${username}') no matcheó ningún usuario en InvGate — no se pueden crear tickets sin creator_id.`,
       );
+      return null;
     }
+    this.creatorIdCache = user.id;
     return this.creatorIdCache;
   }
 
   // --- Incidentes (tickets) ---------------------------------------------------------
 
-  async createIncident(input: CreateIncidentInput): Promise<InvgateIncident> {
-    return this.post('incident', {
+  /**
+   * A diferencia de `GET incident` (que devuelve el incidente completo con `id`),
+   * `POST incident` responde `{status, info, request_id}` — SIN `id` (confirmado
+   * contra la instancia real 2026-08-20). Sin este mapeo, `incident.id` queda
+   * `undefined` y el ticket local se guarda con `invgateId: "undefined"` (string),
+   * silenciosamente "sincronizado" con nada.
+   *
+   * Adjuntos: confirmado contra la instancia real (2026-08-20) que `incident` (igual
+   * que `incident.comment`) solo acepta archivos si el POST entero va como
+   * `multipart/form-data` con cada archivo en un campo `attachments[]` — mandado
+   * como el resto de los writes (`application/x-www-form-urlencoded`, campo
+   * `attachments` con un id/JSON) el archivo se descarta en silencio (devuelve 200
+   * OK igual, pero `attached_files`/`attachments` queda vacío). Sin adjuntos, sigue
+   * yendo form-urlencoded como siempre — no hay motivo para cambiarlo si no hace falta.
+   */
+  /**
+   * `description`/`comment` de InvGate son campos HTML (editor WYSIWYG del lado de
+   * InvGate, no texto plano) — un `\n` literal no genera salto de línea ahí, queda
+   * todo corrido en una sola línea. Solo se usa para lo que viaja a la API; no toca
+   * `Ticket.description` en nuestra base, que sigue siendo texto plano con `\n` real.
+   */
+  private toInvgateHtml(text: string): string {
+    return text.replace(/\r\n|\r|\n/g, '<br>');
+  }
+
+  async createIncident(input: CreateIncidentInput, attachments: IncidentAttachment[] = []): Promise<InvgateIncident> {
+    const fields = {
       creator_id: input.creatorId,
       customer_id: input.customerId,
       category_id: input.categoryId,
       priority_id: input.priorityId,
       type_id: input.typeId,
       title: input.title,
-      description: input.description,
+      description: input.description ? this.toInvgateHtml(input.description) : input.description,
       source_id: input.sourceId,
-    }) as Promise<InvgateIncident>;
+    };
+    const raw = (
+      attachments.length ? await this.postMultipart('incident', fields, attachments) : await this.post('incident', fields)
+    ) as { id?: number; request_id?: number; [key: string]: unknown };
+
+    const id = raw.id ?? raw.request_id;
+    if (id === undefined) {
+      throw new Error(`InvGate no devolvió un id de incidente creado: ${JSON.stringify(raw)}`);
+    }
+    return { ...raw, id } as InvgateIncident;
   }
 
   /**
@@ -349,6 +396,7 @@ export class InvgateService {
     title: string,
     description?: string,
     fields: TicketFieldNames = {},
+    attachments: IncidentAttachment[] = [],
   ): Promise<InvgateIncident | null> {
     const creatorId = await this.resolveCreatorId();
     if (!creatorId) return null; // ya logueado en resolveCreatorId()
@@ -370,16 +418,19 @@ export class InvgateService {
       return null;
     }
 
-    return this.createIncident({
-      creatorId,
-      customerId,
-      categoryId: categoryId!,
-      priorityId: priorityId!,
-      typeId: typeId!,
-      sourceId,
-      title,
-      description,
-    });
+    return this.createIncident(
+      {
+        creatorId,
+        customerId,
+        categoryId: categoryId!,
+        priorityId: priorityId!,
+        typeId: typeId!,
+        sourceId,
+        title,
+        description,
+      },
+      attachments,
+    );
   }
 
   async getIncident(id: number | string, opts: { includeComments?: boolean } = {}): Promise<InvgateIncident> {
@@ -394,7 +445,7 @@ export class InvgateService {
     return this.put('incident', {
       id,
       title: input.title,
-      description: input.description,
+      description: input.description ? this.toInvgateHtml(input.description) : input.description,
       category_id: input.categoryId,
       priority_id: input.priorityId,
       type_id: input.typeId,
@@ -410,7 +461,7 @@ export class InvgateService {
   ): Promise<unknown> {
     return this.post('incident.comment', {
       request_id: requestId,
-      comment,
+      comment: this.toInvgateHtml(comment),
       author_id: authorId,
       customer_visible: opts.customerVisible ?? true,
     });
@@ -435,6 +486,28 @@ export class InvgateService {
   private async post(endpoint: string, data: Record<string, unknown> = {}): Promise<unknown> {
     const url = new URL(`${await this.baseUrl()}${API_PREFIX}/${endpoint}`);
     return this.send('POST', url, this.formBody(data));
+  }
+
+  /**
+   * Único write que necesita `multipart/form-data` en vez del form-urlencoded del resto de
+   * la API — ver el comentario en `createIncident`. `fetch` arma el boundary solo cuando el
+   * body es un `FormData` real; por eso `send()` NO le pone `Content-Type` a mano acá (a
+   * diferencia de `post`/`put`) — ese header sin el boundary correcto invalida el multipart entero.
+   */
+  private async postMultipart(
+    endpoint: string,
+    fields: Record<string, unknown>,
+    attachments: IncidentAttachment[],
+  ): Promise<unknown> {
+    const url = new URL(`${await this.baseUrl()}${API_PREFIX}/${endpoint}`);
+    const form = new FormData();
+    for (const [key, value] of Object.entries(this.clean(fields))) {
+      form.append(key, String(value));
+    }
+    for (const att of attachments) {
+      form.append('attachments[]', new Blob([new Uint8Array(att.data)], { type: att.contentType }), att.filename);
+    }
+    return this.send('POST', url, form, UPLOAD_TIMEOUT_MS);
   }
 
   private async put(endpoint: string, data: Record<string, unknown> = {}): Promise<unknown> {
@@ -464,7 +537,12 @@ export class InvgateService {
     return out;
   }
 
-  private async send(method: string, url: URL, body?: URLSearchParams): Promise<unknown> {
+  private async send(
+    method: string,
+    url: URL,
+    body?: URLSearchParams | FormData,
+    timeoutMs: number = TIMEOUT_MS,
+  ): Promise<unknown> {
     let res: Response;
     try {
       res = await fetch(url, {
@@ -472,10 +550,10 @@ export class InvgateService {
         headers: {
           Authorization: await this.authHeader(),
           Accept: 'application/json',
-          ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+          ...(body instanceof URLSearchParams ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
         },
         body,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new Error(`No se pudo contactar la API de InvGate: ${(err as Error).message}`);

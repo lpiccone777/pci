@@ -6,6 +6,7 @@ import { TwilioWebhookController } from './twilio-webhook.controller';
 import { GupshupWhatsAppService } from './gupshup-whatsapp.service';
 import { GupshupWebhookController } from './gupshup-webhook.controller';
 import { BrokerModule } from '../broker/broker.module';
+import { MediaModule } from '../../common/media.module';
 
 /**
  * Agrupa los tres conectores de WhatsApp (Meta, Twilio y Gupshup) más sus webhooks. Los tres
@@ -15,7 +16,7 @@ import { BrokerModule } from '../broker/broker.module';
  * cuál URL se configuró del lado de Meta/Twilio/Gupshup.
  */
 @Module({
-  imports: [BrokerModule],
+  imports: [BrokerModule, MediaModule],
   controllers: [WhatsAppWebhookController, TwilioWebhookController, GupshupWebhookController],
   providers: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],
   exports: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],

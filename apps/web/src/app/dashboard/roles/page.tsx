@@ -1158,7 +1158,7 @@ function UsersModal({ role, onClose }: { role: RoleRow; onClose: () => void }) {
             {people && people.length > 0 ? 'El rol se cambia desde cada usuario.' : ''}
           </span>
           <button
-            onClick={() => router.push('/dashboard/users')}
+            onClick={() => router.push('/dashboard/users/')}
             className="text-gray-600 px-4 py-2 rounded hover:bg-gray-100 whitespace-nowrap"
           >
             Ir a Usuarios
