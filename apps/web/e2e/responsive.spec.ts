@@ -54,7 +54,7 @@ test('FE-RSP-03: el editor de flujos en pantalla chica mantiene canvas, paleta y
 }) => {
   await page.setViewportSize({ width: 700, height: 900 });
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
 
   // Paleta de nodos.
   await expect(page.getByRole('heading', { name: 'Nodos' })).toBeVisible();

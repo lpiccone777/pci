@@ -67,7 +67,7 @@ test('FE-LOG-01: login correcto con OTP deshabilitado guarda el token y entra al
   await page.locator('#login-password').fill(SEED_ADMIN.password);
   await page.getByRole('button', { name: 'Ingresar' }).click();
 
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
   expect(await page.evaluate(() => localStorage.getItem('token'))).toBeTruthy();
 });
 
@@ -83,7 +83,7 @@ test('FE-LOG-02: login con credenciales incorrectas muestra el error del backend
 
   // El backend responde 401 "Credenciales inválidas"; la pantalla lo muestra en el banner rojo.
   await expect(page.getByText('Credenciales inválidas')).toBeVisible();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
   expect(await page.evaluate(() => localStorage.getItem('token'))).toBeNull();
 });
 
@@ -100,7 +100,7 @@ test('FE-LOG-03: un login que responde otp_required pasa a la vista de OTP con e
 
   await expect(page.getByText('Se envió un código de verificación a tu email')).toBeVisible();
   await expect(page.locator('#login-otp')).toBeVisible();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
 });
 
 test('FE-LOG-04: ingresar el código OTP correcto verifica, guarda el token y entra al panel', async ({
@@ -124,7 +124,7 @@ test('FE-LOG-04: ingresar el código OTP correcto verifica, guarda el token y en
   await page.locator('#login-otp').fill(code);
   await page.getByRole('button', { name: 'Verificar' }).click();
 
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
   expect(await page.evaluate(() => localStorage.getItem('token'))).toBeTruthy();
 });
 
@@ -177,7 +177,7 @@ test('FE-LOG-06: el botón queda deshabilitado mientras la request está en curs
   await expect(pending).toBeDisabled();
 
   // Se libera y termina entrando al panel.
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 });
 
 test('FE-LOG-07: el campo OTP acepta hasta 8 dígitos (OTP_CODE_LENGTH configurable)', async ({

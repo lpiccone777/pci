@@ -61,7 +61,7 @@ function flowCard(page: Page, name: string) {
 
 /** Abre el editor de un flujo y espera a que ReactFlow monte. */
 async function openEditor(page: Page, flowId: string) {
-  await page.goto(`/dashboard/flows/${flowId}`);
+  await page.goto(`/dashboard/flows/edit/?id=${flowId}`);
   await expect(page.locator('.react-flow')).toBeVisible();
 }
 
@@ -138,7 +138,7 @@ test('FE-FLW-03: "Default" marca el flujo por defecto y se refleja en la card', 
 
 test('FE-FLW-04: el editor de un flujo nuevo arranca con un nodo start', async ({ page }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('.react-flow')).toBeVisible();
 
   await expect(page.locator('.react-flow__node-start')).toBeVisible();
@@ -147,7 +147,7 @@ test('FE-FLW-04: el editor de un flujo nuevo arranca con un nodo start', async (
 
 test('FE-FLW-08: seleccionar un nodo abre el panel con sus campos propios', async ({ page }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('.react-flow__node-start')).toBeVisible();
 
   await page.locator('.react-flow__node-start').click();
@@ -185,7 +185,7 @@ test('FE-FLW-10: el header lista las fuentes de verdad activas del tenant', asyn
   const source = await createContextSource(admin, { tenantId: admin.systemTenantId, type: 'n8n' });
 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('#flow-context-source')).toBeVisible();
   await expect(page.locator('#flow-context-source')).toContainText(source.name);
 });
@@ -199,7 +199,7 @@ test('FE-FLW-11: el modal "Empresas y roles" arma el acordeón y avisa cuando un
   await createRole(admin, { tenantId: t2.id, name: 'Ventas', permissions: ['flows:read'] });
 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('.react-flow')).toBeVisible();
 
   await page.getByRole('button', { name: /Empresas y roles/ }).click();
@@ -225,7 +225,7 @@ test('FE-FLW-12: el checkbox "Inicio" está deshabilitado mientras no haya empre
   page,
 }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('.react-flow')).toBeVisible();
 
   const inicio = page.locator('label', { hasText: 'Inicio' }).locator('input[type="checkbox"]');
@@ -240,7 +240,7 @@ test('FE-FLW-13: guardar un flujo nuevo hace POST y uno existente PATCH + assign
 
   // --- Nuevo: POST /flows ---
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('.react-flow')).toBeVisible();
   await page.getByPlaceholder('Nombre del flujo').fill(`Flujo nuevo ${Date.now()}`);
   const [postReq] = await Promise.all([
@@ -266,7 +266,7 @@ test('FE-FLW-13: guardar un flujo nuevo hace POST y uno existente PATCH + assign
 
 test('FE-FLW-14: guardar sin empresas asignadas pide confirmación', async ({ page }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
-  await page.goto('/dashboard/flows/new');
+  await page.goto('/dashboard/flows/edit/?id=new');
   await expect(page.locator('.react-flow')).toBeVisible();
   await page.getByPlaceholder('Nombre del flujo').fill(`Flujo ${Date.now()}`);
 
@@ -488,7 +488,7 @@ test.fail(
     await page.waitForLoadState('domcontentloaded');
 
     // SEGURO: debería haber vuelto al listado. Hoy sigue en el editor del flujo.
-    await expect(page).toHaveURL(/\/dashboard\/flows$/);
+    await expect(page).toHaveURL(/\/dashboard\/flows\/?$/);
   },
 );
 
@@ -522,7 +522,7 @@ test.fail(
     const respPromise = page.waitForResponse((r) =>
       r.url().includes('/invgate/catalog/priorities'),
     );
-    await page.goto('/dashboard/flows/new');
+    await page.goto('/dashboard/flows/edit/?id=new');
     const resp = await respPromise;
 
     // SEGURO: no debería ser 500. Hoy lo es.

@@ -68,7 +68,7 @@ test('FE-SEC-02: el JWT vive en localStorage (expuesto a XSS) — se documenta e
 }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 
   // El token queda accesible desde JS de la página: es un JWT (tres segmentos) en `localStorage`.
   // Relacionado con SEC-06 (el refresh de 7 días también sirve como access). Sólo se documenta.
@@ -105,7 +105,7 @@ test('FE-SEC-04: la baja del usuario durante la sesión hace que /auth/me falle 
 
   await injectSession(page, session);
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 
   // Baja durante la sesión (por la API, como lo haría otro operador).
   const userId = await findUserIdByEmail(admin, user.email);
@@ -114,7 +114,7 @@ test('FE-SEC-04: la baja del usuario durante la sesión hace que /auth/me falle 
 
   // Al recargar, /auth/me responde 401 (auth.service.me filtra deletedAt) → logout + /login.
   await page.reload();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
   await page.waitForFunction(() => localStorage.getItem('token') === null);
 });
 

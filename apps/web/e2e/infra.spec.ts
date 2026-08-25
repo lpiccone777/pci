@@ -52,12 +52,12 @@ async function sessionForUser(email: string, password: string, activeTenant: str
 
 test('FE-INF-01: entrar a /dashboard sin sesión redirige a /login', async ({ page }) => {
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
 });
 
 test('FE-INF-02: entrar a la raíz redirige a /login', async ({ page }) => {
   await page.goto('/');
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
 });
 
 test('FE-INF-03: recargar con sesión válida re-consulta /auth/me y mantiene la sesión', async ({
@@ -65,7 +65,7 @@ test('FE-INF-03: recargar con sesión válida re-consulta /auth/me y mantiene la
 }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 
   const authMeCalls: string[] = [];
   page.on('request', (r) => {
@@ -73,7 +73,7 @@ test('FE-INF-03: recargar con sesión válida re-consulta /auth/me y mantiene la
   });
 
   await page.reload();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
   await expect.poll(() => authMeCalls.length).toBeGreaterThan(0);
 });
 
@@ -84,7 +84,7 @@ test('FE-INF-04: un token inválido al montar cierra la sesión y manda a /login
   await page.goto('/dashboard');
 
   // GET /auth/me responde 401 → apiFetch/logout limpian localStorage y redirigen.
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
   // `waitForFunction` corre dentro de la página y sobrevive a la navegación (a diferencia de un
   // `page.evaluate` suelto, que puede pegarle a un contexto ya destruido por el redirect).
   await page.waitForFunction(() => localStorage.getItem('token') === null);
@@ -100,7 +100,7 @@ test('FE-INF-05: toda request del panel lleva Authorization y X-Tenant-Id (aun c
 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 
   await expect.poll(() => authMeHeaders.length).toBeGreaterThan(0);
   const headers = authMeHeaders[0];
@@ -228,7 +228,7 @@ test('FE-INF-11: cerrar sesión limpia el almacenamiento y redirige a /login', a
 
   await page.getByRole('button', { name: 'Cerrar sesión' }).click();
 
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
   await page.waitForFunction(
     () => localStorage.getItem('token') === null && localStorage.getItem('activeTenant') === null,
   );
@@ -293,7 +293,7 @@ test('FE-INF-14: X-Access-Token de una respuesta autenticada pisa el token de lo
 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 
   // El interceptor de sesión deslizante reemite el token en cada request autenticado; apiFetch
   // lo guarda en localStorage.token, así que este pasa a valer lo que vino en el header.
@@ -308,7 +308,7 @@ test('FE-INF-15: un 401 con token presente cierra la sesión y redirige de inmed
 }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
 
   // El listado de Usuarios responde 401 (sesión caída del lado servidor) con el token puesto.
   // Ruta scopeada a la API para no interceptar la navegación del documento /dashboard/users.
@@ -327,7 +327,7 @@ test('FE-INF-15: un 401 con token presente cierra la sesión y redirige de inmed
   // El redirect a /login ante un 401 con token lo dispara SOLO clearSession(): alcanza como prueba
   // de que se cerró la sesión. El vaciado del localStorage se verifica en FE-INF-11 (con networkidle,
   // para no chocar con la carrera de la sesión deslizante).
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\/?$/);
 });
 
 test.fail(
@@ -341,7 +341,7 @@ test.fail(
 
     await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
     await page.goto('/dashboard/tenants');
-    await expect(page).toHaveURL(/\/dashboard\/tenants$/);
+    await expect(page).toHaveURL(/\/dashboard\/tenants\/?$/);
 
     const selector = page.locator('aside select');
     await expect(selector.locator(`option[value="${tenant.id}"]`)).toBeAttached();
@@ -352,6 +352,6 @@ test.fail(
     // de contexto destruido durante el reload.
     await page.waitForFunction((id) => localStorage.getItem('activeTenant') === id, tenant.id);
     // Lo esperado (hoy NO implementado): haber sido redirigido fuera de la pantalla solo-sistema.
-    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page).toHaveURL(/\/dashboard\/?$/);
   },
 );

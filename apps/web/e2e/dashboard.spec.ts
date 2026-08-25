@@ -30,7 +30,7 @@ test('FE-DASH-01: el home muestra las cuatro tarjetas de resumen con el placehol
 }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/dashboard');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
   await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible();
 
   // Las tarjetas viven en la grilla del contenido, no en el sidebar (donde "Usuarios"/"Tenants"
