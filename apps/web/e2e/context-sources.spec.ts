@@ -249,6 +249,10 @@ test('FE-CS-08: los botones de ABM de Conexiones aparecen sólo con el permiso c
   const creator = await createUserWithPermissions(admin, ['context-sources:read', 'context-sources:create'], {
     tenantId: tenant.id,
   });
+  // Limpiar la sesión del reader antes de inyectar la del creator: `injectSession` asume que /login
+  // monta SIN token (si no, la pantalla redirige antes de setear el nuevo y la sesión no cambia,
+  // quedando en /login). Mismo recaudo que FE-CS-10 al cambiar de sesión en la misma página.
+  await page.evaluate(() => localStorage.clear());
   await injectSession(page, await sessionForUser(creator.email, creator.password, tenant.id));
   await page.goto('/dashboard/context-sources');
   await expect(page.getByRole('heading', { name: 'Nueva fuente de verdad' })).toBeVisible();

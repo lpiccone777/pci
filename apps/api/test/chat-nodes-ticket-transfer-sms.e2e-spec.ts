@@ -5,16 +5,22 @@
  * Vía: `POST /conversations/simulate` (mismo patrón que `chat-start.e2e-spec.ts`), salvo
  * CHAT-N-TKC-04 que llama a `ConversationsService.handleMessage` directo (ver el comentario en
  * ese test — evita colgar 300s esperando una respuesta RPC que, ante una excepción no
- * capturada, `BrokerService` nunca llega a publicar).
+ * capturada, `BrokerService` nunca llega a publicar) y CHAT-N-TKC-07a que hace lo mismo por otro
+ * motivo: es la única forma de inyectar `attachments` en el mensaje entrante (los produce el
+ * webhook de Twilio; `simulateIncomingMessage` no los reenvía).
  *
  * Fronteras mockeadas:
  * - `LlmService` → `FakeLlmService` (ninguno de estos flujos debería necesitarlo: los mensajes
  *   de prueba evitan a propósito las palabras de `CANCEL_HINT_WORDS`, así que no se dispara
  *   ningún clasificador).
  * - `EmailService` → grabador (`t.email`, por default de `createTestApp`).
- * - InvGate (CHAT-N-TKC-05/06, CHAT-N-TKQ-04) → `fetch` global mockeado con `installFetchMock`
- *   y un router propio (`makeInvgateMock`) que simula la API real de InvGate contra la que
- *   pega `InvgateService`.
+ * - InvGate (CHAT-N-TKC-05/06/07a, CHAT-N-TKQ-04/05a) → `fetch` global mockeado con
+ *   `installFetchMock` y un router propio (`makeInvgateMock`) que simula la API real de InvGate
+ *   contra la que pega `InvgateService`. CHAT-N-TKC-07a envuelve ese router para contar los
+ *   `attachments[]` del multipart de alta.
+ * - Adjuntos (CHAT-N-TKC-07a/07b): archivos reales en un directorio temporal propio, que es lo
+ *   que el webhook de Twilio ya habría descargado. No se mockea el filesystem: el motor los lee,
+ *   los borra y (07b) el cron de retención de `TwilioMediaService` los limpia de verdad.
  * - `BrokerService.publish` (nodo `sms`) → spy PASSTHROUGH (`jest.spyOn`, sin
  *   `mockImplementation`): dejamos que el publish real ocurra (para no vaciar el test de
  *   sentido) y solo observamos con qué argumentos se llamó. Suscribir un consumer propio a
@@ -29,8 +35,9 @@
  * nodo), documentado como límite conocido del código. Se restaura inmediatamente después.
  *
  * Invertidos (`it.failing`, comportamiento SEGURO que hoy no existe):
- * - CHAT-N-TKQ-03 (SEC-08): `ticket_query` de un ticket de otro tenant no debería devolverlo.
  * - CHAT-N-SMS-04 (SEC-18): `sms` con un recipient de otra empresa no debería mandarle nada.
+ *
+ * (CHAT-N-TKQ-03 / SEC-08 ya se cerró: `ticket_query` scopea por tenant → test normal, no invertido.)
  */
 import { LlmService } from '../src/modules/llm/llm.service';
 import { BrokerService } from '../src/modules/broker/broker.service';
@@ -54,6 +61,7 @@ import {
   startNode,
   endNode,
   variableNode,
+  inputNode,
   ticketCreateNode,
   ticketQueryNode,
   transferAgentNode,
@@ -62,6 +70,11 @@ import {
   FlowNode,
   FlowEdge,
 } from './support';
+import { TwilioMediaService } from '../src/common/twilio-media.service';
+import { stripArgentinaMobileNine } from '../src/common/phone.util';
+import { mkdtemp, writeFile, stat, utimes, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 /** Catálogo mínimo que arma `makeInvgateMock` para simular la API real de InvGate. */
 interface InvgateMockCatalog {
@@ -135,6 +148,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
   let llm: FakeLlmService;
   let broker: BrokerService;
   let service: ConversationsService;
+  let media: TwilioMediaService;
 
   let tenantTkc: { id: string };
   let tenantTrf: { id: string };
@@ -170,6 +184,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     });
     broker = t.moduleRef.get(BrokerService);
     service = t.moduleRef.get(ConversationsService);
+    media = t.moduleRef.get(TwilioMediaService);
 
     tenantTkc = await createTenant(t.prisma, { slug: uniqueSlug('tkc') });
     tenantTrf = await createTenant(t.prisma, { slug: uniqueSlug('trf') });
@@ -191,6 +206,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     await deleteSetting(t.prisma, 'INVGATE_API_URL');
     await deleteSetting(t.prisma, 'INVGATE_API_USER');
     await deleteSetting(t.prisma, 'INVGATE_API_KEY');
+    await deleteSetting(t.prisma, 'MEDIA_STORAGE_DIR');
   });
 
   // ---------------------------------------------------------------------------------------
@@ -340,7 +356,10 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
             { id: 2, name: 'Resuelto' },
           ],
           creatorIdByUsername: { chatbot_test: 42 },
-          customerIdByPhone: { [phone]: 777 },
+          // InvGate guarda el teléfono REAL (sin el 9 de móvil de WhatsApp): el código
+          // consulta `users.by` con `stripArgentinaMobileNine(phone)`, así que el mock —que
+          // representa la BD de InvGate— tiene que indexar por ese mismo número normalizado.
+          customerIdByPhone: { [stripArgentinaMobileNine(phone)]: 777 },
           initialStatusId: 1,
         });
         const fetchMock = installFetchMock(mock.router);
@@ -390,6 +409,141 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
         fetchMock.restore();
       }
     });
+
+    it(
+      'CHAT-N-TKC-07a: las imágenes se acumulan en flowState.pendingAttachments al llegar (placeholder de mensaje solo-imagen) y ticket_create las consume: las lee, las borra del disco y viajan a InvGate',
+      async () => {
+        // Se llama a `handleMessage` (privado) directo, no vía /conversations/simulate: es la
+        // única forma de inyectar `attachments` en el mensaje entrante (los produce el webhook de
+        // Twilio al descargar la media — frontera externa; `simulateIncomingMessage` no los
+        // reenvía). Mismo recurso que CHAT-N-TKC-04: el motor NO se mockea, solo se lo invoca
+        // con la forma de mensaje que el canal real ya arma.
+        const { phone, user } = await setupKnownFlow(
+          tenantTkc.id,
+          'TKC-07A',
+          [
+            startNode('s'),
+            // `input` deja el flujo esperando: el primer mensaje solo-imagen NO llega todavía
+            // a `ticket_create`, así se ve la acumulación antes de la consumición.
+            inputNode('ip', { text: 'Mandá las imágenes y contame qué pasa', variableName: 'detalle' }),
+            // category/priority/type por nombre: sin ellos resolubles, `createTicketForChat`
+            // devuelve null antes de crear el incidente (y los adjuntos no viajarían).
+            ticketCreateNode('tc', { subject: 'Falla con adjuntos', category: 'Redes', priority: 'Alta', ticketType: 'Incidente' }),
+            endNode('e'),
+          ],
+          [edge('s', 'ip', 'known'), edge('ip', 'tc'), edge('tc', 'e')],
+        );
+
+        await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
+        await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
+        await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
+
+        const invg = makeInvgateMock({
+          categories: [{ id: 501, name: 'Redes' }],
+          priorities: [{ id: 2, name: 'Alta' }],
+          types: [{ id: 7, name: 'Incidente' }],
+          statuses: [{ id: 1, name: 'Abierto' }],
+          creatorIdByUsername: { chatbot_test: 42 },
+          // InvGate guarda el teléfono REAL (sin el 9 de móvil de WhatsApp): el código
+          // consulta `users.by` con `stripArgentinaMobileNine(phone)`, así que el mock —que
+          // representa la BD de InvGate— tiene que indexar por ese mismo número normalizado.
+          customerIdByPhone: { [stripArgentinaMobileNine(phone)]: 777 },
+          initialStatusId: 1,
+        });
+        // Router envolvente: sobre el POST de alta cuenta los `attachments[]` del multipart
+        // (`InvgateService.postMultipart` arma un FormData real, ver invgate.service.ts) para
+        // confirmar que los adjuntos efectivamente viajaron.
+        let postedAttachmentCount = -1;
+        const router: FetchRouter = (url, init) => {
+          const u = new URL(url);
+          const path = u.pathname.replace(/^\/api\/v1\//, '');
+          if ((init?.method || 'GET').toUpperCase() === 'POST' && path === 'incident') {
+            const body = init?.body;
+            postedAttachmentCount = body instanceof FormData ? body.getAll('attachments[]').length : 0;
+          }
+          return invg.router(url, init);
+        };
+        const fetchMock = installFetchMock(router);
+
+        // Los archivos que el webhook ya habría descargado y guardado en disco (StoredAttachment).
+        const mediaDir = await mkdtemp(join(tmpdir(), 'pci-tkc07a-'));
+        const att1 = { path: join(mediaDir, 'foto-1.png'), filename: 'foto-1.png', contentType: 'image/png' };
+        const att2 = { path: join(mediaDir, 'foto-2.png'), filename: 'foto-2.png', contentType: 'image/png' };
+        await writeFile(att1.path, Buffer.from('bytes-de-foto-1'));
+        await writeFile(att2.path, Buffer.from('bytes-de-foto-2'));
+
+        const callHandle = (attachments: unknown[]) =>
+          (service as unknown as { handleMessage: (msg: unknown) => Promise<string> }).handleMessage({
+            pattern: 'message.received',
+            data: { from: phone, body: '', attachments }, // body vacío = mensaje solo-imagen
+            tenantId: tenantTkc.id,
+            timestamp: new Date().toISOString(),
+          });
+
+        try {
+          // --- Turno 1: primera imagen en una charla nueva. Se acumula, el flujo queda parado
+          // en el nodo `input` (todavía no toca ticket_create). ---
+          await callHandle([att1]);
+
+          const conv = await t.prisma.conversation.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+          const state1 = conv!.flowState as Record<string, any>;
+          expect(state1.pendingAttachments).toHaveLength(1); // acumulado, NO consumido
+
+          const msg1 = await t.prisma.message.findFirst({
+            where: { conversationId: conv!.id, senderType: 'user' },
+            orderBy: { createdAt: 'desc' },
+          });
+          expect(msg1!.content).toBe('[1 imagen(es) adjunta(s)]'); // placeholder del mensaje solo-imagen
+
+          expect(await t.prisma.ticket.count({ where: { userId: user.id, tenantId: tenantTkc.id } })).toBe(0);
+          await expect(stat(att1.path)).resolves.toBeDefined(); // sin consumir: sigue en disco
+
+          // --- Turno 2: segunda imagen. Se acumula ([att1, att2]) y el `input` avanza a
+          // ticket_create, que consume ambos adjuntos. ---
+          const reply = await callHandle([att2]);
+          expect(reply).toContain('creado. Un agente te contactará pronto.');
+
+          const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+          expect(ticket).not.toBeNull();
+          expect(ticket!.invgateId).not.toBeNull(); // sincronizó a InvGate
+          expect(postedAttachmentCount).toBe(2); // los 2 adjuntos viajaron en el multipart
+
+          const convAfter = await t.prisma.conversation.findUnique({ where: { id: conv!.id } });
+          // El flujo llegó al nodo `end`, y `closeConversation` resetea TODO el flowState a null
+          // (no solo vacía pendingAttachments) — ver conversations.service.ts. Que los adjuntos se
+          // consumieron de verdad lo prueban `postedAttachmentCount === 2` (viajaron a InvGate) y el
+          // borrado de disco de abajo; acá el estado limpio confirma que no quedaron reservados.
+          expect(convAfter!.flowState).toBeNull();
+          await expect(stat(att1.path)).rejects.toThrow(); // loadAttachments los borró del disco
+          await expect(stat(att2.path)).rejects.toThrow();
+        } finally {
+          fetchMock.restore();
+          await rm(mediaDir, { recursive: true, force: true });
+        }
+      },
+      20000,
+    );
+
+    it('CHAT-N-TKC-07b: sin ticket que los consuma, el cron de retención (cleanupExpired) borra los adjuntos de más de 10 min y conserva los recientes', async () => {
+      const mediaDir = await mkdtemp(join(tmpdir(), 'pci-tkc07b-'));
+      await setSetting(t.prisma, 'MEDIA_STORAGE_DIR', mediaDir); // el cron barre este directorio
+      try {
+        const stale = join(mediaDir, 'sin-usar-vieja.png');
+        const fresh = join(mediaDir, 'sin-usar-nueva.png');
+        await writeFile(stale, Buffer.from('vieja'));
+        await writeFile(fresh, Buffer.from('nueva'));
+        const old = new Date(Date.now() - 11 * 60 * 1000); // 11 min: pasó la retención de 10
+        await utimes(stale, old, old);
+
+        await media.cleanupExpired();
+
+        await expect(stat(stale)).rejects.toThrow(); // borrada: nadie la consumió y venció
+        await expect(stat(fresh)).resolves.toBeDefined(); // reciente: se conserva
+      } finally {
+        await deleteSetting(t.prisma, 'MEDIA_STORAGE_DIR');
+        await rm(mediaDir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------------------
@@ -424,7 +578,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       expect(res.body.reply).toContain('No encontré el ticket solicitado.');
     });
 
-    it.failing('CHAT-N-TKQ-03: una variable que apunta a un ticket de OTRO tenant no debería devolverlo (SEC-08) @invertido', async () => {
+    it('CHAT-N-TKQ-03: una variable que apunta a un ticket de OTRO tenant no lo devuelve (SEC-08 cerrado)', async () => {
       const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('tkc-other') });
       const owner = await createUser(t.prisma, { email: uniqueEmail('owner-other'), phone: uniquePhone(), firstName: 'Owner' });
       const foreignTicket = await t.prisma.ticket.create({
@@ -451,12 +605,10 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
 
       const res = await simulate(phone, tenantTkc.id, 'quiero ver el ticket');
 
-      // Comportamiento SEGURO esperado: el motor debería filtrar por tenant y no encontrar nada.
-      // Hoy `ticket.findUnique({ where: { id } })` (executeNode, case 'ticket_query') no filtra
-      // por tenantId, así que devuelve el ticket de la otra empresa con su subject real — este
-      // assert falla contra el código actual y `it.failing` lo marca verde. Cuando se agregue el
-      // filtro de tenant, este test empieza a pasar de verdad y `it.failing` grita para sacar el
-      // marcador.
+      // Comportamiento SEGURO ya implementado: `ticket_query` usa
+      // `ticket.findFirst({ where: { tenantId, OR: [{ id }, { invgateId }] } })`, scopeado por
+      // empresa, así que el ticket de la otra empresa no aparece y responde "no encontrado".
+      // Cierra SEC-08 (antes era `ticket.findUnique({ where: { id } })` sin filtro de tenant).
       expect(res.body.reply).toContain('No encontré el ticket solicitado.');
     });
 
@@ -496,13 +648,103 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       try {
         const res = await simulate(phone, tenantTkc.id, 'quiero el estado de mi ticket');
         expect(res.status).toBe(201);
-        expect(res.body.reply).toContain(`Ticket #${ticket.id}: Ticket ya sincronizado con InvGate - Estado: open`);
+        // El display prefiere `invgateId ?? id` (coherente con CHAT-N-TKQ-05a/05b): el ticket
+        // ya tiene invgateId '4242', así que se muestra #4242, no el cuid local.
+        expect(res.body.reply).toContain(`Ticket #${ticket.invgateId}: Ticket ya sincronizado con InvGate - Estado: open`);
 
         const refreshed = await t.prisma.ticket.findUnique({ where: { id: ticket.id } });
         expect(refreshed!.status).toBe('open'); // sin cambios: InvGate no respondió, se mantuvo el local
       } finally {
         fetchMock.restore();
       }
+    });
+
+    it(
+      'CHAT-N-TKQ-05a: al sincronizar, lastTicketId queda en el número real de InvGate; ticket_query lo resuelve por invgateId y muestra #invgateId (no el cuid)',
+      async () => {
+        const { phone, user } = await setupKnownFlow(
+          tenantTkc.id,
+          'TKQ-05A',
+          [
+            startNode('s'),
+            ticketCreateNode('tc', { subject: 'Sincroniza con InvGate', category: 'Redes', priority: 'Alta', ticketType: 'Incidente' }),
+            ticketQueryNode('tq', {}), // sin ticketIdVariable → usa flowState.lastTicketId (= número de InvGate)
+            endNode('e'),
+          ],
+          [edge('s', 'tc', 'known'), edge('tc', 'tq'), edge('tq', 'e')],
+        );
+
+        await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
+        await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
+        await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
+
+        const mock = makeInvgateMock({
+          categories: [{ id: 501, name: 'Redes' }],
+          priorities: [{ id: 2, name: 'Alta' }],
+          types: [{ id: 7, name: 'Incidente' }],
+          statuses: [{ id: 1, name: 'Abierto' }],
+          creatorIdByUsername: { chatbot_test: 42 },
+          // InvGate guarda el teléfono REAL (sin el 9 de móvil de WhatsApp): el código
+          // consulta `users.by` con `stripArgentinaMobileNine(phone)`, así que el mock —que
+          // representa la BD de InvGate— tiene que indexar por ese mismo número normalizado.
+          customerIdByPhone: { [stripArgentinaMobileNine(phone)]: 777 },
+          initialStatusId: 1,
+        });
+        const fetchMock = installFetchMock(mock.router);
+
+        try {
+          const res = await simulate(phone, tenantTkc.id, 'necesito soporte');
+          expect(res.status).toBe(201);
+
+          const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+          expect(ticket!.invgateId).not.toBeNull();
+          expect(ticket!.invgateId).not.toBe(ticket!.id); // el número de InvGate no es el cuid local
+
+          // ticket_create mostró el número de InvGate y dejó lastTicketId en ese número; ticket_query
+          // lo tomó, resolvió el ticket por la rama `invgateId` del OR y volvió a mostrar #invgateId.
+          expect(res.body.reply).toContain(`Ticket #${ticket!.invgateId} creado`);
+          expect(res.body.reply).toContain(`Ticket #${ticket!.invgateId}: Sincroniza con InvGate - Estado: Abierto`);
+          expect(res.body.reply).not.toContain(ticket!.id); // el cuid interno nunca se le muestra al usuario
+        } finally {
+          fetchMock.restore();
+        }
+      },
+      20000,
+    );
+
+    it('CHAT-N-TKQ-05b: ticket_query también acepta el cuid local (rama OR {id}) y sigue mostrando #invgateId', async () => {
+      const owner = await createUser(t.prisma, { email: uniqueEmail('tkq05b'), phone: uniquePhone(), firstName: 'Owner' });
+      const ticket = await t.prisma.ticket.create({
+        data: {
+          userId: owner.id,
+          tenantId: tenantTkc.id,
+          subject: 'Buscado por cuid',
+          description: 'Ya sincronizado',
+          priority: 'medium',
+          invgateId: '7777',
+          status: 'open',
+        },
+      });
+
+      const { phone } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKQ-05B',
+        [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'ticketRef', value: ticket.id }), // el cuid, NO el invgateId
+          ticketQueryNode('tq', { ticketIdVariable: 'ticketRef' }),
+          endNode('e'),
+        ],
+        [edge('s', 'v', 'known'), edge('v', 'tq'), edge('tq', 'e')],
+      );
+
+      // Sin InvGate configurado: refreshInvgateStatus corta al toque y devuelve el estado local.
+      const res = await simulate(phone, tenantTkc.id, 'quiero ver el ticket');
+      expect(res.status).toBe(201);
+
+      // Resuelto por el cuid (rama OR {id}), pero el display prefiere `invgateId ?? id`.
+      expect(res.body.reply).toContain('Ticket #7777: Buscado por cuid - Estado: open');
+      expect(res.body.reply).not.toContain(ticket.id); // buscó por el cuid, pero no lo muestra
     });
   });
 
@@ -675,6 +917,101 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
 
       const ticketCount = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, userId: user.id } });
       expect(ticketCount).toBe(0);
+    });
+
+    it(
+      'CHAT-N-TRF-08a: un assignee dado de baja sale de la rotación; pickNextAssignee rota solo sobre los activos y el dado de baja nunca recibe',
+      async () => {
+        const agentA = await createUser(t.prisma, { email: uniqueEmail('trf08a-a'), phone: uniquePhone(), firstName: 'A' });
+        // Dado de baja (soft-delete): sigue listado en `data.assignees` del nodo (la config no se
+        // actualiza sola), pero `pickNextAssignee` lo filtra por `deletedAt:null`.
+        const agentDown = await createUser(t.prisma, {
+          email: uniqueEmail('trf08a-down'),
+          phone: uniquePhone(),
+          firstName: 'Baja',
+          deletedAt: new Date(),
+        });
+        const agentB = await createUser(t.prisma, { email: uniqueEmail('trf08a-b'), phone: uniquePhone(), firstName: 'B' });
+
+        const role = await createRole(t.prisma, { tenantId: tenantTrf.id, name: 'TRF-08A' });
+        await createFlow(t.prisma, {
+          name: 'TRF-08A',
+          nodes: [
+            startNode('s'),
+            // El dado de baja va EN EL MEDIO a propósito: si no se lo filtrara, le tocaría en la
+            // segunda vuelta y correría el orden. Filtrado, la rotación es solo [A, B].
+            transferAgentNode('ta', { methods: ['ticket'], assignees: [agentA.id, agentDown.id, agentB.id] }),
+            endNode('e'),
+          ],
+          edges: [edge('s', 'ta', 'known'), edge('ta', 'e')],
+          assign: [{ tenantId: tenantTrf.id, isStart: true, roleIds: [role.id] }],
+        });
+
+        async function knownUser(label: string) {
+          const phone = uniquePhone();
+          const user = await createUser(t.prisma, {
+            email: uniqueEmail(label),
+            phone,
+            firstName: label,
+            memberships: [{ tenantId: tenantTrf.id, roleId: role.id }],
+          });
+          return { phone, user };
+        }
+
+        const x = await knownUser('trf08a-x');
+        const y = await knownUser('trf08a-y');
+        const z = await knownUser('trf08a-z');
+
+        await simulate(x.phone, tenantTrf.id, 'transferime');
+        await simulate(y.phone, tenantTrf.id, 'transferime');
+        await simulate(z.phone, tenantTrf.id, 'transferime');
+
+        const ticketX = await t.prisma.ticket.findFirst({ where: { tenantId: tenantTrf.id, userId: x.user.id } });
+        const ticketY = await t.prisma.ticket.findFirst({ where: { tenantId: tenantTrf.id, userId: y.user.id } });
+        const ticketZ = await t.prisma.ticket.findFirst({ where: { tenantId: tenantTrf.id, userId: z.user.id } });
+
+        // Activos = [A, B]; el dado de baja no cuenta: -1→0→A, 0→1→B, 1→0→A (da la vuelta sobre 2).
+        expect(ticketX!.assignedToId).toBe(agentA.id);
+        expect(ticketY!.assignedToId).toBe(agentB.id);
+        expect(ticketZ!.assignedToId).toBe(agentA.id);
+
+        const downTickets = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, assignedToId: agentDown.id } });
+        expect(downTickets).toBe(0); // el dado de baja nunca recibió una asignación
+      },
+      20000,
+    );
+
+    it('CHAT-N-TRF-08b: si NINGÚN assignee queda activo, pickNextAssignee devuelve null: no crea ticket y el flujo sigue sin romper', async () => {
+      const down1 = await createUser(t.prisma, {
+        email: uniqueEmail('trf08b-1'),
+        phone: uniquePhone(),
+        firstName: 'Baja 1',
+        deletedAt: new Date(),
+      });
+      const down2 = await createUser(t.prisma, {
+        email: uniqueEmail('trf08b-2'),
+        phone: uniquePhone(),
+        firstName: 'Baja 2',
+        deletedAt: new Date(),
+      });
+
+      const { phone, user } = await setupKnownFlow(
+        tenantTrf.id,
+        'TRF-08B',
+        [
+          startNode('s'),
+          transferAgentNode('ta', { methods: ['ticket', 'email'], assignees: [down1.id, down2.id] }),
+          endNode('e'),
+        ],
+        [edge('s', 'ta', 'known'), edge('ta', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTrf.id, 'necesito un humano');
+      expect(res.status).toBe(201); // no rompe: assignee null se maneja como en TRF-03
+
+      const ticketCount = await t.prisma.ticket.count({ where: { tenantId: tenantTrf.id, userId: user.id } });
+      expect(ticketCount).toBe(0); // sin activo → el bloque 'ticket' no corre
+      expect(t.email.sent).toHaveLength(0); // assignee null y sin watchers/collaborators → nadie a notificar
     });
   });
 

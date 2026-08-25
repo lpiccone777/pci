@@ -453,3 +453,196 @@ test.fail(
     await expect(dialog.getByRole('option', { name: role.name })).toBeAttached({ timeout: 8000 });
   },
 );
+
+/* ------------------------------------------------------------------ */
+/* Importación masiva desde Excel (`import-users-modal.tsx`)           */
+/*                                                                     */
+/* El modal parsea el archivo en el navegador con la librería `xlsx`   */
+/* (`parseSpreadsheet`), que también lee CSV: por eso los fixtures se  */
+/* generan como buffers `.csv` en memoria (más estable que un binario  */
+/* `.xlsx`) y se suben con `setInputFiles` al <input type=file> oculto */
+/* del paso "upload". El mapeo columna→campo se hace por CLICK (elegir */
+/* la etiqueta y después la columna), no por drag&drop, porque el      */
+/* componente soporta ambos y el click es determinístico en Playwright.*/
+/* ------------------------------------------------------------------ */
+
+/** Sube un archivo en memoria al input oculto del paso 1 (acepta `.xlsx/.xls/.csv`). */
+async function uploadFile(dialog: Locator, name: string, content: string, mimeType = 'text/csv') {
+  await dialog
+    .locator('input[type="file"]')
+    .setInputFiles({ name, mimeType, buffer: Buffer.from(content, 'utf-8') });
+}
+
+/** Selecciona el <select> "Rol por defecto" del paso de mapeo por su primera opción-placeholder. */
+function defaultRoleSelect(page: Page, dialog: Locator) {
+  return dialog.locator('select', { has: page.getByRole('option', { name: 'Elegí un rol...' }) });
+}
+
+/** Mapea un campo requerido a una columna: click en la etiqueta, después click en el <th>. */
+async function mapFieldToHeader(dialog: Locator, fieldLabel: string, headerText: string) {
+  await dialog.getByRole('button', { name: fieldLabel, exact: true }).click();
+  await dialog.locator('thead th').filter({ hasText: headerText }).first().click();
+}
+
+test('FE-USR-17: importar desde Excel recorre subir→mapear→resultado y postea a /users/bulk-import', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  // Un rol en la empresa activa: es el "Rol por defecto" obligatorio del paso de mapeo.
+  const role = await createRole(admin, { tenantId: tenant.id, name: 'Importados', permissions: ['users:read'] });
+  const okEmail = uniqueEmail('bulk-ok');
+
+  // La fila 3 reusa el email de un usuario que YA existe → el backend la rechaza por fila con
+  // 'Ya existe un usuario con ese email' (users.service.ts `bulkImport`), sin abortar el lote.
+  // Ojo: una fila con email VACÍO no sirve para esto — `BulkImportUserRowDto.email` es `@IsEmail`
+  // y NO opcional, así que un email vacío hace fallar la validación del DTO y devuelve 400 sobre
+  // TODO el lote (nunca se llega al paso "result"); la rama 'Falta el email' del service es
+  // defensiva e inalcanzable por este endpoint. Por eso el rechazo por fila se prueba con un
+  // email duplicado, que sí pasa el DTO y falla recién en la lógica de importación.
+  const dupEmail = uniqueEmail('bulk-dup');
+  await createUser(admin, {
+    email: dupEmail,
+    memberships: [{ tenantId: tenant.id, roleId: role.id }],
+  });
+
+  // Se captura el POST real a /users/bulk-import para fundar endpoint + header de empresa activa.
+  const bulkPosts: Array<{ url: string; tenant: string | undefined }> = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().includes('/users/bulk-import')) {
+      bulkPosts.push({ url: r.url(), tenant: r.headers()['x-tenant-id'] });
+    }
+  });
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await page.goto('/dashboard/users');
+  await page.getByRole('button', { name: 'Importar desde Excel' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'Importar usuarios desde Excel' })).toBeVisible();
+
+  // Fila 2 (Ana) es válida; fila 3 (Bruno) reusa un email ya existente → el backend la rechaza.
+  const csv = ['Nombre,Apellido,Email', `Ana,Perez,${okEmail}`, `Bruno,Gomez,${dupEmail}`].join('\n');
+  await uploadFile(dialog, 'usuarios.csv', csv);
+
+  // Avanza a "map": el subtítulo reporta el archivo y las filas de datos detectadas.
+  await expect(dialog.getByText('usuarios.csv', { exact: false })).toBeVisible();
+  await expect(dialog.getByText('2 filas detectadas', { exact: false })).toBeVisible();
+
+  // Mapeo de los 3 requeridos + rol por defecto → habilita "Importar 2 usuarios".
+  await mapFieldToHeader(dialog, 'Nombre *', 'Nombre');
+  await mapFieldToHeader(dialog, 'Apellido *', 'Apellido');
+  await mapFieldToHeader(dialog, 'Email *', 'Email');
+  await defaultRoleSelect(page, dialog).selectOption({ label: role.name });
+
+  const importBtn = dialog.getByRole('button', { name: /Importar 2 usuarios/ });
+  await expect(importBtn).toBeEnabled();
+  await importBtn.click();
+
+  // Paso "result": creados con contraseña temporal + botón de descarga, y el fallido con fila y motivo.
+  await expect(dialog.getByRole('heading', { name: 'Resultado de la importación' })).toBeVisible();
+  await expect(dialog.getByText('1 importado', { exact: false })).toBeVisible();
+  await expect(dialog.getByText('Descargar CSV')).toBeVisible();
+  await expect(dialog.getByText(okEmail)).toBeVisible();
+  await expect(dialog.getByText('Fila 3')).toBeVisible();
+  await expect(dialog.getByText('Ya existe un usuario con ese email')).toBeVisible();
+
+  // El POST fue al endpoint correcto y con el header de la empresa activa.
+  expect(bulkPosts.length).toBeGreaterThan(0);
+  expect(bulkPosts[0].tenant).toBe(tenant.id);
+});
+
+test('FE-USR-18: en "Todas las empresas" no aparece el botón ni monta el modal de importación', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  await createRole(admin, { tenantId: tenant.id, permissions: ['users:read'] });
+  // Usuario sin permiso de crear: ni con empresa concreta ve el botón (gate `canCreate`).
+  const lector = await createUserWithPermissions(admin, ['users:read'], { tenantId: tenant.id });
+
+  // Superadmin (canCreate) parado en una empresa concreta → el botón está.
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await page.goto('/dashboard/users');
+  await expect(page.getByRole('button', { name: 'Importar desde Excel' })).toBeVisible();
+
+  // Mismo superadmin en modo consolidado → el botón desaparece y el modal no monta.
+  await injectSession(page, { token: admin.token, activeTenant: ALL_TENANTS });
+  await page.goto('/dashboard/users');
+  await expect(page.getByRole('columnheader', { name: 'Empresa' })).toBeVisible(); // confirma consolidado
+  await expect(page.getByRole('button', { name: 'Importar desde Excel' })).toHaveCount(0);
+  await expect(
+    page.getByRole('heading', { name: 'Importar usuarios desde Excel' }),
+  ).toHaveCount(0);
+
+  // Sin canCreate, en empresa concreta, tampoco.
+  await injectSession(page, await sessionForUser(lector.email, lector.password, tenant.id));
+  await page.goto('/dashboard/users');
+  await expect(page.getByRole('button', { name: 'Importar desde Excel' })).toHaveCount(0);
+});
+
+test('FE-USR-19: archivo no soportado, sin filas o con más de 10.000 filas → error y no postea', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  await createRole(admin, { tenantId: tenant.id, permissions: ['users:read'] });
+
+  const bulkPosts: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().includes('/users/bulk-import')) bulkPosts.push(r.url());
+  });
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await page.goto('/dashboard/users');
+  await page.getByRole('button', { name: 'Importar desde Excel' }).click();
+  const dialog = page.getByRole('dialog');
+
+  // 1) Extensión no soportada → mensaje del validador `isSupportedFile`, no avanza a "map".
+  await uploadFile(dialog, 'datos.txt', 'lo que sea', 'text/plain');
+  await expect(dialog.getByText('El archivo tiene que ser .xlsx, .xls o .csv.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Nombre *', exact: true })).toHaveCount(0);
+
+  // 2) Solo headers, sin filas de datos → `parseSpreadsheet` corta con su mensaje.
+  await uploadFile(dialog, 'solo-headers.csv', 'Nombre,Apellido,Email');
+  await expect(dialog.getByText('El archivo no tiene filas de datos.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Nombre *', exact: true })).toHaveCount(0);
+
+  // 3) Más de MAX_ROWS (10000) filas → corte del lado del cliente antes de armar el mapeo.
+  const bigRows = Array.from({ length: 10001 }, (_, i) => `N${i},A${i},u${i}@e.local`);
+  await uploadFile(dialog, 'enorme.csv', ['Nombre,Apellido,Email', ...bigRows].join('\n'));
+  await expect(dialog.getByText('el máximo por importación es 10000', { exact: false })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Nombre *', exact: true })).toHaveCount(0);
+
+  // En ningún caso se llegó a postear al backend.
+  expect(bulkPosts).toHaveLength(0);
+});
+
+test('FE-USR-20: headers vacíos/repetidos → "Columna N", mapeo por índice y bloqueo sin los 3 requeridos', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  await createRole(admin, { tenantId: tenant.id, permissions: ['users:read'] });
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await page.goto('/dashboard/users');
+  await page.getByRole('button', { name: 'Importar desde Excel' }).click();
+  const dialog = page.getByRole('dialog');
+
+  // Header con una columna repetida ("Email","Email") y una sin nombre (col 3 vacía).
+  await uploadFile(dialog, 'raro.csv', ['Email,Email,', 'a@e.local,b@e.local,x'].join('\n'));
+
+  // La columna sin header se renombra "Columna 3" (índice 1-based); es el 3.º <th>.
+  await expect(dialog.locator('thead th').nth(2)).toContainText('Columna 3');
+
+  // Mapeo por índice: asignar Email al 1.º <th> deja la etiqueta como "✓ Email".
+  await dialog.getByRole('button', { name: 'Email *', exact: true }).click();
+  await dialog.locator('thead th').nth(0).click();
+  await expect(dialog.getByRole('button', { name: '✓ Email' })).toBeVisible();
+
+  // Una columna, un solo campo: reasignar el MISMO <th> a "Nombre" libera Email (vuelve a "Email *").
+  await dialog.getByRole('button', { name: 'Nombre *', exact: true }).click();
+  await dialog.locator('thead th').nth(0).click();
+  await expect(dialog.getByRole('button', { name: '✓ Nombre' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Email *', exact: true })).toBeVisible();
+
+  // Sin los 3 requeridos (falta Apellido/Email) + sin rol → aviso y botón de importar deshabilitado.
+  await expect(dialog.getByText('para poder importar', { exact: false })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: /Importar 1 usuario/ })).toBeDisabled();
+});

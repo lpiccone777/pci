@@ -57,6 +57,10 @@ import {
 import { InvgateService } from '../src/modules/invgate/invgate.service';
 import { SecretsCipher } from '../src/config/secrets.cipher';
 import { AppConfigService } from '../src/config/app-config.service';
+import { stripArgentinaMobileNine } from '../src/common/phone.util';
+import { promises as fs } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 // --- Catálogo simulado de InvGate (estático durante todo el archivo, ver comentario de arriba) ---
 
@@ -124,6 +128,8 @@ interface MockState {
   nextIncidentId: number;
   customerByPhone: Map<string, { id: number; username?: string }>;
   failCreateIncident: boolean;
+  /** `POST incident` responde 200 pero con un body sin `id` ni `request_id` (contrato raro) — BE-IG-15. */
+  weirdCreateBody: boolean;
   infiniteCategoryParentId: number | null;
 }
 
@@ -188,6 +194,11 @@ function invgateRouter(state: MockState): FetchRouter {
       if (state.failCreateIncident) {
         return { status: 500, body: { error: 'InvGate no disponible (simulado)' } };
       }
+      if (state.weirdCreateBody) {
+        // 200 OK pero sin `id` ni `request_id`: `createIncident` no puede mapear el incidente
+        // creado y tiene que tirar en vez de "sincronizar" con nada (BE-IG-15).
+        return { status: 200, body: { status: 'ok', info: 'Creado', request_ok: true } };
+      }
       const id = state.nextIncidentId++;
       const created = { id, status_id: STATUS_ABIERTO };
       state.incidents.set(id, created);
@@ -221,6 +232,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     nextIncidentId: 9000,
     customerByPhone: new Map(),
     failCreateIncident: false,
+    weirdCreateBody: false,
     infiniteCategoryParentId: null,
   };
 
@@ -383,7 +395,10 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
       .send({ from: user.phone, body: '¿Cómo va mi ticket?', tenantId: tenant.id });
 
     expect(res.status).toBe(201);
-    expect(res.body.reply).toContain(`Ticket #${ticket.id}`);
+    // Ya sincronizado: el nodo `ticket_query` muestra el número de InvGate, no el cuid local
+    // (`ticket.invgateId ?? ticket.id` en executeNode — el cuid interno no le sirve a nadie
+    // fuera del sistema), así que el "#" del mensaje es el remoteId de InvGate.
+    expect(res.body.reply).toContain(`Ticket #${remoteId}`);
     expect(res.body.reply).toContain('Resuelto');
 
     const updated = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id } });
@@ -513,7 +528,11 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig06b') });
     const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
     const phone = uniquePhone();
-    state.customerByPhone.set(phone, { id: 7050, username: 'cliente_encontrado' });
+    // El código busca en InvGate por el teléfono SIN el 9 de móvil argentino
+    // (`resolveInvgateCustomerId` normaliza con `stripArgentinaMobileNine` antes de
+    // consultar — InvGate guarda los números sin ese 9), así que el mock tiene que
+    // indexar al cliente por el mismo número normalizado que le va a llegar.
+    state.customerByPhone.set(stripArgentinaMobileNine(phone), { id: 7050, username: 'cliente_encontrado' });
     const user = await createUser(t.prisma, {
       email: uniqueEmail('ig06b'),
       phone,
@@ -668,9 +687,9 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     }
   });
 
-  // --- BE-IG-10 (robustez, sin número de hallazgo): cachés en memoria que no se invalidan ---
-  it.failing(
-    'BE-IG-10: corregir INVGATE_API_USER en caliente debería resolver el creator_id sin reiniciar (robustez) @invertido',
+  // --- BE-IG-10 (robustez): resolveCreatorId no cachea el fallo, solo el éxito ---
+  it(
+    'BE-IG-10: corregir INVGATE_API_USER en caliente resuelve el creator_id sin reiniciar (robustez)',
     async () => {
       // Nota de diseño: NO se usa una segunda `createTestApp()` (patrón de BE-AUTH-25) para
       // esto. `ConversationsService` se suscribe a `whatsapp.simulate.incoming` con
@@ -690,17 +709,16 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
       await setSetting(t.prisma, 'INVGATE_API_USER', 'usuario-tecnico-que-no-existe');
       try {
         const first = await freshInvgate.resolveCreatorId();
-        expect(first).toBeNull(); // no matchea a nadie en InvGate → cachea `null`
+        expect(first).toBeNull(); // no matchea a nadie en InvGate → devuelve null SIN cachear el fallo
 
         // Se corrige la configuración desde /settings...
         await setSetting(t.prisma, 'INVGATE_API_USER', TECH_USER);
 
         const second = await freshInvgate.resolveCreatorId();
-        // SEGURO esperado: con la config ya corregida, la próxima resolución encuentra al
-        // técnico. Hoy `resolveCreatorId` cachea `null` la primera vez y nunca reintenta
-        // (`if (this.creatorIdCache !== undefined) return this.creatorIdCache;`), así que
-        // sigue devolviendo `null` aunque la config ya esté bien — solo se arregla
-        // reiniciando el proceso.
+        // SEGURO ya implementado: con la config corregida, la próxima resolución encuentra al
+        // técnico. `resolveCreatorId` solo cachea cuando obtiene un id real (el fallo no se
+        // cachea), así que corregir `INVGATE_API_USER` en caliente vuelve a resolver sin
+        // reiniciar el proceso.
         expect(second).not.toBeNull();
       } finally {
         await setSetting(t.prisma, 'INVGATE_API_USER', TECH_USER); // restaurar para el resto de la suite
@@ -765,4 +783,191 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
       // Intencionalmente vacío: ver motivo en el título.
     },
   );
+
+  it('BE-IG-15: si InvGate responde 200 sin id ni request_id (body raro), el Ticket local existe pero no queda marcado como sincronizado', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig15') });
+    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('ig15'),
+      phone: uniquePhone(),
+      invgateUserId: '7090',
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    await createFlow(t.prisma, {
+      name: `IG15 ${uniqueSlug()}`,
+      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'InvGate devuelve un body raro', priority: 'Media' } }],
+      assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    state.weirdCreateBody = true;
+    try {
+      const res = await http(t)
+        .post('/conversations/simulate')
+        .send({ from: user.phone, body: 'Necesito abrir un ticket nuevo', tenantId: tenant.id });
+
+      // `createIncident` tira ("InvGate no devolvió un id de incidente creado…"),
+      // `syncTicketToInvgate` lo atrapa y devuelve null: la charla sigue best-effort.
+      expect(res.status).toBe(201);
+      expect(res.body.reply).toContain('Ticket #');
+      expect(res.body.reply).toContain('creado');
+
+      const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { userId: user.id } });
+      // El ticket local existe igual, y NO se persiste el string "undefined" como invgateId.
+      expect(ticket.invgateId).toBeNull();
+      expect(ticket.invgateId).not.toBe('undefined');
+    } finally {
+      state.weirdCreateBody = false;
+    }
+  });
+
+  it('BE-IG-16a: ticket_create con un adjunto de imagen lo manda a InvGate como multipart/form-data (campo attachments[])', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig16a') });
+    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('ig16a'),
+      phone: uniquePhone(),
+      invgateUserId: '7100',
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+
+    // Adjunto real en disco: `loadAttachments` lo lee (y lo borra) antes de armar el multipart.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ig16a-'));
+    const filePath = path.join(dir, 'captura.png');
+    await fs.writeFile(filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])); // firma PNG
+    const stored = { path: filePath, filename: 'captura.png', contentType: 'image/png' };
+
+    // El nodo ticket_create consume `flowState.pendingAttachments` (llenado por un mensaje con
+    // imagen previo). Como `/conversations/simulate` no reenvía adjuntos, se deja la conversación
+    // ya parada en ese nodo con el adjunto acumulado — mismo patrón que BE-IG-02 con ticket_query.
+    const flow = await createFlow(t.prisma, {
+      name: `IG16a ${uniqueSlug()}`,
+      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'La pantalla está rota', priority: 'Media' } }],
+    });
+    await t.prisma.conversation.create({
+      data: {
+        userId: user.id,
+        tenantId: tenant.id,
+        channel: 'whatsapp',
+        externalId: user.phone,
+        status: 'active',
+        sessionStartedAt: new Date(),
+        currentFlowId: flow.id,
+        currentNodeId: 'tc',
+        flowState: { pendingAttachments: [stored] },
+      },
+    });
+
+    const before = requests.length;
+    const res = await http(t)
+      .post('/conversations/simulate')
+      .send({ from: user.phone, body: 'Adjunto la foto del problema', tenantId: tenant.id });
+    expect(res.status).toBe(201);
+
+    const postCall = requests.slice(before).find((r) => r.url.endsWith('/api/v1/incident') && r.init?.method === 'POST');
+    expect(postCall).toBeDefined();
+    // multipart/form-data: el body es un FormData real y `send()` NO fija el Content-Type a mano
+    // (fetch arma el boundary) — ver `InvgateService.postMultipart`.
+    expect(postCall!.init!.body).toBeInstanceOf(FormData);
+    const form = postCall!.init!.body as FormData;
+    expect(form.getAll('attachments[]')).toHaveLength(1);
+    expect(form.get('customer_id')).toBe('7100');
+    expect((postCall!.init!.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+
+    // El adjunto temporal se consumió (leído y borrado) al armar el multipart.
+    await expect(fs.access(filePath)).rejects.toBeTruthy();
+
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { userId: user.id } });
+    expect(ticket.invgateId).not.toBeNull(); // sincronizó con InvGate
+  });
+
+  it('BE-IG-16b: si el adjunto no se puede leer, degrada a un ticket sin adjunto (form-urlencoded normal) sin cortar la charla', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig16b') });
+    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('ig16b'),
+      phone: uniquePhone(),
+      invgateUserId: '7101',
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+
+    // `path` apunta a un archivo que no existe: `TwilioMediaService.read` devuelve null y
+    // `loadAttachments` lo descarta en silencio, así que el ticket va sin adjunto.
+    const stored = { path: path.join(os.tmpdir(), `ig16b-inexistente-${Date.now()}.png`), filename: 'x.png', contentType: 'image/png' };
+
+    const flow = await createFlow(t.prisma, {
+      name: `IG16b ${uniqueSlug()}`,
+      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'Foto que no se pudo guardar', priority: 'Media' } }],
+    });
+    await t.prisma.conversation.create({
+      data: {
+        userId: user.id,
+        tenantId: tenant.id,
+        channel: 'whatsapp',
+        externalId: user.phone,
+        status: 'active',
+        sessionStartedAt: new Date(),
+        currentFlowId: flow.id,
+        currentNodeId: 'tc',
+        flowState: { pendingAttachments: [stored] },
+      },
+    });
+
+    const before = requests.length;
+    const res = await http(t)
+      .post('/conversations/simulate')
+      .send({ from: user.phone, body: 'Te mando la imagen', tenantId: tenant.id });
+
+    // La charla sigue con normalidad.
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toContain('Ticket #');
+    expect(res.body.reply).toContain('creado');
+
+    const postCall = requests.slice(before).find((r) => r.url.endsWith('/api/v1/incident') && r.init?.method === 'POST');
+    expect(postCall).toBeDefined();
+    // Sin adjunto que subir, vuelve al camino normal: form-urlencoded, no multipart.
+    expect(postCall!.init!.body).toBeInstanceOf(URLSearchParams);
+    expect((postCall!.init!.body as URLSearchParams).has('attachments[]')).toBe(false);
+
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { userId: user.id } });
+    expect(ticket.invgateId).not.toBeNull(); // el ticket sí se creó en InvGate, solo que sin la imagen
+  });
+
+  it('BE-IG-17: los saltos de línea de la descripción viajan a InvGate como <br>, pero el Ticket.description local sigue en texto plano', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig17') });
+    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('ig17'),
+      phone: uniquePhone(),
+      invgateUserId: '7110',
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+
+    // Mezcla intencional de \n y \r\n: `toInvgateHtml` colapsa \r\n en un solo <br>.
+    const descripcion = 'Línea uno\nLínea dos\r\nLínea tres';
+    await createFlow(t.prisma, {
+      name: `IG17 ${uniqueSlug()}`,
+      nodes: [
+        { id: 'tc', type: 'ticket_create', data: { subject: 'Reporte multilínea', description: descripcion, priority: 'Media' } },
+      ],
+      assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    const before = requests.length;
+    const res = await http(t)
+      .post('/conversations/simulate')
+      .send({ from: user.phone, body: 'Quiero reportar un problema', tenantId: tenant.id });
+    expect(res.status).toBe(201);
+
+    const postCall = requests.slice(before).find((r) => r.url.endsWith('/api/v1/incident') && r.init?.method === 'POST');
+    const params = postCall!.init!.body as URLSearchParams;
+    // Hacia InvGate (campo WYSIWYG): saltos convertidos a <br>, sin \n/\r crudos.
+    expect(params.get('description')).toBe('Línea uno<br>Línea dos<br>Línea tres');
+    expect(params.get('description')).not.toContain('\n');
+    expect(params.get('description')).not.toContain('\r');
+
+    // En nuestra base sigue como texto plano con los saltos reales, sin <br>.
+    const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { userId: user.id } });
+    expect(ticket.description).toBe(descripcion);
+    expect(ticket.description).not.toContain('<br>');
+  });
 });

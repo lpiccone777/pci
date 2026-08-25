@@ -227,4 +227,61 @@ describe('1.15 Datos, seed y migraciones (BE-DAT-*)', () => {
     const fresh = await t.prisma.area.findUnique({ where: { id: areaConGente.id } });
     expect(fresh).not.toBeNull();
   });
+
+  it('BE-DAT-06: la migración de backfill rellena TenantFlowRole en los flujos de inicio sin roles (un rol por cada Role del mismo tenant, sin cruzar tenants) y es idempotente', async () => {
+    // Escenario que la migración de backfill busca: un TenantFlow con isStart=true y CERO roles
+    // (el estado en que quedaron todos al crearse la tabla TenantFlowRole). La migración ya corrió
+    // sobre la base efímera, así que montamos el caso a mano y reejecutamos su MISMO SQL, leído
+    // del propio archivo de migración (no una copia), para verificar su efecto y su idempotencia.
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('dat06') });
+    const rolA = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol A DAT06' });
+    const rolB = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol B DAT06' });
+
+    // Rol de OTRA empresa: la migración NO debe cruzarlo (el JOIN es `r."tenantId" = tf."tenantId"`).
+    const otroTenant = await createTenant(t.prisma, { slug: uniqueSlug('dat06-otro') });
+    const rolAjeno = await createRole(t.prisma, { tenantId: otroTenant.id, name: 'Rol ajeno DAT06' });
+
+    // Flujo de inicio SIN roles: el que hay que rellenar.
+    const flowSinRoles = await createFlow(t.prisma, {
+      name: `Inicio sin roles ${uniqueSlug()}`,
+      assign: [{ tenantId: tenant.id, isStart: true }], // isStart=true, roleIds vacío
+    });
+    const tfSinRoles = await t.prisma.tenantFlow.findFirstOrThrow({ where: { flowId: flowSinRoles.id } });
+    expect(await t.prisma.tenantFlowRole.count({ where: { tenantFlowId: tfSinRoles.id } })).toBe(0);
+
+    // Flujo de inicio que YA tiene un rol: la migración no debe tocarlo (cláusula `NOT EXISTS`).
+    const flowConRol = await createFlow(t.prisma, {
+      name: `Inicio con rol ${uniqueSlug()}`,
+      assign: [{ tenantId: tenant.id, isStart: true, roleIds: [rolA.id] }],
+    });
+    const tfConRol = await t.prisma.tenantFlow.findFirstOrThrow({ where: { flowId: flowConRol.id } });
+
+    // SQL REAL de la migración de backfill (INSERT ... SELECT ... ON CONFLICT DO NOTHING).
+    const backfillSql = fs.readFileSync(
+      path.join(
+        API_DIR,
+        'prisma',
+        'migrations',
+        '20260824120000_backfill_tenant_flow_role_for_existing_start_flows',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    await t.prisma.$executeRawUnsafe(backfillSql);
+
+    // El flujo sin roles quedó con UNA fila por cada Role del MISMO tenant (rolA y rolB) y ninguna
+    // del rol ajeno: el JOIN por tenantId no cruza empresas.
+    const rolesRellenados = await t.prisma.tenantFlowRole.findMany({ where: { tenantFlowId: tfSinRoles.id } });
+    expect(rolesRellenados.map((r) => r.roleId).sort()).toEqual([rolA.id, rolB.id].sort());
+    expect(rolesRellenados.map((r) => r.roleId)).not.toContain(rolAjeno.id);
+
+    // El que ya tenía rolA sigue con exactamente ese rol: no se lo tocó.
+    const rolesDelConRol = await t.prisma.tenantFlowRole.findMany({ where: { tenantFlowId: tfConRol.id } });
+    expect(rolesDelConRol.map((r) => r.roleId)).toEqual([rolA.id]);
+
+    // Idempotente: reejecutar el mismo SQL no duplica (ON CONFLICT (tenantFlowId, roleId) DO NOTHING).
+    await t.prisma.$executeRawUnsafe(backfillSql);
+    const trasSegunda = await t.prisma.tenantFlowRole.findMany({ where: { tenantFlowId: tfSinRoles.id } });
+    expect(trasSegunda.map((r) => r.roleId).sort()).toEqual([rolA.id, rolB.id].sort());
+  });
 });

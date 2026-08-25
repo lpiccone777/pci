@@ -13,6 +13,7 @@
  */
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule, TestingModuleBuilder } from '@nestjs/testing';
+import { json } from 'express';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { EmailService } from '../../src/modules/auth/email.service';
@@ -66,6 +67,13 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
 
     moduleRef = await builder.compile();
     app = moduleRef.createNestApplication();
+
+    // Mismo body-limit que `main.ts` (`app.use(json({ limit: '10mb' }))`): el default de Express
+    // (100kb) alcanza para el resto de la API, pero la carga masiva de usuarios (bulk-import) puede
+    // mandar miles de filas y superarlo. Sin esto, un lote grande dispara un 413 del body-parser
+    // ANTES de llegar a la validación del DTO, y no se puede observar el 400 de `@ArrayMaxSize`
+    // (BE-USR-32). Solo sube el límite: no cambia la validación de ningún otro spec.
+    app.use(json({ limit: '10mb' }));
 
     // Mismo pipe global que `main.ts`. Imprescindible para los casos de whitelist/validación.
     app.useGlobalPipes(

@@ -24,6 +24,7 @@ import {
   type AdminCtx,
 } from './support/seed';
 import { injectSession } from './support/session';
+import { API_URL } from './support/ports';
 
 let admin: AdminCtx;
 
@@ -42,9 +43,62 @@ function settingCard(page: Page, key: string) {
   return page.locator('div.bg-white').filter({ has: page.locator(`#${key}`) });
 }
 
-/** Activa la pestaña de un grupo por su nombre exacto. */
+/**
+ * Ruta de navegación (labels de pestaña, nivel por nivel) hasta cada grupo del catálogo.
+ * Espeja `GROUP_HIERARCHY` de `apps/web/src/app/settings/page.tsx`: las ~17 pestañas planas
+ * del catálogo se reorganizaron en una jerarquía de hasta 3 niveles de tablists anidados
+ * (categoría → sub-sección → proveedor), con labels cortos. Ver FE-SET-16/17 como referencia.
+ *
+ * Cada sub-tablist solo se renderiza cuando su rama tiene más de un hijo, así que las categorías
+ * de un solo grupo (Integraciones → InvGate) no exponen sub-pestaña: alcanza con clickear la
+ * categoría, que activa su primera (y única) hoja.
+ */
+const GROUP_PATH: Record<string, string[]> = {
+  'Autenticación y 2FA': ['Seguridad', 'Autenticación y 2FA'],
+  Dispositivos: ['Seguridad', 'Dispositivos'],
+  LLM: ['LLM', 'General'],
+  'LLM: OpenAI': ['LLM', 'OpenAI'],
+  'LLM: Gemini': ['LLM', 'Gemini'],
+  'LLM: Claude': ['LLM', 'Claude'],
+  'LLM: OpenRouter': ['LLM', 'OpenRouter'],
+  'LLM: OpenCode Go': ['LLM', 'OpenCode Go'],
+  'LLM: MiniMax': ['LLM', 'MiniMax'],
+  'Mensajería: WhatsApp': ['Mensajería', 'WhatsApp', 'General'],
+  'Mensajería: WhatsApp (Twilio)': ['Mensajería', 'WhatsApp', 'Twilio'],
+  'Mensajería: WhatsApp (Gupshup)': ['Mensajería', 'WhatsApp', 'Gupshup'],
+  'Mensajería: SMS': ['Mensajería', 'SMS', 'General'],
+  'Mensajería: SMS (Twilio)': ['Mensajería', 'SMS', 'Twilio'],
+  'Mensajería: SMS (Gupshup)': ['Mensajería', 'SMS', 'Gupshup'],
+  'Mensajería: Email': ['Mensajería', 'Email'],
+  'Integración: InvGate': ['Integraciones'],
+};
+
+/** Navega la jerarquía de pestañas hasta dejar activo el panel del grupo `group` del catálogo. */
 async function openTab(page: Page, group: string) {
-  await page.getByRole('tab', { name: group, exact: true }).click();
+  const path = GROUP_PATH[group];
+  if (!path) throw new Error(`openTab: grupo sin ruta mapeada en GROUP_PATH: ${group}`);
+
+  // Nivel 1 — categorías (tablist raíz "Secciones de configuración").
+  await page
+    .getByRole('tablist', { name: 'Secciones de configuración' })
+    .getByRole('tab', { name: path[0], exact: true })
+    .click();
+
+  // Nivel 2 — sub-secciones (solo si la categoría tiene más de una hoja/rama).
+  if (path[1]) {
+    await page
+      .getByRole('tablist', { name: `Sub-secciones de ${path[0]}` })
+      .getByRole('tab', { name: path[1], exact: true })
+      .click();
+  }
+
+  // Nivel 3 — proveedores (solo si el sub-tema tiene más de una hoja).
+  if (path[2]) {
+    await page
+      .getByRole('tablist', { name: `Proveedores de ${path[1]}` })
+      .getByRole('tab', { name: path[2], exact: true })
+      .click();
+  }
 }
 
 test('FE-SET-01: como SuperAdmin de sistema carga /settings + /settings/providers/status y muestra las pestañas', async ({
@@ -61,7 +115,9 @@ test('FE-SET-01: como SuperAdmin de sistema carga /settings + /settings/provider
   await page.goto('/settings');
 
   await expect(page.getByRole('heading', { name: 'Configuración del sistema' })).toBeVisible();
-  await expect(page.getByRole('tablist')).toBeVisible();
+  // El tablist raíz de categorías (ahora conviven varios tablists anidados: hay que nombrarlo).
+  await expect(page.getByRole('tablist', { name: 'Secciones de configuración' })).toBeVisible();
+  // "Autenticación y 2FA" es la primera sub-sección de "Seguridad" (categoría activa por defecto).
   await expect(page.getByRole('tab', { name: 'Autenticación y 2FA', exact: true })).toBeVisible();
 
   await expect.poll(() => calls.includes('status')).toBe(true);
@@ -211,7 +267,16 @@ test('FE-SET-09: el punto de la pestaña marca el proveedor activo', async ({ pa
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/settings');
 
-  const openaiTab = page.getByRole('tab', { name: 'LLM: OpenAI', exact: true });
+  // Abrimos la categoría LLM para que aparezcan sus sub-pestañas por proveedor.
+  await page
+    .getByRole('tablist', { name: 'Secciones de configuración' })
+    .getByRole('tab', { name: 'LLM', exact: true })
+    .click();
+
+  // La sub-pestaña del proveedor activo (OpenAI) lleva el punto "Proveedor activo".
+  const openaiTab = page
+    .getByRole('tablist', { name: 'Sub-secciones de LLM' })
+    .getByRole('tab', { name: 'OpenAI', exact: true });
   await expect(openaiTab.locator('span[title="Proveedor activo"]')).toBeVisible();
 });
 
@@ -303,16 +368,33 @@ test('FE-SET-14: aparecen las pestañas de mensajería/InvGate con los secretos 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/settings');
 
-  for (const group of [
-    'Mensajería: WhatsApp (Twilio)',
-    'Mensajería: WhatsApp (Gupshup)',
-    'Mensajería: SMS (Twilio)',
-    'Mensajería: SMS (Gupshup)',
-    'Integración: InvGate',
-  ]) {
-    await expect(page.getByRole('tab', { name: group, exact: true })).toBeVisible();
+  const topTabs = page.getByRole('tablist', { name: 'Secciones de configuración' });
+
+  // Mensajería abre sus sub-secciones (WhatsApp / SMS / Email).
+  await topTabs.getByRole('tab', { name: 'Mensajería', exact: true }).click();
+  const msgTabs = page.getByRole('tablist', { name: 'Sub-secciones de Mensajería' });
+  for (const mid of ['WhatsApp', 'SMS', 'Email']) {
+    await expect(msgTabs.getByRole('tab', { name: mid, exact: true })).toBeVisible();
   }
 
+  // WhatsApp (activo por defecto) muestra sus proveedores, entre ellos Twilio y Gupshup.
+  const waProviders = page.getByRole('tablist', { name: 'Proveedores de WhatsApp' });
+  for (const leaf of ['Twilio', 'Gupshup']) {
+    await expect(waProviders.getByRole('tab', { name: leaf, exact: true })).toBeVisible();
+  }
+
+  // Ídem para SMS.
+  await msgTabs.getByRole('tab', { name: 'SMS', exact: true }).click();
+  const smsProviders = page.getByRole('tablist', { name: 'Proveedores de SMS' });
+  for (const leaf of ['Twilio', 'Gupshup']) {
+    await expect(smsProviders.getByRole('tab', { name: leaf, exact: true })).toBeVisible();
+  }
+
+  // Integraciones tiene una sola integración (InvGate): sin sub-tablist, la categoría abre su panel.
+  await topTabs.getByRole('tab', { name: 'Integraciones', exact: true }).click();
+  await expect(page.locator('#INVGATE_API_URL')).toBeVisible();
+
+  // Un secreto de mensajería (Auth Token de Twilio) arranca vacío y "sin configurar".
   await openTab(page, 'Mensajería: WhatsApp (Twilio)');
   const token = page.locator('#TWILIO_AUTH_TOKEN');
   await expect(token).toHaveAttribute('type', 'password'); // 🔒 secret
@@ -341,4 +423,145 @@ test('FE-SET-15: los selectores de proveedor WHATSAPP_PROVIDER/SMS_PROVIDER son 
   for (const value of ['twilio', 'gupshup']) {
     await expect(smsProvider.locator(`option[value="${value}"]`)).toHaveCount(1);
   }
+});
+
+test('FE-SET-16: las pestañas forman una jerarquía de 3 niveles navegable por teclado, con "Otros" y punto de estado propagado', async ({
+  page,
+}) => {
+  // Fijamos openai como proveedor activo para que el punto de estado sea determinista.
+  await setSetting(admin, 'LLM_PROVIDER', 'openai');
+
+  await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+  await page.goto('/settings');
+
+  // Nivel 1 — categorías por tema (no los ~17 grupos planos del catálogo). El tablist raíz tiene
+  // aria-label "Secciones de configuración"; cada tab lleva como nombre accesible el label de la
+  // categoría (el puntito de estado es aria-hidden).
+  const topTabs = page.getByRole('tablist', { name: 'Secciones de configuración' });
+  await expect(topTabs).toBeVisible();
+  for (const cat of ['Seguridad', 'LLM', 'Mensajería', 'Integraciones']) {
+    await expect(topTabs.getByRole('tab', { name: cat, exact: true })).toBeVisible();
+  }
+
+  // Navegación por teclado (WAI-ARIA APG, activación automática): arranca en "Seguridad" (primera
+  // categoría, seleccionada por defecto); ArrowRight mueve el foco Y activa "LLM" al toque.
+  const seguridad = topTabs.getByRole('tab', { name: 'Seguridad', exact: true });
+  await expect(seguridad).toHaveAttribute('aria-selected', 'true');
+  await seguridad.focus();
+  await seguridad.press('ArrowRight');
+  await expect(topTabs.getByRole('tab', { name: 'LLM', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(seguridad).toHaveAttribute('aria-selected', 'false');
+
+  // El punto de estado se propaga a la RAMA: el activo (openai) vive en una hoja ("LLM: OpenAI"),
+  // pero la categoría "LLM" muestra igual el puntito de "Proveedor activo".
+  await expect(
+    topTabs
+      .getByRole('tab', { name: 'LLM', exact: true })
+      .locator('span[title="Proveedor activo"]'),
+  ).toBeVisible();
+
+  // Los 3 niveles: clic en "Mensajería" abre su sub-tablist (WhatsApp/SMS/Email) y, como la primera
+  // hoja cuelga de WhatsApp, también el tablist de proveedores (General/Twilio/Gupshup).
+  await topTabs.getByRole('tab', { name: 'Mensajería', exact: true }).click();
+
+  const midTabs = page.getByRole('tablist', { name: 'Sub-secciones de Mensajería' });
+  await expect(midTabs).toBeVisible();
+  for (const mid of ['WhatsApp', 'SMS', 'Email']) {
+    await expect(midTabs.getByRole('tab', { name: mid, exact: true })).toBeVisible();
+  }
+
+  const leafTabs = page.getByRole('tablist', { name: 'Proveedores de WhatsApp' });
+  await expect(leafTabs).toBeVisible();
+  for (const leaf of ['General', 'Twilio', 'Gupshup']) {
+    await expect(leafTabs.getByRole('tab', { name: leaf, exact: true })).toBeVisible();
+  }
+
+  // "Otros" — con el catálogo real todos los grupos están mapeados en GROUP_HIERARCHY, así que la
+  // pestaña "Otros" NO aparece hoy.
+  await expect(topTabs.getByRole('tab', { name: 'Otros', exact: true })).toHaveCount(0);
+
+  // Para ejercitar la rama defensiva (un grupo del catálogo sin mapear cae en "Otros" en vez de
+  // desaparecer) hace falta un grupo que la jerarquía no conozca, y no hay endpoint para agregar
+  // grupos al catálogo. Interceptamos SOLO el GET /settings para reusar la respuesta REAL de la API
+  // y sumarle una única clave con un grupo inexistente en GROUP_HIERARCHY; el resto del payload y el
+  // status de proveedores siguen siendo los reales (frontera bajo prueba: el agrupamiento en el
+  // cliente).
+  const probeKey = 'E2E_UNMAPPED_PROBE';
+  await page.route(`${API_URL}/settings`, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const resp = await route.fetch();
+    const real = await resp.json();
+    real.push({
+      key: probeKey,
+      type: 'string',
+      group: 'Grupo E2E Sin Mapear',
+      label: 'Sonda E2E',
+      description: 'Grupo sintético para ejercitar la pestaña "Otros".',
+      defaultValue: '',
+      value: '',
+      source: 'default',
+      updatedAt: null,
+    });
+    await route.fulfill({ response: resp, json: real });
+  });
+  await page.reload();
+
+  const otros = page
+    .getByRole('tablist', { name: 'Secciones de configuración' })
+    .getByRole('tab', { name: 'Otros', exact: true });
+  await expect(otros).toBeVisible();
+  await otros.click();
+  // El grupo sin mapear quedó dentro de "Otros" y su tarjeta se renderiza (no se perdió).
+  await expect(page.locator(`#${probeKey}`)).toBeVisible();
+});
+
+test('FE-SET-17: guardar una fila resetea solo su draft y conserva lo tipeado en las demás', async ({
+  page,
+}) => {
+  await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+  // Arranca en "Autenticación y 2FA": OTP_TTL_SECONDS y OTP_CODE_LENGTH conviven en este panel.
+  await page.goto('/settings');
+
+  const ttl = page.locator('#OTP_TTL_SECONDS');
+  const codeLen = page.locator('#OTP_CODE_LENGTH');
+  await expect(ttl).toBeVisible();
+  await expect(codeLen).toBeVisible();
+
+  const ttlOriginal = await ttl.inputValue();
+  const codeOriginal = await codeLen.inputValue();
+  const ttlNew = String(Number(ttlOriginal) + 7); // dentro del rango 60–3600
+  const codeNew = codeOriginal === '7' ? '5' : '7'; // otro valor válido (rango 4–8), distinto del actual
+
+  // Tipeamos drafts SIN guardar en las dos filas.
+  await ttl.fill(ttlNew);
+  await codeLen.fill(codeNew);
+
+  const patchCalls: string[] = [];
+  const statusCalls: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'PATCH' && r.url().includes('/settings/OTP_')) patchCalls.push(r.url());
+    if (r.url().includes('/settings/providers/status')) statusCalls.push(r.url());
+  });
+
+  // Guardamos SOLO la fila de OTP_TTL_SECONDS.
+  await settingCard(page, 'OTP_TTL_SECONDS').getByRole('button', { name: 'Guardar' }).click();
+  await expect(page.getByText('OTP_TTL_SECONDS actualizado.')).toBeVisible();
+
+  // La fila guardada mergea su valor: su draft queda en el valor efectivo (ni vacío ni revertido).
+  await expect(ttl).toHaveValue(ttlNew);
+  // La OTRA fila conserva lo tipeado: guardar una no pisa los drafts de las demás (antes un load()
+  // completo los borraba a todos).
+  await expect(codeLen).toHaveValue(codeNew);
+  // Y sigue "sucia" (su Guardar habilitado): no se guardó ni se reseteó.
+  await expect(
+    settingCard(page, 'OTP_CODE_LENGTH').getByRole('button', { name: 'Guardar' }),
+  ).toBeEnabled();
+
+  // Solo se tocó el backend por la fila guardada; y `refreshStatus` corrió tras el PATCH.
+  expect(patchCalls.length).toBe(1);
+  expect(patchCalls[0]).toContain('/settings/OTP_TTL_SECONDS');
+  await expect.poll(() => statusCalls.length).toBeGreaterThanOrEqual(1);
 });

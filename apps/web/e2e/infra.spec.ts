@@ -1,8 +1,8 @@
 /**
  * Bloque 3.1 del plan de pruebas — Infraestructura transversal (sesión, tenant activo, menú).
  *
- * Casos FE-INF-01..16. (FE-INF-17 se difiere al bloque 3.4 — Usuarios —, donde vive el filtro
- * "Empresa:" de la pantalla que compara.)
+ * Casos FE-INF-01..19, menos FE-INF-17 (se difiere al bloque 3.4 — Usuarios —, donde vive el
+ * filtro "Empresa:" de la pantalla que compara).
  *
  * Corren contra el web aislado (`localhost:3100`); la siembra va por la API real (`localhost:3101`)
  * como el SuperAdmin del seed. La mayoría de los casos inyectan la sesión en `localStorage` para
@@ -256,10 +256,11 @@ test('FE-INF-12: un error del backend muestra su mensaje, no uno genérico', asy
 test('FE-INF-13: el superadmin ve SIEMPRE el menú completo, esté donde esté en el selector', async ({
   page,
 }) => {
-  // NOTA: el plan marca este caso como `❌` (bug: al superadmin le desaparecían Tenants y
-  // Configuración al pararse en una empresa común). El código ya lo corrige
-  // (sidebar.tsx: `isSuperAdmin ? menuDefinition : ...`), así que se prueba como comportamiento
-  // seguro (verde). El `❌` del plan quedó viejo; que lo actualice la skill del plan.
+  // NOTA: describe una regresión ya corregida (el bug era que al superadmin le desaparecían
+  // Tenants y Configuración al pararse en una empresa común). El código lo resuelve en
+  // sidebar.tsx (`isSuperAdmin ? menuDefinition : filtrado`), así que se prueba como
+  // comportamiento seguro (verde). La fila vigente del plan ya figura en `✅` con esa misma
+  // descripción — test y plan quedan consistentes.
   const tenant = await createTenant(admin);
 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
@@ -355,3 +356,82 @@ test.fail(
     await expect(page).toHaveURL(/\/dashboard\/?$/);
   },
 );
+
+test('FE-INF-18: un miembro común del tenant de sistema NO ve el menú completo ni "Todas las empresas"', async ({
+  page,
+}) => {
+  // Miembro de la EMPRESA DE SISTEMA con un rol propio (NO SuperAdmin): createUserWithPermissions
+  // siembra en el tenant de sistema y le crea un rol nuevo con solo `users:read`, así que el
+  // backend lo devuelve con `isSuperAdmin: false` (el rol no es el SuperAdmin del seed) aunque
+  // `isSystemMember` sea true. Es justo el escalón que separa "pertenecer al sistema" de "ser
+  // superusuario": el sidebar arma el menú completo SOLO para `isSuperAdmin`, no para cualquier
+  // miembro del sistema, y `useAuth` ya no hereda el rol de sistema a un no-superadmin.
+  const user = await createUserWithPermissions(admin, ['users:read']);
+  const session = await sessionForUser(user.email, user.password, admin.systemTenantId);
+
+  await injectSession(page, session);
+  await page.goto('/dashboard');
+
+  // Ve solo lo que su rol permite: aparece Usuarios (tiene users:read)...
+  await expect(menuLink(page, 'Usuarios')).toBeVisible();
+  // ...pero NO el menú completo. Las 7 opciones restantes no se renderizan: ni las que exigen otro
+  // permiso (Dashboard, Roles, Áreas, Flujos IVR, Fuentes de Verdad), ni las solo-sistema (Tenants,
+  // Configuración), que además de estar en contexto de sistema requieren el permiso — que no tiene.
+  for (const item of [
+    'Dashboard',
+    'Tenants',
+    'Áreas',
+    'Roles',
+    'Flujos IVR',
+    'Fuentes de Verdad',
+    'Configuración',
+  ]) {
+    await expect(menuLink(page, item)).toHaveCount(0);
+  }
+
+  // No es superadmin y pertenece a una sola empresa: el selector no se renderiza y, con él, tampoco
+  // la opción global "🌐 Todas las empresas" (que el sidebar reserva para `isSuperAdmin`). Un
+  // superadmin, en cambio, tendría selector + esa opción + el menú de 8 ítems (ver FE-INF-13).
+  await expect(page.locator('aside select')).toHaveCount(0);
+  await expect(page.getByRole('option', { name: '🌐 Todas las empresas' })).toHaveCount(0);
+});
+
+test('FE-INF-19: la navegación del panel usa rutas con barra final y el editor de flujos viaja por query', async ({
+  page,
+}) => {
+  // El build de producción sirve el estático con `output:'export'` + `trailingSlash` (ver
+  // next.config.ts): cada ruta se emite como `carpeta/index.html`. En el stack e2e `output:'export'`
+  // se OMITE (el web corre con `next start`, modo servidor), así que la EMISIÓN física de esos
+  // `index.html` no se puede asertar acá. Lo que SÍ se conserva en e2e —a propósito— es
+  // `trailingSlash`, que es la causa observable: se verifica navegando (URLs con barra final, editor
+  // por query, sin 404 ni redirects de más), que es lo que de verdad importa del caso.
+  await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+
+  // 1) Forma canónica: entrar a /dashboard queda en /dashboard/ (un único redirect a la barra
+  //    final, no "de más").
+  await page.goto('/dashboard');
+  await expect(page).toHaveURL(/\/dashboard\/$/);
+
+  // 2) Menú completo (superadmin) y sin links rotos: cada ítem apunta a una ruta interna del panel.
+  for (const item of ALL_MENU_ITEMS) {
+    const href = await menuLink(page, item).getAttribute('href');
+    expect(href, `${item} debería enlazar a una ruta interna`).toMatch(/^\//);
+  }
+
+  // 3) `router.push`/`Link` llevan barra final: navegar por el menú aterriza en la forma canónica y
+  //    la pantalla monta de verdad (layout con sidebar + su encabezado), no un 404.
+  await menuLink(page, 'Usuarios').click();
+  await expect(page).toHaveURL(/\/dashboard\/users\/$/);
+  await expect(page.getByRole('heading', { name: 'Usuarios' })).toBeVisible();
+  await expect(page.locator('aside')).toBeVisible();
+
+  // 4) El editor de flujos viaja por QUERY (`/dashboard/flows/edit/?id=…`), no por ruta dinámica
+  //    `[id]` (que el export no soporta sin generateStaticParams). "Nuevo Flujo" hace
+  //    router.push('/dashboard/flows/edit/?id=new').
+  await page.goto('/dashboard/flows');
+  await expect(page).toHaveURL(/\/dashboard\/flows\/$/);
+  await page.getByRole('button', { name: 'Nuevo Flujo' }).click();
+  await expect(page).toHaveURL(/\/dashboard\/flows\/edit\/\?id=new$/);
+  // El editor montó (no 404): su input de nombre está presente.
+  await expect(page.getByPlaceholder('Nombre del flujo')).toBeVisible();
+});

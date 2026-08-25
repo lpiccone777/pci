@@ -22,19 +22,32 @@ import {
   TestApp,
   http,
   createTenant,
+  createRole,
+  createUser,
+  createFlow,
   uniqueSlug,
+  uniqueEmail,
   uniquePhone,
   setSetting,
   deleteSetting,
   installFetchMock,
   FakeLlmService,
+  startNode,
+  ticketCreateNode,
+  endNode,
+  edge,
 } from './support';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { BrokerService } from '../src/modules/broker/broker.service';
 import { TwilioSmsService } from '../src/modules/sms/twilio-sms.service';
 import { GupshupSmsService } from '../src/modules/sms/gupshup-sms.service';
+import { TwilioMediaService } from '../src/common/twilio-media.service';
 import { LlmService } from '../src/modules/llm/llm.service';
 import { WhatsAppInteractive } from '../src/modules/whatsapp/whatsapp-interactive.types';
+import sharp from 'sharp';
+import { mkdtemp, rm } from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 
 /** Ver el comentario completo en twilio.e2e-spec.ts. */
 async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -44,6 +57,29 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`waitFor: la condición no se cumplió dentro de ${timeoutMs}ms`);
+}
+
+/**
+ * `installFetchMock` con canal BINARIO (el router puede devolver un `Buffer` como `body`, que
+ * llega intacto a `res.arrayBuffer()`). Ver el comentario completo en twilio.e2e-spec.ts: el
+ * `installFetchMock` compartido corrompe imágenes reales al serializarlas a string. Se usa para
+ * bajar el MMS y volver a leer los adjuntos del disco. Sigue mockeando SOLO la frontera HTTP.
+ */
+function installBinaryFetchMock(
+  router: (
+    url: string,
+    init?: RequestInit,
+  ) => { status?: number; body?: Buffer | string; headers?: Record<string, string> },
+) {
+  const requests: { url: string; init?: RequestInit }[] = [];
+  const spy = jest.spyOn(globalThis, 'fetch').mockImplementation((async (input: any, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input?.url ?? String(input);
+    requests.push({ url, init });
+    const res = router(url, init);
+    const headers = new Headers(res.headers ?? {});
+    return new Response((res.body ?? '') as BodyInit, { status: res.status ?? 200, headers });
+  }) as unknown as typeof fetch);
+  return { requests, restore: () => spy.mockRestore() };
 }
 
 const TWILIO_ACCOUNT_SID = 'ACtest00000000000000000000000000';
@@ -302,7 +338,9 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
       expect(res.status).toBe(200);
       const call = publishSpy.mock.calls.find((c) => c[0] === 'sms.incoming');
       expect(call).toBeDefined();
-      expect((call![1] as any).data).toEqual({ from: phone, body: 'Hola por SMS', channel: 'sms' });
+      // El webhook SMS SIEMPRE arma `attachments` (feature de MMS): `extractMedia` devuelve `[]`
+      // cuando no hay media y el controller lo incluye en el publish (ver TwilioSmsWebhookController).
+      expect((call![1] as any).data).toEqual({ from: phone, body: 'Hola por SMS', channel: 'sms', attachments: [] });
 
       await waitFor(async () => {
         const msg = await t.prisma.message.findFirst({
@@ -428,7 +466,9 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
 
       expect(requests).toHaveLength(1); // SMS no tiene Content API: nunca hay una llamada previa
       const body = new URLSearchParams(requests[0].init!.body as string);
-      expect(body.get('To')).toBe(to); // sin "whatsapp:" — a diferencia del canal WhatsApp
+      // `stripArgentinaMobileNine` saca el 9 de móvil AR (uniquePhone() da `+5491…`) — ver
+      // BE-SMS-11 y phone.util.ts. Y sin "whatsapp:", a diferencia del canal WhatsApp.
+      expect(body.get('To')).toBe(to.replace('+5491', '+541'));
       const text = body.get('Body')!;
       expect(text).toContain('1. Opción A');
       expect(text).toContain('2. Opción B');
@@ -457,10 +497,44 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
       );
       const body = new URLSearchParams(requests[0].init!.body as string);
       expect(body.get('From')).toBe(TWILIO_SMS_FROM); // sin "whatsapp:"
-      expect(body.get('To')).toBe(to);
+      // `stripArgentinaMobileNine` saca el 9 de móvil AR (uniquePhone() da `+5491…`) — ver
+      // BE-SMS-11 y phone.util.ts.
+      expect(body.get('To')).toBe(to.replace('+5491', '+541'));
       const auth = requests[0].init!.headers as Record<string, string>;
       const decoded = Buffer.from((auth['Authorization'] as string).replace('Basic ', ''), 'base64').toString();
       expect(decoded).toBe(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
+    } finally {
+      restore();
+      await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
+      await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
+      await deleteSetting(t.prisma, 'TWILIO_SMS_FROM');
+    }
+  });
+
+  it('BE-SMS-11: un móvil argentino guardado como +549… sale con el 9 removido (To); el From pasa por normalizeRecipient; un número no argentino cae a +digits', async () => {
+    // El `To` de un SMS lo procesa `TwilioSmsService.sendText` con `stripArgentinaMobileNine`
+    // (el mismo teléfono `+549…` que el nodo `sms` publica desde `recipient.phone`): el 9 de
+    // móvil que WhatsApp exige, la red celular / Twilio SMS no lo quieren. El `From`
+    // (TWILIO_SMS_FROM) pasa por `normalizeRecipient`. Se llama a `sendText` directo, como
+    // BE-SMS-06/08, para probar la transformación sin el timing del broker.
+    await setSetting(t.prisma, 'TWILIO_ACCOUNT_SID', TWILIO_ACCOUNT_SID);
+    await setSetting(t.prisma, 'TWILIO_AUTH_TOKEN', TWILIO_AUTH_TOKEN);
+    await setSetting(t.prisma, 'TWILIO_SMS_FROM', TWILIO_SMS_FROM);
+    const { requests, restore } = installFetchMock((url) =>
+      url.includes('api.twilio.com') ? { status: 201, body: { sid: 'SM11' } } : { status: 404 },
+    );
+    try {
+      await twilioSms.sendText('+5491122223333', 'hola AR'); // móvil argentino con el 9
+      await twilioSms.sendText('+447911123456', 'hello UK'); // no argentino
+
+      expect(requests).toHaveLength(2);
+
+      const arBody = new URLSearchParams(requests[0].init!.body as string);
+      expect(arBody.get('To')).toBe('+541122223333'); // stripArgentinaMobileNine sacó el 9 de móvil
+      expect(arBody.get('From')).toBe('+15005550006'); // normalizeRecipient(TWILIO_SMS_FROM)
+
+      const ukBody = new URLSearchParams(requests[1].init!.body as string);
+      expect(ukBody.get('To')).toBe('+447911123456'); // no argentino: +${digits}, sin tocar
     } finally {
       restore();
       await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
@@ -493,4 +567,119 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
       await deleteSetting(t.prisma, 'GUPSHUP_SMS_PASSWORD');
     }
   });
+});
+
+/**
+ * MMS entrante (media por SMS) — reusa `TwilioMediaService` + `TwilioSmsWebhookController`.
+ *
+ * Mismo criterio que el describe de media de twilio.e2e-spec.ts: app propia con `FakeLlmService`,
+ * credenciales de Twilio y `MEDIA_STORAGE_DIR` a un temporal por test. Se fija
+ * `TWILIO_SMS_TENANT_ID` a NUESTRO tenant para que el webhook resuelva ahí y corra su flujo de
+ * inicio (start → ticket_create), donde los adjuntos se consumen.
+ */
+describe('1.21 Canal SMS, media entrante MMS (BE-SMS-12)', () => {
+  let t: TestApp;
+  let broker: BrokerService;
+  let twilioMedia: TwilioMediaService;
+  let mediaDir: string;
+
+  beforeAll(async () => {
+    t = await createTestApp({
+      customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok')),
+    });
+    broker = t.moduleRef.get(BrokerService);
+    twilioMedia = t.moduleRef.get(TwilioMediaService);
+  }, 30000);
+
+  afterAll(async () => {
+    await new Promise((r) => setTimeout(r, 300));
+    await t.close();
+  });
+
+  beforeEach(async () => {
+    mediaDir = await mkdtemp(path.join(os.tmpdir(), 'pci-sms-media-'));
+    await setSetting(t.prisma, 'TWILIO_ACCOUNT_SID', TWILIO_ACCOUNT_SID);
+    await setSetting(t.prisma, 'TWILIO_AUTH_TOKEN', TWILIO_AUTH_TOKEN);
+    await setSetting(t.prisma, 'MEDIA_STORAGE_DIR', mediaDir);
+  });
+
+  afterEach(async () => {
+    await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
+    await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
+    await deleteSetting(t.prisma, 'MEDIA_STORAGE_DIR');
+    await deleteSetting(t.prisma, 'TWILIO_SMS_TENANT_ID');
+    await rm(mediaDir, { recursive: true, force: true });
+  });
+
+  it(
+    'BE-SMS-12: un MMS con 2 imágenes reusa TwilioMediaService y ambas viajan al ticket_create como adjuntos',
+    async () => {
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('sms12') });
+      await setSetting(t.prisma, 'TWILIO_SMS_TENANT_ID', tenant.id); // el webhook resuelve acá
+      const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'SMS-12' });
+      const phone = uniquePhone();
+      const user = await createUser(t.prisma, {
+        email: uniqueEmail('sms12'),
+        phone,
+        firstName: 'SMS12',
+        memberships: [{ tenantId: tenant.id, roleId: role.id }],
+      });
+      await createFlow(t.prisma, {
+        name: 'SMS-12',
+        nodes: [startNode('s'), ticketCreateNode('tc', { subject: 'Adjuntos MMS' }), endNode('e')],
+        edges: [edge('s', 'tc', 'known'), edge('tc', 'e')],
+        assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
+      });
+
+      // Dos JPEG reales; el webhook de SMS reusa la misma descarga/resize/retención que WhatsApp.
+      const img0 = await sharp({ create: { width: 800, height: 600, channels: 3, background: { r: 200, g: 10, b: 10 } } })
+        .jpeg()
+        .toBuffer();
+      const img1 = await sharp({ create: { width: 640, height: 480, channels: 3, background: { r: 10, g: 200, b: 10 } } })
+        .jpeg()
+        .toBuffer();
+      const mock = installBinaryFetchMock((url) => (url.endsWith('ME1') ? { body: img1 } : { body: img0 }));
+      const publishSpy = jest.spyOn(broker, 'publish');
+      // Passthrough (sin mockImplementation): observamos que `ticket_create` lea los adjuntos,
+      // sin reemplazar el comportamiento real de `TwilioMediaService` (frontera bajo prueba).
+      const readSpy = jest.spyOn(twilioMedia, 'read');
+      try {
+        const res = await http(t)
+          .post('/webhooks/twilio-sms')
+          .type('form')
+          .send({
+            From: phone,
+            Body: 'adjunto dos fotos',
+            NumMedia: '2',
+            MediaUrl0: 'https://media.twiliocdn.test/Messages/MM12/Media/ME0',
+            MediaContentType0: 'image/jpeg',
+            MediaUrl1: 'https://media.twiliocdn.test/Messages/MM12/Media/ME1',
+            MediaContentType1: 'image/jpeg',
+          });
+        expect(res.status).toBe(200);
+
+        // Ambas imágenes se bajaron y viajan en sms.incoming.
+        const inc = publishSpy.mock.calls.find(
+          (c) => c[0] === 'sms.incoming' && (c[1] as any).data?.from === phone,
+        );
+        expect(inc).toBeDefined();
+        expect((inc![1] as any).data.channel).toBe('sms');
+        expect((inc![1] as any).data.attachments).toHaveLength(2);
+
+        // La charla corre el flujo de inicio hasta ticket_create (crea el Ticket).
+        await waitFor(async () => !!(await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenant.id } })));
+        const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenant.id } });
+        expect(ticket).not.toBeNull();
+
+        // ticket_create → loadAttachments leyó (y consumió) los 2 adjuntos: prueba que llegaron.
+        await waitFor(() => readSpy.mock.calls.length >= 2);
+        expect(readSpy.mock.calls).toHaveLength(2);
+      } finally {
+        publishSpy.mockRestore();
+        readSpy.mockRestore();
+        mock.restore();
+      }
+    },
+    20000,
+  );
 });

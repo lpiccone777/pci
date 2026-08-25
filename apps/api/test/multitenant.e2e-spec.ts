@@ -287,21 +287,55 @@ describe('1.3 Multitenant (BE-MT-*)', () => {
   });
 
   // --- BE-MT-12: el candado de superusuario lee el vínculo de sistema, no la empresa activa ---
-  it('BE-MT-12: el superusuario parado en una empresa común sigue viendo la configuración global y todas las empresas', async () => {
+  it('BE-MT-12: el superusuario parado en una empresa común responde 200 en TODAS las operaciones con candado', async () => {
     const { admin } = await getSystemContext(t.prisma);
     const common = await createTenant(t.prisma, { slug: uniqueSlug('mt12') });
     const token = tokenFor(t, admin);
 
     // `SystemTenantGuard` mira `request.userTenant` (el vínculo de sistema que dejó
     // `TenantGuard.resolveAsSystemUser`), igual que `RolesGuard` — no `request.tenantId`
-    // (la empresa pedida en el header). `/settings` es la config global, única en toda la
-    // base: responde igual sin importar en qué empresa esté parado el superusuario.
-    const settingsRes = await withAuth(http(t).get('/settings'), token, common.id);
-    expect(settingsRes.status).toBe(200);
+    // (la empresa pedida en el header). El candado es una sola pieza compartida: todas
+    // estas operaciones son globales por naturaleza (la config es única en toda la base y
+    // las vistas `/all` no dependen de la empresa elegida), así que responden lo mismo esté
+    // parado donde esté. Se cubren las dos pantallas del menú (Configuración y ABM de
+    // empresas) y las vistas de todas las empresas de usuarios, roles, áreas y flujos.
+    const lockedEndpoints = [
+      '/settings', // configuración global
+      '/tenants/all', // ABM de empresas (vista de todas las empresas)
+      '/users/all', // usuarios de todas las empresas
+      '/roles/all', // roles de todas las empresas
+      '/areas/all', // áreas de todas las empresas
+      '/flows/all', // flujos de todas las empresas
+    ];
 
-    // Mismo mecanismo en la otra pantalla cross-tenant: `GET /tenants/all`.
-    const tenantsRes = await withAuth(http(t).get('/tenants/all'), token, common.id);
-    expect(tenantsRes.status).toBe(200);
+    for (const path of lockedEndpoints) {
+      const res = await withAuth(http(t).get(path), token, common.id);
+      expect(`${path} → ${res.status}`).toBe(`${path} → 200`);
+    }
+  });
+
+  // --- BE-MT-12b: un admin de empresa común NO pasa el candado, aunque se auto-asigne el permiso ---
+  it('BE-MT-12b: un administrador de empresa común recibe 403 en una operación con candado aunque tenga el permiso RBAC', async () => {
+    // Contraparte de BE-MT-12: el corte es por VÍNCULO con el tenant de sistema, no por el
+    // permiso RBAC. Un admin de empresa común puede auto-asignarse `settings:read`, pero
+    // `SystemTenantGuard` corta antes que `RolesGuard` porque su vínculo no es el de sistema.
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('mt12b') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Admin empresa común',
+      // Aunque tenga TODOS estos permisos, no tiene vínculo con el tenant de sistema.
+      permissions: ['settings:read', 'tenants:read', 'users:read', 'roles:read', 'areas:read', 'flows:read'],
+    });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('mt12b'),
+      password: DEFAULT_PASSWORD,
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, user);
+
+    const res = await withAuth(http(t).get('/settings'), token, tenant.id);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('Esta operación solo puede realizarse desde el tenant de sistema');
   });
 
   // --- BE-MT-13: ser miembro del tenant de sistema NO alcanza; hace falta el rol SuperAdmin ---

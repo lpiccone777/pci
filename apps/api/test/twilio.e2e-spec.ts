@@ -30,6 +30,7 @@ import {
   TestApp,
   http,
   uniquePhone,
+  uniqueSlug,
   setSetting,
   deleteSetting,
   installFetchMock,
@@ -38,8 +39,13 @@ import {
 import { PrismaService } from '../src/prisma/prisma.service';
 import { BrokerService } from '../src/modules/broker/broker.service';
 import { TwilioWhatsAppService } from '../src/modules/whatsapp/twilio-whatsapp.service';
+import { TwilioMediaService } from '../src/common/twilio-media.service';
 import { LlmService } from '../src/modules/llm/llm.service';
 import { WhatsAppInteractive } from '../src/modules/whatsapp/whatsapp-interactive.types';
+import sharp from 'sharp';
+import { mkdtemp, rm, readFile, writeFile, utimes } from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 
 /**
  * Espera hasta que `check()` devuelva `true` o vence el timeout. Hace falta porque publicar en
@@ -54,6 +60,32 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`waitFor: la condición no se cumplió dentro de ${timeoutMs}ms`);
+}
+
+/**
+ * Igual que `installFetchMock` pero deja pasar cuerpos BINARIOS intactos: el `router` puede
+ * devolver un `Buffer` como `body` y llega tal cual a `res.arrayBuffer()`. Hace falta porque
+ * `installFetchMock` serializa cualquier body no-string con `JSON.stringify`, y pasar la imagen
+ * como string latin1 la corrompe al re-encodear a UTF-8 dentro de `new Response(...)`
+ * (comprobado: los bytes de un PNG/JPEG real no sobreviven). Para bajar imágenes reales y volver
+ * a leerlas del disco (verificar resize/orientación) hace falta este canal binario. Sigue
+ * mockeando SOLO la frontera HTTP (descarga de media de Twilio).
+ */
+function installBinaryFetchMock(
+  router: (
+    url: string,
+    init?: RequestInit,
+  ) => { status?: number; body?: Buffer | string; headers?: Record<string, string> },
+) {
+  const requests: { url: string; init?: RequestInit }[] = [];
+  const spy = jest.spyOn(globalThis, 'fetch').mockImplementation((async (input: any, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input?.url ?? String(input);
+    requests.push({ url, init });
+    const res = router(url, init);
+    const headers = new Headers(res.headers ?? {});
+    return new Response((res.body ?? '') as BodyInit, { status: res.status ?? 200, headers });
+  }) as unknown as typeof fetch);
+  return { requests, restore: () => spy.mockRestore() };
 }
 
 const TWILIO_ACCOUNT_SID = 'ACtest00000000000000000000000000';
@@ -189,7 +221,9 @@ describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-
 
       const call = publishSpy.mock.calls.find((c) => c[0] === 'whatsapp.incoming');
       expect(call).toBeDefined();
-      expect((call![1] as any).data).toEqual({ from: phone, body: 'Hola, necesito ayuda', channel: 'whatsapp' });
+      // El webhook SIEMPRE arma `attachments` (feature de media): `extractMedia` devuelve `[]`
+      // cuando no hay media y el controller lo incluye en el publish (ver TwilioWebhookController).
+      expect((call![1] as any).data).toEqual({ from: phone, body: 'Hola, necesito ayuda', channel: 'whatsapp', attachments: [] });
 
       // Esperar a que termine de fondo el pipeline real que dispara ese publish
       // (`ConversationsService.handleMessage`, siempre suscripto a `whatsapp.incoming`): sin
@@ -497,6 +531,339 @@ describe('1.19 Canal WhatsApp — Twilio, mecánica del conector (BE-TWA-05..09,
       }
     } finally {
       restore();
+    }
+  });
+});
+
+/**
+ * Media entrante por WhatsApp (Twilio) — `TwilioMediaService` + `TwilioWebhookController`.
+ *
+ * Describe propio (app propia, mismo criterio que el resto del archivo). A diferencia del
+ * "webhook de entrada", ESTE bloque SÍ carga credenciales de Twilio en cada test (las necesita
+ * `downloadAndStore` para autenticarse contra la media de Twilio), pero eso no activa ningún
+ * conector de salida: el de WhatsApp Twilio solo se suscribe con `WHATSAPP_PROVIDER=twilio`
+ * (no seteado acá) y el de Meta necesita SUS credenciales — así que la respuesta que
+ * `handleMessage` publica de fondo en `whatsapp.outgoing` sigue siendo un no-op silencioso.
+ *
+ * `MEDIA_STORAGE_DIR` se apunta a un temporal propio por test (borrado en `afterEach`) para no
+ * ensuciar `uploads/incoming-media` del repo ni pisarse entre tests.
+ *
+ * La descarga de media se mockea con `installBinaryFetchMock` (canal binario, ver arriba)
+ * cuando el test lee de vuelta la imagen del disco, y con el `installFetchMock` compartido
+ * cuando solo importa el status/headers (404, tamaño).
+ */
+describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () => {
+  let t: TestApp;
+  let broker: BrokerService;
+  let twilioMedia: TwilioMediaService;
+  let mediaDir: string;
+
+  beforeAll(async () => {
+    t = await createTestApp({
+      customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok')),
+    });
+    broker = t.moduleRef.get(BrokerService);
+    twilioMedia = t.moduleRef.get(TwilioMediaService);
+  }, 30000);
+
+  afterAll(async () => {
+    // Margen para que el pipeline de fondo (handleMessage → whatsapp.outgoing, no-op) ackee
+    // antes de cerrar — mismo motivo que los otros describes del archivo.
+    await new Promise((r) => setTimeout(r, 300));
+    await t.close();
+  });
+
+  beforeEach(async () => {
+    mediaDir = await mkdtemp(path.join(os.tmpdir(), 'pci-twa-media-'));
+    await setSetting(t.prisma, 'TWILIO_ACCOUNT_SID', TWILIO_ACCOUNT_SID);
+    await setSetting(t.prisma, 'TWILIO_AUTH_TOKEN', TWILIO_AUTH_TOKEN);
+    await setSetting(t.prisma, 'MEDIA_STORAGE_DIR', mediaDir);
+  });
+
+  afterEach(async () => {
+    await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
+    await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
+    await deleteSetting(t.prisma, 'MEDIA_STORAGE_DIR');
+    await deleteSetting(t.prisma, 'TWILIO_TENANT_ID');
+    await rm(mediaDir, { recursive: true, force: true });
+  });
+
+  it('BE-TWA-12: baja cada adjunto con Authorization Basic, auto-orienta/redimensiona (jpeg), no toca gif/pdf, publica attachments; solo-imagen NO se descarta; tope MAX_MEDIA_ITEMS=10', async () => {
+    // JPEG apaisado 2400x1000 con EXIF orientation=6 (foto sacada con el celular de costado):
+    // al auto-orientar por EXIF pasa a vertical, y al redimensionar entra en 1920x1080.
+    const orientedJpeg = await sharp({
+      create: { width: 2400, height: 1000, channels: 3, background: { r: 0, g: 128, b: 255 } },
+    })
+      .withMetadata({ orientation: 6 })
+      .jpeg()
+      .toBuffer();
+    // GIF grande: multi-frame, NO se redimensiona (queda 3000x2000).
+    const bigGif = await sharp({
+      create: { width: 3000, height: 2000, channels: 3, background: { r: 10, g: 20, b: 30 } },
+    })
+      .gif()
+      .toBuffer();
+    // "PDF": no es imagen, no se redimensiona; se guarda tal cual con extensión .pdf.
+    const pdfBytes = Buffer.from('%PDF-1.4\nfake pdf payload\n%%EOF');
+
+    const base = `https://media.twiliocdn.test/Messages/MM1/Media`;
+    const mock = installBinaryFetchMock((url) => {
+      if (url.endsWith('ME0')) return { body: orientedJpeg };
+      if (url.endsWith('ME1')) return { body: bigGif };
+      if (url.endsWith('ME2')) return { body: pdfBytes };
+      return { status: 404 };
+    });
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const phone = uniquePhone();
+      // Sin `Body` (solo imágenes): antes se descartaba, ahora sigue de largo.
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .send({
+          From: `whatsapp:${phone}`,
+          NumMedia: '3',
+          MediaUrl0: `${base}/ME0`,
+          MediaContentType0: 'image/jpeg',
+          MediaUrl1: `${base}/ME1`,
+          MediaContentType1: 'image/gif',
+          MediaUrl2: `${base}/ME2`,
+          MediaContentType2: 'application/pdf',
+        });
+      expect(res.status).toBe(200);
+
+      // Cada descarga lleva Authorization: Basic base64(SID:token) de /settings.
+      const mediaReqs = mock.requests.filter((r) => r.url.includes('/Media/'));
+      expect(mediaReqs).toHaveLength(3);
+      for (const r of mediaReqs) {
+        const authHeader = (r.init!.headers as Record<string, string>)['Authorization'];
+        const decoded = Buffer.from(authHeader.replace('Basic ', ''), 'base64').toString();
+        expect(decoded).toBe(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
+      }
+
+      // whatsapp.incoming con los 3 adjuntos y body vacío: el mensaje solo-imagen NO se descartó.
+      const call = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
+      );
+      expect(call).toBeDefined();
+      const data = (call![1] as any).data;
+      expect(data.body).toBe('');
+      expect(data.channel).toBe('whatsapp');
+      expect(data.attachments).toHaveLength(3);
+      const byType: Record<string, any> = Object.fromEntries(
+        data.attachments.map((a: any) => [a.contentType, a]),
+      );
+
+      // JPEG: auto-orientado (apaisado → vertical) y redimensionado a ≤1920x1080.
+      const jpegMeta = await sharp(byType['image/jpeg'].path).metadata();
+      expect(jpegMeta.width).toBeLessThanOrEqual(1920);
+      expect(jpegMeta.height).toBeLessThanOrEqual(1080);
+      expect(jpegMeta.height!).toBeGreaterThan(jpegMeta.width!); // la orientación EXIF se aplicó
+      expect(byType['image/jpeg'].filename.endsWith('.jpg')).toBe(true);
+
+      // GIF: NO redimensionado (sigue 3000x2000).
+      const gifMeta = await sharp(byType['image/gif'].path).metadata();
+      expect(gifMeta.width).toBe(3000);
+      expect(gifMeta.height).toBe(2000);
+      expect(byType['image/gif'].filename.endsWith('.gif')).toBe(true);
+
+      // PDF: guardado tal cual (mismos bytes), extensión .pdf.
+      const storedPdf = await readFile(byType['application/pdf'].path);
+      expect(storedPdf.equals(pdfBytes)).toBe(true);
+      expect(byType['application/pdf'].filename.endsWith('.pdf')).toBe(true);
+    } finally {
+      publishSpy.mockRestore();
+      mock.restore();
+    }
+
+    // --- Tope MAX_MEDIA_ITEMS=10: 12 adjuntos declarados, solo 10 se descargan/publican ---
+    const tiny = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: { r: 1, g: 2, b: 3 } },
+    })
+      .png()
+      .toBuffer();
+    const capMock = installBinaryFetchMock(() => ({ body: tiny }));
+    const capSpy = jest.spyOn(broker, 'publish');
+    try {
+      const phone2 = uniquePhone();
+      const payload: Record<string, string> = { From: `whatsapp:${phone2}`, NumMedia: '12' };
+      for (let i = 0; i < 12; i++) {
+        payload[`MediaUrl${i}`] = `https://media.twiliocdn.test/Messages/MM2/Media/ME${i}`;
+        payload[`MediaContentType${i}`] = 'image/png';
+      }
+      const res2 = await http(t).post('/webhooks/twilio').type('form').send(payload);
+      expect(res2.status).toBe(200);
+
+      const mediaReqs2 = capMock.requests.filter((r) => r.url.includes('/Media/'));
+      expect(mediaReqs2).toHaveLength(10); // NumMedia=12, pero el tope corta en 10
+      const call2 = capSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone2,
+      );
+      expect((call2![1] as any).data.attachments).toHaveLength(10);
+    } finally {
+      capSpy.mockRestore();
+      capMock.restore();
+    }
+  }, 20000);
+
+  it('BE-TWA-13: URL no-2xx o sin credenciales → warn y se saltea el adjunto (la charla sigue); el cron borra temporales de +10min; ni SID ni token se loguean', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn');
+    const logSpy = jest.spyOn(Logger.prototype, 'log');
+    try {
+      // --- (A) URL 404: el adjunto se saltea, el mensaje se publica igual con su body ---
+      // URL sin el SID adentro, para que el warn (que loguea la URL) no lo arrastre.
+      const url404 = 'https://media.twiliocdn.test/Messages/MMbad/Media/MEbad';
+      const mockA = installFetchMock(() => ({ status: 404, body: 'not found' }));
+      const publishSpyA = jest.spyOn(broker, 'publish');
+      try {
+        const phone = uniquePhone();
+        const res = await http(t)
+          .post('/webhooks/twilio')
+          .type('form')
+          .send({ From: `whatsapp:${phone}`, Body: 'tengo un problema', NumMedia: '1', MediaUrl0: url404, MediaContentType0: 'image/jpeg' });
+        expect(res.status).toBe(200);
+
+        const call = publishSpyA.mock.calls.find(
+          (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
+        );
+        expect(call).toBeDefined();
+        expect((call![1] as any).data.body).toBe('tengo un problema'); // la charla no se rompe
+        expect((call![1] as any).data.attachments).toHaveLength(0); // el adjunto 404 se salteó
+        expect(warnSpy.mock.calls.some((a) => String(a[0]).includes('Twilio respondió 404'))).toBe(true);
+      } finally {
+        publishSpyA.mockRestore();
+        mockA.restore();
+      }
+
+      // --- (B) sin credenciales: warn y ni siquiera se intenta la descarga ---
+      await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
+      await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
+      const mockB = installFetchMock(() => ({ status: 200, body: 'no debería llamarse' }));
+      const publishSpyB = jest.spyOn(broker, 'publish');
+      try {
+        const phone = uniquePhone();
+        const res = await http(t)
+          .post('/webhooks/twilio')
+          .type('form')
+          .send({ From: `whatsapp:${phone}`, Body: 'hola', NumMedia: '1', MediaUrl0: 'https://media.twiliocdn.test/Messages/MMx/Media/MEnocreds', MediaContentType0: 'image/jpeg' });
+        expect(res.status).toBe(200);
+
+        expect(mockB.requests).toHaveLength(0); // sin credenciales no llega a `fetch`
+        const call = publishSpyB.mock.calls.find(
+          (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
+        );
+        expect((call![1] as any).data.attachments).toHaveLength(0);
+        expect(
+          warnSpy.mock.calls.some((a) => String(a[0]).includes('falta TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN')),
+        ).toBe(true);
+      } finally {
+        publishSpyB.mockRestore();
+        mockB.restore();
+      }
+
+      // --- (C) el cron @Cron('*/2 …') borra temporales de más de 10 min y deja los frescos ---
+      const oldFile = path.join(mediaDir, 'old.jpg');
+      const freshFile = path.join(mediaDir, 'fresh.jpg');
+      await writeFile(oldFile, 'viejo');
+      await writeFile(freshFile, 'nuevo');
+      const elevenMinAgo = new Date(Date.now() - 11 * 60 * 1000);
+      await utimes(oldFile, elevenMinAgo, elevenMinAgo);
+
+      await twilioMedia.cleanupExpired();
+
+      await expect(readFile(oldFile)).rejects.toThrow(); // el de +10min se borró
+      expect((await readFile(freshFile)).toString()).toBe('nuevo'); // el fresco quedó
+
+      // --- Ni el SID ni el token aparecieron en ningún log (warn/log) ---
+      const allLogs = [...warnSpy.mock.calls, ...logSpy.mock.calls].map((a) => a.map(String).join(' ')).join('\n');
+      expect(allLogs).not.toContain(TWILIO_ACCOUNT_SID);
+      expect(allLogs).not.toContain(TWILIO_AUTH_TOKEN);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it.failing('BE-TWA-14: un adjunto de media demasiado grande debería rechazarse por un tope de bytes / Content-Length (robustez) @invertido', async () => {
+    // Declara 64MB por Content-Length; hoy `downloadAndStore` ignora el header y hace
+    // `res.arrayBuffer()` (carga todo en memoria), con el timeout de 20s como único freno.
+    const bigBody = 'a'.repeat(1024 * 1024); // 1MB de relleno; el header declara mucho más
+    const mock = installFetchMock(() => ({
+      status: 200,
+      body: bigBody,
+      headers: { 'content-length': String(64 * 1024 * 1024), 'content-type': 'image/jpeg' },
+    }));
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const phone = uniquePhone();
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .send({ From: `whatsapp:${phone}`, Body: 'foto pesada', NumMedia: '1', MediaUrl0: 'https://media.twiliocdn.test/Messages/MMh/Media/MEhuge', MediaContentType0: 'image/jpeg' });
+      expect(res.status).toBe(200);
+
+      const call = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
+      );
+      // SEGURO (deseado): con un tope de bytes / chequeo de Content-Length, el adjunto gigante
+      // se rechaza y no viaja ningún attachment. Hoy no hay tope: se descarga y guarda igual,
+      // así que `attachments` trae 1 y este assert falla → por eso va con `it.failing`.
+      expect((call![1] as any).data.attachments).toHaveLength(0);
+    } finally {
+      publishSpy.mockRestore();
+      mock.restore();
+    }
+  });
+
+  it('BE-TWA-15: sin TWILIO_TENANT_ID y con la empresa más vieja dada de baja, resolveTenantId cae a la más vieja ACTIVA', async () => {
+    await deleteSetting(t.prisma, 'TWILIO_TENANT_ID');
+
+    // Dos empresas más viejas que cualquier otra de la corrida (backdate a 1970): la MÁS vieja
+    // dada de baja, la siguiente activa. Antes `findFirst` sin `deletedAt:null` resolvía a la
+    // dada de baja y `handleMessage` descartaba el mensaje (empresa dada de baja → silencio);
+    // ahora el filtro `where:{deletedAt:null}` la salta y cae a la más vieja ACTIVA.
+    // Se crean DENTRO del try para que el cleanup del finally corra aunque una de las dos
+    // creaciones (o cualquier assert) falle antes de tiempo.
+    let deleted: { id: string } | undefined;
+    let active: { id: string } | undefined;
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      deleted = await t.prisma.tenant.create({
+        data: { slug: uniqueSlug('twa15-del'), name: 'baja', createdAt: new Date('1970-01-01T00:00:00Z'), deletedAt: new Date() },
+      });
+      active = await t.prisma.tenant.create({
+        data: { slug: uniqueSlug('twa15-act'), name: 'activa', createdAt: new Date('1970-01-02T00:00:00Z') },
+      });
+
+      const phone = uniquePhone();
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .send({ From: `whatsapp:${phone}`, Body: 'hola' });
+      expect(res.status).toBe(200);
+
+      const call = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as any).tenantId).toBe(active.id); // la activa, NO la dada de baja
+      expect((call![1] as any).tenantId).not.toBe(deleted.id);
+    } finally {
+      publishSpy.mockRestore();
+      // Cleanup robusto: dar de baja las dos empresas Y sacarles el `createdAt` del piso de 1970.
+      // El soft-delete solo no basta: hay specs que resuelven "el tenant más antiguo del sistema"
+      // con `findFirst({orderBy:{createdAt:'asc'}})` SIN filtrar `deletedAt` (p. ej. BE-WHK-10 en
+      // webhook-whatsapp.e2e), y esas filas backdateadas a 1970 quedarían como las más viejas del
+      // sistema aunque estén dadas de baja — divergiendo del webhook real, que sí filtra
+      // `deletedAt:null`. Con `createdAt` = ahora dejan de sesgar ese orden global. Soft-delete
+      // (no hard) para no chocar con las filas que el pipeline de fondo pudo crear bajo `active`.
+      const ids = [deleted?.id, active?.id].filter((x): x is string => !!x);
+      if (ids.length) {
+        await t.prisma.tenant.updateMany({
+          where: { id: { in: ids } },
+          data: { deletedAt: new Date(), createdAt: new Date() },
+        });
+      }
     }
   });
 });

@@ -12,15 +12,19 @@
  * y el texto literal de labels/botones. Los diálogos de guardar/confirmar/eliminar son
  * `window.confirm`/`window.alert` NATIVOS → se manejan con `page.on('dialog', …)`.
  *
- * NO se automatizan tres casos del canvas por decisión explícita (interacciones nativas de ReactFlow
- * demasiado frágiles en headless, sin selectores estables): FE-FLW-05 (arrastrar de la paleta),
- * FE-FLW-06 (conectar dos nodos handle-a-handle) y FE-FLW-07 (borrar arista con la × al hover).
- * Quedan sin cobertura a propósito; no se cuentan como cubiertos.
+ * Cinco casos del canvas quedan EXCLUIDOS por decisión del plan (gestos nativos de ReactFlow
+ * demasiado frágiles en headless, sin selectores estables — ver `docs/plan-de-pruebas.md`):
+ * FE-FLW-05 (arrastrar de la paleta), FE-FLW-06 (conectar dos nodos handle-a-handle), FE-FLW-07
+ * (borrar arista con la × al hover), FE-FLW-16 (borrar el nodo con Delete: depende de selección
+ * previa y foco del canvas) y FE-FLW-19 (nodo SMS: hereda el drag nativo de la paleta). FE-05/06/07
+ * nunca tuvieron cuerpo; FE-16/19 antes corrían y quedan como `test.skip` para dejar visible la
+ * reclasificación. Ninguno se cuenta como cubierto.
  *
- * FE-FLW-22..25 son casos INVERTIDOS (`test.fail`): describen el comportamiento SEGURO/robusto que
- * hoy no existe. El assert verifica ese comportamiento deseado; hoy falla a propósito. Cuando se
- * corrija el hallazgo, el marcador saltará y avisará que hay que quitarlo.
+ * FE-FLW-22..25 y FE-FLW-29 son casos INVERTIDOS (`test.fail`): describen el comportamiento
+ * SEGURO/robusto que hoy no existe. El assert verifica ese comportamiento deseado; hoy falla a
+ * propósito. Cuando se corrija el hallazgo, el marcador saltará y avisará que hay que quitarlo.
  */
+import { readFileSync } from 'node:fs';
 import { test, expect, type Page } from '@playwright/test';
 import {
   adminContext,
@@ -312,7 +316,9 @@ test('FE-FLW-15: el payload de guardado limpia las props transitorias de ReactFl
   }
 });
 
-test('FE-FLW-16: se puede borrar el nodo seleccionado con la tecla Delete', async ({ page }) => {
+// Reclasificado a EXCLUIDO por el plan (gesto de canvas frágil: depende de selección previa y foco
+// del canvas). Antes corría; se deja como `test.skip` para dejar constancia de la reclasificación.
+test.skip('FE-FLW-16: se puede borrar el nodo seleccionado con la tecla Delete', async ({ page }) => {
   const flow = await createFlow(admin, {
     nodes: [
       { id: 'start_1', type: 'start', data: { text: 'Hola' }, position: { x: 250, y: 40 } },
@@ -402,7 +408,10 @@ test('FE-FLW-18: el selector de Skill lista sólo las activas y vincula/desvincu
   expect(JSON.parse(patchDesvincula.postData() ?? '{}').skillId).toBeNull();
 });
 
-test('FE-FLW-19: el nodo SMS tiene mensaje y selector de destinatarios', async ({ page }) => {
+// Reclasificado a EXCLUIDO por el plan (el caso es el nodo SMS en la paleta: hereda el drag nativo,
+// ver FE-FLW-05). El chequeo del panel (message + destinatarios) era estable, pero el plan excluye el
+// caso; antes corría y se deja como `test.skip` para dejar constancia de la reclasificación.
+test.skip('FE-FLW-19: el nodo SMS tiene mensaje y selector de destinatarios', async ({ page }) => {
   const flow = await createFlow(admin, {
     nodes: [
       { id: 'start_1', type: 'start', data: { text: 'Hola' }, position: { x: 250, y: 40 } },
@@ -543,5 +552,180 @@ test.fail(
 
     // SEGURO: debería mostrar el aviso de permiso. Hoy muestra "No hay flujos configurados.".
     await expect(page.getByText(/Permiso denegado.*flows:read/)).toBeVisible();
+  },
+);
+
+// ===================== DUPLICAR / EXPORTAR / IMPORTAR =====================
+
+test('FE-FLW-26: "Duplicar" clona vía GET+POST con "(copia)" y redirige al editor del nuevo', async ({
+  page,
+}) => {
+  const source = await createContextSource(admin, { tenantId: admin.systemTenantId, type: 'n8n' });
+  const skill = await createSkill(admin, { tenantId: admin.systemTenantId, isActive: true });
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const flow = await createFlow(admin, {
+    contextSourceId: source.id,
+    skillId: skill.id,
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+  });
+
+  // Gateado por flows:create: un usuario sólo-lectura ve la card pero NO el botón "Duplicar".
+  const reader = await createUserWithPermissions(admin, ['flows:read'], { tenantId: tenant.id });
+  await injectSession(page, await sessionForUser(reader.email, reader.password, tenant.id));
+  await page.goto('/dashboard/flows');
+  await expect(flowCard(page, flow.name)).toBeVisible();
+  await expect(flowCard(page, flow.name).getByRole('button', { name: 'Duplicar' })).toHaveCount(0);
+
+  // Con flows:create (superadmin): "Duplicar" hace GET /flows/:id y luego POST /flows con "(copia)".
+  await injectSession(page, { token: admin.token, activeTenant: ALL_TENANTS });
+  await page.goto('/dashboard/flows');
+  const [getReq, postReq] = await Promise.all([
+    page.waitForRequest(
+      (r) => r.method() === 'GET' && new RegExp(`/flows/${flow.id}$`).test(r.url()),
+    ),
+    page.waitForRequest((r) => r.method() === 'POST' && /\/flows$/.test(r.url())),
+    flowCard(page, flow.name).getByRole('button', { name: 'Duplicar' }).click(),
+  ]);
+  expect(getReq).toBeTruthy();
+
+  const body = JSON.parse(postReq.postData() ?? '{}');
+  expect(body.name).toBe(`${flow.name} (copia)`);
+  expect(body.contextSourceId).toBe(source.id);
+  expect(body.skillId).toBe(skill.id);
+  // Nace sin empresas: el POST de duplicado no manda assignments (se asignan luego desde el editor).
+  expect(body.assignments).toBeUndefined();
+
+  // Redirige al editor del flujo nuevo.
+  await expect(page).toHaveURL(/\/dashboard\/flows\/edit\/?\?id=/);
+});
+
+test('FE-FLW-27: "Exportar" descarga un .flow.json con name/description/nodes/edges/contextSourceId/skillId', async ({
+  page,
+}) => {
+  const source = await createContextSource(admin, { tenantId: admin.systemTenantId, type: 'n8n' });
+  const skill = await createSkill(admin, { tenantId: admin.systemTenantId, isActive: true });
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const flow = await createFlow(admin, {
+    description: 'Flujo para exportar',
+    contextSourceId: source.id,
+    skillId: skill.id,
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+  });
+
+  // Gateado por flows:read: un usuario sólo-lectura SÍ ve "Exportar".
+  const reader = await createUserWithPermissions(admin, ['flows:read'], { tenantId: tenant.id });
+  await injectSession(page, await sessionForUser(reader.email, reader.password, tenant.id));
+  await page.goto('/dashboard/flows');
+  const exportBtn = flowCard(page, flow.name).getByRole('button', { name: 'Exportar' });
+  await expect(exportBtn).toBeVisible();
+
+  // La descarga se dispara desde el navegador (Blob + <a download>): la captura Playwright.
+  const [download] = await Promise.all([page.waitForEvent('download'), exportBtn.click()]);
+  expect(download.suggestedFilename()).toMatch(/\.flow\.json$/);
+
+  const path = await download.path();
+  const payload = JSON.parse(readFileSync(path, 'utf-8'));
+  expect(Object.keys(payload).sort()).toEqual(
+    ['contextSourceId', 'description', 'edges', 'name', 'nodes', 'skillId'].sort(),
+  );
+  expect(payload.name).toBe(flow.name);
+  expect(payload.contextSourceId).toBe(source.id);
+  expect(payload.skillId).toBe(skill.id);
+  expect(Array.isArray(payload.nodes)).toBe(true);
+  expect(Array.isArray(payload.edges)).toBe(true);
+});
+
+test('FE-FLW-28: "Importar" valida superficialmente y hace POST; un JSON inválido sólo alerta', async ({
+  page,
+}) => {
+  await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+  await page.goto('/dashboard/flows');
+
+  const fileInput = page.locator('input[type="file"]');
+
+  // --- Inválido: sin name/nodes/edges → alert de formato y NO llama a la API ---
+  let posted = false;
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/flows$/.test(r.url())) posted = true;
+  });
+  let alertMsg = '';
+  page.once('dialog', async (d) => {
+    alertMsg = d.message();
+    await d.accept();
+  });
+  await fileInput.setInputFiles({
+    name: 'malformado.flow.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ foo: 'bar' })),
+  });
+  await expect
+    .poll(() => alertMsg)
+    .toBe('El archivo no tiene el formato esperado (falta name, nodes o edges).');
+  expect(posted).toBe(false);
+
+  // --- Válido: name + nodes[] + edges[] → POST /flows y redirige al editor ---
+  const validName = `Importado ${Date.now()}`;
+  const [postReq] = await Promise.all([
+    page.waitForRequest((r) => r.method() === 'POST' && /\/flows$/.test(r.url())),
+    fileInput.setInputFiles({
+      name: 'valido.flow.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          name: validName,
+          description: 'Importado por e2e',
+          nodes: [
+            { id: 'start_1', type: 'start', data: { text: 'Hola' }, position: { x: 250, y: 40 } },
+          ],
+          edges: [],
+        }),
+      ),
+    }),
+  ]);
+  expect(JSON.parse(postReq.postData() ?? '{}').name).toBe(validName);
+  await expect(page).toHaveURL(/\/dashboard\/flows\/edit\/?\?id=/);
+});
+
+// --- Caso invertido (comportamiento seguro/robusto deseado; hoy falla a propósito) ---
+
+test.fail(
+  'FE-FLW-29: importar en otra empresa debería sanear los ids embebidos ajenos (robustez/seguridad) @invertido',
+  async ({ page }) => {
+    // Un .flow.json exportado en la empresa A trae ids que sólo existen en A (acá, la fuente de verdad
+    // de A vía `contextSourceId`; igual valdría para `skillId`, el `userId` de assignees/recipients o el
+    // `flowId` de un nodo `subflow`). Importándolo con la empresa B activa, lo SEGURO es que el backend
+    // saneé o rechace ese id ajeno. Hoy `POST /flows` lo guarda como blob sin validar: el flujo nuevo
+    // queda apuntando a un recurso de A.
+    const empresaA = await createTenant(admin);
+    const fuenteA = await createContextSource(admin, { tenantId: empresaA.id, type: 'n8n' });
+    const empresaB = await createTenant(admin);
+
+    await injectSession(page, { token: admin.token, activeTenant: empresaB.id });
+    await page.goto('/dashboard/flows');
+
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'POST' && /\/flows$/.test(r.url())),
+      page.locator('input[type="file"]').setInputFiles({
+        name: 'de-empresa-a.flow.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(
+          JSON.stringify({
+            name: `Cruzado ${Date.now()}`,
+            description: 'Exportado de A, importado en B',
+            nodes: [
+              { id: 'start_1', type: 'start', data: { text: 'Hola' }, position: { x: 250, y: 40 } },
+            ],
+            edges: [],
+            contextSourceId: fuenteA.id,
+          }),
+        ),
+      }),
+    ]);
+    const created = await resp.json();
+
+    // SEGURO: el flujo importado en B NO debería quedar con la fuente de verdad de A. Hoy sí queda.
+    expect(created.contextSourceId).not.toBe(fuenteA.id);
   },
 );

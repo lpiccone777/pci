@@ -481,4 +481,90 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
+
+  it('BE-FLW-20: assign-tenants con un roleId de otra empresa (o inexistente) devuelve 400 y no persiste la asignación', async () => {
+    const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw20');
+    // Rol de OTRA empresa: no puede habilitar la recepción de un flujo en `tenant`.
+    const otherTenant = await createTenant(t.prisma, { slug: uniqueSlug('flw20-otra') });
+    const foreignRole = await createRole(t.prisma, { tenantId: otherTenant.id, name: 'Rol ajeno', permissions: [] });
+    const flow = await createFlow(t.prisma, { name: 'Flujo a asignar (flw20)', nodes: [], edges: [] });
+
+    // `applyTenantAssignment` valida la pertenencia de cada roleId ANTES de la transacción de
+    // reemplazo (ver flow.service.ts): un rol de otra empresa corta con 400 y mensaje explícito.
+    const conRolAjeno = await withAuth(http(t).post(`/flows/${flow.id}/assign-tenants`), token, tenant.id).send({
+      assignments: [{ tenantId: tenant.id, roleIds: [foreignRole.id] }],
+    });
+    expect(conRolAjeno.status).toBe(400);
+    expect(conRolAjeno.body.message).toBe(
+      `El rol ${foreignRole.id} no existe o no pertenece al tenant ${tenant.id}`,
+    );
+
+    // Un roleId inexistente cae por el mismo camino (no está en el mapa `tenantByRole` → mismatch).
+    const roleInexistente = 'rol-que-no-existe';
+    const conRolInexistente = await withAuth(http(t).post(`/flows/${flow.id}/assign-tenants`), token, tenant.id).send({
+      assignments: [{ tenantId: tenant.id, roleIds: [roleInexistente] }],
+    });
+    expect(conRolInexistente.status).toBe(400);
+    expect(conRolInexistente.body.message).toBe(
+      `El rol ${roleInexistente} no existe o no pertenece al tenant ${tenant.id}`,
+    );
+
+    // La validación corta antes del `$transaction`: no quedó ninguna asignación para ese flujo.
+    const tenantFlows = await t.prisma.tenantFlow.findMany({ where: { flowId: flow.id } });
+    expect(tenantFlows).toHaveLength(0);
+  });
+
+  // --- BE-FLW-21 (❌ robustez): el DTO de nodo no valida rango/forma de los campos de `llm_query` ---
+  // Invertidos (`it.failing`): asertan el comportamiento SEGURO (que el endpoint rechace con 400
+  // los valores inválidos). Hoy `FlowNodeDataDto` valida `temperature` solo con `@IsNumber` (sin
+  // rango), `maxAttempts` sin ningún validador de tipo, y `extractVariables` solo con `@IsArray`
+  // (sin `@ValidateNested`/`@Type` por item), así que esos valores pasan y el flujo se crea (201).
+  // Cuando se endurezca el DTO, estos tests pasarán a verde real y hay que sacarles el `.failing`.
+  describe('BE-FLW-21: validación de rango/forma de los campos de un nodo llm_query', () => {
+    it.failing('BE-FLW-21: temperature fuera de rango (999) debería rechazarse con 400 @invertido', async () => {
+      const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw21temp');
+
+      const res = await withAuth(http(t).post('/flows'), token, tenant.id).send({
+        name: 'Flujo temperature inválida',
+        nodes: [{ id: 'n1', type: 'llm_query', data: { temperature: 999 } }],
+        edges: [],
+      });
+
+      // SEGURO: temperature vive en 0-2 (ver el comentario del campo en flow-elements.dto.ts).
+      // Hoy el DTO la valida solo con `@IsNumber`, sin rango → 999 pasa y el flujo se crea.
+      expect(res.status).toBe(400);
+    });
+
+    it.failing('BE-FLW-21: maxAttempts no numérico ("abc") debería rechazarse con 400 @invertido', async () => {
+      const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw21max');
+
+      const res = await withAuth(http(t).post('/flows'), token, tenant.id).send({
+        name: 'Flujo maxAttempts inválido',
+        nodes: [{ id: 'n1', type: 'llm_query', data: { maxAttempts: 'abc' } }],
+        edges: [],
+      });
+
+      // SEGURO: maxAttempts es una cantidad de reintentos (debería llevar `@IsNumber`/`@Min`).
+      // Hoy el DTO lo declara solo `@IsOptional`, sin validador de tipo → "abc" pasa.
+      expect(res.status).toBe(400);
+    });
+
+    it.failing(
+      'BE-FLW-21: un item de extractVariables sin forma (sin `variable`) debería rechazarse con 400 @invertido',
+      async () => {
+        const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw21extract');
+
+        const res = await withAuth(http(t).post('/flows'), token, tenant.id).send({
+          name: 'Flujo extractVariables inválido',
+          nodes: [{ id: 'n1', type: 'llm_query', data: { extractVariables: [{ noEsVariable: 'x' }] } }],
+          edges: [],
+        });
+
+        // SEGURO: cada item necesita al menos `variable: string` (debería llevar
+        // `@ValidateNested({ each: true })` + `@Type(...)`). Hoy `extractVariables` se valida
+        // solo con `@IsArray` → un item sin esquema pasa sin control.
+        expect(res.status).toBe(400);
+      },
+    );
+  });
 });

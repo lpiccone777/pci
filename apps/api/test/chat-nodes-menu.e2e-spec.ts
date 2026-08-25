@@ -489,4 +489,110 @@ describe('2.3 Nodos del motor — menu (CHAT-N-MENU-*)', () => {
     // la vez, por un bug, se duplicarían las líneas).
     expect(numberedLines(res.body.reply)).toHaveLength(11);
   });
+
+  // ── CHAT-N-MENU-15: en fallback LLM, una opción exacta sale del LLM libre ────
+  // Verificado en `case 'menu'`: con `__llmFallback === node.id`, un `body.trim()` que iguale
+  // EXACTO un `value`, `label` o el índice (`String(idx+1)`) —o "Volver"— limpia `__llmFallback`
+  // y deja que el matching normal procese la selección; si no iguala, sigue en `orchestratorLlm`.
+
+  it('CHAT-N-MENU-15: en __llmFallback, una opción exacta (número) limpia el fallback y procesa la selección; una respuesta no exacta sigue en LLM libre', async () => {
+    const { phone, tenant, user } = await setupMenuFlow(mainMenuNodes(), mainMenuEdges());
+    await simulate(phone, tenant.id, 'hola');
+
+    // Secuestro del menú: un mensaje sin match ni cancelación entra en fallback LLM (CHAT-N-MENU-08).
+    orchestratorAnswer = 'Te ayudo con tu consulta general.';
+    await simulate(phone, tenant.id, 'xyz algo sin sentido');
+    let conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    expect((conv?.flowState as any)?.__llmFallback).toBe('menuRoot');
+
+    // Respuesta NO exacta: sigue en LLM libre, NO procesa ninguna opción.
+    orchestratorAnswer = 'Sigo en LLM libre.';
+    const noExacto = await simulate(phone, tenant.id, 'otra cosa random poco clara');
+    expect(noExacto.body.reply).toBe('Sigo en LLM libre.');
+    conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    expect((conv?.flowState as any)?.__llmFallback).toBe('menuRoot'); // sigue secuestrado
+
+    // Opción EXACTA por número ('3' = 'otro'): match estricto → limpia el fallback y enruta.
+    const res = await simulate(phone, tenant.id, '3');
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toContain('Listo, anotado el otro tema.'); // procesó la selección
+    conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    // La opción 'otro' llega a un `end` → la charla cierra y `closeConversation` deja flowState en null.
+    expect((conv?.flowState as any)?.__llmFallback).toBeUndefined(); // salió del LLM libre
+  });
+
+  it('CHAT-N-MENU-15: en __llmFallback dentro de un submenú, tipear "Volver" (label exacto) sale del LLM libre y desapila al menú anterior', async () => {
+    const { phone, tenant, user } = await setupMenuFlow(mainMenuNodes(), mainMenuEdges());
+    await simulate(phone, tenant.id, 'hola');
+    await simulate(phone, tenant.id, '2'); // reclamo → submenu (pila = [menuRoot], ofrece Volver)
+
+    orchestratorAnswer = 'Consulta libre en el submenú.';
+    await simulate(phone, tenant.id, 'xyz sin match en el submenu');
+    let conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    expect((conv?.flowState as any)?.__llmFallback).toBe('submenu');
+
+    // "Volver" iguala EXACTO el label de la opción sintética → sale del fallback y desapila.
+    // (El gate de cierre de charla evalúa 'Volver' pero el dispatch responde SEGUIR, así que no cierra.)
+    const res = await simulate(phone, tenant.id, 'Volver');
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toContain('¿En qué te ayudamos?'); // de vuelta en el menú raíz
+    expect(res.body.reply).not.toContain('Volver'); // raíz: pila vacía, sin Volver
+
+    conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    expect((conv?.flowState as any)?.__llmFallback).toBeUndefined();
+    expect(conv?.currentNodeId).toBe('menuRoot');
+  });
+
+  // ── CHAT-N-MENU-16: el botón "Volver" (__volver) no dispara el cierre de charla ─
+  // Verificado en `looksLikeCancelAttempt`: excluye por igualdad exacta el id `__volver` (antes
+  // matcheaba por substring contra la palabra 'volver' de CANCEL_HINT_WORDS). El clasificador de
+  // cierre se programa en CERRAR para probar por contraste que con el botón NUNCA se consulta.
+
+  it('CHAT-N-MENU-16: elegir el botón "Volver" (id __volver) con una gestión abierta NO dispara el cierre de charla; desapila normalmente', async () => {
+    const { phone, tenant, user } = await setupMenuFlow(mainMenuNodes(), mainMenuEdges());
+    // Si el gate de cierre se consultara, este clasificador diría CERRAR y cortaría la charla.
+    llm.setResponder((messages) => {
+      const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+      if (sys.includes('cerrar o reiniciar la charla completa')) return 'CERRAR';
+      return 'NINGUNA';
+    });
+    await simulate(phone, tenant.id, 'hola');
+    await simulate(phone, tenant.id, '2'); // → submenu, ofrece Volver
+
+    const callsBefore = llm.calls.length;
+    const res = await simulate(phone, tenant.id, '__volver'); // id EXACTO del botón sintético
+
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toContain('¿En qué te ayudamos?'); // desapiló al raíz, no cerró
+    // looksLikeCancelAttempt excluye el id exacto __volver → el clasificador de cierre nunca se consultó.
+    const newCalls = llm.calls.slice(callsBefore);
+    expect(newCalls.every((c) => !(c.messages[0]?.content ?? '').includes('cerrar o reiniciar la charla completa'))).toBe(true);
+
+    const conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    expect(conv?.status).toBe('active'); // la charla sigue abierta
+    expect(conv?.currentNodeId).toBe('menuRoot');
+  });
+
+  it('CHAT-N-MENU-16: escribir "volver" a mano SÍ evalúa el cierre de charla (looksLikeCancelAttempt matchea la palabra suelta)', async () => {
+    const { phone, tenant, user } = await setupMenuFlow(mainMenuNodes(), mainMenuEdges());
+    llm.setResponder((messages) => {
+      const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+      if (sys.includes('cerrar o reiniciar la charla completa')) return 'CERRAR';
+      return 'NINGUNA';
+    });
+    await simulate(phone, tenant.id, 'hola');
+    await simulate(phone, tenant.id, '2'); // → submenu
+
+    const callsBefore = llm.calls.length;
+    const res = await simulate(phone, tenant.id, 'volver'); // texto a mano, NO el id del botón
+
+    expect(res.status).toBe(201);
+    // Acá SÍ se evalúa el cierre: el gate matcheó 'volver' → confirmEndChatIntent → CERRAR → cierra.
+    const newCalls = llm.calls.slice(callsBefore);
+    expect(newCalls.some((c) => (c.messages[0]?.content ?? '').includes('cerrar o reiniciar la charla completa'))).toBe(true);
+    expect(res.body.reply).toBe('Listo, cerré la charla. Escribime cuando necesites algo más.');
+
+    const conv = await t.prisma.conversation.findFirst({ where: { userId: user.id } });
+    expect(conv?.status).toBe('closed');
+  });
 });

@@ -70,11 +70,21 @@ test('FE-RSP-04: las pestañas de /settings se recorren sin desbordar horizontal
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/settings');
 
-  const tablist = page.getByRole('tablist');
+  // Ahora hay tablists anidados (categoría → sub-sección → proveedor): anclamos el raíz por nombre.
+  const tablist = page.getByRole('tablist', { name: 'Secciones de configuración' });
   await expect(tablist).toBeVisible();
-  // Con tantos proveedores el tablist envuelve (flex-wrap): la PÁGINA no debe desbordar en x.
-  const overflows = await page.evaluate(
-    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
-  );
-  expect(overflows, 'la página no debería tener scroll horizontal a 700px').toBe(false);
+
+  // Recorremos las categorías —incluida LLM, con siete proveedores, y Mensajería, con sub-pestañas
+  // y "pills" de proveedor— y verificamos en cada una que el tablist envuelve (flex-wrap) sin que
+  // la PÁGINA desborde horizontalmente.
+  const noHorizontalOverflow = () =>
+    page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+    );
+  for (const cat of ['Seguridad', 'LLM', 'Mensajería', 'Integraciones']) {
+    await tablist.getByRole('tab', { name: cat, exact: true }).click();
+    expect(await noHorizontalOverflow(), `no debería haber scroll horizontal a 700px en "${cat}"`).toBe(
+      true,
+    );
+  }
 });

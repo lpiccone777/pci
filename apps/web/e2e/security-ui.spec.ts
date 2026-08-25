@@ -87,7 +87,15 @@ test('FE-SEC-03: los campos secretos nunca muestran el valor real, sólo enmasca
 
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
   await page.goto('/settings');
-  await page.getByRole('tab', { name: 'LLM: OpenAI', exact: true }).click();
+  // La pestaña del proveedor vive en una jerarquía de tablists: LLM (categoría) → OpenAI (sub-sección).
+  await page
+    .getByRole('tablist', { name: 'Secciones de configuración' })
+    .getByRole('tab', { name: 'LLM', exact: true })
+    .click();
+  await page
+    .getByRole('tablist', { name: 'Sub-secciones de LLM' })
+    .getByRole('tab', { name: 'OpenAI', exact: true })
+    .click();
 
   // El input arranca vacío, muestra el estado "cargada" y en ningún lugar aparece el valor real.
   await expect(page.locator('#OPENAI_API_KEY')).toHaveValue('');

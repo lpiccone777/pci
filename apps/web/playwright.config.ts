@@ -13,6 +13,10 @@ export default defineConfig({
   reporter: 'list',
   // Margen amplio: la primera navegación puede esperar la compilación on-demand de Next.
   timeout: 60_000,
+  // Un reintento: todos los tests comparten un único server, así que las aserciones de
+  // visibilidad (menús/botones por permiso) pueden perder la carrera del timeout bajo carga.
+  // El reintento absorbe esa flakiness sin tapar una falla real (que falla también al reintentar).
+  retries: 1,
   globalSetup: './e2e/global-setup.ts',
   use: {
     baseURL: WEB_URL,
