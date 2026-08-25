@@ -1,4 +1,10 @@
-import { Controller, Post, Body, GatewayTimeoutException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  GatewayTimeoutException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConversationsService } from './conversations.service';
 
 @Controller('conversations')
@@ -11,9 +17,17 @@ export class ConversationsController {
    * el objetivo es simular el funcionamiento real, no atajarlo.
    * Devuelve la respuesta del bot: es un endpoint de prueba y ver qué contestó
    * es justamente para lo que sirve.
+   *
+   * Sin guard propio (no pasa por auth real, simula un canal): en NODE_ENV=production
+   * queda 404 para no dejar una vía sin autenticar que cree usuarios placeholder
+   * (`UsersService.findOrCreateByPhone`) en la tabla real. 404 y no 403: en producción
+   * no tiene que ni confirmar que la ruta existe.
    */
   @Post('simulate')
   async simulate(@Body() dto: { from: string; body: string; tenantId: string }) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new NotFoundException();
+    }
     try {
       const reply = await this.conversationsService.simulateIncomingMessage(
         dto.from,
