@@ -461,7 +461,10 @@ export class ConversationsService implements OnModuleInit {
     if (!flowId) {
       // El flujo de inicio se elige por (empresa + rol del usuario): `identity.roleId`
       // ya viene resuelto desde handleMessage contra el registro real de usuarios.
-      const flow = await this.flowService.findActiveFlowForTenant(tenantId, identity.roleId);
+      // `new Date()` habilita la resolución de feriado/guardia (ver
+      // FlowService.findActiveFlowForTenant) — se calcula una sola vez acá, nunca se
+      // re-evalúa a mitad de conversación.
+      const flow = await this.flowService.findActiveFlowForTenant(tenantId, identity.roleId, new Date());
       if (!flow) return null;
       flowId = flow.id;
       currentNodeId = this.findStartNodeId(flow.nodes as any[]);

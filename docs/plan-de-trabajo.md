@@ -1156,6 +1156,58 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 
 ---
 
+## Flows alternativos por rol: Feriado / Guardia 🔄 EN PROGRESO (pedido 2026-08-25)
+
+Diseño completo en `docs/plan-subflows-feriados-guardias.md`. Cada flow "Principal" puede
+tener hasta 2 variantes — **Feriado** y **Guardia** — cada una otra fila `Flow` completa e
+independiente (su propio `nodes`/`edges`), elegida automáticamente al iniciar una
+conversación según el rol del usuario y un calendario configurable. Sin variantes
+configuradas, comportamiento idéntico al actual (retrocompatible). **No** tiene relación con
+el nodo `subflow` del motor (ese es un salto en vivo entre flows durante la charla; esto es
+una variante elegida antes de arrancar).
+
+- [x] **Schema**: `ScheduleCalendarEntry` (calendario por tenant+rol, `type` string
+      `'feriado'|'guardia'`) y `FlowAlternative` (mapeo `baseFlow` ↔ `variantFlow`, 1:1 por
+      `variantFlowId`). `type` es `String`, no enum de Prisma — mismo criterio que
+      `ContextSource.type` (sumar tipos nuevos sin migración). Migración
+      `20260825144917_add_schedule_calendar_and_flow_alternative`, puramente aditiva.
+- [x] **Backend — módulo `schedule-calendar`**: CRUD scopeado por tenant +
+      `resolveStatus(tenantId, roleId, atDate)` (feriado gana sobre guardia si ambos
+      matchean el mismo instante). Permiso nuevo `schedule-calendar` (16 recursos × 4
+      acciones = 64 permisos totales).
+- [x] **Backend — variantes dentro de `flow` module**: `listAlternatives`/`createVariant`
+      (duplica el grafo del Principal — única vía del MVP)/`deleteVariant`, rutas
+      `GET|POST /flows/:id/variants`, `DELETE /flows/:id/variants/:type`. `findAll` excluye
+      las filas Flow que son variante (no deben aparecer en dropdowns generales — nodo
+      `subflow`, asignación de tenants). `FlowService.findActiveFlowForTenant` acepta ahora
+      un tercer parámetro `atDate` (default `new Date()`): resuelve el Principal igual que
+      antes y, si `resolveStatus` da feriado/guardia y hay una `FlowAlternative` activa para
+      ese `(baseFlow, type)`, devuelve la variante — sin variante configurada, cae al
+      Principal. Único call site (`conversations.service.ts`, adentro del `if (!flowId)` de
+      `executeFlow`, se resuelve una sola vez al iniciar la conversación).
+- [x] **Tests**: `schedule-calendar.service.spec.ts` (empate feriado/guardia, `roleId: null`,
+      scoping por tenant, límites inclusivos, guardia cruzando medianoche) y
+      `flow.service.spec.ts` (las 3 ramas de fallback + variante activa) — 12 tests nuevos,
+      13/13 en verde (`pnpm --filter api exec jest`).
+- [x] **Frontend — editor de flujos**: selector Principal/Guardia/Feriado en la esquina
+      superior derecha (`apps/web/.../flows/edit/page.tsx`), con indicador de variante
+      configurada y flujo de "crear variante" duplicando el Principal. `saveFlow` apunta al
+      `activeFlowId` de la pestaña activa; `assign-tenants` solo corre para el Principal (las
+      variantes heredan su visibilidad, no tienen asignación propia).
+- [x] **Frontend — calendario**: pantalla nueva `/dashboard/schedule-calendar` con
+      `react-big-calendar` + `date-fns` (nuevas dependencias de `apps/web`) — vistas
+      mes/semana/día, color por tipo, alta/edición/borrado contra el backend nuevo. Entrada
+      nueva en el sidebar.
+- [x] `pnpm --filter api run build` y `pnpm --filter web run build` en verde.
+- [ ] **QA manual pendiente**: sembrar una `ScheduleCalendarEntry` vigente "ahora" y arrancar
+      una conversación real (`/conversations/simulate` o `pnpm --filter api chat`) para
+      confirmar que resuelve la variante y no el Principal. No se ejercitó todavía contra
+      datos reales, solo contra los tests unitarios (mocks) y los builds.
+- [ ] Recorrido manual en el navegador del selector de tabs y de la pantalla de calendario
+      (crear/editar/borrar entradas, cambiar de tab, crear variante duplicando).
+
+---
+
 ## Hito 4 - Auditoría y Métricas ⏳ PENDIENTE
 
 ### Registro estructurado

@@ -8,16 +8,16 @@ datasource db {
 }
 
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  phone         String?  @unique
+  id            String    @id @default(cuid())
+  email         String    @unique
+  phone         String?   @unique
   // Interno telefónico de la persona. Va acá y no en `UserTenant` porque es un dato de la
   // persona, no de la empresa: la misma persona tiene el mismo interno valga en la empresa
   // que valga (mismo criterio que `phone`). Lo usará un voicebot a futuro; hoy solo se carga.
   // Opcional a propósito (se carga a mano y la mayoría no lo tiene) y único para que dos
   // personas no compartan interno —un voicebot que enruta por interno tiene que resolver a
   // una sola persona—. Como el resto de los únicos, se libera con sufijo en la baja lógica.
-  internalPhone String?  @unique
+  internalPhone String?   @unique
   passwordHash  String
   firstName     String?
   lastName      String?
@@ -29,9 +29,9 @@ model User {
   // Único para que un error de tipeo no deje dos usuarios apuntando al mismo id de
   // Invgate; en Postgres varios NULL conviven sin problema, así que no molesta a los
   // que están sin cargar.
-  invgateUserId String?  @unique
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  invgateUserId String?   @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
   // Baja lógica sin reactivación: una persona dada de baja conserva su fila —y con ella el
   // historial que la referencia— pero deja de existir para el sistema. No hay "restaurar":
   // para volver se da de alta una persona nueva, que arranca sin historial.
@@ -54,11 +54,11 @@ model User {
 }
 
 model Tenant {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
-  slug      String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  slug      String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   // Baja lógica: una empresa dada de baja conserva su fila (y sus datos) pero deja de
   // listarse. No se libera el slug, que es @unique global: una empresa dada de baja lo
   // sigue ocupando, y sí se puede reactivar.
@@ -67,16 +67,17 @@ model Tenant {
   // distintos: una empresa vuelve con sus datos, una persona vuelve como alguien nuevo.
   deletedAt DateTime?
 
-  users          UserTenant[]
-  roles          Role[]
-  areas          Area[]
-  conversations  Conversation[]
-  tickets        Ticket[]
-  metrics        Metric[]
-  settings       Setting[]
-  tenantFlows    TenantFlow[]
-  contextSources ContextSource[]
-  skills         Skill[]
+  users                   UserTenant[]
+  roles                   Role[]
+  areas                   Area[]
+  conversations           Conversation[]
+  tickets                 Ticket[]
+  metrics                 Metric[]
+  settings                Setting[]
+  tenantFlows             TenantFlow[]
+  contextSources          ContextSource[]
+  skills                  Skill[]
+  scheduleCalendarEntries ScheduleCalendarEntry[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -104,9 +105,10 @@ model Role {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  permissions     RolePermission[]
-  userTenants     UserTenant[]
-  tenantFlowRoles TenantFlowRole[]
+  permissions             RolePermission[]
+  userTenants             UserTenant[]
+  tenantFlowRoles         TenantFlowRole[]
+  scheduleCalendarEntries ScheduleCalendarEntry[]
 
   @@unique([name, tenantId])
 }
@@ -174,21 +176,21 @@ model DeviceValidation {
 }
 
 model Conversation {
-  id            String    @id @default(cuid())
-  userId        String
-  user          User      @relation(fields: [userId], references: [id])
-  tenantId      String
-  tenant        Tenant    @relation(fields: [tenantId], references: [id])
-  channel       String
-  externalId    String?
-  status        String    @default("active") // "active" | "closed"
-  closedAt      DateTime? // Cuándo se cerró; habilita reanudarla dentro de la ventana de resume.
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  channel          String
+  externalId       String?
+  status           String    @default("active") // "active" | "closed"
+  closedAt         DateTime? // Cuándo se cerró; habilita reanudarla dentro de la ventana de resume.
   sessionStartedAt DateTime? // Se resetea al crear o reanudar la charla; acota qué Message cuentan como historial de la sesión actual (una reanudación reusa el mismo id, así que sin esto el historial de antes del cierre se filtraba al LLM).
-  currentFlowId String?
-  currentNodeId String?
-  flowState     Json? // Variables del flujo: { problemDescription: "...", ticketId: "944" }
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  currentFlowId    String?
+  currentNodeId    String?
+  flowState        Json? // Variables del flujo: { problemDescription: "...", ticketId: "944" }
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   messages Message[]
   metrics  Metric[]
@@ -287,35 +289,39 @@ model Metric {
 }
 
 model Flow {
-  id              String               @id @default(cuid())
-  name            String
-  description     String?
-  nodes           Json // ReactFlow nodes JSON
-  edges           Json // ReactFlow edges JSON
-  isActive        Boolean              @default(true)
-  isDefault       Boolean              @default(false) // Flujo por defecto si no hay match
+  id               String               @id @default(cuid())
+  name             String
+  description      String?
+  nodes            Json // ReactFlow nodes JSON
+  edges            Json // ReactFlow edges JSON
+  isActive         Boolean              @default(true)
+  isDefault        Boolean              @default(false) // Flujo por defecto si no hay match
   // Fuente de datos que respalda las respuestas de este flujo. Lista cerrada
   // (ver FLOW_CONTEXT_OPTIONS en flow-context.ts): 'none' | 'invgate' | 'internal_kb' | 'other'.
   // DEPRECATED: reemplazado de a poco por contextSourceId (ver ContextSource). Se
   // conserva por compatibilidad con flujos existentes — no se borra en esta etapa.
-  context         String               @default("none")
+  context          String               @default("none")
   // Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar durante la
   // conversación. Nullable: no todos los flujos necesitan una. La ejecución real
   // (consultarla desde el motor de conversaciones) es trabajo de una etapa
   // posterior — ver docs/plan-de-trabajo.md, sección "Fuentes de verdad".
-  contextSourceId String?
-  contextSource   ContextSource?       @relation(fields: [contextSourceId], references: [id], onDelete: SetNull)
+  contextSourceId  String?
+  contextSource    ContextSource?       @relation(fields: [contextSourceId], references: [id], onDelete: SetNull)
   // Skill (texto de contexto libre) que se concatena al system prompt base
   // (LLM_SYSTEM_PROMPT de /settings) cuando este flujo ejecuta un nodo `llm_query`
   // o cae al orquestador. Nullable: no todos los flujos necesitan uno. Ver
   // ConversationsService.buildBasePrompt.
-  skillId         String?
-  skill           Skill?               @relation(fields: [skillId], references: [id], onDelete: SetNull)
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  tenantFlows     TenantFlow[]
-  createdBy       String? // userId
-  roundRobins     FlowNodeRoundRobin[]
+  skillId          String?
+  skill            Skill?               @relation(fields: [skillId], references: [id], onDelete: SetNull)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  tenantFlows      TenantFlow[]
+  createdBy        String? // userId
+  roundRobins      FlowNodeRoundRobin[]
+  // Variantes (Feriado/Guardia) de este flow cuando actúa como Principal, y el
+  // registro inverso cuando esta fila ES una variante de otro flow. Ver FlowAlternative.
+  baseAlternatives FlowAlternative[]    @relation("FlowAlternativeBase")
+  variantOf        FlowAlternative?     @relation("FlowAlternativeVariant")
 
   @@index([isActive])
   @@index([isDefault])
@@ -396,7 +402,7 @@ model FlowNodeRoundRobin {
 }
 
 model TenantFlow {
-  id       String  @id @default(cuid())
+  id       String           @id @default(cuid())
   flowId   String
   tenantId String
   // Flujo de inicio PARA ESTE TENANT. Va acá y no en Flow: un mismo flujo puede
@@ -404,7 +410,7 @@ model TenantFlow {
   // no puede ser un booleano a nivel Flow. La invariante "un tenant tiene como
   // máximo un flujo de inicio" se aplica en FlowService.applyTenantAssignment,
   // no acá (Prisma no soporta índices únicos parciales en el schema DSL).
-  isStart  Boolean @default(false)
+  isStart  Boolean          @default(false)
   flow     Flow             @relation(fields: [flowId], references: [id], onDelete: Cascade)
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   roles    TenantFlowRole[]
@@ -430,4 +436,65 @@ model TenantFlowRole {
 
   @@unique([tenantFlowId, roleId])
   @@index([roleId])
+}
+
+// Entrada de calendario para feriados/guardias por rol, consumida por
+// ScheduleCalendarService.resolveStatus para decidir el flow alternativo de un flujo
+// al iniciar una conversación (ver FlowAlternative, FlowService.findActiveFlowForTenant).
+// `roleId` null = aplica a todos los roles del tenant. Por tenant (como Area/ContextSource),
+// sin calendario global de feriados nacionales por ahora.
+model ScheduleCalendarEntry {
+  id              String    @id @default(cuid())
+  tenantId        String
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roleId          String?
+  role            Role?     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  // 'feriado' | 'guardia' (catálogo abierto en código, ver schedule-entry-types.catalog.ts).
+  // String y no enum de Prisma, mismo criterio que ContextSource.type.
+  type            String
+  title           String
+  startAt         DateTime
+  endAt           DateTime
+  allDay          Boolean   @default(true)
+  // Repetición: 'daily' | 'weekly' | 'monthly' | 'yearly' | null (no se repite). String, no
+  // enum de Prisma — mismo criterio que `type`. Ver schedule-recurrence.catalog.ts.
+  // `startAt`/`endAt` siguen siendo la PRIMER ocurrencia — cada repetición reusa esa misma
+  // duración, desplazada al ciclo que corresponda (ver schedule-recurrence.util.ts).
+  recurrenceFreq  String?
+  // `null` con recurrenceFreq seteado = "hasta nuevo aviso" (indefinido). Sin sentido si
+  // recurrenceFreq es null — el service lo fuerza a null en ese caso.
+  recurrenceUntil DateTime?
+  // 'manual' (default, alta desde el modal) | 'ar_holidays_import' (importado desde la API
+  // pública de feriados argentinos — ver ScheduleCalendarService.importArgentinaHolidays).
+  // String, no enum de Prisma, mismo criterio que `type`. Permite un borrado masivo por año
+  // sin afectar entradas cargadas a mano (ver removeArgentinaHolidaysImport).
+  source          String    @default("manual")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([tenantId, type])
+  @@index([roleId])
+  @@index([tenantId, source])
+  @@index([startAt, endAt])
+}
+
+// Variante (Feriado/Guardia) de un flow "Principal": otra fila Flow completa e
+// independiente (su propio nodes/edges), vinculada acá. NO es un nodo dentro del grafo,
+// y no tiene relación con el nodo `subflow` del motor de conversaciones (ese es un salto
+// en vivo entre flows durante la charla; esto es una variante elegida antes de arrancar,
+// según rol + calendario). `variantFlowId` es 1:1: una fila Flow variante pertenece a un
+// único (baseFlow, type). Sin tenantId propio, igual que Flow: la tenencia vive en
+// TenantFlow del flow base.
+model FlowAlternative {
+  id            String   @id @default(cuid())
+  baseFlowId    String
+  baseFlow      Flow     @relation("FlowAlternativeBase", fields: [baseFlowId], references: [id], onDelete: Cascade)
+  type          String
+  variantFlowId String   @unique
+  variantFlow   Flow     @relation("FlowAlternativeVariant", fields: [variantFlowId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([baseFlowId, type])
+  @@index([baseFlowId])
 }

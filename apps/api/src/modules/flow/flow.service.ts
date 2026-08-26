@@ -1,10 +1,30 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateFlowDto, UpdateFlowDto, TenantAssignmentDto } from './dto/create-flow.dto';
+import { ScheduleCalendarService } from '../schedule-calendar/schedule-calendar.service';
+import { isValidScheduleEntryType } from '../schedule-calendar/schedule-entry-types.catalog';
+
+/** Mismo nodo `start` por defecto que el editor arma para un flujo nuevo (ver `isNew` en apps/web/.../flows/edit/page.tsx). */
+const BLANK_VARIANT_NODES = [
+  {
+    id: 'start_1',
+    type: 'start',
+    position: { x: 250, y: 50 },
+    data: { text: 'Bienvenido al soporte técnico' },
+  },
+];
 
 @Injectable()
 export class FlowService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly scheduleCalendarService: ScheduleCalendarService,
+  ) {}
 
   async create(data: CreateFlowDto, userId?: string) {
     const { assignments, isStart, ...flowData } = data;
@@ -26,13 +46,20 @@ export class FlowService {
   }
 
   async findAll(tenantId?: string) {
-    const where = tenantId
-      ? {
-          tenantFlows: {
-            some: { tenantId },
-          },
-        }
-      : {};
+    // `variantOf: null` excluye las filas Flow que son variante (Feriado/Guardia) de otro
+    // flow — nunca deben aparecer en listados/dropdowns generales (nodo subflow, asignación
+    // de tenants, etc.), solo se acceden vía FlowService.listAlternatives/findById. Ver
+    // FlowAlternative en schema.prisma.
+    const where = {
+      variantOf: null,
+      ...(tenantId
+        ? {
+            tenantFlows: {
+              some: { tenantId },
+            },
+          }
+        : {}),
+    };
 
     return this.prisma.flow.findMany({
       where,
@@ -199,7 +226,13 @@ export class FlowService {
     });
   }
 
-  async findActiveFlowForTenant(tenantId: string, roleId?: string | null) {
+  /**
+   * Flow de inicio (empresa + rol), sin considerar feriado/guardia — la lógica de
+   * `findActiveFlowForTenant` de antes de sumar variantes, ahora privada. La resuelve
+   * `findActiveFlowForTenant` siempre primero como "Principal", y a partir de ahí decide si
+   * corresponde devolver una variante en su lugar.
+   */
+  private async resolvePrincipalFlow(tenantId: string, roleId?: string | null) {
     // Flujo de inicio que matchea (empresa + rol del usuario). El candado de
     // recepción es por rol: un usuario recibe el flujo de inicio solo si su rol
     // está habilitado para ese flujo en esta empresa.
@@ -224,6 +257,119 @@ export class FlowService {
     return this.prisma.flow.findFirst({
       where: { isDefault: true, isActive: true },
     });
+  }
+
+  /**
+   * Igual que antes de sumar feriados/guardias, más una dimensión temporal: si el
+   * (tenant, rol) resuelve a feriado o guardia en `atDate` y el flow Principal encontrado
+   * tiene una variante activa configurada para ese estado (`FlowAlternative`), se devuelve
+   * la variante en su lugar. Sin variante configurada (o inactiva) → cae al Principal, igual
+   * que hoy. Se calcula una sola vez al iniciar la conversación (ver
+   * ConversationsService.executeFlow) — nunca se re-evalúa a mitad de una charla.
+   */
+  async findActiveFlowForTenant(tenantId: string, roleId?: string | null, atDate: Date = new Date()) {
+    const principal = await this.resolvePrincipalFlow(tenantId, roleId);
+    if (!principal) return principal;
+
+    const status = await this.scheduleCalendarService.resolveStatus(tenantId, roleId ?? null, atDate);
+    if (!status) return principal;
+
+    const alternative = await this.prisma.flowAlternative.findUnique({
+      where: { baseFlowId_type: { baseFlowId: principal.id, type: status } },
+      include: { variantFlow: true },
+    });
+    return alternative?.variantFlow?.isActive ? alternative.variantFlow : principal;
+  }
+
+  /** Variantes (Feriado/Guardia) configuradas para este flow como Principal. */
+  async listAlternatives(baseFlowId: string) {
+    return this.prisma.flowAlternative.findMany({
+      where: { baseFlowId },
+      select: { type: true, variantFlowId: true },
+    });
+  }
+
+  /**
+   * Crea la variante de `type` para `baseFlowId`. Tres orígenes posibles para el grafo
+   * inicial (`opts.blank` y `opts.sourceFlowId` son mutuamente excluyentes; ninguno de los
+   * dos = duplicar el Principal de `baseFlowId`, el default original del MVP):
+   * - Duplicar el Principal de `baseFlowId` (default)
+   * - Duplicar otro flujo cualquiera (`opts.sourceFlowId` — típicamente el Principal de OTRO
+   *   flow, elegido por el usuario en el editor)
+   * - Arrancar en blanco (`opts.blank` — mismo nodo `start` por defecto que un flujo nuevo)
+   * La fila nueva nace sin `tenantFlows` propios ni `isDefault`: nunca debe ser elegible
+   * directamente por `resolvePrincipalFlow`, solo a través de `FlowAlternative`.
+   */
+  async createVariant(
+    baseFlowId: string,
+    type: string,
+    opts?: { blank?: boolean; sourceFlowId?: string },
+  ) {
+    if (!isValidScheduleEntryType(type)) {
+      throw new BadRequestException(`Tipo de variante desconocido: "${type}"`);
+    }
+    const base = await this.findById(baseFlowId);
+
+    const existing = await this.prisma.flowAlternative.findUnique({
+      where: { baseFlowId_type: { baseFlowId, type } },
+    });
+    if (existing) {
+      throw new ConflictException('Ya existe una variante de este tipo para este flujo');
+    }
+
+    let graphSource: { nodes: unknown; edges: unknown; description: string | null; contextSourceId: string | null; skillId: string | null };
+    if (opts?.blank) {
+      graphSource = {
+        nodes: BLANK_VARIANT_NODES,
+        edges: [],
+        description: null,
+        contextSourceId: null,
+        skillId: null,
+      };
+    } else if (opts?.sourceFlowId) {
+      const source = await this.findById(opts.sourceFlowId);
+      graphSource = {
+        nodes: source.nodes,
+        edges: source.edges,
+        description: source.description,
+        contextSourceId: source.contextSourceId,
+        skillId: source.skillId,
+      };
+    } else {
+      graphSource = {
+        nodes: base.nodes,
+        edges: base.edges,
+        description: base.description,
+        contextSourceId: base.contextSourceId,
+        skillId: base.skillId,
+      };
+    }
+
+    const variant = await this.prisma.flow.create({
+      data: {
+        name: `${base.name} (${type})`,
+        description: graphSource.description,
+        nodes: graphSource.nodes as any,
+        edges: graphSource.edges as any,
+        contextSourceId: graphSource.contextSourceId,
+        skillId: graphSource.skillId,
+        isActive: true,
+        isDefault: false,
+      },
+    });
+    await this.prisma.flowAlternative.create({ data: { baseFlowId, type, variantFlowId: variant.id } });
+    return this.findById(variant.id);
+  }
+
+  /** Borra la variante de `type` para `baseFlowId` (y con ella la fila Flow variante, por cascade). */
+  async deleteVariant(baseFlowId: string, type: string) {
+    const alternative = await this.prisma.flowAlternative.findUnique({
+      where: { baseFlowId_type: { baseFlowId, type } },
+    });
+    if (!alternative) throw new NotFoundException('No hay variante de ese tipo para este flujo');
+
+    await this.prisma.flow.delete({ where: { id: alternative.variantFlowId } });
+    return { deleted: true };
   }
 
   async setDefault(id: string) {

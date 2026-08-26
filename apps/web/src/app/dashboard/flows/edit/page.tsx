@@ -86,6 +86,19 @@ interface Assignment {
   roleIds: string[];
 }
 
+/**
+ * Variantes de un flow. "Principal" es el flow de siempre (`id` de la URL); "guardia" y
+ * "feriado" son otra fila Flow completa e independiente, vinculada por FlowAlternative — ver
+ * docs/plan-subflows-feriados-guardias.md. No confundir con el nodo `subflow` (salto en vivo
+ * entre flows durante la charla): esto elige qué grafo se edita/guarda, antes de arrancar.
+ */
+type VariantTab = 'principal' | 'guardia' | 'feriado';
+
+interface FlowVariant {
+  type: string;
+  variantFlowId: string;
+}
+
 const customNodeTypes = {
   start: StartNode,
   message: MessageNode,
@@ -165,6 +178,27 @@ function FlowEditorInner() {
   const [isStartFlow, setIsStartFlow] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
+  // Qué variante está cargada en el canvas ahora mismo. `activeFlowId` es contra qué Flow
+  // apuntan fetch/save (Principal = `id` de la URL; guardia/feriado = su propio Flow.id).
+  const [activeTab, setActiveTab] = useState<VariantTab>('principal');
+  const [variants, setVariants] = useState<FlowVariant[]>([]);
+  const [activeFlowId, setActiveFlowId] = useState<string | null>(isNew ? null : id);
+  // Modal de "crear variante": se abre al elegir una pestaña (Guardia/Feriado) sin
+  // variante configurada todavía. Tres orígenes posibles para el grafo inicial — ver
+  // createVariant en flow.service.ts (backend).
+  const [variantModalOpen, setVariantModalOpen] = useState(false);
+  const [pendingVariantTab, setPendingVariantTab] = useState<VariantTab | null>(null);
+  const [variantSourceMode, setVariantSourceMode] = useState<'principal' | 'copy' | 'blank'>(
+    'principal',
+  );
+  const [variantSourceFlowId, setVariantSourceFlowId] = useState('');
+  const [creatingVariant, setCreatingVariant] = useState(false);
+  // Botón "Copiar flujo…" (solo en Guardia/Feriado): reemplaza el grafo del canvas actual
+  // por el de otro flujo cualquiera, sin crear una variante nueva ni tocar nombre/
+  // descripción — para resincronizar una variante ya existente contra otro flujo.
+  const [copyModalOpen, setCopyModalOpen] = useState(false);
+  const [copySourceFlowId, setCopySourceFlowId] = useState('');
+  const [copyingFlow, setCopyingFlow] = useState(false);
   const { screenToFlowPosition } = useReactFlow();
 
   // El id de la empresa de sistema. Con él, los endpoints globales (lista de empresas) se
@@ -280,13 +314,25 @@ function FlowEditorInner() {
     }
   }
 
+  /** Puebla nombre/descripción/skill/fuente de verdad + canvas a partir de un Flow ya traído. */
+  function applyFlowGraph(flow: any) {
+    setFlowName(flow.name);
+    setFlowDescription(flow.description || '');
+    setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
+    setSkillId(flow.skillId || flow.skill?.id || '');
+    setNodes(flow.nodes || []);
+    setEdges(
+      (flow.edges || []).map((e: any) => ({
+        ...e,
+        type: e.type || 'default',
+      })),
+    );
+  }
+
   async function loadFlow() {
     try {
       const flow = await apiFetch(`/flows/${id}`);
-      setFlowName(flow.name);
-      setFlowDescription(flow.description || '');
-      setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
-      setSkillId(flow.skillId || flow.skill?.id || '');
+      applyFlowGraph(flow);
       const tenantFlows = flow.tenantFlows || [];
       const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
         tenantId: tf.tenant.id,
@@ -297,6 +343,122 @@ function FlowEditorInner() {
       // Precargar los roles de las empresas ya asignadas: así el contador "X/Y" y
       // los chips del modal quedan completos apenas se abre.
       loadRolesForTenants(loaded.map((a) => a.tenantId));
+      loadVariants();
+    } catch (err) {
+      console.error('Error loading flow:', err);
+      alert('Error al cargar el flujo');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Variantes (Guardia/Feriado) ya configuradas para este flow como Principal. */
+  async function loadVariants() {
+    try {
+      const data = await apiFetch(`/flows/${id}/variants`);
+      setVariants(data || []);
+    } catch {
+      setVariants([]);
+    }
+  }
+
+  /**
+   * Cambia qué Flow está cargado en el canvas. Sin variante creada todavía para la pestaña
+   * elegida, ofrece crearla duplicando el grafo del Principal (única vía del MVP).
+   */
+  async function selectTab(tab: VariantTab) {
+    if (tab === activeTab) return;
+
+    if (tab === 'principal') {
+      try {
+        const flow = await apiFetch(`/flows/${id}`);
+        applyFlowGraph(flow);
+        setActiveTab('principal');
+        setActiveFlowId(id);
+      } catch (err: any) {
+        alert(`Error al cargar el flujo: ${err?.message ?? 'error desconocido'}`);
+      }
+      return;
+    }
+
+    const existing = variants.find((v) => v.type === tab);
+    if (existing) {
+      try {
+        const flow = await apiFetch(`/flows/${existing.variantFlowId}`);
+        applyFlowGraph(flow);
+        setActiveTab(tab);
+        setActiveFlowId(existing.variantFlowId);
+      } catch (err: any) {
+        alert(`Error al cargar la variante: ${err?.message ?? 'error desconocido'}`);
+      }
+      return;
+    }
+
+    // Sin variante todavía: abrir el modal a elegir el origen del grafo inicial en vez de
+    // solo ofrecer duplicar el Principal (ver createVariant más abajo).
+    setPendingVariantTab(tab);
+    setVariantSourceMode('principal');
+    setVariantSourceFlowId('');
+    setVariantModalOpen(true);
+  }
+
+  function closeVariantModal() {
+    setVariantModalOpen(false);
+    setPendingVariantTab(null);
+  }
+
+  /** Envía la creación de la variante `pendingVariantTab` con el origen elegido en el modal. */
+  async function createVariant() {
+    if (!pendingVariantTab) return;
+    if (variantSourceMode === 'copy' && !variantSourceFlowId) {
+      alert('Elegí de qué flujo copiar el grafo.');
+      return;
+    }
+    setCreatingVariant(true);
+    try {
+      const created = await apiFetch(`/flows/${id}/variants`, {
+        method: 'POST',
+        body: JSON.stringify({
+          type: pendingVariantTab,
+          blank: variantSourceMode === 'blank',
+          sourceFlowId: variantSourceMode === 'copy' ? variantSourceFlowId : undefined,
+        }),
+      });
+      setVariants((prev) => [...prev, { type: pendingVariantTab, variantFlowId: created.id }]);
+      applyFlowGraph(created);
+      setActiveTab(pendingVariantTab);
+      setActiveFlowId(created.id);
+      closeVariantModal();
+    } catch (err: any) {
+      alert(`Error al crear la variante: ${err?.message ?? 'error desconocido'}`);
+    } finally {
+      setCreatingVariant(false);
+    }
+  }
+
+  function openCopyModal() {
+    setCopySourceFlowId('');
+    setCopyModalOpen(true);
+  }
+
+  function closeCopyModal() {
+    setCopyModalOpen(false);
+    setCopySourceFlowId('');
+  }
+
+  /**
+   * Reemplaza nodos/edges del canvas por los de `copySourceFlowId`, sin persistir todavía —
+   * queda como cualquier otro cambio sin guardar, a confirmar con "Guardar". No toca nombre,
+   * descripción, skill ni fuente de verdad de la variante actual: solo el grafo.
+   */
+  async function copyFromFlow() {
+    if (!copySourceFlowId) {
+      alert('Elegí de qué flujo copiar el grafo.');
+      return;
+    }
+    setCopyingFlow(true);
+    try {
+      const flow = await apiFetch(`/flows/${copySourceFlowId}`);
       setNodes(flow.nodes || []);
       setEdges(
         (flow.edges || []).map((e: any) => ({
@@ -304,11 +466,11 @@ function FlowEditorInner() {
           type: e.type || 'default',
         })),
       );
-    } catch (err) {
-      console.error('Error loading flow:', err);
-      alert('Error al cargar el flujo');
+      closeCopyModal();
+    } catch (err: any) {
+      alert(`Error al copiar el flujo: ${err?.message ?? 'error desconocido'}`);
     } finally {
-      setLoading(false);
+      setCopyingFlow(false);
     }
   }
 
@@ -507,7 +669,9 @@ function FlowEditorInner() {
     // Aviso al vaciar: dejar el flujo sin empresas no lo borra, pero no lo recibe
     // nadie y queda "sin asignar". Confirmamos antes de persistir para que sea
     // intencional (aplica tanto a quitar la última empresa como a no asignar ninguna).
-    if (assignments.length === 0) {
+    // Solo aplica al Principal: las variantes no tienen asignación propia, heredan la
+    // visibilidad del Principal.
+    if (activeTab === 'principal' && assignments.length === 0) {
       const ok = confirm(
         'Este flujo va a quedar sin empresas asignadas: no lo va a recibir ningún usuario ' +
           'y aparecerá como "sin asignar" en la lista. ¿Guardar igual?',
@@ -551,18 +715,22 @@ function FlowEditorInner() {
             isStart: isStartFlow,
           }),
         });
+        setActiveFlowId(created.id);
         router.replace(`/dashboard/flows/edit/?id=${created.id}`);
       } else {
-        await apiFetch(`/flows/${id}`, {
+        await apiFetch(`/flows/${activeFlowId}`, {
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
-        // La asignación de empresas y roles es un endpoint aparte del resto de los
-        // campos del flujo (igual que ya era antes de agregar los checkboxes).
-        await apiFetch(`/flows/${id}/assign-tenants`, {
-          method: 'POST',
-          body: JSON.stringify({ assignments, isStart: isStartFlow }),
-        });
+        // La asignación de empresas y roles es un endpoint aparte del resto de los campos
+        // del flujo (igual que ya era antes de agregar los checkboxes), y solo aplica al
+        // Principal: las variantes no tienen asignación propia.
+        if (activeTab === 'principal') {
+          await apiFetch(`/flows/${activeFlowId}/assign-tenants`, {
+            method: 'POST',
+            body: JSON.stringify({ assignments, isStart: isStartFlow }),
+          });
+        }
         alert('Flujo guardado');
       }
     } catch (err: any) {
@@ -645,20 +813,66 @@ function FlowEditorInner() {
             </select>
           </div>
         </div>
-        <button
-          onClick={saveFlow}
-          disabled={saving}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-        >
-          {saving ? 'Guardando...' : 'Guardar'}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Principal/Guardia/Feriado: qué grafo está cargado en el canvas. Cada uno es
+              otro Flow completo e independiente (ver FlowAlternative) — no un nodo dentro
+              del grafo. Oculto para un flujo nuevo sin guardar: todavía no existe una fila
+              Flow contra la que crear variantes. */}
+          {!isNew && (
+            <div className="flex bg-gray-100 rounded-lg p-1 text-sm">
+              {(['principal', 'guardia', 'feriado'] as VariantTab[]).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => selectTab(tab)}
+                  className={`px-3 py-1.5 rounded-md font-medium flex items-center gap-1.5 transition-colors ${
+                    activeTab === tab
+                      ? 'bg-white shadow text-gray-900'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab === 'principal' ? 'Principal' : tab === 'guardia' ? 'Guardia' : 'Feriado'}
+                  {tab !== 'principal' && (
+                    <span
+                      title={variants.some((v) => v.type === tab) ? 'Variante configurada' : 'Sin configurar'}
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        variants.some((v) => v.type === tab) ? 'bg-green-500' : 'bg-gray-300'
+                      }`}
+                    />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Solo en Guardia/Feriado: reemplaza el grafo actual por el de cualquier otro
+              flujo, sin crear una variante nueva — para resincronizar una ya existente. */}
+          {!isNew && activeTab !== 'principal' && (
+            <button
+              type="button"
+              onClick={openCopyModal}
+              title="Reemplaza los nodos y conexiones del canvas por los de otro flujo"
+              className="text-sm border border-gray-300 text-gray-700 px-3 py-2 rounded hover:bg-gray-50"
+            >
+              Copiar flujo…
+            </button>
+          )}
+          <button
+            onClick={saveFlow}
+            disabled={saving}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? 'Guardando...' : 'Guardar'}
+          </button>
+        </div>
       </div>
 
       {/* Asignación a empresas y roles: en qué empresas está disponible este flujo,
           qué roles lo reciben en cada una, y si es el flujo de inicio para esos
           pares (empresa + rol). Solo se muestra si se pudo cargar la lista de empresas
-          (el superadmin, parado en cualquier empresa; ver loadTenants). */}
-      {allTenants.length > 0 && (
+          (el superadmin, parado en cualquier empresa; ver loadTenants), y solo para el
+          Principal: las variantes heredan la visibilidad del Principal, no tienen
+          asignación propia. */}
+      {allTenants.length > 0 && activeTab === 'principal' && (
         <div className="bg-gray-50 border-b px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
           <span className="text-gray-500 font-medium">Disponible en:</span>
 
@@ -956,6 +1170,181 @@ function FlowEditorInner() {
                   Guardar
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal "Crear variante": se abre desde selectTab al elegir Guardia/Feriado sin
+          variante configurada. Tres orígenes posibles para el grafo inicial — duplicar el
+          Principal de este flujo, duplicar otro flujo cualquiera, o arrancar en blanco. */}
+      {variantModalOpen && pendingVariantTab && (
+        <div
+          className="fixed inset-0 bg-slate-900/55 flex items-center justify-center p-6 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeVariantModal();
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-semibold">
+                Crear variante de {pendingVariantTab === 'guardia' ? 'Guardia' : 'Feriado'}
+              </h2>
+              <button
+                onClick={closeVariantModal}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="variant-source"
+                  className="mt-1"
+                  checked={variantSourceMode === 'principal'}
+                  onChange={() => setVariantSourceMode('principal')}
+                />
+                <span>
+                  <span className="block font-medium text-sm">Duplicar el flujo Principal</span>
+                  <span className="block text-xs text-gray-500">
+                    Copia el grafo actual de este mismo flujo como punto de partida.
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="variant-source"
+                  className="mt-1"
+                  checked={variantSourceMode === 'copy'}
+                  onChange={() => setVariantSourceMode('copy')}
+                />
+                <span className="flex-1">
+                  <span className="block font-medium text-sm">Duplicar otro flujo</span>
+                  <span className="block text-xs text-gray-500 mb-1.5">
+                    Copia el grafo de cualquier otro flujo existente.
+                  </span>
+                  <select
+                    value={variantSourceFlowId}
+                    onChange={(e) => {
+                      setVariantSourceFlowId(e.target.value);
+                      if (e.target.value) setVariantSourceMode('copy');
+                    }}
+                    onClick={() => setVariantSourceMode('copy')}
+                    disabled={variantSourceMode !== 'copy'}
+                    className="border rounded px-2 py-1.5 text-sm w-full disabled:bg-gray-50 disabled:text-gray-400"
+                  >
+                    <option value="">Elegir flujo…</option>
+                    {flowOptions
+                      .filter((f) => f.id !== id)
+                      .map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                  </select>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="variant-source"
+                  className="mt-1"
+                  checked={variantSourceMode === 'blank'}
+                  onChange={() => setVariantSourceMode('blank')}
+                />
+                <span>
+                  <span className="block font-medium text-sm">Crear vacía</span>
+                  <span className="block text-xs text-gray-500">
+                    Arranca solo con un nodo de inicio, sin copiar nada.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <div className="px-5 py-3.5 border-t flex justify-end gap-2.5">
+              <button
+                onClick={closeVariantModal}
+                className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={createVariant}
+                disabled={creatingVariant}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                {creatingVariant ? 'Creando...' : 'Crear'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal "Copiar flujo": reemplaza el grafo del canvas actual (Guardia/Feriado) por
+          el de otro flujo cualquiera. No crea una variante nueva ni toca nombre/
+          descripción — solo nodos/edges, y recién se persiste al tocar "Guardar". */}
+      {copyModalOpen && (
+        <div
+          className="fixed inset-0 bg-slate-900/55 flex items-center justify-center p-6 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeCopyModal();
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Copiar flujo</h2>
+              <button
+                onClick={closeCopyModal}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-2">
+                Esto reemplaza los nodos y conexiones del canvas actual. Los cambios sin
+                guardar se pierden. Después seguí usando "Guardar" para persistir la copia.
+              </p>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Copiar desde</label>
+                <select
+                  value={copySourceFlowId}
+                  onChange={(e) => setCopySourceFlowId(e.target.value)}
+                  className="border rounded px-2 py-1.5 text-sm w-full"
+                >
+                  <option value="">Elegir flujo…</option>
+                  {flowOptions.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t flex justify-end gap-2.5">
+              <button
+                onClick={closeCopyModal}
+                className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={copyFromFlow}
+                disabled={copyingFlow}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                {copyingFlow ? 'Copiando...' : 'Copiar'}
+              </button>
             </div>
           </div>
         </div>

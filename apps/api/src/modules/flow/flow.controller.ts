@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { FlowService } from './flow.service';
 import { CreateFlowDto, UpdateFlowDto, AssignTenantsDto } from './dto/create-flow.dto';
+import { CreateFlowVariantDto } from './dto/flow-alternative.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../rbac/guards/roles.guard';
 import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
@@ -83,5 +84,28 @@ export class FlowController {
   @RequirePermission('flows', 'update')
   async setDefault(@Param('id') id: string) {
     return this.flowService.setDefault(id);
+  }
+
+  /** Variantes (Feriado/Guardia) configuradas para este flow como Principal. */
+  @Get(':id/variants')
+  @RequirePermission('flows', 'read')
+  async listVariants(@Param('id') id: string) {
+    return this.flowService.listAlternatives(id);
+  }
+
+  /** Crea la variante de `dto.type` — ver CreateFlowVariantDto para las 3 fuentes posibles. */
+  @Post(':id/variants')
+  @RequirePermission('flows', 'create')
+  async createVariant(@Param('id') id: string, @Body() dto: CreateFlowVariantDto) {
+    return this.flowService.createVariant(id, dto.type, {
+      blank: dto.blank,
+      sourceFlowId: dto.sourceFlowId,
+    });
+  }
+
+  @Delete(':id/variants/:type')
+  @RequirePermission('flows', 'delete')
+  async deleteVariant(@Param('id') id: string, @Param('type') type: string) {
+    return this.flowService.deleteVariant(id, type);
   }
 }
