@@ -3,12 +3,20 @@ import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GupshupFileLoggerService } from './gupshup-file-logger.service';
+import { GupshupMediaService } from '../../common/gupshup-media.service';
+import { StoredAttachment } from '../../common/media-storage.util';
 
 interface GupshupInnerPayload {
   /** 'text' | 'button_reply' | 'list_reply' | 'image' | ... */
   type?: string;
-  /** Contenido real del mensaje — su forma varía según `type`, ver `extractBody`. */
-  payload?: { text?: string; postbackText?: string };
+  /**
+   * Contenido real del mensaje — su forma varía según `type`, ver `extractBody`/`extractMedia`.
+   * `url`/`contentType`/`caption` solo están presentes cuando `type === 'image'` (Gupshup docs
+   * "Media", verificado 2026-08-26) — `url` es pública con expiración (`urlExpiry`, no
+   * validado acá: si ya venció, `GupshupMediaService.downloadAndStore` simplemente falla y
+   * el adjunto se pierde best-effort, mismo criterio que el resto de las integraciones.
+   */
+  payload?: { text?: string; postbackText?: string; url?: string; contentType?: string; caption?: string };
   sender?: { phone?: string };
 }
 
@@ -46,6 +54,7 @@ export class GupshupWebhookController {
     private readonly broker: BrokerService,
     private readonly prisma: PrismaService,
     private readonly fileLog: GupshupFileLoggerService,
+    private readonly gupshupMedia: GupshupMediaService,
   ) {}
 
   @Post()
@@ -89,7 +98,13 @@ export class GupshupWebhookController {
     const inbound = payload.payload as GupshupInnerPayload | undefined;
     const from = inbound?.sender?.phone;
     const body = this.extractBody(inbound);
-    if (!from || body === null) {
+    const attachments = await this.extractMedia(inbound);
+
+    // Solo se descarta si no hay remitente, o si no hay ni texto ni adjuntos — un mensaje
+    // solo-imagen (sin caption) sigue de largo igual, mismo criterio que
+    // `TwilioWebhookController.receive` (ver `ConversationsService.handleMessage`,
+    // `flowState.pendingAttachments`).
+    if (!from || (body === null && !attachments.length)) {
       this.logger.warn(
         `Mensaje de Gupshup ignorado (tipo '${inbound?.type}' no soportado o sin remitente).`,
       );
@@ -97,11 +112,11 @@ export class GupshupWebhookController {
       return { status: 'ok' };
     }
 
-    this.fileLog.log('inbound.processed', { from, body, tenantId });
+    this.fileLog.log('inbound.processed', { from, body, attachments: attachments.length, tenantId });
 
     await this.broker.publish('whatsapp.incoming', {
       pattern: 'message.received',
-      data: { from: `+${from}`, body, channel: 'whatsapp' },
+      data: { from: `+${from}`, body: body ?? '', channel: 'whatsapp', attachments },
       tenantId,
       timestamp: new Date().toISOString(),
     });
@@ -113,7 +128,8 @@ export class GupshupWebhookController {
    * Texto plano equivalente, mismo criterio que `WhatsAppWebhookController.extractBody`: para
    * una respuesta de botón/lista devuelve `postbackText` (el `id` con el que armamos la opción
    * al mandarla, ver `GupshupWhatsAppService.buildInteractiveMessage`), no el título visible —
-   * así el nodo `menu` la matchea sin cambios.
+   * así el nodo `menu` la matchea sin cambios. Para una imagen, el `caption` (puede ser `''` si
+   * no tiene — no confundir con `null`, que significa "tipo no soportado, descartar").
    */
   private extractBody(inner?: GupshupInnerPayload): string | null {
     if (!inner) return null;
@@ -121,7 +137,15 @@ export class GupshupWebhookController {
       return inner.payload?.postbackText ?? inner.payload?.text ?? null;
     }
     if (inner.type === 'text') return inner.payload?.text ?? null;
+    if (inner.type === 'image') return inner.payload?.caption ?? '';
     return null;
+  }
+
+  /** Descarga la imagen adjunta, si el mensaje es de tipo `image` — ver `GupshupMediaService`. */
+  private async extractMedia(inner?: GupshupInnerPayload): Promise<StoredAttachment[]> {
+    if (inner?.type !== 'image' || !inner.payload?.url) return [];
+    const stored = await this.gupshupMedia.downloadAndStore(inner.payload.url, inner.payload.contentType);
+    return stored ? [stored] : [];
   }
 
   /** A qué tenant se asignan los mensajes entrantes. Mismo criterio que `WhatsAppWebhookController.resolveTenantId`. */
