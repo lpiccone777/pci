@@ -422,7 +422,10 @@
   - Estado persistido por conversación (`flowState`), con reseteo al terminar el flujo
 - [x] 13 tipos de nodo: `start`, `message`, `menu`, `input`, `condition`, `ticket_create`,
       `ticket_query`, `transfer_agent`, `llm_query`, `delay`, `variable`, `webhook`, `subflow`
-  - ⏳ `transfer_agent` y `webhook` son stubs: responden texto fijo, no ejecutan la acción
+  - ⏳ `transfer_agent` sigue siendo stub: responde texto fijo, no ejecuta la acción
+  - [x] `webhook` implementado (2026-08-26): hace el `fetch` real (URL/método/body JSON
+    interpolados con `flowState`), fire-and-forget — si falla solo loguea y el flujo
+    sigue. Editor con campo Body para armar el payload (ej. embeds de Discord)
 - [x] Editor visual en Next.js con ReactFlow (`/dashboard/flows` y `/dashboard/flows/[id]`)
   - Componentes `flow-nodes.tsx` y `flow-edges.tsx`
 - [x] Soporte de sub-flujos (nodo `subflow` con nodo de entrada configurable)
@@ -1316,7 +1319,7 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
    `InvgateService.addComment()` a esa detección (ver "Integración Invgate" en el Hito 2):
    escribir en InvGate a partir de un match de ticket potencialmente equivocado es peor que no
    escribir nada
-4. Implementar el nodo `webhook` (hoy stub)
+4. ~~Implementar el nodo `webhook` (hoy stub)~~ — implementado 2026-08-26
 5. Webhook de WhatsApp sin verificar `X-Hub-Signature-256` (App Secret de Meta) — cualquiera
    que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`
 6. `WHATSAPP_TENANT_ID` es un solo valor global: un número de WhatsApp = un tenant, hasta
