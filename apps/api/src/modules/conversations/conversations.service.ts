@@ -60,6 +60,7 @@ const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
+const WEBHOOK_TIMEOUT_MS = 10_000;
 
 /**
  * Nodo `llm_query` en modo extracción: cuántas veces se le pregunta al usuario un
@@ -2003,8 +2004,30 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'webhook': {
-        // TODO: Implementar llamada HTTP a webhook externo
-        return { responseText: 'Acción webhook ejecutada (stub).' };
+        // Fire-and-forget: no devuelve responseText, así que no interrumpe la
+        // conversación con el usuario. Si falla, se loguea y el flujo sigue
+        // (un webhook caído -p.ej. una alerta a Discord- no debe trabar el bot).
+        const url = data.url ? this.interpolate(data.url, flowState) : '';
+        if (!url) {
+          this.logger.warn(`Nodo webhook (${node.id}) sin URL configurada.`);
+          return {};
+        }
+        const method = (data.method || 'POST').toUpperCase();
+        const requestBody = method !== 'GET' && data.body ? this.interpolate(data.body, flowState) : undefined;
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: requestBody ? { 'Content-Type': 'application/json' } : undefined,
+            body: requestBody,
+            signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+          });
+          if (!res.ok) {
+            this.logger.warn(`Webhook (${node.id}) respondió ${res.status}: ${(await res.text().catch(() => '')).substring(0, 200)}`);
+          }
+        } catch (err) {
+          this.logger.error(`No se pudo llamar al webhook (${node.id}, ${url}): ${(err as Error).message}`);
+        }
+        return {};
       }
 
       case 'subflow': {

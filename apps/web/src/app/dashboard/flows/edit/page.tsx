@@ -2003,6 +2003,21 @@ function NodeProperties({
               <option value="PUT">PUT</option>
             </select>
           </div>
+          {(data.method || 'POST') !== 'GET' && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Body (JSON)</label>
+              <textarea
+                value={data.body || ''}
+                onChange={(e) => onUpdate('body', e.target.value)}
+                className="w-full border rounded p-2 text-sm font-mono"
+                rows={8}
+                placeholder={'{\n  "content": "Alerta: {{descripcion}}"\n}'}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Se envía con Content-Type: application/json. Podés usar variables del flujo con {'{{variable}}'}.
+              </p>
+            </div>
+          )}
         </>
       )}
 
