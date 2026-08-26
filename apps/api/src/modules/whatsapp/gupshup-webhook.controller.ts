@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Logger, Post } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -38,10 +38,21 @@ export class GupshupWebhookController {
 
   @Post()
   @HttpCode(200)
-  async receive(@Body() payload: GupshupWebhookPayload) {
+  async receive(
+    @Headers('content-type') contentType: string,
+    @Body() payload: GupshupWebhookPayload,
+  ) {
+    // TEMPORAL (debug entrega de webhook, 2026-08-26): loguea qué llega realmente antes de
+    // cualquier early-return, para confirmar si Gupshup manda el Content-Type que esperamos
+    // (`express.json()` en main.ts solo parsea el body si el header dice `application/json` —
+    // si Gupshup manda otra cosa, `payload` llega vacío/undefined y esto se descarta en
+    // silencio). Sacar esta línea una vez confirmado.
+    this.logger.debug(`Webhook Gupshup — Content-Type: '${contentType}' — body: ${JSON.stringify(payload)}`);
+
     // Gupshup manda varios `type` de evento por el mismo webhook (entrega, plantilla, cuenta,
     // facturación) — solo nos importan los mensajes reales entrantes, el resto se descarta.
-    if (payload.type !== 'message') {
+    // `payload` puede llegar undefined si el body no se pudo parsear (ver nota arriba).
+    if (!payload || payload.type !== 'message') {
       return { status: 'ok' };
     }
 
