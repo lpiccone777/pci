@@ -1796,23 +1796,52 @@ export class ConversationsService implements OnModuleInit {
           return this.resolveInvgateCustomerId(user.id, from);
         };
 
+        const clearTicketQueryState = () => {
+          delete flowState.__awaiting;
+          delete flowState.__ticketQueryStep;
+          delete flowState.__ticketQueryListCache;
+          delete flowState.__ticketQueryListTruncated;
+        };
+
+        /**
+         * "Volver a la lista" reusa la MISMA lista ya armada (`flowState.__ticketQueryListCache`)
+         * en vez de reconsultar InvGate — no solo por ahorrar la consulta: Twilio manda listas
+         * vía un Content Template cacheado por FORMA exacta del menú, incluyendo el id de cada
+         * fila (`TwilioWhatsAppService.hashInteractiveShape`). Si se reconstruye la lista de
+         * nuevo, aunque el resultado sea idéntico, cualquier corrimiento en el orden/estado de
+         * los tickets de InvGate arma un hash distinto y fuerza crear un Content Template
+         * nuevo (lento, y ese es justo el que a veces no llega a renderizar el botón/lista del
+         * lado de WhatsApp). Reenviando el mismo objeto en memoria, es 100% el mismo Content
+         * Template ya usado en el mensaje anterior — el mismo que si funciona (ver el botón
+         * "Volver a la lista", con forma fija, siempre cacheado). Se descarta con
+         * `clearTicketQueryState` apenas se sale del nodo, así una visita futura sí trae los
+         * tickets al día.
+         */
         const renderTicketList = async (prefix?: string): Promise<NodeExecutionResult> => {
-          const customerId = await resolveCustomerId();
-          if (!customerId) {
-            delete flowState.__awaiting;
-            delete flowState.__ticketQueryStep;
-            return {
-              responseText: 'No pude vincular tu usuario con InvGate para buscar tus tickets. Contactá a un administrador.',
-              flowState,
-            };
+          let interactive = flowState.__ticketQueryListCache as WhatsAppInteractive | undefined;
+          let truncated = !!flowState.__ticketQueryListTruncated;
+
+          if (!interactive) {
+            const customerId = await resolveCustomerId();
+            if (!customerId) {
+              clearTicketQueryState();
+              return {
+                responseText: 'No pude vincular tu usuario con InvGate para buscar tus tickets. Contactá a un administrador.',
+                flowState,
+              };
+            }
+
+            const built = await this.buildOpenTicketsList(customerId);
+            if (!built.interactive) {
+              clearTicketQueryState();
+              return { responseText: 'No tenés tickets abiertos en este momento.', flowState };
+            }
+            interactive = built.interactive;
+            truncated = built.truncated;
+            flowState.__ticketQueryListCache = interactive;
+            flowState.__ticketQueryListTruncated = truncated;
           }
 
-          const { interactive, truncated } = await this.buildOpenTicketsList(customerId);
-          if (!interactive) {
-            delete flowState.__awaiting;
-            delete flowState.__ticketQueryStep;
-            return { responseText: 'No tenés tickets abiertos en este momento.', flowState };
-          }
           flowState.__awaiting = node.id;
           flowState.__ticketQueryStep = 'select';
           const notice = truncated
@@ -1830,8 +1859,7 @@ export class ConversationsService implements OnModuleInit {
           if (body.trim() === BACK_OPTION_VALUE) {
             return renderTicketList();
           }
-          delete flowState.__awaiting;
-          delete flowState.__ticketQueryStep;
+          clearTicketQueryState();
           return { flowState };
         }
 
