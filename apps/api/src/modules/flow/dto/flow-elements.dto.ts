@@ -135,6 +135,10 @@ export class FlowNodeDataDto {
   @IsOptional()
   bodyTemplate?: string;
 
+  @IsString()
+  @IsOptional()
+  body?: string;
+
   @IsOptional()
   seconds?: number;
 
