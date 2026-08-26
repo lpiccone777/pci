@@ -4,9 +4,10 @@ import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { AppConfigService } from '../config/app-config.service';
-import { EXTENSION_BY_CONTENT_TYPE, StoredAttachment, resizeIfNeeded, resolveStorageDir } from './media-storage.util';
+import { EXTENSION_BY_CONTENT_TYPE, resizeIfNeeded, resolveStorageDir } from './media-storage.util';
+import type { StoredAttachment } from './media-storage.util';
 
-export { StoredAttachment };
+export type { StoredAttachment };
 
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 
