@@ -2,6 +2,7 @@ import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { GupshupFileLoggerService } from './gupshup-file-logger.service';
 
 interface GupshupInnerPayload {
   /** 'text' | 'button_reply' | 'list_reply' | 'image' | ... */
@@ -11,10 +12,20 @@ interface GupshupInnerPayload {
   sender?: { phone?: string };
 }
 
+/** Evento de estado de un mensaje SALIENTE (enqueued/sent/delivered/read/failed) — no confundir con un mensaje entrante. */
+interface GupshupMessageEventPayload {
+  /** 'enqueued' | 'sent' | 'delivered' | 'read' | 'failed' | ... */
+  type?: string;
+  /** Número destino del mensaje saliente al que corresponde este evento. */
+  destination?: string;
+  /** Solo presente cuando `type === 'failed'`: motivo del rechazo (ej. WhatsApp Error Code 131037). */
+  payload?: { code?: number; reason?: string };
+}
+
 interface GupshupWebhookPayload {
   /** 'message' | 'message-event' | 'account-event' | 'user-event' | 'template-event' | 'billing-event' */
   type?: string;
-  payload?: GupshupInnerPayload;
+  payload?: GupshupInnerPayload | GupshupMessageEventPayload;
 }
 
 /**
@@ -34,15 +45,34 @@ export class GupshupWebhookController {
     private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
     private readonly prisma: PrismaService,
+    private readonly fileLog: GupshupFileLoggerService,
   ) {}
 
   @Post()
   @HttpCode(200)
   async receive(@Body() payload: GupshupWebhookPayload) {
-    // Gupshup manda varios `type` de evento por el mismo webhook (entrega, plantilla, cuenta,
-    // facturación) — solo nos importan los mensajes reales entrantes, el resto se descarta.
+    this.fileLog.log('webhook.received', { type: payload?.type, raw: payload });
+
     // `payload` puede llegar undefined si el body no se pudo parsear (ej. Content-Type inesperado).
-    if (!payload || payload.type !== 'message') {
+    if (!payload) return { status: 'ok' };
+
+    // Evento de estado de un mensaje SALIENTE (el que nosotros mandamos como respuesta) — no es
+    // un mensaje entrante. Solo nos interesa loguear los rechazos: son la única forma de enterarse
+    // de que WhatsApp no entregó la respuesta del bot (ej. Error 131037, display name del número
+    // sin aprobar todavía — ver commit 2026-08-26). El resto (enqueued/sent/delivered/read) se ignora.
+    if (payload.type === 'message-event') {
+      const event = payload.payload as GupshupMessageEventPayload | undefined;
+      if (event?.type === 'failed') {
+        const reason = event.payload?.reason ?? `código ${event.payload?.code ?? 'desconocido'}`;
+        this.logger.warn(`Envío de WhatsApp (Gupshup) rechazado para ${event.destination ?? '(destino desconocido)'}: ${reason}`);
+        this.fileLog.log('delivery.failed', { destination: event.destination, code: event.payload?.code, reason });
+      }
+      return { status: 'ok' };
+    }
+
+    // Gupshup manda otros `type` de evento por el mismo webhook (plantilla, cuenta, facturación)
+    // aparte de 'message' (entrante) y 'message-event' (ya manejado arriba) — el resto se descarta.
+    if (payload.type !== 'message') {
       return { status: 'ok' };
     }
 
@@ -52,17 +82,22 @@ export class GupshupWebhookController {
         'Mensaje de Gupshup recibido pero no hay tenant configurado ' +
           '(GUPSHUP_WHATSAPP_TENANT_ID en /settings, ni ningún tenant en el sistema).',
       );
+      this.fileLog.log('inbound.no_tenant', {});
       return { status: 'ignored' };
     }
 
-    const from = payload.payload?.sender?.phone;
-    const body = this.extractBody(payload.payload);
+    const inbound = payload.payload as GupshupInnerPayload | undefined;
+    const from = inbound?.sender?.phone;
+    const body = this.extractBody(inbound);
     if (!from || body === null) {
       this.logger.warn(
-        `Mensaje de Gupshup ignorado (tipo '${payload.payload?.type}' no soportado o sin remitente).`,
+        `Mensaje de Gupshup ignorado (tipo '${inbound?.type}' no soportado o sin remitente).`,
       );
+      this.fileLog.log('inbound.ignored', { innerType: inbound?.type, hasFrom: !!from });
       return { status: 'ok' };
     }
+
+    this.fileLog.log('inbound.processed', { from, body, tenantId });
 
     await this.broker.publish('whatsapp.incoming', {
       pattern: 'message.received',

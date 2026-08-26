@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService, BrokerMessage } from '../broker/broker.service';
 import { WhatsAppInteractive } from './whatsapp-interactive.types';
+import { GupshupFileLoggerService } from './gupshup-file-logger.service';
 
 const TIMEOUT_MS = 10_000;
 const API_URL = 'https://api.gupshup.io/wa/api/v1/msg';
@@ -34,6 +35,7 @@ export class GupshupWhatsAppService implements OnModuleInit {
   constructor(
     private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
+    private readonly fileLog: GupshupFileLoggerService,
   ) {}
 
   /**
@@ -79,6 +81,7 @@ export class GupshupWhatsAppService implements OnModuleInit {
         `No se pudo enviar WhatsApp (Gupshup) a ${to}: falta GUPSHUP_API_KEY, ` +
           'GUPSHUP_WHATSAPP_SOURCE o GUPSHUP_APP_NAME en /settings.',
       );
+      this.fileLog.log('send.missing_credentials', { to });
       return;
     }
 
@@ -105,14 +108,18 @@ export class GupshupWhatsAppService implements OnModuleInit {
       });
     } catch (err) {
       this.logger.error(`No se pudo contactar la API de Gupshup: ${(err as Error).message}`);
+      this.fileLog.log('send.network_error', { to, error: (err as Error).message });
       throw err;
     }
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       this.logger.error(`Gupshup API respondió ${res.status} al mandarle a ${to}: ${detail.slice(0, 500)}`);
+      this.fileLog.log('send.api_error', { to, status: res.status, detail: detail.slice(0, 500) });
       throw new Error(`Gupshup API error ${res.status}`);
     }
+
+    this.fileLog.log('send.accepted', { to, body });
   }
 
   /**

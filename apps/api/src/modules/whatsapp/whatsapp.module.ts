@@ -5,6 +5,7 @@ import { TwilioWhatsAppService } from './twilio-whatsapp.service';
 import { TwilioWebhookController } from './twilio-webhook.controller';
 import { GupshupWhatsAppService } from './gupshup-whatsapp.service';
 import { GupshupWebhookController } from './gupshup-webhook.controller';
+import { GupshupFileLoggerService } from './gupshup-file-logger.service';
 import { BrokerModule } from '../broker/broker.module';
 import { MediaModule } from '../../common/media.module';
 
@@ -18,7 +19,7 @@ import { MediaModule } from '../../common/media.module';
 @Module({
   imports: [BrokerModule, MediaModule],
   controllers: [WhatsAppWebhookController, TwilioWebhookController, GupshupWebhookController],
-  providers: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],
+  providers: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService, GupshupFileLoggerService],
   exports: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],
 })
 export class WhatsAppModule {}
