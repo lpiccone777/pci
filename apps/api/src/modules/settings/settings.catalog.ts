@@ -437,20 +437,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'suscripción del webhook (GET /webhooks/whatsapp). Tiene que coincidir con el que ' +
       'configures en Meta for Developers > WhatsApp > Configuration.',
   },
-  {
-    key: 'WHATSAPP_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número de WhatsApp. ' +
-      'Limitación temporal: como los settings todavía son globales (no por tenant), un ' +
-      'solo número de WhatsApp sirve a un solo tenant. Sin definir, usa el tenant más ' +
-      'antiguo del sistema.',
-  },
-
   // --- Mensajería: WhatsApp (Twilio) ---
   {
     key: 'TWILIO_ACCOUNT_SID',
@@ -483,19 +469,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
       'automáticamente, no incluirlo acá.',
   },
-  {
-    key: 'TWILIO_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp (Twilio)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número de Twilio. Misma ' +
-      'limitación que WHATSAPP_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
-      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
   // --- Mensajería: WhatsApp (Gupshup) ---
   // API moderna de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey` — NO
   // confundir con la API legacy "Enterprise SMS" (grupo "Mensajería: SMS (Gupshup)", más
@@ -530,19 +503,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     placeholder: 'dasyBot',
     description: 'Nombre de la app registrada en Gupshup contra ese número (breadcrumb del panel, ej. "dasyBot").',
   },
-  {
-    key: 'GUPSHUP_WHATSAPP_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp (Gupshup)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número. Misma limitación que ' +
-      'WHATSAPP_TENANT_ID/TWILIO_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
-      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
   // --- Mensajería: SMS ---
   {
     key: 'SMS_PROVIDER',
@@ -575,19 +535,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
       'WhatsApp no sirve para esto.',
   },
-  {
-    key: 'TWILIO_SMS_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: SMS (Twilio)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número de SMS. Misma ' +
-      'limitación que el resto de los canales: un solo número sirve a un solo tenant ' +
-      'mientras los settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
   // --- Mensajería: SMS (Gupshup) ---
   // API LEGACY "Enterprise SMS" (enterprise.smsgupshup.com) — cuenta y producto totalmente
   // distintos de la API de WhatsApp de Gupshup (grupo de arriba): auth por userid/password
@@ -614,19 +561,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     placeholder: '••••••••',
     description: 'Contraseña de la cuenta de Enterprise SMS de Gupshup. Se guarda cifrada.',
   },
-  {
-    key: 'GUPSHUP_SMS_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número. Misma limitación que ' +
-      'TWILIO_SMS_TENANT_ID: un solo número sirve a un solo tenant mientras los settings sean ' +
-      'globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
   // --- Mensajería: Email ---
   {
     key: 'EMAIL_SMTP_HOST',

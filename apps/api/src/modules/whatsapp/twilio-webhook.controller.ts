@@ -1,7 +1,5 @@
 import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
-import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
-import { PrismaService } from '../../prisma/prisma.service';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
 
 interface TwilioIncomingPayload {
@@ -26,9 +24,7 @@ export class TwilioWebhookController {
   private readonly logger = new Logger(TwilioWebhookController.name);
 
   constructor(
-    private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
-    private readonly prisma: PrismaService,
     private readonly twilioMedia: TwilioMediaService,
   ) {}
 
@@ -43,15 +39,8 @@ export class TwilioWebhookController {
   @Post()
   @HttpCode(200)
   async receive(@Body() payload: TwilioIncomingPayload) {
-    const tenantId = await this.resolveTenantId();
-    if (!tenantId) {
-      this.logger.error(
-        'Mensaje de Twilio recibido pero no hay tenant configurado ' +
-          '(TWILIO_TENANT_ID en /settings, ni ningún tenant en el sistema).',
-      );
-      return { status: 'ignored' };
-    }
-
+    // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
+    // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
     const from = this.extractFrom(payload.From);
     const body = (payload.Body ?? '').trim();
     const attachments = await this.extractMedia(payload);
@@ -69,7 +58,6 @@ export class TwilioWebhookController {
     await this.broker.publish('whatsapp.incoming', {
       pattern: 'message.received',
       data: { from, body, channel: 'whatsapp', attachments },
-      tenantId,
       timestamp: new Date().toISOString(),
     });
 
@@ -98,19 +86,5 @@ export class TwilioWebhookController {
   private extractFrom(from?: string): string | null {
     if (!from) return null;
     return from.replace(/^whatsapp:/, '') || null;
-  }
-
-  /** A qué tenant se asignan los mensajes entrantes. Mismo criterio que `WhatsAppWebhookController.resolveTenantId`. */
-  private async resolveTenantId(): Promise<string | null> {
-    const configured = await this.appConfig.get('TWILIO_TENANT_ID');
-    if (configured) return configured;
-
-    // Sin esto, si la empresa más vieja se da de baja, los mensajes entrantes le siguen
-    // resolviendo a ella y `ConversationsService.handleMessage` los descarta en silencio.
-    const first = await this.prisma.tenant.findFirst({
-      where: { deletedAt: null },
-      orderBy: { createdAt: 'asc' },
-    });
-    return first?.id ?? null;
   }
 }

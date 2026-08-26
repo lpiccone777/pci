@@ -173,6 +173,27 @@ model DeviceValidation {
   @@index([userId])
 }
 
+// Selección de empresa pendiente para un usuario multitenant (teléfono que pertenece a
+// varias empresas). El ruteo del tenant entrante ahora sale de la membresía del teléfono:
+// con una sola empresa se atiende directo, con varias el bot pregunta con cuál hablar. La
+// pregunta ocurre ANTES de que exista una `Conversation` (que es por-tenant), así que el
+// estado intermedio vive acá, keyed por teléfono+canal. `originalBody` guarda el mensaje
+// que disparó la pregunta para reprocesarlo al elegir; `options` es la lista ofrecida
+// (`[{ index, tenantId, name }]`) para matchear la respuesta. `expiresAt` = ahora + 12hs
+// (misma ventana de reanudación que RESUME_WINDOW_MS).
+model PendingTenantSelection {
+  id           String   @id @default(cuid())
+  phone        String
+  channel      String
+  originalBody String
+  options      Json
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([phone, channel])
+}
+
 model Conversation {
   id            String    @id @default(cuid())
   userId        String

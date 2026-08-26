@@ -573,9 +573,9 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
  * MMS entrante (media por SMS) — reusa `TwilioMediaService` + `TwilioSmsWebhookController`.
  *
  * Mismo criterio que el describe de media de twilio.e2e-spec.ts: app propia con `FakeLlmService`,
- * credenciales de Twilio y `MEDIA_STORAGE_DIR` a un temporal por test. Se fija
- * `TWILIO_SMS_TENANT_ID` a NUESTRO tenant para que el webhook resuelva ahí y corra su flujo de
- * inicio (start → ticket_create), donde los adjuntos se consumen.
+ * credenciales de Twilio y `MEDIA_STORAGE_DIR` a un temporal por test. El teléfono se crea como
+ * MIEMBRO de NUESTRO tenant (única empresa), así el ruteo por membresía resuelve ahí y corre su
+ * flujo de inicio (start → ticket_create), donde los adjuntos se consumen.
  */
 describe('1.21 Canal SMS, media entrante MMS (BE-SMS-12)', () => {
   let t: TestApp;
@@ -607,7 +607,6 @@ describe('1.21 Canal SMS, media entrante MMS (BE-SMS-12)', () => {
     await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
     await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
     await deleteSetting(t.prisma, 'MEDIA_STORAGE_DIR');
-    await deleteSetting(t.prisma, 'TWILIO_SMS_TENANT_ID');
     await rm(mediaDir, { recursive: true, force: true });
   });
 
@@ -615,7 +614,6 @@ describe('1.21 Canal SMS, media entrante MMS (BE-SMS-12)', () => {
     'BE-SMS-12: un MMS con 2 imágenes reusa TwilioMediaService y ambas viajan al ticket_create como adjuntos',
     async () => {
       const tenant = await createTenant(t.prisma, { slug: uniqueSlug('sms12') });
-      await setSetting(t.prisma, 'TWILIO_SMS_TENANT_ID', tenant.id); // el webhook resuelve acá
       const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'SMS-12' });
       const phone = uniquePhone();
       const user = await createUser(t.prisma, {

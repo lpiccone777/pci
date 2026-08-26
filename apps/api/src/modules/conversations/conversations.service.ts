@@ -11,6 +11,7 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService } from '../context-sources/context-sources.service';
+import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-tenant-routing.service';
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
@@ -134,6 +135,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly contextSourcesService: ContextSourcesService,
     private readonly invgateService: InvgateService,
     private readonly twilioMedia: TwilioMediaService,
+    private readonly inboundTenantRouting: InboundTenantRoutingService,
   ) {}
 
   async onModuleInit() {
@@ -155,8 +157,12 @@ export class ConversationsService implements OnModuleInit {
    * —a través del broker, no en memoria— la respuesta que `handleMessage` publica
    * de vuelta. Simula el funcionamiento real: RabbitMQ de punta a punta, no una
    * llamada directa que se salte la cola.
+   *
+   * `tenantId` opcional: con valor, `handleMessage` usa esa empresa y corta el ruteo
+   * (probar el flujo de un tenant puntual); sin valor, pasa por el ruteo por membresía
+   * como un canal real (incluido el selector de empresa, que vuelve como texto acá).
    */
-  async simulateIncomingMessage(from: string, body: string, tenantId: string): Promise<string> {
+  async simulateIncomingMessage(from: string, body: string, tenantId?: string): Promise<string> {
     const reply = await this.broker.request(
       SIMULATE_QUEUE,
       {
@@ -198,12 +204,51 @@ export class ConversationsService implements OnModuleInit {
     // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
     const {
       from,
-      body,
       channel = 'whatsapp',
       attachments = [],
     } = msg.data as { from: string; body: string; channel?: string; attachments?: StoredAttachment[] };
-    const tenantId = msg.tenantId!;
+    // `body` es `let`: si el usuario venía respondiendo el selector de empresa, se reemplaza
+    // por el mensaje original que disparó la pregunta, para reprocesarlo en la empresa elegida.
+    let body = (msg.data as { body: string }).body;
     const outgoingQueue = `${channel}.outgoing`;
+
+    // Resolución de la empresa. `/simulate` y el RPC mandan `tenantId` explícito y cortan acá;
+    // los mensajes reales de canal llegan SIN tenant y se rutean por la membresía del teléfono
+    // (una empresa → directo; varias → se pregunta; ninguna → tenant de sistema). Ver
+    // InboundTenantRoutingService.
+    let tenantId = msg.tenantId;
+    if (!tenantId) {
+      let routing: InboundRoutingResult;
+      try {
+        routing = await this.inboundTenantRouting.resolve(from, channel, body);
+      } catch (err) {
+        this.logger.error(
+          `No se pudo resolver la empresa para ${from} (${channel}): ${err instanceof Error ? err.message : err}`,
+        );
+        return '';
+      }
+      if (routing.status === 'ask') {
+        // Todavía no hay empresa (ni conversación): se le pregunta y se corta. La respuesta del
+        // usuario entrará como un mensaje nuevo y la matcheará el propio InboundTenantRoutingService.
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: routing.body, interactive: routing.interactive },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        this.logger.log(`[selector] Empresa preguntada a ${from} (${channel}).`);
+        return routing.interactive
+          ? `${routing.body}\n\n${this.formatInteractiveAsText(routing.interactive)}`
+          : routing.body;
+      }
+      tenantId = routing.tenantId;
+      if (routing.replayBody !== undefined) body = routing.replayBody;
+    }
+    if (!tenantId) return '';
 
     this.logger.log(`[${tenantId}] Mensaje de ${from}: ${body.substring(0, 50)}...`);
 

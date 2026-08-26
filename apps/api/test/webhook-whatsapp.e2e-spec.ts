@@ -17,15 +17,7 @@
  * spec flaky. Espiar `publish()` deja correr el código real tal cual (nada mockeado, ni el
  * broker ni el controller) y observa exactamente lo que el controller mandó, sin esa carrera.
  */
-import {
-  createTestApp,
-  TestApp,
-  http,
-  createTenant,
-  uniqueSlug,
-  setSetting,
-  deleteSetting,
-} from './support';
+import { createTestApp, TestApp, http, setSetting, deleteSetting } from './support';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
 
 const WEBHOOK_PATH = '/webhooks/whatsapp';
@@ -63,7 +55,6 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
   afterEach(async () => {
     publishSpy.mockRestore();
     await deleteSetting(t.prisma, 'WHATSAPP_WEBHOOK_VERIFY_TOKEN');
-    await deleteSetting(t.prisma, 'WHATSAPP_TENANT_ID');
   });
 
   /** Solo las publicaciones dirigidas a `whatsapp.incoming` (el controller no publica en otra cola). */
@@ -106,9 +97,7 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
 
   // --- POST de mensajes entrantes ---
 
-  it('BE-WHK-03: POST con un mensaje de texto responde 200 {status:ok} y publica {from,body} en whatsapp.incoming', async () => {
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk03') });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
+  it('BE-WHK-03: POST con un mensaje de texto responde 200 {status:ok} y publica {from,body} en whatsapp.incoming (sin tenantId: la empresa se resuelve aguas abajo)', async () => {
     const from = '5491122334455';
 
     const res = await http(t)
@@ -124,14 +113,11 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
     expect(incomingCalls()).toHaveLength(1);
     const [, message] = incomingCalls()[0];
     expect(message.data).toEqual({ from: `+${from}`, body: 'Hola, necesito ayuda', channel: 'whatsapp' });
-    expect(message.tenantId).toBe(tenant.id);
+    expect(message.tenantId).toBeUndefined();
     expect(message.pattern).toBe('message.received');
   });
 
   it('BE-WHK-04: POST con una respuesta interactiva (botón o lista) publica el id de la opción como body', async () => {
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk04') });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
-
     const resBoton = await http(t)
       .post(WEBHOOK_PATH)
       .send({
@@ -191,9 +177,6 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
   });
 
   it('BE-WHK-05: POST con un tipo no soportado (imagen) ignora ese mensaje y responde 200 igual', async () => {
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk05') });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
-
     const res = await http(t)
       .post(WEBHOOK_PATH)
       .send({ entry: [{ changes: [{ value: { messages: [{ from: '5491100000000', type: 'image' }] } }] }] });
@@ -204,9 +187,6 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
   });
 
   it('BE-WHK-06: POST sin "messages" (ej. statuses de entrega) responde 200 sin publicar nada', async () => {
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk06') });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
-
     const res = await http(t)
       .post(WEBHOOK_PATH)
       .send({ entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.entrega1', status: 'delivered' }] } }] }] });
@@ -216,30 +196,8 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
     expect(incomingCalls()).toHaveLength(0);
   });
 
-  it.skip(
-    'BE-WHK-07: POST sin WHATSAPP_TENANT_ID y sin ningún tenant en el sistema devuelve {status:ignored} ' +
-      '[BLOQUEADO: la base efímera de e2e siempre tiene al menos el tenant "system" del seed global ' +
-      '(Apéndice C) — vaciar la tabla Tenant para reproducir "cero tenants" rompería el resto de los ' +
-      'specs que corren contra la misma base compartida]',
-    async () => {
-      const res = await http(t)
-        .post(WEBHOOK_PATH)
-        .send({
-          entry: [
-            { changes: [{ value: { messages: [{ from: '5491100000099', type: 'text', text: { body: 'nadie lo recibe' } }] } }] },
-          ],
-        });
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ status: 'ignored' });
-      expect(incomingCalls()).toHaveLength(0);
-    },
-  );
-
   // --- BE-WHK-08 (SEC-04): el POST debe validar X-Hub-Signature-256 antes de encolar ---
   it.failing('BE-WHK-08: POST sin X-Hub-Signature-256 válida debe rechazarse antes de encolar (SEC-04) @invertido', async () => {
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk08') });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
-
     const res = await http(t)
       .post(WEBHOOK_PATH)
       // Sin X-Hub-Signature-256 (Meta firma cada POST con el App Secret configurado en la app).
@@ -259,8 +217,6 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
     // manda igual, pero el controller lo ignora por completo. Este caso documenta que, el día que
     // se agregue la validación, el flujo legítimo (firma correcta) tiene que seguir dando este
     // mismo resultado — hoy da lo mismo mandar el header o no.
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('whk09') });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', tenant.id);
     const from = '5491100000002';
 
     const res = await http(t)
@@ -274,21 +230,4 @@ describe('1.12 Webhook de WhatsApp — recepción (BE-WHK-*)', () => {
     expect(incomingCalls()[0][1].data).toEqual({ from: `+${from}`, body: 'con firma', channel: 'whatsapp' });
   });
 
-  it('BE-WHK-10: POST sin WHATSAPP_TENANT_ID configurado asigna el mensaje al tenant más antiguo del sistema', async () => {
-    // No seteamos WHATSAPP_TENANT_ID (y el afterEach global ya lo dejó limpio de otros tests):
-    // `resolveTenantId` cae al fallback `prisma.tenant.findFirst({orderBy:{createdAt:'asc'}})`.
-    const oldest = await t.prisma.tenant.findFirst({ orderBy: { createdAt: 'asc' } });
-    expect(oldest).not.toBeNull(); // el seed global siempre deja al menos el tenant "system"
-    const from = '5491100000003';
-
-    const res = await http(t)
-      .post(WEBHOOK_PATH)
-      .send({
-        entry: [{ changes: [{ value: { messages: [{ from, type: 'text', text: { body: 'sin tenant configurado' } }] } }] }],
-      });
-
-    expect(res.status).toBe(200);
-    expect(incomingCalls()).toHaveLength(1);
-    expect(incomingCalls()[0][1].tenantId).toBe(oldest!.id);
-  });
 });

@@ -11,9 +11,14 @@ export class ConversationsController {
    * el objetivo es simular el funcionamiento real, no atajarlo.
    * Devuelve la respuesta del bot: es un endpoint de prueba y ver qué contestó
    * es justamente para lo que sirve.
+   *
+   * `tenantId` es OPCIONAL: si se manda, se prueba el flujo de esa empresa puntual
+   * (corta el ruteo); si se omite, el mensaje pasa por el ruteo por membresía del
+   * teléfono igual que un canal real (una empresa → directo; varias → selector de
+   * empresa; ninguna → tenant de sistema). Ver InboundTenantRoutingService.
    */
   @Post('simulate')
-  async simulate(@Body() dto: { from: string; body: string; tenantId: string }) {
+  async simulate(@Body() dto: { from: string; body: string; tenantId?: string }) {
     try {
       const reply = await this.conversationsService.simulateIncomingMessage(
         dto.from,

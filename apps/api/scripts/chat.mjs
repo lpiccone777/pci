@@ -5,8 +5,10 @@
  * Manda cada línea que escribís a POST /conversations/simulate y muestra la respuesta.
  * Sirve para probar flujos IVR y el LLM sin WhatsApp, sin RabbitMQ y sin frontend.
  *
- *   pnpm --filter api chat
- *   pnpm --filter api chat -- --tenant <id> --from +5491100000001
+ *   pnpm --filter api chat                       (auto: usa la empresa más antigua)
+ *   pnpm --filter api chat -- --tenant <id>      (fija una empresa puntual)
+ *   pnpm --filter api chat -- --route            (rutea por la membresía del teléfono:
+ *                                                 una → directo; varias → selector; ninguna → sistema)
  *
  * Comandos dentro del chat:
  *   /reset   cierra la conversación y arranca de cero (vuelve al inicio del flujo)
@@ -25,6 +27,9 @@ function arg(name, fallback) {
 const API = arg('api', process.env.API_URL || 'http://localhost:3001');
 const FROM = arg('from', '+5491100000001');
 let tenantId = arg('tenant', process.env.TENANT_ID || '');
+// Con --route no se manda tenant: el mensaje pasa por el ruteo por membresía del teléfono,
+// igual que un canal real (incluido el selector de empresa para números multitenant).
+const routeByMembership = args.includes('--route');
 
 const c = {
   dim: (s) => `\x1b[2m${s}\x1b[0m`,
@@ -35,6 +40,10 @@ const c = {
 
 /** Sin --tenant, resolvemos el primero que exista para no pedirle el id al usuario. */
 async function resolveTenant() {
+  if (routeByMembership) {
+    console.log(c.dim('ruteo: la empresa se resuelve por la membresía del teléfono (no se fija tenant)'));
+    return;
+  }
   if (tenantId) return;
   try {
     const { PrismaClient } = await import('@prisma/client');
@@ -55,7 +64,7 @@ async function send(body) {
   const res = await fetch(`${API}/conversations/simulate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: FROM, body, tenantId }),
+    body: JSON.stringify(tenantId ? { from: FROM, body, tenantId } : { from: FROM, body }),
   });
 
   const text = await res.text();
@@ -73,7 +82,7 @@ async function showState() {
   const { PrismaClient } = await import('@prisma/client');
   const prisma = new PrismaClient();
   const conv = await prisma.conversation.findFirst({
-    where: { tenantId, user: { phone: FROM }, status: 'active' },
+    where: { user: { phone: FROM }, status: 'active', ...(tenantId ? { tenantId } : {}) },
     orderBy: { createdAt: 'desc' },
   });
   await prisma.$disconnect();
@@ -88,7 +97,7 @@ async function reset() {
   const { PrismaClient } = await import('@prisma/client');
   const prisma = new PrismaClient();
   const { count } = await prisma.conversation.updateMany({
-    where: { tenantId, user: { phone: FROM }, status: 'active' },
+    where: { user: { phone: FROM }, status: 'active', ...(tenantId ? { tenantId } : {}) },
     data: { status: 'closed', currentFlowId: null, currentNodeId: null },
   });
   await prisma.$disconnect();

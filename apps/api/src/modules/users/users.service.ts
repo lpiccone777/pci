@@ -977,6 +977,25 @@ export class UsersService {
     });
   }
 
+  /**
+   * Todas las membresías activas del teléfono, con empresa y rol — versión plural de
+   * `findMembershipByPhone`. La usa el ruteo de tenant entrante para decidir qué empresa
+   * atiende: una sola → directo; varias → se le pregunta al usuario; ninguna → tenant de
+   * sistema. Excluye usuario y empresas dados de baja. Ordena por antigüedad de la empresa
+   * para que la lista ofrecida sea estable.
+   */
+  async findMembershipsByPhone(phone: string) {
+    return this.prisma.userTenant.findMany({
+      where: { user: { phone, deletedAt: null }, tenant: { deletedAt: null } },
+      include: {
+        user: { select: USER_SELECT },
+        role: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: { tenant: { createdAt: 'asc' } },
+    });
+  }
+
   async findByPhone(phone: string) {
     return this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
   }

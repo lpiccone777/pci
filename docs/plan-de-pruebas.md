@@ -424,7 +424,7 @@ Las claves válidas son sólo las del catálogo. Los secretos se cifran con AES-
 | BE-SET-15 | `GET /settings/:key` de una key del catálogo vs. una key inexistente | La del catálogo: valor resuelto con `source` (los secretos, enmascarado + `isSet`); una key fuera del catálogo: 400 con la lista de keys válidas |
 | BE-SET-16 | `PATCH /settings/:key` | Equivale a `POST /settings` (`upsert`): fija el valor con las mismas validaciones (catálogo, rango, enum, secreto cifrado) |
 | BE-SET-17 | `DELETE /settings/:key` de una key **sin** valor en BD | 404 "…no tiene valor en BD (usa env var o default)" |
-| BE-SET-18 | Guardar los secretos de los canales nuevos e InvGate (`TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) | Se guardan **cifrados** (AES-256-GCM); el `GET` los enmascara + `isSet`. Los identificadores **no** secretos (`TWILIO_ACCOUNT_SID`, `GUPSHUP_SMS_USERID`, `INVGATE_API_USER`, números `*_FROM`, `*_TENANT_ID`) van en claro |
+| BE-SET-18 | Guardar los secretos de los canales nuevos e InvGate (`TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) | Se guardan **cifrados** (AES-256-GCM); el `GET` los enmascara + `isSet`. Los identificadores **no** secretos (`TWILIO_ACCOUNT_SID`, `GUPSHUP_SMS_USERID`, `INVGATE_API_USER`, números `*_FROM`) van en claro |
 | BE-SET-19 | Selectores de proveedor `WHATSAPP_PROVIDER` (`meta`/`twilio`/`gupshup`) y `SMS_PROVIDER` (`twilio`/`gupshup`) | Cascada estándar BD → env → default (`meta`/`twilio`); un valor fuera del enum → 400 (`allowedValues`). ⚠️ A diferencia de `LLM_PROVIDER`, se leen **una sola vez al arrancar**: cambiarlos no re-suscribe los consumers sin reiniciar (ver BE-TWA-02) |
 | BE-SET-20 | Descripciones de `TWILIO_ACCOUNT_SID` e `INVGATE_API_USER` | Dicen "solo escritura por consistencia" pero están `secret:false`: el `GET` los devuelve **en claro**. Inocuo (un SID no es sensible), pero la descripción sugiere algo que el flag no cumple — anotar la discrepancia |
 
@@ -546,20 +546,19 @@ conexión).
 ## 1.12 Webhook de WhatsApp — recepción
 
 **Precondición:** `webhooks/whatsapp` sin `JwtAuthGuard` (Meta no manda token propio). El GET
-valida el verify token; el POST publica en `whatsapp.incoming`.
+valida el verify token; el POST publica en `whatsapp.incoming` **sin resolver la empresa** (eso
+ahora lo hace el orquestador por la membresía del teléfono, ver §1.24).
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
 | BE-WHK-01 | GET de verificación con `hub.verify_token` correcto y `mode=subscribe` | Devuelve el `challenge` como cuerpo de la respuesta (Content-Type `text/html` por el default de Nest para un string) |
 | BE-WHK-02 | GET de verificación con token incorrecto | 403 "verify_token inválido" |
-| BE-WHK-03 | POST con un mensaje de texto | 200 `{ status: ok }`, publica `{ from: +<num>, body }` en `whatsapp.incoming` |
+| BE-WHK-03 | POST con un mensaje de texto | 200 `{ status: ok }`, publica `{ from: +<num>, body }` en `whatsapp.incoming` **sin `tenantId`** (la empresa se resuelve aguas abajo por membresía, §1.24) |
 | BE-WHK-04 | POST con una respuesta interactiva (botón/lista) | Publica el `id` de la opción como `body` |
 | BE-WHK-05 | POST con un tipo no soportado (imagen, audio) | Se ignora ese mensaje (warn), 200 igual |
 | BE-WHK-06 | POST sin `messages` (ej. `statuses` de entrega) | 200 `{ status: ok }`, no genera nada |
-| BE-WHK-07 | POST sin tenant configurado ni tenant en el sistema | 200 `{ status: ignored }`, loguea error |
 | BE-WHK-08 | POST con `X-Hub-Signature-256` **ausente o inválida** | **Se rechaza** (401/403) antes de encolar: la firma se valida con el App Secret de Meta. ⚠️ Hoy se **procesa igual** sin validar firma (SEC-04): `❌` hasta validar `X-Hub-Signature-256` |
 | BE-WHK-09 | POST con `X-Hub-Signature-256` **válida** | 200 `{ status: ok }`, publica en `whatsapp.incoming` (el camino legítimo sigue funcionando tras sumar la validación) |
-| BE-WHK-10 | POST **sin** `WHATSAPP_TENANT_ID` pero con al menos una empresa en el sistema | Asigna el mensaje al tenant **más antiguo** (fallback de desarrollo) y publica en `whatsapp.incoming` |
 
 ## 1.13 Conector de salida de WhatsApp (`WhatsAppService`)
 
@@ -684,7 +683,7 @@ Template pre-creado por **forma** de menú, cacheado en la tabla `TwilioContentT
 | BE-TWA-12 | `POST webhooks/twilio` con `MediaUrl0..N` (imagen) | `TwilioMediaService` baja cada adjunto con `Authorization: Basic` (SID/token de `/settings`), auto-orienta por EXIF y redimensiona a ≤1920×1080 (`sharp`, solo jpeg/png/webp; gif/pdf sin resize) y publica el mensaje con `attachments` en `whatsapp.incoming`. Un mensaje solo-imagen (sin caption) ya no se descarta. Tope `MAX_MEDIA_ITEMS=10` |
 | BE-TWA-13 | Media con URL falsa/404, sin credenciales, o cron de retención | URL no-2xx o sin credenciales → `warn` y se saltea ese adjunto (no rompe la charla); el `@Cron('*/2 …')` borra los temporales de más de 10 min sin consumir. Ni el SID ni el token se loguean |
 | BE-TWA-14 | Adjunto de media **muy grande** (o muchos juntos) | **Debería** haber un tope de bytes en la descarga. ⚠️ Hoy `res.arrayBuffer()` carga el archivo entero en memoria y el único freno es el timeout de 20s (no chequea `Content-Length`): `❌` (robustez, sin número de hallazgo) |
-| BE-TWA-15 | `resolveTenantId` cuando no hay `*_TENANT_ID` configurado y la empresa **más vieja** está dada de baja | Cae a la empresa más vieja **activa** (`where:{ deletedAt:null }`); antes resolvía a la dada de baja y `handleMessage` descartaba el mensaje en silencio |
+| BE-TWA-15 | El webhook de Twilio publica en `whatsapp.incoming` **sin** `tenantId` | La empresa se resuelve aguas abajo por membresía (§1.24); se eliminó el ruteo por `*_TENANT_ID` + fallback al tenant más viejo |
 
 ## 1.20 Canal WhatsApp — Gupshup (`GupshupWhatsAppService` + `GupshupWebhookController`)
 
@@ -777,6 +776,29 @@ cadena estándar `@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)` y permisos
 | BE-SKL-08 | Un `Flow` compartido (`TenantFlow` N:N) entre la empresa **A** (dueña de la skill) y **B**; una charla del tenant **B** pasa por ese flujo | **No debe** filtrar: la skill de A no tendría que inyectarse en las conversaciones de B. ⚠️ Hoy `findById` carga `skill.promptText` **sin re-chequear el tenant en curso** → el texto de A entra en el prompt de B. A diferencia de la fuente de verdad (que falla-seguro por tenant), la skill **filtra en silencio** (SEC-17): `❌` |
 | BE-SKL-09 | `POST`/`PATCH /flows` con un `skillId` de **otra** empresa | **Debe** rechazar (no pertenece al tenant activo). ⚠️ Hoy `FlowService.create/update` propagan `skillId` por spread **sin validar pertenencia**; la FK sólo valida existencia (SEC-17): `❌` |
 | BE-SKL-10 | Marcar una Skill como `isActive:false` y usar un flujo vinculado a ella | **Debería** dejar de concatenarse. ⚠️ Hoy el motor **no chequea `isActive`** (`findById` ni lo trae): el texto se inyecta igual. El flag es letra muerta en el motor: `❌` (robustez, sin número de hallazgo) |
+
+## 1.24 Ruteo de tenant entrante por membresía (`InboundTenantRoutingService`)
+
+**Precondición:** el tenant que atiende un mensaje **entrante** ya no sale de configuración por
+canal (`WHATSAPP_TENANT_ID` y hermanos + el fallback al tenant más viejo, **eliminados**), sino de
+la **membresía del teléfono**. Los webhooks (§1.12, §1.19–1.21) publican el mensaje **sin
+`tenantId`**; `ConversationsService.handleMessage` delega la resolución en
+`InboundTenantRoutingService.resolve(from, channel, body)`. Un mensaje que llega **con** `tenantId`
+explícito (p. ej. `/conversations/simulate`) saltea el ruteo y usa esa empresa.
+
+Orden de decisión: pendiente de selección → conversación **activa** en alguna empresa → 1 membresía
+(directo) / ≥2 (se pregunta) / 0 (tenant de sistema). El estado intermedio de la pregunta vive en
+`PendingTenantSelection` (por teléfono+canal, expira a las 12h). En WhatsApp el selector va como
+lista/botones interactivos; en SMS como texto numerado.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-ITR-01 | Teléfono miembro de **una sola** empresa | `resolve` → `{ resolved, tenantId }` de esa empresa, sin preguntar ni crear pendiente |
+| BE-ITR-02 | Teléfono **sin ninguna** empresa (desconocido) | `resolve` → tenant de **sistema** (`SYSTEM_TENANT_SLUG`), que lo atiende con su flujo global (`Flow.isDefault`) |
+| BE-ITR-03 | Teléfono **multiempresa** | `resolve` → `{ ask }` con el selector; crea `PendingTenantSelection` con las opciones (ordenadas por antigüedad de la empresa) y el mensaje original |
+| BE-ITR-04 | Responder el selector con el **número** de la empresa | `resolve` → `{ resolved, tenantId elegido, replayBody }` (reprocesa el mensaje original); borra el pendiente |
+| BE-ITR-05 | Responder el selector con algo **inválido** | `resolve` → `{ ask }` otra vez; conserva el pendiente (se re-pregunta; expira a las 12h) |
+| BE-ITR-06 | Multiempresa con una **conversación activa** en una empresa | `resolve` → esa empresa (continúa la charla), sin volver a preguntar. Una charla **cerrada** ya no cuenta: el próximo mensaje vuelve a preguntar |
 
 ---
 
@@ -1489,8 +1511,8 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
   Gupshup no se verifica de ninguna forma. Agravante: los cuatro quedan activos **aunque
   `WHATSAPP_PROVIDER`/`SMS_PROVIDER` no sean ese proveedor**.
 - **Cómo se explota:** quien conozca la URL publica mensajes falsos con cualquier remitente en
-  `whatsapp.incoming`/`sms.incoming`; el sistema los asigna al tenant configurado (o al más antiguo)
-  y los procesa como reales.
+  `whatsapp.incoming`/`sms.incoming`; el sistema los rutea al tenant según la membresía del teléfono
+  (o al de sistema si no pertenece a ninguna empresa) y los procesa como reales.
 - **Impacto:** suplantación de usuarios por la puerta pública, avance de flujos, gasto de LLM y hasta
   creación de tickets. Mismo efecto que SEC-04 (webhook de Meta), ahora multiplicado por cuatro canales.
 - **Sugerencia:** validar `X-Twilio-Signature` con el auth token antes de encolar; para Gupshup, un

@@ -584,7 +584,6 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
     await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
     await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
     await deleteSetting(t.prisma, 'MEDIA_STORAGE_DIR');
-    await deleteSetting(t.prisma, 'TWILIO_TENANT_ID');
     await rm(mediaDir, { recursive: true, force: true });
   });
 
@@ -815,26 +814,12 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
     }
   });
 
-  it('BE-TWA-15: sin TWILIO_TENANT_ID y con la empresa más vieja dada de baja, resolveTenantId cae a la más vieja ACTIVA', async () => {
-    await deleteSetting(t.prisma, 'TWILIO_TENANT_ID');
-
-    // Dos empresas más viejas que cualquier otra de la corrida (backdate a 1970): la MÁS vieja
-    // dada de baja, la siguiente activa. Antes `findFirst` sin `deletedAt:null` resolvía a la
-    // dada de baja y `handleMessage` descartaba el mensaje (empresa dada de baja → silencio);
-    // ahora el filtro `where:{deletedAt:null}` la salta y cae a la más vieja ACTIVA.
-    // Se crean DENTRO del try para que el cleanup del finally corra aunque una de las dos
-    // creaciones (o cualquier assert) falle antes de tiempo.
-    let deleted: { id: string } | undefined;
-    let active: { id: string } | undefined;
+  it('BE-TWA-15: el webhook de Twilio publica en whatsapp.incoming SIN tenantId (la empresa se resuelve aguas abajo por membresía, ver inbound-tenant-routing.e2e)', async () => {
+    // El ruteo por config (TWILIO_TENANT_ID + fallback al tenant más viejo) se eliminó: el
+    // webhook ya no resuelve la empresa, solo publica el mensaje. La resolución por membresía
+    // del teléfono vive en InboundTenantRoutingService y se prueba en su propio spec.
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      deleted = await t.prisma.tenant.create({
-        data: { slug: uniqueSlug('twa15-del'), name: 'baja', createdAt: new Date('1970-01-01T00:00:00Z'), deletedAt: new Date() },
-      });
-      active = await t.prisma.tenant.create({
-        data: { slug: uniqueSlug('twa15-act'), name: 'activa', createdAt: new Date('1970-01-02T00:00:00Z') },
-      });
-
       const phone = uniquePhone();
       const res = await http(t)
         .post('/webhooks/twilio')
@@ -846,24 +831,10 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
         (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
       );
       expect(call).toBeDefined();
-      expect((call![1] as any).tenantId).toBe(active.id); // la activa, NO la dada de baja
-      expect((call![1] as any).tenantId).not.toBe(deleted.id);
+      expect((call![1] as any).data).toMatchObject({ from: phone, body: 'hola', channel: 'whatsapp' });
+      expect((call![1] as any).tenantId).toBeUndefined();
     } finally {
       publishSpy.mockRestore();
-      // Cleanup robusto: dar de baja las dos empresas Y sacarles el `createdAt` del piso de 1970.
-      // El soft-delete solo no basta: hay specs que resuelven "el tenant más antiguo del sistema"
-      // con `findFirst({orderBy:{createdAt:'asc'}})` SIN filtrar `deletedAt` (p. ej. BE-WHK-10 en
-      // webhook-whatsapp.e2e), y esas filas backdateadas a 1970 quedarían como las más viejas del
-      // sistema aunque estén dadas de baja — divergiendo del webhook real, que sí filtra
-      // `deletedAt:null`. Con `createdAt` = ahora dejan de sesgar ese orden global. Soft-delete
-      // (no hard) para no chocar con las filas que el pipeline de fondo pudo crear bajo `active`.
-      const ids = [deleted?.id, active?.id].filter((x): x is string => !!x);
-      if (ids.length) {
-        await t.prisma.tenant.updateMany({
-          where: { id: { in: ids } },
-          data: { deletedAt: new Date(), createdAt: new Date() },
-        });
-      }
     }
   });
 });
