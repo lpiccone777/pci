@@ -23,11 +23,29 @@ export const ACTIVE_TENANT_KEY = 'activeTenant';
  * app cambie —el `activeTenant` del selector, el token que borra el logout—, rompiendo justo los
  * casos que prueban esos cambios. Como acá se setea el token DESPUÉS de que `/login` ya montó sin
  * token, la pantalla de login no redirige; la sesión recién la lee `useAuth` al navegar al panel.
+ *
+ * Antes de eso limpia cualquier sesión previa del origen: si al montar `/login` sigue el token de
+ * un usuario ANTERIOR (típico al inyectar dos sesiones en un mismo test, p. ej. lector y luego
+ * editor), su `useEffect` redirige a `/dashboard` COMO ESE usuario viejo —client-side, sin recargar—
+ * y el token nuevo que seteamos después ya no lo relee nadie: el test terminaba viendo al usuario
+ * anterior (flaky de FE-TEN-01 / FE-ARE-04 / FE-FLW-02). En la primera inyección todavía no hay
+ * origen cargado (`about:blank`): ahí `localStorage` tira `SecurityError`, lo ignoramos.
  */
 export async function injectSession(
   page: Page,
   session: { token: string; activeTenant: string },
 ): Promise<void> {
+  await page
+    .evaluate(() => {
+      try {
+        localStorage.clear();
+      } catch {
+        // about:blank / origen sin cargar: no hay sesión previa que limpiar.
+      }
+    })
+    .catch(() => {
+      // `evaluate` puede rechazar si aún no se navegó a ningún origen; es esperable.
+    });
   await page.goto('/login');
   await page.evaluate(
     ({ tokenKey, tenantKey, token, tenant }) => {

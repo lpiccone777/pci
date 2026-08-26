@@ -20,9 +20,8 @@
  * nunca tuvieron cuerpo; FE-16/19 antes corrían y quedan como `test.skip` para dejar visible la
  * reclasificación. Ninguno se cuenta como cubierto.
  *
- * FE-FLW-22..25 y FE-FLW-29 son casos INVERTIDOS (`test.fail`): describen el comportamiento
- * SEGURO/robusto que hoy no existe. El assert verifica ese comportamiento deseado; hoy falla a
- * propósito. Cuando se corrija el hallazgo, el marcador saltará y avisará que hay que quitarlo.
+ * FE-FLW-22..25 y FE-FLW-29 verifican el comportamiento seguro/robusto del editor y el listado
+ * de flujos frente al cambio de empresa y a la importación (ver cada caso).
  */
 import { readFileSync } from 'node:fs';
 import { test, expect, type Page } from '@playwright/test';
@@ -478,13 +477,13 @@ test('FE-FLW-21: el nodo llm_query ofrece el toggle reemplaza/agrega del prompt 
   await expect(agrega).not.toBeChecked();
 });
 
-// --- Casos invertidos (comportamiento seguro/robusto deseado; hoy fallan a propósito) ---
+// --- Cambio de empresa e importación: comportamiento seguro/robusto del editor y el listado ---
 
-test.fail(
-  'FE-FLW-22: cambiar de empresa en el editor debería devolver al listado (SEC-03) @invertido',
+test(
+  'FE-FLW-22: cambiar de empresa en el editor devuelve al listado (SEC-03)',
   async ({ page }) => {
-    // El flujo abierto puede ser de otra empresa: al cambiar la empresa activa, lo seguro es sacar al
-    // usuario del editor. Hoy el reload lo deja adentro, editando el mismo flujo (ver SEC-03).
+    // El flujo abierto puede ser de otra empresa: al cambiar la empresa activa, el editor saca al
+    // usuario y lo devuelve al listado (ver SEC-03).
     const tenant = await createTenant(admin);
     const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
     const flow = await createFlow(admin, { assignments: [{ tenantId: tenant.id, roleIds: [role.id] }] });
@@ -496,16 +495,16 @@ test.fail(
     await page.locator('aside select').selectOption(ALL_TENANTS);
     await page.waitForLoadState('domcontentloaded');
 
-    // SEGURO: debería haber vuelto al listado. Hoy sigue en el editor del flujo.
+    // Debe haber vuelto al listado.
     await expect(page).toHaveURL(/\/dashboard\/flows\/?$/);
   },
 );
 
-test.fail(
-  'FE-FLW-23: los dropdowns deberían poblarse con la empresa del flujo, no con la activa @invertido',
+test(
+  'FE-FLW-23: los dropdowns se pueblan con la empresa del flujo, no con la activa',
   async ({ page }) => {
     // Un flujo de la empresa B tiene una fuente de verdad de B. Abriéndolo con otra empresa activa, el
-    // dropdown "Fuente de verdad" debería listar la de B. Hoy usa la empresa activa y la deja fuera.
+    // dropdown "Fuente de verdad" lista la de B (la del flujo), no la de la empresa activa.
     const empresaB = await createTenant(admin);
     const fuenteB = await createContextSource(admin, { tenantId: empresaB.id, type: 'n8n' });
     const role = await createRole(admin, { tenantId: empresaB.id, permissions: ['flows:read'] });
@@ -518,15 +517,15 @@ test.fail(
     await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
     await openEditor(page, flow.id);
 
-    // SEGURO: la fuente de la empresa del flujo debería estar en el dropdown. Hoy no aparece.
+    // La fuente de la empresa del flujo debe estar en el dropdown.
     await expect(page.locator('#flow-context-source')).toContainText(fuenteB.name);
   },
 );
 
-test.fail(
-  'FE-FLW-24: los catálogos de InvGate no deberían responder 500 al abrir el editor @invertido',
+test(
+  'FE-FLW-24: los catálogos de InvGate no responden 500 al abrir el editor',
   async ({ page }) => {
-    // InvGate sin configurar debería devolver lista vacía o un 4xx controlado, no un 500.
+    // InvGate sin configurar devuelve lista vacía (un 4xx controlado sería aceptable), no un 500.
     await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
     const respPromise = page.waitForResponse((r) =>
       r.url().includes('/invgate/catalog/priorities'),
@@ -534,23 +533,23 @@ test.fail(
     await page.goto('/dashboard/flows/edit/?id=new');
     const resp = await respPromise;
 
-    // SEGURO: no debería ser 500. Hoy lo es.
+    // No debe ser 500.
     expect(resp.status()).not.toBe(500);
   },
 );
 
-test.fail(
-  'FE-FLW-25: sin flows:read la pantalla debería avisar "Permiso denegado", no simular lista vacía @invertido',
+test(
+  'FE-FLW-25: sin flows:read la pantalla avisa "Permiso denegado", no simula lista vacía',
   async ({ page }) => {
-    // Flujos es la única de su clase que oculta el 403: muestra "No hay flujos configurados." igual que
-    // una empresa sin flujos. Lo seguro es distinguirlo, como Áreas/Roles/Usuarios.
+    // Flujos distingue el 403 de "empresa sin flujos" (muestra el aviso de permiso), como
+    // Áreas/Roles/Usuarios, en vez de mostrar "No hay flujos configurados." para ambos.
     const tenant = await createTenant(admin);
     const user = await createUserWithPermissions(admin, ['areas:read'], { tenantId: tenant.id });
 
     await injectSession(page, await sessionForUser(user.email, user.password, tenant.id));
     await page.goto('/dashboard/flows');
 
-    // SEGURO: debería mostrar el aviso de permiso. Hoy muestra "No hay flujos configurados.".
+    // Debe mostrar el aviso de permiso.
     await expect(page.getByText(/Permiso denegado.*flows:read/)).toBeVisible();
   },
 );
@@ -688,16 +687,15 @@ test('FE-FLW-28: "Importar" valida superficialmente y hace POST; un JSON inváli
   await expect(page).toHaveURL(/\/dashboard\/flows\/edit\/?\?id=/);
 });
 
-// --- Caso invertido (comportamiento seguro/robusto deseado; hoy falla a propósito) ---
+// --- Importar en otra empresa: el backend sanea los ids embebidos ajenos (robustez/seguridad) ---
 
-test.fail(
-  'FE-FLW-29: importar en otra empresa debería sanear los ids embebidos ajenos (robustez/seguridad) @invertido',
+test(
+  'FE-FLW-29: importar en otra empresa sanea los ids embebidos ajenos (robustez/seguridad)',
   async ({ page }) => {
     // Un .flow.json exportado en la empresa A trae ids que sólo existen en A (acá, la fuente de verdad
-    // de A vía `contextSourceId`; igual valdría para `skillId`, el `userId` de assignees/recipients o el
-    // `flowId` de un nodo `subflow`). Importándolo con la empresa B activa, lo SEGURO es que el backend
-    // saneé o rechace ese id ajeno. Hoy `POST /flows` lo guarda como blob sin validar: el flujo nuevo
-    // queda apuntando a un recurso de A.
+    // de A vía `contextSourceId`; igual vale para `skillId`, el `userId` de assignees/recipients o el
+    // `flowId` de un nodo `subflow`). Importándolo con la empresa B activa, `POST /flows` descarta ese
+    // id ajeno (lo sanea a null) en vez de guardarlo tal cual apuntando a un recurso de A.
     const empresaA = await createTenant(admin);
     const fuenteA = await createContextSource(admin, { tenantId: empresaA.id, type: 'n8n' });
     const empresaB = await createTenant(admin);
@@ -725,7 +723,7 @@ test.fail(
     ]);
     const created = await resp.json();
 
-    // SEGURO: el flujo importado en B NO debería quedar con la fuente de verdad de A. Hoy sí queda.
+    // El flujo importado en B no debe quedar con la fuente de verdad de A.
     expect(created.contextSourceId).not.toBe(fuenteA.id);
   },
 );

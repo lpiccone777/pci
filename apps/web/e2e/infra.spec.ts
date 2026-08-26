@@ -331,13 +331,11 @@ test('FE-INF-15: un 401 con token presente cierra la sesión y redirige de inmed
   await expect(page).toHaveURL(/\/login\/?$/);
 });
 
-test.fail(
-  'FE-INF-16: parado en una pantalla solo-sistema, cambiar a una empresa no-sistema debería sacar al usuario al dashboard @invertido',
+test(
+  'FE-INF-16: parado en una pantalla solo-sistema, cambiar a una empresa no-sistema saca al usuario al dashboard',
   async ({ page }) => {
-    // Comportamiento SEGURO esperado (hoy NO implementado): al cambiar el selector a una empresa
-    // que ya no tiene esta pantalla en el menú, la app debería redirigir al dashboard. Hoy la
-    // recarga deja al usuario en la misma URL huérfana (/dashboard/tenants). `test.fail` da verde
-    // mientras el bug siga vivo; cuando se corrija, gritará "sacá el marcador".
+    // Al cambiar el selector a una empresa que ya no tiene esta pantalla en el menú, la app
+    // redirige al dashboard en vez de dejar al usuario en la URL huérfana (/dashboard/tenants).
     const tenant = await createTenant(admin);
 
     await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
@@ -349,10 +347,10 @@ test.fail(
     await selector.selectOption(tenant.id);
 
     // El cambio de empresa ya se aplicó (persistió + recargó); lo verificamos con waitForFunction
-    // para que el `test.fail` falle por la ASERCIÓN de abajo (la redirección), no por una carrera
-    // de contexto destruido durante el reload.
+    // para que la aserción de abajo (la redirección) no compita con una carrera de contexto
+    // destruido durante el reload.
     await page.waitForFunction((id) => localStorage.getItem('activeTenant') === id, tenant.id);
-    // Lo esperado (hoy NO implementado): haber sido redirigido fuera de la pantalla solo-sistema.
+    // Debe haber sido redirigido fuera de la pantalla solo-sistema, al dashboard.
     await expect(page).toHaveURL(/\/dashboard\/?$/);
   },
 );

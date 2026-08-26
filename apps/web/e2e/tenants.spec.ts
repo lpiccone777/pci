@@ -5,10 +5,8 @@
  * parado en la empresa de sistema. La siembra va por la API real (`localhost:3101`); la UI corre
  * contra el web aislado (`localhost:3100`).
  *
- * FE-TEN-06 y FE-TEN-07 son casos invertidos (`❌` por diseño): el selector del sidebar cachea
- * `/tenants/all` al montar y no se refresca al crear/editar en esta pantalla. El test verifica el
- * comportamiento SEGURO esperado (el selector debería reflejar el cambio) y va con `test.fail`:
- * mientras el bug siga vivo el marcador lo da por rojo esperado; cuando se corrija, saltará.
+ * FE-TEN-06 y FE-TEN-07 verifican que el selector del sidebar refleje el alta y el renombre de una
+ * empresa sin recargar: la pantalla emite un evento tras cada cambio y el sidebar refresca su lista.
  */
 import { test, expect, type Page } from '@playwright/test';
 import {
@@ -53,12 +51,20 @@ test('FE-TEN-01: el ítem "Tenants" del menú aparece sólo con tenants:read en 
   const conPermiso = await createUserWithPermissions(admin, ['tenants:read']);
   await injectSession(page, await sessionForUser(conPermiso.email, conPermiso.password, admin.systemTenantId));
   await page.goto('/dashboard');
+  // Gate: esperar a que useAuth resuelva /auth/me y el sidebar monte (el email aparece recién
+  // ahí) antes de mirar el menú. En la primera navegación, la compilación on-demand de Next más
+  // la resolución de permisos pueden pasarse de los 5s por defecto de la aserción — ése era el
+  // origen del flaky. Con el gate, la comprobación del menú ya no corre esa carrera.
+  await expect(page.getByText(conPermiso.email)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('link', { name: 'Tenants', exact: true })).toBeVisible();
 
   // Miembro de sistema SIN tenants:read → no lo ve (el corte es por permiso, no por contexto).
   const sinPermiso = await createUserWithPermissions(admin, ['users:read']);
   await injectSession(page, await sessionForUser(sinPermiso.email, sinPermiso.password, admin.systemTenantId));
   await page.goto('/dashboard');
+  await expect(page.getByText(sinPermiso.email)).toBeVisible({ timeout: 15_000 });
+  // "Usuarios" visible confirma que el menú ya se renderizó, así el toHaveCount(0) de "Tenants"
+  // se evalúa sobre el menú final, no sobre uno todavía vacío.
   await expect(page.getByRole('link', { name: 'Usuarios', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Tenants', exact: true })).toHaveCount(0);
 });
@@ -159,8 +165,8 @@ test('FE-TEN-05: baja lógica y reactivación por fila con confirmación inline'
   await expect(rowWith(page, empresa.slug).getByText('Dada de baja')).toHaveCount(0);
 });
 
-test.fail(
-  'FE-TEN-06: crear una empresa debería reflejarse también en el selector del sidebar @invertido',
+test(
+  'FE-TEN-06: crear una empresa se refleja también en el selector del sidebar',
   async ({ page }) => {
     await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
     await page.goto('/dashboard/tenants');
@@ -175,18 +181,19 @@ test.fail(
     // La tabla sí la muestra de inmediato.
     await expect(rowWith(page, slug)).toBeVisible();
 
-    // Comportamiento SEGURO esperado (hoy NO): la empresa nueva debería estar en el selector sin
-    // recargar. Hoy el sidebar quedó con la lista cacheada → esta aserción falla → test.fail verde.
+    // La empresa nueva debe estar en el selector sin recargar (el sidebar refresca su lista al
+    // recibir el evento que emite la pantalla).
     await expect(page.locator(`aside select option:has-text("${name}")`)).toBeAttached({
       timeout: 5000,
     });
   },
 );
 
-test.fail(
-  'FE-TEN-07: renombrar una empresa debería reflejarse también en el selector del sidebar @invertido',
+test(
+  'FE-TEN-07: renombrar una empresa se refleja también en el selector del sidebar',
   async ({ page }) => {
-    // La empresa existe ANTES de montar, así que el sidebar la cachea con su nombre viejo.
+    // La empresa existe ANTES de montar, así que el sidebar la cachea con su nombre viejo; al
+    // renombrarla, el evento de la pantalla lo hace refrescar.
     const empresa = await createTenant(admin);
 
     await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
@@ -202,8 +209,7 @@ test.fail(
     // La tabla ya muestra el nombre nuevo.
     await expect(rowWith(page, nuevoNombre)).toBeVisible();
 
-    // Comportamiento SEGURO esperado (hoy NO): el selector debería mostrar el nombre nuevo. Hoy
-    // sigue con el viejo cacheado → esta aserción falla → test.fail verde.
+    // El selector debe mostrar el nombre nuevo sin recargar.
     await expect(page.locator(`aside select option:has-text("${nuevoNombre}")`)).toBeAttached({
       timeout: 5000,
     });

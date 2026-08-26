@@ -10,8 +10,8 @@
  * adyacencia CSS (`label:text-is("X") + input/select`), por tipo (`input[type=email/password]`)
  * o por `title`/`placeholder`. Los modales son `role="dialog"`.
  *
- * FE-USR-15 y FE-USR-16 son casos invertidos (`❌` por diseño): verifican el comportamiento
- * SEGURO esperado y van con `test.fail` (rojo esperado hoy; cuando se corrija el bug, saltarán).
+ * FE-USR-15 y FE-USR-16 verifican el comportamiento seguro del alta de usuarios: no avisar de
+ * cambios sin guardar al cerrar un alta intacta, y poder elegir rol con `users:create` sin `roles:read`.
  */
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import {
@@ -407,15 +407,14 @@ test('FE-USR-14: un clic en la fila abre el detalle de solo lectura con botón E
   await expect(dialog.locator('button', { hasText: 'Cerrar' })).toBeVisible();
 });
 
-test.fail(
-  'FE-USR-15: cancelar un alta en blanco no debería avisar de cambios sin guardar @invertido',
+test(
+  'FE-USR-15: cancelar un alta en blanco no avisa de cambios sin guardar',
   async ({ page }) => {
     const tenant = await createTenant(admin);
     await createRole(admin, { tenantId: tenant.id, permissions: ['users:read'] });
 
-    // Comportamiento SEGURO esperado: abrir y cerrar sin tocar nada NO dispara el confirm.
-    // Hoy sí lo hace (el preset de la empresa activa ya cuenta como "cambio"): el handler acepta
-    // el diálogo y registra que apareció → la aserción de abajo falla → test.fail verde.
+    // Abrir y cerrar sin tocar nada NO dispara el confirm: el preset de la empresa activa no
+    // cuenta como "cambio". El handler acepta el diálogo y registra si llegó a aparecer.
     let confirmShown = false;
     page.on('dialog', (d) => {
       confirmShown = true;
@@ -433,8 +432,8 @@ test.fail(
   },
 );
 
-test.fail(
-  'FE-USR-16: con users:create pero sin roles:read el alta debería poder elegir un rol @invertido',
+test(
+  'FE-USR-16: con users:create pero sin roles:read el alta puede elegir un rol',
   async ({ page }) => {
     const tenant = await createTenant(admin);
     const role = await createRole(admin, { tenantId: tenant.id, name: 'Rol existente', permissions: ['users:read'] });
@@ -448,8 +447,8 @@ test.fail(
     await page.getByRole('button', { name: 'Nuevo usuario' }).click();
     const dialog = page.getByRole('dialog');
 
-    // Comportamiento SEGURO esperado: el rol existente debería poder elegirse en el desplegable.
-    // Hoy el GET /roles da 403, el dropdown queda vacío y la opción nunca aparece → falla → test.fail.
+    // El rol existente debe poder elegirse en el desplegable: `GET /roles` es accesible con
+    // `users:create` (no hace falta `roles:read` aparte), así que el dropdown se puebla.
     await expect(dialog.getByRole('option', { name: role.name })).toBeAttached({ timeout: 8000 });
   },
 );

@@ -54,10 +54,11 @@ export class CreateFlowDto {
 
   /**
    * Fuente de verdad (MCP/RAG/n8n/broker) que este flujo consulta. `null` desvincula.
-   * `FlowService` no valida tenant acá: el frontend solo ofrece en el dropdown las
-   * fuentes del tenant activo, pero un flujo puede estar asignado a varios
-   * tenants (`TenantFlow`) y `ContextSource` es por tenant — ver la limitación
-   * documentada en AGENTS.md.
+   * `FlowService.sanitizeCrossTenantRefs` valida que pertenezca a una empresa válida
+   * (la activa o alguna asignada al flujo) y la descarta a `null` si es de otra empresa
+   * — así un flujo importado no queda apuntando a la fuente de la empresa origen. Un
+   * flujo puede estar asignado a varios tenants (`TenantFlow`) y `ContextSource` es por
+   * tenant — ver la limitación documentada en AGENTS.md.
    */
   @IsString()
   @IsOptional()

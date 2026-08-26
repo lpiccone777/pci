@@ -59,6 +59,54 @@ export class ContextSourcesService {
     return sources.map((s) => this.toSafeDto(s));
   }
 
+  /**
+   * Fuentes de TODAS las empresas (vista consolidada "Todas las empresas" del superadmin).
+   * Operación cross-tenant → `SystemTenantGuard` en el controller. Mismo shape que `findAll`
+   * pero con la empresa de cada fila, para la columna "Empresa". Espejo de
+   * `AreasService.findAllCrossTenant`.
+   */
+  async findAllCrossTenant() {
+    const sources = await this.prisma.contextSource.findMany({
+      // No listar fuentes de empresas dadas de baja: la empresa desaparece del selector,
+      // así que su contenido no debe seguir apareciendo en la vista consolidada.
+      where: { tenant: { deletedAt: null } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
+    });
+    return sources.map((s) => this.toSafeDto(s));
+  }
+
+  /**
+   * Fuentes de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
+   * común). Acotado a las empresas donde su rol tiene `context-sources:read`. El scope lo pone
+   * el userId, no el header. Espejo de `AreasService.findMine`.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some(
+          (p) => p.resource === 'context-sources' && p.action === 'read',
+        ),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    const sources = await this.prisma.contextSource.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
+    });
+    return sources.map((s) => this.toSafeDto(s));
+  }
+
   async findOne(tenantId: string, id: string) {
     return this.toSafeDto(await this.getOwned(tenantId, id));
   }

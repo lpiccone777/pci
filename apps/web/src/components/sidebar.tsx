@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
@@ -9,6 +9,7 @@ import {
   ALL_TENANTS,
   ALL_TENANTS_CACHE_KEY,
   SYSTEM_TENANT_SLUG,
+  TENANTS_CHANGED_EVENT,
 } from '@/lib/system-tenant';
 
 interface TenantOption {
@@ -90,7 +91,9 @@ export default function Sidebar() {
    * empresa de sistema, por eso se guarda: apenas salta a otra, el pedido daría 403 y sin
    * la copia guardada el selector se quedaría sin opciones y no habría cómo volver.
    */
-  useEffect(() => {
+  // Trae la lista completa de empresas (solo en contexto de sistema, que es donde
+  // `/tenants/all` responde) y la cachea. Fuera de ese contexto, cae a la copia guardada.
+  const refreshAllTenants = useCallback(() => {
     if (!isSuperAdmin) return;
 
     if (!isSystemContext) {
@@ -113,6 +116,19 @@ export default function Sidebar() {
       });
   }, [isSuperAdmin, isSystemContext]);
 
+  useEffect(() => {
+    refreshAllTenants();
+  }, [refreshAllTenants]);
+
+  // La lista se cachea al montar, así que un alta/renombre/baja/restauración desde la
+  // pantalla de Tenants no se reflejaba en el selector hasta recargar (FE-TEN-06/07 y N2).
+  // Esa pantalla emite `TENANTS_CHANGED_EVENT` tras cada cambio y acá volvemos a traerla.
+  useEffect(() => {
+    const handler = () => refreshAllTenants();
+    window.addEventListener(TENANTS_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(TENANTS_CHANGED_EVENT, handler);
+  }, [refreshAllTenants]);
+
   const tenantOptions: TenantOption[] =
     allTenants ?? user?.tenants?.map((t) => t.tenant) ?? [];
 
@@ -129,6 +145,33 @@ export default function Sidebar() {
           (!item.systemTenantOnly || isSystemContext),
       );
 
+  // Id de la empresa de sistema (de las membresías), para saber si la empresa nueva del
+  // selector da "contexto de sistema".
+  const systemTenantId = user?.tenants?.find(
+    (t) => t.tenant.slug === SYSTEM_TENANT_SLUG,
+  )?.tenant.id;
+
+  const isSystemContextForTenant = (id: string): boolean =>
+    id === ALL_TENANTS ? isSystemMember : !!systemTenantId && id === systemTenantId;
+
+  /**
+   * A dónde mandar al usuario cuando cambia de empresa, si la pantalla actual ya no
+   * corresponde a la empresa nueva. `undefined` = quedarse donde está (recarga en el lugar).
+   */
+  const redirectOnTenantChange = (newId: string): string | undefined => {
+    // FE-FLW-22: en el editor de un flujo, cambiar de empresa saca al listado — el flujo
+    // abierto puede ser de otra empresa.
+    if (pathname?.startsWith('/dashboard/flows/edit')) return '/dashboard/flows/';
+    // FE-INF-16: parado en una pantalla solo-sistema, pasar a una empresa que no da contexto
+    // de sistema deja la pantalla huérfana (fuera del menú) → volver al dashboard. La comparación
+    // normaliza la barra final: con `trailingSlash`, `usePathname()` puede traer
+    // "/dashboard/tenants/" y el match exacto contra el href del menú (sin barra) fallaría.
+    const normalizedPath = (pathname ?? '').replace(/\/+$/, '') || '/';
+    const current = menuDefinition.find((m) => m.href === normalizedPath);
+    if (current?.systemTenantOnly && !isSystemContextForTenant(newId)) return '/dashboard/';
+    return undefined;
+  };
+
   return (
     <aside className="w-64 bg-gray-900 text-white min-h-screen flex flex-col">
       <div className="p-4 border-b border-gray-800">
@@ -139,7 +182,9 @@ export default function Sidebar() {
             {tenantOptions.length > 1 || isSuperAdmin ? (
               <select
                 value={activeTenant || ''}
-                onChange={(e) => setActiveTenant(e.target.value)}
+                onChange={(e) =>
+                  setActiveTenant(e.target.value, redirectOnTenantChange(e.target.value))
+                }
                 className="mt-1 w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs"
               >
                 {/* La vista consolidada no es una empresa real. El superadmin ve todas las del

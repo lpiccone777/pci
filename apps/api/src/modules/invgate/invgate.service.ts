@@ -145,10 +145,17 @@ export class InvgateService {
   // --- Catálogo (IDs válidos de esta instancia) -----------------------------------
 
   async listPriorities(): Promise<InvgateCatalogEntry[]> {
+    // InvGate sin configurar → `[]` (no un 500). Sin base URL/credenciales, `get()`
+    // arma `new URL(undefined...)` y tira "Invalid URL", que subía como 500 crudo en
+    // cada apertura del editor de flujos. El catálogo vacío degrada bien (el nodo
+    // "Generar ticket" cae a campos de texto libre). Mismo criterio que
+    // `listTicketCategories`, que ya cortaba antes de pegarle a la API.
+    if (!(await this.isConfigured())) return [];
     return this.asList(await this.get('incident.attributes.priority'));
   }
 
   async listStatuses(): Promise<InvgateCatalogEntry[]> {
+    if (!(await this.isConfigured())) return [];
     return this.asList(await this.get('incident.attributes.status'));
   }
 
@@ -172,14 +179,17 @@ export class InvgateService {
   }
 
   async listIncidentTypes(): Promise<InvgateCatalogEntry[]> {
+    if (!(await this.isConfigured())) return [];
     return this.asList(await this.get('incident.attributes.type'));
   }
 
   async listCategories(search?: string): Promise<InvgateCatalogEntry[]> {
+    if (!(await this.isConfigured())) return [];
     return this.asList(await this.get('incident.attributes.category', { search }));
   }
 
   async listSources(): Promise<InvgateCatalogEntry[]> {
+    if (!(await this.isConfigured())) return [];
     return this.asList(await this.get('incident.attributes.source'));
   }
 
@@ -208,6 +218,12 @@ export class InvgateService {
 
   /** Lee `INVGATE_CATEGORY_PARENT_ID` y devuelve sus hijas — `[]` si no está configurado. */
   async listTicketCategories(): Promise<InvgateCatalogEntry[]> {
+    // InvGate sin configurar → `[]` (no un 500), mismo criterio que el resto del catálogo.
+    // El corte por `parentId` no alcanza: si la categoría padre está cargada pero falta la
+    // base URL/credenciales, `listCategoriesByParent` termina en `new URL(undefined...)` y
+    // tira "Invalid URL" (500 en cada apertura del editor). Con este chequeo el catálogo de
+    // categorías degrada igual que prioridades/tipos.
+    if (!(await this.isConfigured())) return [];
     const parentId = await this.parseId('INVGATE_CATEGORY_PARENT_ID');
     if (parentId === undefined) return [];
     return this.listCategoriesByParent(parentId);

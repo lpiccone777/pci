@@ -26,12 +26,15 @@ export class FlowController {
 
   @Post()
   @RequirePermission('flows', 'create')
-  async create(@Body() dto: CreateFlowDto) {
+  async create(@Body() dto: CreateFlowDto, @CurrentTenant() tenantId: string) {
     // Un flujo nace sin empresas asignadas: las empresas y sus roles se definen
     // desde el modal "Empresas y roles" del editor. (Antes se auto-asignaba al
     // tenant actual, pero con el modelo por rol esa asignación vendría sin roles y
     // no la recibiría nadie, así que confundía más de lo que aportaba.)
-    return this.flowService.create(dto);
+    //
+    // `tenantId` (empresa activa) va al saneo multitenant de referencias: un flujo
+    // importado no puede quedar apuntando a la fuente/skill/usuarios de otra empresa.
+    return this.flowService.create(dto, undefined, tenantId);
   }
 
   @Get()
@@ -79,8 +82,12 @@ export class FlowController {
 
   @Patch(':id')
   @RequirePermission('flows', 'update')
-  async update(@Param('id') id: string, @Body() dto: UpdateFlowDto) {
-    return this.flowService.update(id, dto);
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateFlowDto,
+    @CurrentTenant() tenantId: string,
+  ) {
+    return this.flowService.update(id, dto, tenantId);
   }
 
   @Delete(':id')

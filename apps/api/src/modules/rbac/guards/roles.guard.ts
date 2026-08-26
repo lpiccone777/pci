@@ -15,12 +15,16 @@ export class RolesGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const required = this.reflector.getAllAndOverride<PermissionMetadata>(PERMISSION_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const requiredRaw = this.reflector.getAllAndOverride<
+      PermissionMetadata | PermissionMetadata[]
+    >(PERMISSION_KEY, [context.getHandler(), context.getClass()]);
 
-    if (!required) return true; // Si no hay @RequirePermission, permitir
+    if (!requiredRaw) return true; // Si no hay @RequirePermission, permitir
+
+    // `RequirePermission` deja un objeto único; `RequireAnyPermission`, un arreglo
+    // (autoriza si el rol tiene cualquiera de ellos). Normalizamos a lista.
+    const required = Array.isArray(requiredRaw) ? requiredRaw : [requiredRaw];
+    if (!required.length) return true;
 
     const request = context.switchToHttp().getRequest();
     const user = request.user;
@@ -58,14 +62,17 @@ export class RolesGuard implements CanActivate {
     }
 
     const hasPermission =
-      role?.permissions.some(
-        (p) => p.resource === required.resource && p.action === required.action,
+      required.some((req) =>
+        role?.permissions.some(
+          (p) => p.resource === req.resource && p.action === req.action,
+        ),
       ) ?? false;
 
     if (!hasPermission) {
-      throw new ForbiddenException(
-        `Permiso denegado: ${required.resource}:${required.action}`,
-      );
+      // Con un solo permiso, el mensaje queda igual que siempre (`recurso:accion`);
+      // con varios, se listan las alternativas separadas por " o ".
+      const detail = required.map((r) => `${r.resource}:${r.action}`).join(' o ');
+      throw new ForbiddenException(`Permiso denegado: ${detail}`);
     }
 
     return true;

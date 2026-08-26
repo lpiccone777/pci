@@ -8,7 +8,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 import { SystemTenantGuard } from '../../common/guards/system-tenant.guard';
-import { RequirePermission } from './decorators/require-permission.decorator';
+import {
+  RequirePermission,
+  RequireAnyPermission,
+} from './decorators/require-permission.decorator';
 import { RolesGuard } from './guards/roles.guard';
 
 @Controller('roles')
@@ -80,8 +83,18 @@ export class RbacController {
     return this.roleService.create(tenantId, dto);
   }
 
+  /**
+   * Roles de la empresa activa. Accesible con `roles:read` (administrar roles) O
+   * `users:create`: el alta de usuarios necesita listar los roles para asignarlos, y sin
+   * esto un rol con `users:create` pero sin `roles:read` dejaba el desplegable de rol vacío
+   * y el alta trabada (FE-USR-16). Es lectura de la lista de roles, dependencia natural de
+   * la gestión de usuarios — no habilita administrar roles.
+   */
   @Get()
-  @RequirePermission('roles', 'read')
+  @RequireAnyPermission(
+    { resource: 'roles', action: 'read' },
+    { resource: 'users', action: 'create' },
+  )
   async findAll(@CurrentTenant() tenantId: string) {
     return this.roleService.findAll(tenantId);
   }

@@ -10,10 +10,8 @@
  * roles ARIA nativos (heading, button, table, row, columnheader) y placeholders. Los diálogos de
  * "Eliminar" son `window.confirm` NATIVOS → se manejan con `page.once('dialog', …)`.
  *
- * FE-CS-11 y FE-CS-12 son casos INVERTIDOS (`test.fail`): describen el comportamiento SEGURO que hoy
- * no existe (en modo consolidado la pantalla debería esconder el alta, como Áreas/Roles). El assert
- * verifica ese comportamiento seguro; hoy falla a propósito. Cuando se arregle el hallazgo, el
- * marcador saltará y avisará que hay que quitarlo.
+ * FE-CS-11 y FE-CS-12 verifican que, en modo consolidado ("Todas las empresas"), la pantalla
+ * esconda el alta (como Áreas/Roles) en vez de dejar crear a ciegas en una empresa de respaldo.
  */
 import { test, expect, type Page } from '@playwright/test';
 import {
@@ -315,33 +313,32 @@ test('FE-CS-10: alta de una Skill en la pestaña Skills persiste y se gatea por 
   await expect(page.getByRole('heading', { name: 'Nuevo skill' })).toHaveCount(0);
 });
 
-// --- Casos invertidos (comportamiento seguro deseado; hoy fallan a propósito) ---
+// --- Modo consolidado "Todas las empresas": la pantalla no debe dejar crear a ciegas ---
 
-test.fail(
-  'FE-CS-11: en "Todas las empresas" la pestaña Conexiones NO debería dejar crear a ciegas @invertido',
+test(
+  'FE-CS-11: en "Todas las empresas" la pestaña Conexiones NO debería dejar crear a ciegas',
   async ({ page }) => {
-    // Hoy la pantalla no consolida ni distingue el modo "Todas las empresas": cae en silencio a una
-    // sola empresa y deja el alta activa (guardaría en esa empresa de respaldo sin avisar). El
-    // comportamiento seguro —como Áreas/Roles— es esconder el alta y pedir elegir una empresa.
+    // En modo consolidado la pantalla no debe dejar crear a ciegas en una empresa de respaldo:
+    // como Áreas/Roles, esconde el alta y pide elegir una empresa puntual en el selector.
     const tenant = await createTenant(admin);
     await createContextSource(admin, { tenantId: tenant.id, type: 'n8n' });
 
     await injectSession(page, { token: admin.token, activeTenant: ALL_TENANTS });
     await page.goto('/dashboard/context-sources');
-    // Esperar a que la pantalla termine de montar (useAuth resuelve /auth/me → decide el alta) antes de
-    // evaluar; si no, el heading todavía no existe y el "seguro" se cumpliría por timing.
+    // Esperar a que la pantalla termine de montar (useAuth resuelve /auth/me → decide el alta) antes
+    // de evaluar; si no, el heading todavía no existe y pasaría por timing.
     await expect(page.getByRole('button', { name: 'Conexiones' })).toBeVisible();
     await page.waitForLoadState('networkidle');
 
-    // SEGURO: el formulario de alta no debería estar disponible en modo consolidado. Hoy sí lo está.
+    // El formulario de alta no debe estar disponible en modo consolidado.
     await expect(page.getByRole('heading', { name: 'Nueva fuente de verdad' })).toHaveCount(0);
   },
 );
 
-test.fail(
-  'FE-CS-12: en "Todas las empresas" la pestaña Skills NO debería dejar crear a ciegas @invertido',
+test(
+  'FE-CS-12: en "Todas las empresas" la pestaña Skills NO debería dejar crear a ciegas',
   async ({ page }) => {
-    // Mismo hallazgo que FE-CS-11, en la pestaña Skills.
+    // Mismo criterio que FE-CS-11, en la pestaña Skills.
     const tenant = await createTenant(admin);
     await createSkill(admin, { tenantId: tenant.id });
 
@@ -349,7 +346,7 @@ test.fail(
     await page.goto('/dashboard/context-sources');
     await page.getByRole('button', { name: 'Skills' }).click();
 
-    // SEGURO: el alta de skill no debería estar disponible en modo consolidado. Hoy sí lo está.
+    // El alta de skill no debe estar disponible en modo consolidado.
     await expect(page.getByRole('heading', { name: 'Nuevo skill' })).toHaveCount(0);
   },
 );

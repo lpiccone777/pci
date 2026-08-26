@@ -26,6 +26,47 @@ export class SkillsService {
     });
   }
 
+  /**
+   * Skills de TODAS las empresas (vista consolidada "Todas las empresas" del superadmin).
+   * Cross-tenant → `SystemTenantGuard` en el controller. Incluye la empresa de cada fila
+   * para la columna "Empresa". Espejo de `AreasService.findAllCrossTenant`.
+   */
+  async findAllCrossTenant() {
+    return this.prisma.skill.findMany({
+      where: { tenant: { deletedAt: null } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
+    });
+  }
+
+  /**
+   * Skills de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
+   * común). Acotado a las empresas donde su rol tiene `skills:read`. Espejo de
+   * `AreasService.findMine`.
+   */
+  async findMine(userId: string) {
+    const myMemberships = await this.prisma.userTenant.findMany({
+      where: { userId, tenant: { deletedAt: null } },
+      include: {
+        role: { select: { permissions: { select: { resource: true, action: true } } } },
+      },
+    });
+
+    const readableTenantIds = myMemberships
+      .filter((m) =>
+        m.role.permissions.some((p) => p.resource === 'skills' && p.action === 'read'),
+      )
+      .map((m) => m.tenantId);
+
+    if (readableTenantIds.length === 0) return [];
+
+    return this.prisma.skill.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
+    });
+  }
+
   async findOne(tenantId: string, id: string) {
     return this.getOwned(tenantId, id);
   }
