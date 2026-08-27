@@ -4,18 +4,18 @@ import { BrokerService } from '../broker/broker.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
- * Webhook de SMS ENTRANTE de Gupshup (API legacy "Enterprise SMS") — a diferencia del resto de
- * los webhooks de este proyecto (Meta, Twilio-WhatsApp, Twilio-SMS, Gupshup-WhatsApp), el shape
- * exacto de ESTE payload NO se pudo verificar contra documentación pública completa: Gupshup
- * documenta bien el callback de REPORTE DE ENTREGA (delivery report, con params `pcode`/`phno`)
- * pero no publica con la misma claridad el de RESPUESTA ENTRANTE de un usuario (two-way SMS).
+ * Webhook de SMS ENTRANTE de Gupshup — a diferencia del resto de los webhooks de este proyecto
+ * (Meta, Twilio-WhatsApp, Twilio-SMS, Gupshup-WhatsApp), el shape exacto de ESTE payload NO se
+ * pudo verificar contra documentación pública completa.
  *
- * ⚠️ Sin confirmar contra tráfico real todavía. Acepta tanto query params como body (Gupshup
- * legacy suele mandar GET) y varios nombres de campo candidatos como mejor esfuerzo
- * (`phno`/`mobile`/`from`/`sender` para el remitente; `text`/`msg`/`message` para el cuerpo).
- * Cuando haya cuenta real, revisar la pestaña de configuración de "Two-Way SMS"/callback del
- * panel de Gupshup Enterprise — ahí muestran el formato exacto — y loguea los campos recibidos
- * en cada intento fallido para poder ajustar el mapeo rápido con tráfico real.
+ * `GupshupSmsService` manda el saliente por el endpoint unificado (`api.gupshup.io/wa/api/v1/msg`,
+ * `channel: 'sms'`) — el mismo que usa `GupshupWhatsAppService` para WhatsApp. Es una posibilidad
+ * real (sin confirmar todavía) que las respuestas entrantes de SMS lleguen por ESE MISMO webhook
+ * (`GupshupWebhookController`, `/webhooks/gupshup`) en vez de acá, distinguidas por algún campo
+ * tipo `type`/`channel` en el payload — recién se sabrá con tráfico real. Mientras tanto este
+ * controller queda activo como fallback de mejor esfuerzo, con varios nombres de campo candidatos
+ * (`phno`/`mobile`/`from`/`sender` para el remitente; `text`/`msg`/`message` para el cuerpo), y
+ * logueando los campos recibidos en cada intento fallido para ajustar el mapeo rápido.
  */
 @Controller('webhooks/gupshup-sms')
 export class GupshupSmsWebhookController {

@@ -736,7 +736,7 @@
     para el cuerpo del SMS, que sigue admitiendo `{{variable}}` vía
     `ConversationsService.interpolate`)
 
-### Gupshup como alternativa de WhatsApp y SMS ✅ WHATSAPP FUNCIONAL — SMS bloqueado (pedido 2026-08-14)
+### Gupshup como alternativa de WhatsApp y SMS ✅ WHATSAPP FUNCIONAL — SMS implementado, entrega sin confirmar (pedido 2026-08-14, SMS rehecho 2026-08-27)
 - [x] **`GupshupWhatsAppService`/`GupshupWebhookController`** — tercer conector de WhatsApp
       (`WHATSAPP_PROVIDER=gupshup`), mismo contrato de colas que Meta/Twilio
       (`whatsapp.outgoing`/`whatsapp.incoming`). Spec verificado contra la documentación
@@ -761,20 +761,41 @@
       Gatear un segundo proveedor de SMS obligó a introducir ese mismo mecanismo acá por
       primera vez
 - [x] **`GupshupSmsService`/`GupshupSmsWebhookController`** (`SMS_PROVIDER=gupshup`) —
-      **API completamente distinta de la de WhatsApp**: el "Enterprise SMS" de Gupshup
-      (`enterprise.smsgupshup.com/GatewayAPI/rest`) es un producto legacy con su propia cuenta
-      (`userid`/`password`, no el `apikey` de WhatsApp), request por query params (no JSON) y
-      respuesta en texto plano (`"success | numero | msgid"`, no JSON)
-  - ⚠️ **El shape del webhook de SMS ENTRANTE no se pudo verificar** contra documentación
-    pública (Gupshup documenta bien el callback de *reporte de entrega*, no el de respuesta de
-    un usuario) — el controller acepta varios nombres de campo candidatos como mejor esfuerzo y
-    loguea los campos recibidos en cada intento fallido, para poder ajustar el mapeo rápido en
-    cuanto haya tráfico real
-  - ⚠️ **Bloqueado**: el usuario no tiene todavía la cuenta de Enterprise SMS de Gupshup (es
-    una cuenta separada de la app de WhatsApp) — parametrizado (`GUPSHUP_SMS_USERID`,
-    `GUPSHUP_SMS_PASSWORD`, `GUPSHUP_SMS_TENANT_ID` en `/settings`) para cuando la consiga,
-    mismo criterio que `TWILIO_SMS_FROM` cuando faltaba el número. Mientras tanto sigue
-    funcionando con el sandbox/Twilio existente (`SMS_PROVIDER` default `'twilio'`)
+      **rehecho 2026-08-27**, ver historia abajo
+  - **Primer intento (2026-08-14): "Enterprise SMS" legacy** (`enterprise.smsgupshup.com/
+    GatewayAPI/rest`) — producto y cuenta separados de la app de WhatsApp (`userid`/`password`
+    propios, request por query params, respuesta en texto plano). Quedó bloqueado sin poder
+    probarse ni un solo envío: **la cuenta nunca se pudo dar de alta** — el signup de
+    `enterprise.smsgupshup.com` está roto del lado de Gupshup (confirmado 2026-08-27,
+    contactando soporte no destrabó nada en el momento; la doc pública de
+    `docs.gupshup.io/docs/sms-api-introduction` sigue describiendo esa misma cuenta legacy
+    como la vigente, no hay una API nueva reemplazándola documentada)
+  - **Segundo intento, el que quedó (2026-08-27): endpoint unificado de WhatsApp con
+    `channel: 'sms'`** — mismo `api.gupshup.io/wa/api/v1/msg` que ya usa `GupshupWhatsAppService`,
+    reusando las MISMAS credenciales (`GUPSHUP_API_KEY`/`GUPSHUP_WHATSAPP_SOURCE`/
+    `GUPSHUP_APP_NAME`, grupo "Mensajería: WhatsApp (Gupshup)") en vez de un grupo propio. Se
+    sacaron `GUPSHUP_SMS_USERID`/`GUPSHUP_SMS_PASSWORD` del catálogo de `/settings` — quedaron
+    sin uso. `GUPSHUP_SMS_TENANT_ID` se mantiene, lo sigue necesitando el webhook de entrada
+  - ⚠️⚠️ **Entrega real SIN CONFIRMAR, a pesar de que la API "valida" el envío**: 6 envíos de
+    prueba en vivo (2 apps de Gupshup distintas, 2 API keys distintas, `source`/`src.name`
+    correctamente emparejados) devolvieron siempre `202 {"status":"submitted","messageId":...}`
+    — pero CERO llegaron al celular de destino, y ninguno de los 6 `messageId` dejó rastro (ni
+    éxito ni error) en el dashboard de Gupshup. Se probó también el whitelist de sandbox
+    (mandar "Sandbox" a los números de Gupshup) sin confirmación de alta. Además,
+    `docs.gupshup.io` documenta este endpoint **solo para WhatsApp** — `channel: 'sms'` es una
+    superficie no documentada que la API acepta (no tira 400/404) sin que eso implique que hay
+    algo real escuchando del otro lado
+  - Se integró igual (pedido explícito del cliente: usa Gupshup, no alcanza con Twilio) porque
+    es la única vía de Gupshup que la API llega a validar. Sigue pendiente confirmación de
+    soporte de Gupshup sobre por qué no hay entrega ni rastro en su panel — con esa respuesta,
+    ajustar el código si hace falta
+  - ⚠️ **El shape del webhook de SMS ENTRANTE tampoco se pudo verificar** — y ahora hay una
+    duda adicional: como el saliente ahora comparte endpoint con WhatsApp, las respuestas
+    entrantes de SMS podrían llegar por el webhook de WhatsApp (`GupshupWebhookController`,
+    `/webhooks/gupshup`) en vez de por `/webhooks/gupshup-sms`, distinguidas por algún campo
+    del payload. Sin tráfico real todavía para confirmarlo
+  - Mientras tanto sigue funcionando Twilio para SMS (`SMS_PROVIDER` default `'twilio'`) — ya
+    probado y con número/cuenta cargados en `/settings`
 
 ---
 

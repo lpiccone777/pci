@@ -589,31 +589,14 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
   },
 
   // --- Mensajería: SMS (Gupshup) ---
-  // API LEGACY "Enterprise SMS" (enterprise.smsgupshup.com) — cuenta y producto totalmente
-  // distintos de la API de WhatsApp de Gupshup (grupo de arriba): auth por userid/password
-  // propios, no el API Key de WhatsApp. Bloqueado hasta tener esa cuenta — parametrizado para
-  // cuando esté disponible, mismo criterio que TWILIO_SMS_FROM cuando faltaba el número.
-  {
-    key: 'GUPSHUP_SMS_USERID',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'User ID (Enterprise SMS)',
-    defaultValue: '',
-    placeholder: '2000xxxxxx',
-    description:
-      'Usuario de la cuenta de Enterprise SMS de Gupshup (enterprise.smsgupshup.com) — NO es ' +
-      'el mismo login que la app de WhatsApp de Gupshup.',
-  },
-  {
-    key: 'GUPSHUP_SMS_PASSWORD',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'Password (Enterprise SMS)',
-    defaultValue: '',
-    secret: true,
-    placeholder: '••••••••',
-    description: 'Contraseña de la cuenta de Enterprise SMS de Gupshup. Se guarda cifrada.',
-  },
+  // Ya NO usa una cuenta/credenciales propias: GupshupSmsService reusa GUPSHUP_API_KEY/
+  // GUPSHUP_WHATSAPP_SOURCE/GUPSHUP_APP_NAME del grupo "Mensajería: WhatsApp (Gupshup)" de
+  // arriba (mismo endpoint unificado api.gupshup.io/wa/api/v1/msg, con channel=sms). Antes
+  // apuntaba a la API legacy "Enterprise SMS" (enterprise.smsgupshup.com, userid/password
+  // propios) — se sacó (2026-08-27) porque esa cuenta nunca se pudo dar de alta (alta rota
+  // del lado de Gupshup) y la app unificada sí valida el envío (ver el comentario largo en
+  // GupshupSmsService sobre qué significa "validar" acá — el 202 no confirma entrega real).
+  // Solo queda el setting de tenant, que sigue haciendo falta para el webhook de entrada.
   {
     key: 'GUPSHUP_SMS_TENANT_ID',
     type: 'string',
