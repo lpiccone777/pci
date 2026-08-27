@@ -105,6 +105,9 @@ export class TwilioSmsService implements OnModuleInit {
    * así el índice que el usuario tipea sigue matcheando en su `case 'menu'`.
    */
   private appendInteractiveAsText(body: string, interactive: WhatsAppInteractive): string {
+    if (interactive.type === 'cta_url') {
+      return [body, `${interactive.buttonText}: ${interactive.url}`].filter(Boolean).join('\n');
+    }
     const options =
       interactive.type === 'button'
         ? interactive.buttons.map((b) => b.title)

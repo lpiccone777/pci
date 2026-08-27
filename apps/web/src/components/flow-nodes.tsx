@@ -19,6 +19,7 @@ const nodeColors: Record<string, string> = {
   end: '#991b1b',
   device_validation: '#0ea5e9',
   sms: '#22c55e',
+  notification: '#eab308',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -37,6 +38,7 @@ const nodeLabels: Record<string, string> = {
   end: 'Fin',
   device_validation: 'Validar Dispositivo',
   sms: 'SMS',
+  notification: 'Notificación',
 };
 
 function BaseNode({ id, data, type, children }: any) {
@@ -388,6 +390,21 @@ export const WebhookNode = memo(({ id, data }: any) => (
     )}
   </BaseNode>
 ));
+
+export const NotificationNode = memo(({ id, data }: any) => {
+  const isLink = data?.buttonMode === 'link';
+  return (
+    <BaseNode id={id} data={data} type="notification">
+      <div className="mt-1 inline-block bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded">
+        {isLink ? '🔗 ' : ''}
+        {data?.buttonLabel || 'Continuar'}
+      </div>
+      {isLink && data?.buttonUrl && (
+        <div className="mt-1 text-xs text-gray-500 line-clamp-1">{data.buttonUrl}</div>
+      )}
+    </BaseNode>
+  );
+});
 
 export const EndNode = memo(({ id, data }: any) => {
   const color = nodeColors.end;

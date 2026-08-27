@@ -37,6 +37,7 @@ import {
   SubflowNode,
   EndNode,
   DeviceValidationNode,
+  NotificationNode,
 } from '@/components/flow-nodes';
 import { DeletableEdge } from '@/components/flow-edges';
 
@@ -116,6 +117,7 @@ const customNodeTypes = {
   subflow: SubflowNode,
   end: EndNode,
   device_validation: DeviceValidationNode,
+  notification: NotificationNode,
 };
 
 const customEdgeTypes = {
@@ -139,6 +141,7 @@ const nodeTypeList = [
   { type: 'subflow', label: 'Sub-flujo', color: '#06b6d4' },
   { type: 'end', label: 'Fin', color: '#991b1b' },
   { type: 'device_validation', label: 'Validar Dispositivo', color: '#0ea5e9' },
+  { type: 'notification', label: 'Notificación', color: '#eab308' },
 ];
 
 function FlowEditorInner() {
@@ -647,6 +650,8 @@ function FlowEditorInner() {
         return { action: 'set', name: '', value: '' };
       case 'webhook':
         return { url: '', method: 'POST' };
+      case 'notification':
+        return { text: '', buttonLabel: 'Continuar', buttonMode: 'confirm', buttonUrl: '' };
       case 'end':
       case 'device_validation':
         return { text: '' };
@@ -1631,6 +1636,66 @@ function NodeProperties({
               className="w-full border rounded p-2 text-sm"
             />
           </div>
+        </>
+      )}
+
+      {type === 'notification' && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1">Texto</label>
+            <textarea
+              value={data.text || ''}
+              onChange={(e) => onUpdate('text', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              placeholder="Agregue sus fotos"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Tipo de botón</label>
+            <select
+              value={data.buttonMode || 'confirm'}
+              onChange={(e) => onUpdate('buttonMode', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="confirm">Confirmación (espera a que lo toquen)</option>
+              <option value="link">Link (abre una URL)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Label del botón</label>
+            <input
+              type="text"
+              value={data.buttonLabel || ''}
+              onChange={(e) => onUpdate('buttonLabel', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              placeholder="Sin foto"
+              maxLength={20}
+            />
+            <p className="mt-1 text-xs text-gray-500">Máximo 20 caracteres (límite de WhatsApp para botones).</p>
+          </div>
+          {data.buttonMode === 'link' ? (
+            <div>
+              <label className="block text-sm font-medium mb-1">URL</label>
+              <input
+                type="text"
+                value={data.buttonUrl || ''}
+                onChange={(e) => onUpdate('buttonUrl', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+                placeholder="https://..."
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Admite variables del flujo con {'{{variable}}'}. WhatsApp no avisa cuando lo
+                tocan, así que el flujo sigue de una por la única salida del nodo — no hay
+                confirmación que esperar.
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">
+              Al tocarlo, continúa el flujo por la única salida del nodo. Si la persona escribe
+              otra cosa (agrega lo pedido, hace una consulta), la toma el LLM.
+            </p>
+          )}
         </>
       )}
 

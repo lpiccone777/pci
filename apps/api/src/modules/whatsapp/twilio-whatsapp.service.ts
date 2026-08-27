@@ -142,11 +142,17 @@ export class TwilioWhatsAppService implements OnModuleInit {
     interactive: WhatsAppInteractive,
   ): Promise<void> {
     const contentSid = await this.resolveContentSid(creds, interactive);
+    const variables: Record<string, string> = { '1': body || ' ' };
+    // La URL del botón de link viaja como variable `{{2}}`: el template se cachea solo
+    // por el título del botón (ver `hashInteractiveShape`), así que un mismo nodo con
+    // URLs distintas por conversación (ej. un link con id de ticket) reusa un único
+    // Content Template en vez de crear uno por URL.
+    if (interactive.type === 'cta_url') variables['2'] = interactive.url;
     const params = new URLSearchParams({
       To: `whatsapp:${this.normalizeRecipient(to)}`,
       From: `whatsapp:${this.normalizeRecipient(creds.from)}`,
       ContentSid: contentSid,
-      ContentVariables: JSON.stringify({ '1': body || ' ' }),
+      ContentVariables: JSON.stringify(variables),
     });
     await this.callMessagesApi(to, creds, params);
   }
@@ -204,7 +210,11 @@ export class TwilioWhatsAppService implements OnModuleInit {
   /** Resumen legible de las opciones del menú, solo para la columna `label` de debug en BD. */
   private describeInteractive(interactive: WhatsAppInteractive): string {
     const titles =
-      interactive.type === 'button' ? interactive.buttons.map((b) => b.title) : interactive.rows.map((r) => r.title);
+      interactive.type === 'button'
+        ? interactive.buttons.map((b) => b.title)
+        : interactive.type === 'cta_url'
+          ? [interactive.buttonText]
+          : interactive.rows.map((r) => r.title);
     return titles.join(' | ').slice(0, 200);
   }
 
@@ -218,11 +228,17 @@ export class TwilioWhatsAppService implements OnModuleInit {
     const shape =
       interactive.type === 'button'
         ? { type: 'button', items: interactive.buttons.map((b) => [b.id, b.title]) }
-        : {
-            type: 'list',
-            buttonText: interactive.buttonText,
-            items: interactive.rows.map((r) => [r.id, r.title, r.description ?? '']),
-          };
+        : interactive.type === 'cta_url'
+          // Sin la URL a propósito, igual que el body de `button`/`list`: viaja como
+          // variable `{{2}}` del template (ver `sendInteractive`), no como parte de la
+          // forma — si no, cada URL distinta (ej. un link con id de ticket) crearía su
+          // propio Content Template en la cuenta de Twilio en vez de reusar uno.
+          ? { type: 'cta_url', buttonText: interactive.buttonText }
+          : {
+              type: 'list',
+              buttonText: interactive.buttonText,
+              items: interactive.rows.map((r) => [r.id, r.title, r.description ?? '']),
+            };
     return createHash('sha256').update(JSON.stringify(shape)).digest('hex').slice(0, 20);
   }
 
@@ -255,22 +271,32 @@ export class TwilioWhatsAppService implements OnModuleInit {
               })),
             },
           }
-        : {
-            'twilio/list-picker': {
-              body: '{{1}}',
-              button: interactive.buttonText.slice(0, 20),
-              items: interactive.rows.map((r) => ({
-                id: r.id.slice(0, 200),
-                item: r.title.slice(0, 24),
-                ...(r.description ? { description: r.description.slice(0, 72) } : {}),
-              })),
-            },
-          };
+        : interactive.type === 'cta_url'
+          ? {
+              // La URL real va en `{{2}}` (ver `sendInteractive`), no acá: el título del
+              // botón es lo único fijo de la forma, así el mismo template sirve para
+              // cualquier destino.
+              'twilio/call-to-action': {
+                body: '{{1}}',
+                actions: [{ type: 'URL', title: interactive.buttonText.slice(0, 20), url: '{{2}}' }],
+              },
+            }
+          : {
+              'twilio/list-picker': {
+                body: '{{1}}',
+                button: interactive.buttonText.slice(0, 20),
+                items: interactive.rows.map((r) => ({
+                  id: r.id.slice(0, 200),
+                  item: r.title.slice(0, 24),
+                  ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+                })),
+              },
+            };
 
     const payload = {
       friendly_name: `pci_menu_${hash}`,
       language: 'es',
-      variables: { '1': ' ' },
+      variables: interactive.type === 'cta_url' ? { '1': ' ', '2': ' ' } : { '1': ' ' },
       types,
     };
 
@@ -335,6 +361,10 @@ export class TwilioWhatsAppService implements OnModuleInit {
    * Fallback cuando `sendInteractive` falla — ver `sendText`.
    */
   private appendInteractiveAsText(body: string, interactive: WhatsAppInteractive): string {
+    if (interactive.type === 'cta_url') {
+      // No hay nada que numerar (no es una opción a elegir): el link plano alcanza.
+      return [body, `${interactive.buttonText}: ${interactive.url}`].filter(Boolean).join('\n');
+    }
     const options =
       interactive.type === 'button'
         ? interactive.buttons.map((b) => b.title)

@@ -73,6 +73,25 @@ export class FlowNodeDataDto {
   @IsOptional()
   message?: string;
 
+  /** Nodo `notification`: label del botón único (ej. "Sin foto"). */
+  @IsString()
+  @IsOptional()
+  buttonLabel?: string;
+
+  /**
+   * Nodo `notification`: qué hace el botón. 'confirm' (default) espera a que lo toquen
+   * para seguir el flujo; 'link' lo abre como URL y sigue de una (WhatsApp no avisa el
+   * tap de un botón de link).
+   */
+  @IsString()
+  @IsOptional()
+  buttonMode?: 'confirm' | 'link';
+
+  /** Nodo `notification` en modo `link`: URL que abre el botón. */
+  @IsString()
+  @IsOptional()
+  buttonUrl?: string;
+
   @IsString()
   @IsOptional()
   subject?: string;

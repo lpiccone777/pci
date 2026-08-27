@@ -212,6 +212,7 @@ export class ConversationsService implements OnModuleInit {
 
   /** Ver el comentario de `simulateIncomingMessage`. */
   private formatInteractiveAsText(interactive: WhatsAppInteractive): string {
+    if (interactive.type === 'cta_url') return `${interactive.buttonText}: ${interactive.url}`;
     const items = interactive.type === 'button' ? interactive.buttons : interactive.rows;
     return items.map((item, i) => `${i + 1}. ${item.title}`).join('\n');
   }
@@ -877,6 +878,20 @@ export class ConversationsService implements OnModuleInit {
     };
   }
 
+  /** Botón de link para el nodo `notification` en modo `link` — ver ese `case`. */
+  private buildCtaInteractive(
+    headerText: string | undefined,
+    buttonLabel: string,
+    url: string,
+  ): WhatsAppInteractive {
+    return {
+      type: 'cta_url',
+      body: (headerText ?? '').trim() || 'Ver más:',
+      buttonText: buttonLabel.slice(0, 20),
+      url,
+    };
+  }
+
   /**
    * Los campos de config que declaran un nombre de variable (`input.variableName`,
    * `variable.name`, `ticket_query.ticketIdVariable`, `llm_query.extractVariable`)
@@ -903,7 +918,7 @@ export class ConversationsService implements OnModuleInit {
     });
   }
 
-  /** Mismo reemplazo de `{{variable}}` que `interpolate`, aplicado a un mensaje interactivo (botones/lista). */
+  /** Mismo reemplazo de `{{variable}}` que `interpolate`, aplicado a un mensaje interactivo (botones/lista/CTA). */
   private interpolateInteractive(
     interactive: WhatsAppInteractive,
     flowState: Record<string, any>,
@@ -913,6 +928,15 @@ export class ConversationsService implements OnModuleInit {
         ...interactive,
         body: this.interpolate(interactive.body, flowState),
         buttons: interactive.buttons.map((b) => ({ ...b, title: this.interpolate(b.title, flowState) })),
+      };
+    }
+    if (interactive.type === 'cta_url') {
+      return {
+        ...interactive,
+        body: this.interpolate(interactive.body, flowState),
+        buttonText: this.interpolate(interactive.buttonText, flowState),
+        // La URL también admite variables (ej. un link con el id de ticket recién creado).
+        url: this.interpolate(interactive.url, flowState),
       };
     }
     return {
@@ -1689,6 +1713,66 @@ export class ConversationsService implements OnModuleInit {
         }
         delete flowState.__awaiting;
         return { flowState };
+      }
+
+      case 'notification': {
+        // Texto + un único botón (ej. "Agregue sus fotos" / "Sin foto"). Dos modos:
+        //  - 'link' (data.buttonMode === 'link'): el botón abre una URL. WhatsApp no
+        //    avisa cuando se toca un botón de link, así que no hay nada que esperar —
+        //    se manda y se sigue de una, como un `message` con un botón pegado.
+        //  - 'confirm' (default): al tocarlo, sigue el flujo por la única arista de
+        //    salida del nodo. Cualquier otro mensaje —el usuario agrega algo (manda
+        //    las fotos) o pregunta algo— lo toma el LLM, mismo mecanismo de fallback
+        //    que `menu`, pero sin ramificar por opción: acá no hay nada que elegir,
+        //    solo confirmar o desviarse.
+        const buttonLabel = (data.buttonLabel || 'Continuar').trim();
+
+        if (data.buttonMode === 'link') {
+          if (!data.buttonUrl) {
+            // Sin URL configurada no hay botón que mandar: se degrada a mensaje de
+            // texto plano en vez de mandar un botón roto.
+            return { responseText: data.text };
+          }
+          const interactive = this.buildCtaInteractive(data.text, buttonLabel, data.buttonUrl);
+          return { responseText: (data.text ?? '').trim(), interactive };
+        }
+
+        const pressedButton = () => body.trim() === buttonLabel || body.trim() === '1';
+
+        // Ya se derivó a conversación libre (el mensaje anterior no era el botón ni
+        // encajaba): sigue atendiendo con el LLM hasta que el usuario toque el botón.
+        if (flowState.__llmFallback === node.id) {
+          if (pressedButton()) {
+            delete flowState.__llmFallback;
+            return { flowState };
+          }
+          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
+          return { responseText, waitForInput: true, flowState };
+        }
+
+        // Primera llegada: mostrar el texto con el botón y esperar.
+        if (flowState.__awaiting !== node.id) {
+          flowState.__awaiting = node.id;
+          const interactive = this.buildMenuInteractive(data.text, [
+            { value: buttonLabel, label: buttonLabel },
+          ]);
+          const responseText = interactive
+            ? (data.text ?? '').trim()
+            : `${(data.text ?? '').trim()}\n\n[${buttonLabel}]`;
+          return { responseText, interactive, waitForInput: true, flowState };
+        }
+
+        delete flowState.__awaiting;
+        if (pressedButton()) {
+          return { flowState };
+        }
+
+        // No tocó el botón: puede estar agregando lo que se le pidió (ej. mandó las
+        // fotos) o haciendo una consulta. Se lo pasa al LLM en vez de insistir con el
+        // botón.
+        flowState.__llmFallback = node.id;
+        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
+        return { responseText: fallbackResponse, waitForInput: true, flowState };
       }
 
       case 'condition': {

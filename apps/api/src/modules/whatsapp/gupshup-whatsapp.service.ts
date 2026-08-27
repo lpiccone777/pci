@@ -146,6 +146,22 @@ export class GupshupWhatsAppService implements OnModuleInit {
         })),
       };
     }
+    if (interactive.type === 'cta_url') {
+      // Botón de link en el formato quick_reply de Gupshup: mismo `type: 'quick_reply'`
+      // que uno de texto, pero con `type: 'url'` y `url` en vez de `postbackText` —
+      // sin confirmar contra tráfico real del sandbox, igual que el resto de este método.
+      return {
+        type: 'quick_reply',
+        content: { type: 'text', text: body },
+        options: [
+          {
+            type: 'url',
+            title: interactive.buttonText.slice(0, 20),
+            url: interactive.url,
+          },
+        ],
+      };
+    }
     return {
       type: 'list',
       title: interactive.buttonText,
