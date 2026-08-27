@@ -36,3 +36,11 @@ docs/informe-commits-*.md
 # Imágenes de WhatsApp/SMS descargadas temporalmente (ver TwilioMediaService),
 # guardadas hasta adjuntarse a un ticket de InvGate — no es contenido del repo.
 apps/api/uploads/
+
+# Material de referencia/comparación de PRs de compañeros, dejado suelto en
+# la raíz para diffear contra la implementación final — no es código del repo.
+*.juang.ts
+*.dev.ts
+pr10_*
+pr10.diff.tmp
+pr10_web.diff
