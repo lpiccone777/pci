@@ -11,9 +11,12 @@ export type WhatsAppInteractive =
       /**
        * Botón que abre una URL en vez de mandar una respuesta al webhook (nodo
        * `notification` en modo link). A diferencia de `button`/`list`, tocarlo NO genera
-       * un mensaje entrante — WhatsApp no notifica el tap de un botón de link — así que
-       * el flujo no puede esperar una confirmación: `ConversationsService` lo manda y
-       * sigue de una, no lo deja "esperando" como al de tipo `button`.
+       * un mensaje entrante — WhatsApp no notifica el tap de un botón de link. Igual hay
+       * que frenar el flujo acá (`waitForInput`, como cualquier nodo con `interactive`):
+       * sin eso, `executeFlow` sigue encadenando nodos en el mismo turno y el próximo pisa
+       * este `interactive` antes de que llegue a mandarse. `ConversationsService` no
+       * matchea nada contra un botón de link — el próximo mensaje que sea, cualquiera,
+       * avanza el flujo.
        */
       type: 'cta_url';
       body: string;

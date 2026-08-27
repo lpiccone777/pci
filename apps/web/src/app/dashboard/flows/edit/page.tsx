@@ -1686,8 +1686,8 @@ function NodeProperties({
               />
               <p className="mt-1 text-xs text-gray-500">
                 Admite variables del flujo con {'{{variable}}'}. WhatsApp no avisa cuando lo
-                tocan, así que el flujo sigue de una por la única salida del nodo — no hay
-                confirmación que esperar.
+                tocan, así que no hay nada que confirmar — el próximo mensaje que mande la
+                persona (sea cual sea) avanza por la única salida del nodo.
               </p>
             </div>
           ) : (

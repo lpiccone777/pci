@@ -1747,9 +1747,7 @@ export class ConversationsService implements OnModuleInit {
 
       case 'notification': {
         // Texto + un único botón (ej. "Agregue sus fotos" / "Sin foto"). Dos modos:
-        //  - 'link' (data.buttonMode === 'link'): el botón abre una URL. WhatsApp no
-        //    avisa cuando se toca un botón de link, así que no hay nada que esperar —
-        //    se manda y se sigue de una, como un `message` con un botón pegado.
+        //  - 'link' (data.buttonMode === 'link'): el botón abre una URL.
         //  - 'confirm' (default): al tocarlo, sigue el flujo por la única arista de
         //    salida del nodo. Cualquier otro mensaje —el usuario agrega algo (manda
         //    las fotos) o pregunta algo— lo toma el LLM, mismo mecanismo de fallback
@@ -1763,8 +1761,19 @@ export class ConversationsService implements OnModuleInit {
             // texto plano en vez de mandar un botón roto.
             return { responseText: data.text };
           }
+          // WhatsApp no avisa cuando se toca un botón de link, así que no hay nada que
+          // matchear — pero SÍ hay que frenar acá con `waitForInput` (como cualquier nodo
+          // con `interactive`): sin esto, `executeFlow` sigue encadenando al próximo nodo
+          // en el mismo turno y ese nodo pisa este `interactive` (solo se manda el último
+          // de la cadena) — el botón nunca llegaba a salir. El próximo mensaje que mande
+          // el usuario, sea cual sea, avanza por la única salida del nodo.
+          if (flowState.__awaiting === node.id) {
+            delete flowState.__awaiting;
+            return { flowState };
+          }
+          flowState.__awaiting = node.id;
           const interactive = this.buildCtaInteractive(data.text, buttonLabel, data.buttonUrl);
-          return { responseText: (data.text ?? '').trim(), interactive };
+          return { responseText: (data.text ?? '').trim(), interactive, waitForInput: true, flowState };
         }
 
         const pressedButton = () => body.trim() === buttonLabel || body.trim() === '1';
