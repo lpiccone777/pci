@@ -108,7 +108,12 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
 
     const res = await routing.resolve(phone, 'whatsapp', '2'); // 2 = Empresa B (la más nueva)
 
-    expect(res).toEqual({ status: 'resolved', tenantId: tenantB.id, replayBody: 'necesito ayuda' });
+    expect(res).toEqual({
+      status: 'resolved',
+      tenantId: tenantB.id,
+      replayBody: 'necesito ayuda',
+      replayAttachments: [],
+    });
     expect(await pendingOf(phone)).toBeNull();
   });
 

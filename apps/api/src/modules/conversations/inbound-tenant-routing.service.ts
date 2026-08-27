@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { systemTenantSlug } from '../../common/system-tenant';
 import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
+import { StoredAttachment } from '../../common/twilio-media.service';
 
 /**
  * Ventana de validez del estado pendiente de selección de empresa: 12hs, igual que
@@ -26,7 +27,7 @@ interface TenantOption {
  * hablar (`body` + `interactive` opcional para WhatsApp).
  */
 export type InboundRoutingResult =
-  | { status: 'resolved'; tenantId: string; replayBody?: string }
+  | { status: 'resolved'; tenantId: string; replayBody?: string; replayAttachments?: StoredAttachment[] }
   | { status: 'ask'; body: string; interactive?: WhatsAppInteractive };
 
 /**
@@ -46,25 +47,41 @@ export class InboundTenantRoutingService {
     private readonly config: ConfigService,
   ) {}
 
-  async resolve(from: string, channel: string, body: string): Promise<InboundRoutingResult> {
+  async resolve(
+    from: string,
+    channel: string,
+    body: string,
+    attachments: StoredAttachment[] = [],
+  ): Promise<InboundRoutingResult> {
     // 1. Selección pendiente: este mensaje es la respuesta a "¿con qué empresa?".
     const pending = await this.prisma.pendingTenantSelection.findUnique({
       where: { phone_channel: { phone: from, channel } },
     });
     if (pending) {
       if (pending.expiresAt.getTime() < Date.now()) {
-        // Expiró: se descarta y se resuelve de cero (más abajo).
-        await this.prisma.pendingTenantSelection.delete({ where: { id: pending.id } });
+        // Expiró: se descarta y se resuelve de cero (más abajo). `deleteMany` en vez de
+        // `delete`: si otro mensaje casi simultáneo ya borró la fila, no queremos que esto
+        // tire `P2025` y termine descartando el mensaje en curso.
+        await this.prisma.pendingTenantSelection.deleteMany({ where: { id: pending.id } });
       } else {
         const options = (pending.options as unknown as TenantOption[]) ?? [];
         const chosen = this.matchChoice(body, options);
         if (chosen) {
-          await this.prisma.pendingTenantSelection.delete({ where: { id: pending.id } });
+          await this.prisma.pendingTenantSelection.deleteMany({ where: { id: pending.id } });
           this.logger.log(`[selector] ${from} (${channel}) eligió ${chosen.name} (${chosen.tenantId}).`);
-          return { status: 'resolved', tenantId: chosen.tenantId, replayBody: pending.originalBody };
+          // Se reprocesa el mensaje ORIGINAL: su texto y también sus adjuntos (fotos), que
+          // de otro modo se perderían — la respuesta al selector ("1", el id) no los trae.
+          const replayAttachments = (pending.originalAttachments as unknown as StoredAttachment[]) ?? [];
+          return {
+            status: 'resolved',
+            tenantId: chosen.tenantId,
+            replayBody: pending.originalBody,
+            replayAttachments,
+          };
         }
-        // Respuesta inválida: se re-muestra la lista y se refresca la expiración.
-        await this.prisma.pendingTenantSelection.update({
+        // Respuesta inválida: se re-muestra la lista y se refresca la expiración. `updateMany`
+        // por el mismo motivo que el `deleteMany` de arriba: tolera que la fila ya no exista.
+        await this.prisma.pendingTenantSelection.updateMany({
           where: { id: pending.id },
           data: { expiresAt: new Date(Date.now() + SELECTION_TTL_MS) },
         });
@@ -107,12 +124,31 @@ export class InboundTenantRoutingService {
       name: m.tenant.name,
     }));
     const optionsJson = options as unknown as Prisma.InputJsonValue;
+    const attachmentsJson = attachments as unknown as Prisma.InputJsonValue;
     const expiresAt = new Date(Date.now() + SELECTION_TTL_MS);
-    await this.prisma.pendingTenantSelection.upsert({
-      where: { phone_channel: { phone: from, channel } },
-      create: { phone: from, channel, originalBody: body, options: optionsJson, expiresAt },
-      update: { originalBody: body, options: optionsJson, expiresAt },
-    });
+    // Se crea el pendiente dentro de una transacción serializable para que dos mensajes casi
+    // simultáneos de un teléfono nuevo no se pisen el pendiente: el segundo ve el que dejó el
+    // primero (re-lectura dentro de la tx) y no lo sobreescribe a ciegas. El `upsert` suelto
+    // que había antes era atómico por la unique key, pero igual podía pisar originalBody/options.
+    await this.prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.pendingTenantSelection.findUnique({
+          where: { phone_channel: { phone: from, channel } },
+        });
+        if (existing) return;
+        await tx.pendingTenantSelection.create({
+          data: {
+            phone: from,
+            channel,
+            originalBody: body,
+            originalAttachments: attachmentsJson,
+            options: optionsJson,
+            expiresAt,
+          },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
     this.logger.log(`[selector] ${from} (${channel}) pertenece a ${options.length} empresas: se pregunta.`);
     return this.buildAsk(channel, options, false);
   }

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { SecretsCipher } from '../../config/secrets.cipher';
 import { BrokerService } from '../broker/broker.service';
 import { CreateContextSourceDto, UpdateContextSourceDto } from './dto/context-source.dto';
@@ -82,20 +83,11 @@ export class ContextSourcesService {
    * el userId, no el header. Espejo de `AreasService.findMine`.
    */
   async findMine(userId: string) {
-    const myMemberships = await this.prisma.userTenant.findMany({
-      where: { userId, tenant: { deletedAt: null } },
-      include: {
-        role: { select: { permissions: { select: { resource: true, action: true } } } },
-      },
-    });
-
-    const readableTenantIds = myMemberships
-      .filter((m) =>
-        m.role.permissions.some(
-          (p) => p.resource === 'context-sources' && p.action === 'read',
-        ),
-      )
-      .map((m) => m.tenantId);
+    const readableTenantIds = await resolveReadableTenantIds(
+      this.prisma,
+      userId,
+      'context-sources',
+    );
 
     if (readableTenantIds.length === 0) return [];
 

@@ -26,10 +26,11 @@ function arg(name, fallback) {
 
 const API = arg('api', process.env.API_URL || 'http://localhost:3001');
 const FROM = arg('from', '+5491100000001');
-let tenantId = arg('tenant', process.env.TENANT_ID || '');
 // Con --route no se manda tenant: el mensaje pasa por el ruteo por membresía del teléfono,
-// igual que un canal real (incluido el selector de empresa para números multitenant).
+// igual que un canal real (incluido el selector de empresa para números multitenant). La flag
+// tiene prioridad sobre TENANT_ID del entorno: si no, esa variable dejaría --route en no-op.
 const routeByMembership = args.includes('--route');
+let tenantId = routeByMembership ? '' : arg('tenant', process.env.TENANT_ID || '');
 
 const c = {
   dim: (s) => `\x1b[2m${s}\x1b[0m`,

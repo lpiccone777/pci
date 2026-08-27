@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
 import { isCatalogedPermission } from './permissions.catalog';
 import { effectivePermissions, isProtectedRole } from './protected-role';
@@ -154,20 +155,7 @@ export class RoleService {
    * de `UsersService.findMine` y `AreasService.findMine`.
    */
   async findMine(userId: string) {
-    const myMemberships = await this.prisma.userTenant.findMany({
-      where: { userId, tenant: { deletedAt: null } },
-      include: {
-        role: { select: { permissions: { select: { resource: true, action: true } } } },
-      },
-    });
-
-    const readableTenantIds = myMemberships
-      .filter((m) =>
-        m.role.permissions.some(
-          (p) => p.resource === 'roles' && p.action === 'read',
-        ),
-      )
-      .map((m) => m.tenantId);
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'roles');
 
     if (readableTenantIds.length === 0) return [];
 

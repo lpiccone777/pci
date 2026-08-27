@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { systemTenantSlug } from '../../common/system-tenant';
 import { isProtectedRole } from '../rbac/protected-role';
 import {
@@ -133,20 +134,7 @@ export class UsersService {
    * filtra por el permiso que el usuario tiene en ella.
    */
   async findMine(userId: string) {
-    const myMemberships = await this.prisma.userTenant.findMany({
-      where: { userId, tenant: { deletedAt: null } },
-      include: {
-        role: { select: { permissions: { select: { resource: true, action: true } } } },
-      },
-    });
-
-    const readableTenantIds = myMemberships
-      .filter((m) =>
-        m.role.permissions.some(
-          (p) => p.resource === 'users' && p.action === 'read',
-        ),
-      )
-      .map((m) => m.tenantId);
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'users');
 
     if (readableTenantIds.length === 0) return [];
 

@@ -26,7 +26,7 @@ export class FlowController {
 
   @Post()
   @RequirePermission('flows', 'create')
-  async create(@Body() dto: CreateFlowDto, @CurrentTenant() tenantId: string) {
+  async create(@Body() dto: CreateFlowDto, @CurrentTenant() tenantId: string, @Req() req: any) {
     // Un flujo nace sin empresas asignadas: las empresas y sus roles se definen
     // desde el modal "Empresas y roles" del editor. (Antes se auto-asignaba al
     // tenant actual, pero con el modelo por rol esa asignación vendría sin roles y
@@ -34,7 +34,10 @@ export class FlowController {
     //
     // `tenantId` (empresa activa) va al saneo multitenant de referencias: un flujo
     // importado no puede quedar apuntando a la fuente/skill/usuarios de otra empresa.
-    return this.flowService.create(dto, undefined, tenantId);
+    // El `userId` del llamante se usa para dos cosas: registrar quién creó el flujo
+    // y validar que las empresas que trae el payload sean realmente suyas (el saneo
+    // cross-tenant no puede confiar en un `tenantId` que mande el cliente).
+    return this.flowService.create(dto, req.user.userId, tenantId);
   }
 
   @Get()
@@ -96,10 +99,30 @@ export class FlowController {
     return this.flowService.delete(id);
   }
 
+  /**
+   * Autoridad sobre las empresas destino: un usuario solo puede vincular un flujo a empresas
+   * a las que pertenece (lo valida `FlowService.assignTenants`); el superadmin, parado en el
+   * tenant de sistema, puede asignar a cualquiera. Sin esta validación, un admin con
+   * `flows:update` en su empresa podía enganchar el flujo a una empresa ajena mandándola en
+   * `assignments` (con `roleIds` vacío ni siquiera se validaban roles). No se usa
+   * `SystemTenantGuard` acá a propósito: la administración de flujos también se hace desde
+   * cada empresa, no solo desde sistema (ver los e2e BE-FLW-05/06/20).
+   */
   @Post(':id/assign-tenants')
   @RequirePermission('flows', 'update')
-  async assignTenants(@Param('id') id: string, @Body() dto: AssignTenantsDto) {
-    return this.flowService.assignTenants(id, dto.assignments, !!dto.isStart);
+  async assignTenants(
+    @Param('id') id: string,
+    @Body() dto: AssignTenantsDto,
+    @CurrentTenant() tenantId: string,
+    @Req() req: any,
+  ) {
+    return this.flowService.assignTenants(
+      id,
+      dto.assignments,
+      !!dto.isStart,
+      tenantId,
+      req.user.userId,
+    );
   }
 
   @Post(':id/default')

@@ -202,14 +202,18 @@ export class ConversationsService implements OnModuleInit {
     // viejo que todavía no lo mande. Determina de qué `Conversation` se habla (un mismo
     // usuario puede tener una charla activa por WhatsApp y otra por SMS al mismo tiempo,
     // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
-    const {
-      from,
-      channel = 'whatsapp',
-      attachments = [],
-    } = msg.data as { from: string; body: string; channel?: string; attachments?: StoredAttachment[] };
-    // `body` es `let`: si el usuario venía respondiendo el selector de empresa, se reemplaza
-    // por el mensaje original que disparó la pregunta, para reprocesarlo en la empresa elegida.
+    const { from, channel = 'whatsapp' } = msg.data as {
+      from: string;
+      body: string;
+      channel?: string;
+      attachments?: StoredAttachment[];
+    };
+    // `body` y `attachments` son `let`: si el usuario venía respondiendo el selector de
+    // empresa, se reemplazan por los del mensaje original que disparó la pregunta, para
+    // reprocesarlo (texto Y adjuntos) en la empresa elegida.
     let body = (msg.data as { body: string }).body;
+    let attachments: StoredAttachment[] =
+      (msg.data as { attachments?: StoredAttachment[] }).attachments ?? [];
     const outgoingQueue = `${channel}.outgoing`;
 
     // Resolución de la empresa. `/simulate` y el RPC mandan `tenantId` explícito y cortan acá;
@@ -220,7 +224,7 @@ export class ConversationsService implements OnModuleInit {
     if (!tenantId) {
       let routing: InboundRoutingResult;
       try {
-        routing = await this.inboundTenantRouting.resolve(from, channel, body);
+        routing = await this.inboundTenantRouting.resolve(from, channel, body, attachments);
       } catch (err) {
         this.logger.error(
           `No se pudo resolver la empresa para ${from} (${channel}): ${err instanceof Error ? err.message : err}`,
@@ -247,6 +251,7 @@ export class ConversationsService implements OnModuleInit {
       }
       tenantId = routing.tenantId;
       if (routing.replayBody !== undefined) body = routing.replayBody;
+      if (routing.replayAttachments?.length) attachments = routing.replayAttachments;
     }
     if (!tenantId) return '';
 

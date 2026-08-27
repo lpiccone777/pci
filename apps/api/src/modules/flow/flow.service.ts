@@ -1,8 +1,14 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { systemTenantSlug } from '../../common/system-tenant';
 import { CreateFlowDto, UpdateFlowDto, TenantAssignmentDto } from './dto/create-flow.dto';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 
 @Injectable()
 export class FlowService {
@@ -20,7 +26,12 @@ export class FlowService {
     // que el propio payload asigna. En contexto de sistema (superadmin administrando de
     // forma global) NO se sanea: puede vincular recursos de cualquier empresa a propósito.
     if (!(await this.isSystemContext(activeTenantId))) {
-      const validTenantIds = await this.collectValidTenantIds(activeTenantId, undefined, assignments);
+      const validTenantIds = await this.collectValidTenantIds(
+        activeTenantId,
+        undefined,
+        assignments,
+        userId,
+      );
       await this.sanitizeCrossTenantRefs(flowData, validTenantIds);
     }
 
@@ -67,10 +78,26 @@ export class FlowService {
     activeTenantId?: string,
     flowId?: string,
     assignments?: TenantAssignmentDto[],
+    userId?: string,
   ): Promise<Set<string>> {
     const ids = new Set<string>();
     if (activeTenantId) ids.add(activeTenantId);
-    for (const a of assignments ?? []) if (a?.tenantId) ids.add(a.tenantId);
+
+    // Las empresas que trae el payload (`assignments`) NO se dan por válidas a ciegas: si
+    // se aceptara el `tenantId` que manda el cliente, un usuario podría listar una empresa
+    // ajena solo para que su fuente/skill/usuarios pasen el saneo cross-tenant. Cada empresa
+    // del body se acepta únicamente si el usuario realmente pertenece a ella (`UserTenant`).
+    const claimedTenantIds = [
+      ...new Set((assignments ?? []).map((a) => a?.tenantId).filter((t): t is string => !!t)),
+    ];
+    if (claimedTenantIds.length && userId) {
+      const memberships = await this.prisma.userTenant.findMany({
+        where: { userId, tenantId: { in: claimedTenantIds } },
+        select: { tenantId: true },
+      });
+      for (const m of memberships) ids.add(m.tenantId);
+    }
+
     if (flowId) {
       const tenantFlows = await this.prisma.tenantFlow.findMany({
         where: { flowId },
@@ -150,22 +177,33 @@ export class FlowService {
       validUserIds = new Set(memberships.map((m) => m.userId));
     }
 
-    // Subflujos "claramente ajenos": tienen alguna asignación y ninguna es válida.
+    // Subflujos ajenos, en tres casos:
+    //  - tiene empresas asignadas y NINGUNA es válida → ajeno (import de otra empresa);
+    //  - NO tiene empresas y no es `isDefault` → borrador ajeno (antes se colaba como si
+    //    fuera un subflujo "global legítimo", que es exactamente lo que hay que evitar);
+    //  - el flowId referenciado ni siquiera existe → referencia colgada, también se descarta.
+    // Un subflujo sin empresas pero `isDefault` SÍ es global legítimo (default del sistema) y
+    // se respeta, para no romper referencias válidas dentro del mismo ambiente.
     const foreignSubflowIds = new Set<string>();
     if (subflowIds.size) {
-      const rows = await this.prisma.tenantFlow.findMany({
-        where: { flowId: { in: [...subflowIds] } },
-        select: { flowId: true, tenantId: true },
+      const flows = await this.prisma.flow.findMany({
+        where: { id: { in: [...subflowIds] } },
+        select: {
+          id: true,
+          isDefault: true,
+          tenantFlows: { select: { tenantId: true } },
+        },
       });
-      const tenantsByFlow = new Map<string, string[]>();
-      for (const r of rows) {
-        const list = tenantsByFlow.get(r.flowId) ?? [];
-        list.push(r.tenantId);
-        tenantsByFlow.set(r.flowId, list);
+      const known = new Set(flows.map((f) => f.id));
+      for (const f of flows) {
+        const tenants = f.tenantFlows.map((tf) => tf.tenantId);
+        if (tenants.length) {
+          if (!tenants.some((t) => validTenantIds.has(t))) foreignSubflowIds.add(f.id);
+        } else if (!f.isDefault) {
+          foreignSubflowIds.add(f.id);
+        }
       }
-      for (const [flowId, tenants] of tenantsByFlow) {
-        if (!tenants.some((t) => validTenantIds.has(t))) foreignSubflowIds.add(flowId);
-      }
+      for (const id of subflowIds) if (!known.has(id)) foreignSubflowIds.add(id);
     }
 
     for (const node of nodes) {
@@ -231,20 +269,7 @@ export class FlowService {
    * global del sistema): un usuario común no debe verlos.
    */
   async findMine(userId: string) {
-    const myMemberships = await this.prisma.userTenant.findMany({
-      where: { userId, tenant: { deletedAt: null } },
-      include: {
-        role: { select: { permissions: { select: { resource: true, action: true } } } },
-      },
-    });
-
-    const readableTenantIds = myMemberships
-      .filter((m) =>
-        m.role.permissions.some(
-          (p) => p.resource === 'flows' && p.action === 'read',
-        ),
-      )
-      .map((m) => m.tenantId);
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'flows');
 
     if (readableTenantIds.length === 0) return [];
 
@@ -338,7 +363,39 @@ export class FlowService {
     return { message: 'Flujo eliminado' };
   }
 
-  async assignTenants(flowId: string, assignments: TenantAssignmentDto[], isStart = false) {
+  async assignTenants(
+    flowId: string,
+    assignments: TenantAssignmentDto[],
+    isStart = false,
+    activeTenantId?: string,
+    userId?: string,
+  ) {
+    // Autoridad sobre las empresas destino: fuera del contexto de sistema (donde el superadmin
+    // administra flujos de forma global), un usuario solo puede vincular el flujo a empresas a
+    // las que pertenece. Sin esto, cualquiera con `flows:update` en su empresa podía enganchar
+    // el flujo a una empresa ajena mandándola en `assignments` (con `roleIds` vacío ni siquiera
+    // se validaban roles). El corte por FLUJO ajeno (SEC-03) es un tema aparte, no cubierto acá.
+    if (!(await this.isSystemContext(activeTenantId))) {
+      const targetTenantIds = [
+        ...new Set(assignments.map((a) => a?.tenantId).filter((t): t is string => !!t)),
+      ];
+      if (targetTenantIds.length) {
+        const memberships = userId
+          ? await this.prisma.userTenant.findMany({
+              where: { userId, tenantId: { in: targetTenantIds } },
+              select: { tenantId: true },
+            })
+          : [];
+        const allowed = new Set(memberships.map((m) => m.tenantId));
+        const foreign = targetTenantIds.filter((id) => !allowed.has(id));
+        if (foreign.length) {
+          throw new ForbiddenException(
+            `No podés asignar el flujo a una empresa a la que no pertenecés: ${foreign.join(', ')}`,
+          );
+        }
+      }
+    }
+
     await this.applyTenantAssignment(flowId, assignments, isStart);
     return this.findById(flowId);
   }

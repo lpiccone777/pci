@@ -331,6 +331,12 @@ function FlowEditorInner() {
       setFlowDescription(flow.description || '');
       setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
       setSkillId(flow.skillId || flow.skill?.id || '');
+      // Un flujo sin empresas asignadas (borrador) no tiene ninguna empresa de la cual cargar
+      // los dropdowns, así que la fuente/skill ya vinculadas quedarían sin `<option>` y el
+      // selector se vería vacío pese a estar guardadas. Se inyecta la opción que el propio GET
+      // trae embebida, para que el valor persistido siempre se muestre.
+      if (flow.contextSource) setContextSources((prev) => mergeById(prev, [flow.contextSource]));
+      if (flow.skill) setSkills((prev) => mergeById(prev, [flow.skill]));
       const tenantFlows = flow.tenantFlows || [];
       const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
         tenantId: tf.tenant.id,

@@ -182,14 +182,18 @@ model DeviceValidation {
 // (`[{ index, tenantId, name }]`) para matchear la respuesta. `expiresAt` = ahora + 12hs
 // (misma ventana de reanudación que RESUME_WINDOW_MS).
 model PendingTenantSelection {
-  id           String   @id @default(cuid())
-  phone        String
-  channel      String
-  originalBody String
-  options      Json
-  expiresAt    DateTime
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  phone               String
+  channel             String
+  originalBody        String
+  // Adjuntos (fotos) del mensaje que disparó el selector de empresa. Se guardan acá para no
+  // perderlos: cuando el usuario elige empresa, el mensaje original se reprocesa con su texto
+  // Y sus adjuntos. Ausente/null = el mensaje original no traía adjuntos.
+  originalAttachments Json?
+  options             Json
+  expiresAt           DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@unique([phone, channel])
 }
