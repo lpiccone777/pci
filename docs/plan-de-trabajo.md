@@ -709,14 +709,19 @@
   - Sin interactivo en absoluto (la API de Twilio no tiene noción de botones/listas para SMS):
     un `interactive` que llegue se degrada siempre a texto numerado, mismo mecanismo que el
     fallback de `TwilioWhatsAppService`
-- [x] **`TwilioSmsWebhookController`** — `POST /webhooks/twilio-sms`, mismo criterio que el de
-      Twilio-WhatsApp (sin handshake de verificación, sin firma verificada todavía). El `From`
-      ya viene en E.164 plano, sin prefijo de canal que sacarle
-- [x] **Nueva sección en `/settings`**: "Mensajería: SMS (Twilio)" (`TWILIO_SMS_FROM`,
-      `TWILIO_SMS_TENANT_ID`)
+- [x] **Nueva sección en `/settings`**: "Mensajería: SMS (Twilio)" (`TWILIO_SMS_FROM`)
 - ⚠️ **Bloqueado**: falta un número de Twilio habilitado para SMS — el sandbox de WhatsApp
   (`+14155238886`) no sirve para esto, hace falta comprar/asignar un número real en la
   consola de Twilio y cargarlo en `TWILIO_SMS_FROM`
+- [x] **SMS entrante sacado por completo (pedido 2026-08-27)**: decisión del cliente — no
+      vamos a manejar SMS bidireccional para ningún proveedor. Se borraron
+      `TwilioSmsWebhookController` (`POST /webhooks/twilio-sms`) y `GupshupSmsWebhookController`
+      (`POST /webhooks/gupshup-sms`), la suscripción a `sms.incoming` en
+      `ConversationsService.onModuleInit`, y los settings `TWILIO_SMS_TENANT_ID`/
+      `GUPSHUP_SMS_TENANT_ID` (solo servían para resolver a qué tenant asignar SMS entrante).
+      El grupo "Mensajería: SMS (Gupshup)" quedó vacío y se sacó del catálogo. El canal SMS
+      queda 100% saliente: solo lo usa el nodo `sms` del editor para avisos, sin
+      `Conversation` ni conversación bidireccional por ese canal
 
 ### Editor de flujos: nuevo nodo "SMS" ✅ COMPLETADO (pedido 2026-08-14)
 - [x] **Nodo `sms`** — manda un SMS por Twilio a una lista de destinatarios configurados a mano
@@ -760,8 +765,7 @@
       diferencia de WhatsApp, que ya tenía `WHATSAPP_PROVIDER` desde el conector de Twilio).
       Gatear un segundo proveedor de SMS obligó a introducir ese mismo mecanismo acá por
       primera vez
-- [x] **`GupshupSmsService`/`GupshupSmsWebhookController`** (`SMS_PROVIDER=gupshup`) —
-      **rehecho 2026-08-27**, ver historia abajo
+- [x] **`GupshupSmsService`** (`SMS_PROVIDER=gupshup`) — **rehecho 2026-08-27**, ver historia abajo
   - **Primer intento (2026-08-14): "Enterprise SMS" legacy** (`enterprise.smsgupshup.com/
     GatewayAPI/rest`) — producto y cuenta separados de la app de WhatsApp (`userid`/`password`
     propios, request por query params, respuesta en texto plano). Quedó bloqueado sin poder
@@ -775,7 +779,7 @@
     reusando las MISMAS credenciales (`GUPSHUP_API_KEY`/`GUPSHUP_WHATSAPP_SOURCE`/
     `GUPSHUP_APP_NAME`, grupo "Mensajería: WhatsApp (Gupshup)") en vez de un grupo propio. Se
     sacaron `GUPSHUP_SMS_USERID`/`GUPSHUP_SMS_PASSWORD` del catálogo de `/settings` — quedaron
-    sin uso. `GUPSHUP_SMS_TENANT_ID` se mantiene, lo sigue necesitando el webhook de entrada
+    sin uso
   - ⚠️⚠️ **Entrega real SIN CONFIRMAR, a pesar de que la API "valida" el envío**: 6 envíos de
     prueba en vivo (2 apps de Gupshup distintas, 2 API keys distintas, `source`/`src.name`
     correctamente emparejados) devolvieron siempre `202 {"status":"submitted","messageId":...}`
@@ -789,11 +793,9 @@
     es la única vía de Gupshup que la API llega a validar. Sigue pendiente confirmación de
     soporte de Gupshup sobre por qué no hay entrega ni rastro en su panel — con esa respuesta,
     ajustar el código si hace falta
-  - ⚠️ **El shape del webhook de SMS ENTRANTE tampoco se pudo verificar** — y ahora hay una
-    duda adicional: como el saliente ahora comparte endpoint con WhatsApp, las respuestas
-    entrantes de SMS podrían llegar por el webhook de WhatsApp (`GupshupWebhookController`,
-    `/webhooks/gupshup`) en vez de por `/webhooks/gupshup-sms`, distinguidas por algún campo
-    del payload. Sin tráfico real todavía para confirmarlo
+  - SMS entrante (para cualquier proveedor) se sacó del alcance el mismo día — ver "SMS
+    entrante sacado por completo" más arriba. No aplica ninguna duda sobre shape de webhook
+    de entrada: no hay webhook de entrada
   - Mientras tanto sigue funcionando Twilio para SMS (`SMS_PROVIDER` default `'twilio'`) — ya
     probado y con número/cuenta cargados en `/settings`
 

@@ -170,16 +170,11 @@ export class ConversationsService implements OnModuleInit {
 
   async onModuleInit() {
     await this.broker.subscribe('whatsapp.incoming', this.handleMessage.bind(this));
-    // SMS es un canal aparte, no una alternativa de WhatsApp (a diferencia de Twilio vs
-    // Meta, que comparten cola porque son el mismo canal): conversaciones propias, no
-    // compite por whatsapp.incoming. `handleMessage` es el mismo — ver `channel` en el
-    // payload, que decide de qué `Conversation` y a qué cola de salida se habla.
-    await this.broker.subscribe('sms.incoming', this.handleMessage.bind(this));
-    // Mismo handler, misma lógica de negocio: la única diferencia con el canal real
-    // es por qué cola entra el mensaje. Así /simulate ejercita el camino real
-    // completo (RabbitMQ de punta a punta) en vez de llamar al método en proceso.
+    // SMS es 100% saliente (avisos, ver el nodo `sms` del editor) — no hay `sms.incoming`
+    // ni webhook de entrada para ningún proveedor (Twilio/Gupshup), a propósito: no vamos
+    // a soportar conversación bidireccional por ese canal.
     await this.broker.subscribe(SIMULATE_QUEUE, this.handleMessage.bind(this));
-    this.logger.log(`Subscribed to whatsapp.incoming, sms.incoming and ${SIMULATE_QUEUE}`);
+    this.logger.log(`Subscribed to whatsapp.incoming and ${SIMULATE_QUEUE}`);
   }
 
   /**
@@ -327,8 +322,8 @@ export class ConversationsService implements OnModuleInit {
           });
     }
 
-    // 2.5 Adjuntos (imágenes de WhatsApp/SMS vía Twilio, ver TwilioWebhookController/
-    // TwilioSmsWebhookController): se acumulan en flowState.pendingAttachments hasta que
+    // 2.5 Adjuntos (imágenes de WhatsApp vía Twilio, ver TwilioWebhookController): se
+    // acumulan en flowState.pendingAttachments hasta que
     // el flujo llegue a un nodo `ticket_create` — pueden ser varios mensajes después de
     // este, así que no alcanza con tenerlos en memoria acá: hay que persistirlos ya mismo
     // (no esperar al persist de fin de turno de executeFlow, que ni corre si todavía no

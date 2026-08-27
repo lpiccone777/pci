@@ -43,7 +43,6 @@ export type SettingGroup =
   | 'Mensajería: WhatsApp (Gupshup)'
   | 'Mensajería: SMS'
   | 'Mensajería: SMS (Twilio)'
-  | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
   | 'Integración: InvGate';
 
@@ -497,9 +496,9 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
   },
 
   // --- Mensajería: WhatsApp (Gupshup) ---
-  // API moderna de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey` — NO
-  // confundir con la API legacy "Enterprise SMS" (grupo "Mensajería: SMS (Gupshup)", más
-  // abajo), que es un producto y una cuenta totalmente distintos (userid/password propios).
+  // API de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey`. Estas mismas
+  // credenciales las reusa también GupshupSmsService (SMS_PROVIDER=gupshup, channel='sms'
+  // sobre este mismo endpoint) — no hay un grupo de settings separado para SMS de Gupshup.
   {
     key: 'GUPSHUP_API_KEY',
     type: 'string',
@@ -552,16 +551,17 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     defaultValue: 'twilio',
     description:
       'Qué conector se suscribe a la cola de envío saliente de SMS: "twilio" (grupo ' +
-      '"Mensajería: SMS (Twilio)") o "gupshup" (grupo "Mensajería: SMS (Gupshup)" — API ' +
-      'legacy "Enterprise SMS", cuenta separada de la de WhatsApp). Solo uno puede estar ' +
-      'activo a la vez — se lee una sola vez al arrancar el backend, igual que WHATSAPP_PROVIDER.',
+      '"Mensajería: SMS (Twilio)") o "gupshup" (reusa GUPSHUP_API_KEY/GUPSHUP_WHATSAPP_SOURCE/' +
+      'GUPSHUP_APP_NAME del grupo "Mensajería: WhatsApp (Gupshup)", no tiene settings propios). ' +
+      'Solo uno puede estar activo a la vez — se lee una sola vez al arrancar el backend, igual ' +
+      'que WHATSAPP_PROVIDER.',
     allowedValues: ['twilio', 'gupshup'],
   },
 
   // --- Mensajería: SMS (Twilio) ---
   // Reusa TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN del grupo de WhatsApp (Twilio) — es la misma
-  // cuenta de Twilio, solo cambia el número emisor. SMS no es un reemplazo de WhatsApp
-  // (a diferencia de Twilio vs Meta): es un canal aparte, con sus propias conversaciones.
+  // cuenta de Twilio, solo cambia el número emisor. SMS es 100% saliente (avisos, ver el nodo
+  // `sms` del editor) — no hay tenant de entrada que configurar, no hay webhook de entrada.
   {
     key: 'TWILIO_SMS_FROM',
     type: 'string',
@@ -574,40 +574,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'número de WhatsApp, va SIN el prefijo "whatsapp:" (Twilio lo distingue por el canal, ' +
       'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
       'WhatsApp no sirve para esto.',
-  },
-  {
-    key: 'TWILIO_SMS_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: SMS (Twilio)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número de SMS. Misma ' +
-      'limitación que el resto de los canales: un solo número sirve a un solo tenant ' +
-      'mientras los settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
-  // --- Mensajería: SMS (Gupshup) ---
-  // Ya NO usa una cuenta/credenciales propias: GupshupSmsService reusa GUPSHUP_API_KEY/
-  // GUPSHUP_WHATSAPP_SOURCE/GUPSHUP_APP_NAME del grupo "Mensajería: WhatsApp (Gupshup)" de
-  // arriba (mismo endpoint unificado api.gupshup.io/wa/api/v1/msg, con channel=sms). Antes
-  // apuntaba a la API legacy "Enterprise SMS" (enterprise.smsgupshup.com, userid/password
-  // propios) — se sacó (2026-08-27) porque esa cuenta nunca se pudo dar de alta (alta rota
-  // del lado de Gupshup) y la app unificada sí valida el envío (ver el comentario largo en
-  // GupshupSmsService sobre qué significa "validar" acá — el 202 no confirma entrega real).
-  // Solo queda el setting de tenant, que sigue haciendo falta para el webhook de entrada.
-  {
-    key: 'GUPSHUP_SMS_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número. Misma limitación que ' +
-      'TWILIO_SMS_TENANT_ID: un solo número sirve a un solo tenant mientras los settings sean ' +
-      'globales. Sin definir, usa el tenant más antiguo del sistema.',
   },
 
   // --- Mensajería: Email ---
@@ -774,7 +740,6 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: WhatsApp (Gupshup)',
   'Mensajería: SMS',
   'Mensajería: SMS (Twilio)',
-  'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
   'Integración: InvGate',
 ];
