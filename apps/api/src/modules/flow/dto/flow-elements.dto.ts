@@ -24,6 +24,28 @@ export class FlowNodeDataDto {
   @IsOptional()
   defaultTargetNodeId?: string;
 
+  /**
+   * Nodo `condition`, formato nuevo: variable de `flowState` a comparar (ej. "userRole"
+   * o "{{userRole}}", incluye las que siempre trae el nodo `start`: userRole, userRoleId,
+   * isKnownUser, userName, userFirstName, userLastName, userEmail, userPhone, userId).
+   * Si está seteada, el nodo evalúa esta única comparación y tiene 2 salidas fijas por
+   * `sourceHandle`: 'true' (afirmativo) / 'false' (negativo) — reemplaza a `conditions`/
+   * `defaultTargetNodeId`, que quedan como fallback para flujos viejos sin este campo.
+   */
+  @IsString()
+  @IsOptional()
+  compareVariable?: string;
+
+  /** Nodo `condition` formato nuevo: default 'equals' si no se define. */
+  @IsString()
+  @IsOptional()
+  compareOperator?: 'equals' | 'not_equals' | 'contains' | 'exists' | 'not_exists';
+
+  /** Nodo `condition` formato nuevo: valor contra el que se compara (no aplica a exists/not_exists). */
+  @IsString()
+  @IsOptional()
+  compareValue?: string;
+
   /** Nodo `ticket_create`: nombre real de la categoría en InvGate (ver InvgateService.resolveCategoryId). */
   @IsString()
   @IsOptional()

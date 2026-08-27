@@ -553,6 +553,28 @@
     "Volver" ofrecido) → elegir "Volver" → vuelve exactamente al menú raíz con la pila vacía
     de nuevo. El caso de cruzar un `subflow` al volver quedó implementado y tipado, pero sin
     ejercitar en vivo todavía (no había un caso de prueba a mano con esa forma exacta)
+- [x] **Nodo `condition` rediseñado: comparación de variables + 2 salidas fijas** (pedido 2026-08-27)
+  - Antes: lista de `conditions` (keyword/regex/variable-existe) con `targetNodeId` propio
+    cada una, editada como JSON crudo en el panel — no permitía comparar el *valor* de una
+    variable, solo si existía
+  - Formato nuevo: `data.compareVariable` (nombre de variable de `flowState`, ej.
+    `userRole`) + `data.compareOperator` (`equals`/`not_equals`/`contains`/`exists`/
+    `not_exists`) + `data.compareValue`. El motor evalúa una única comparación y devuelve
+    `sourceHandle: 'true' | 'false'` — el nodo en el editor siempre dibuja 2 salidas fijas
+    ("afirmativo"/"negativo"), mismo patrón de `sourceHandle` que ya usaba `start`
+    (`known`/`unknown`)
+  - Compatibilidad: si `data.compareVariable` no está seteado, el motor cae a la lógica
+    vieja de `conditions`/`defaultTargetNodeId` — los flujos guardados antes de este cambio
+    siguen funcionando, aunque ya no tengan UI para editarse (habría que migrarlos al
+    formato nuevo a mano)
+  - El panel del editor ahora tiene: input de variable (con `datalist` de sugerencias —
+    las que siempre trae `start`: `userRole`, `userRoleId`, `isKnownUser`, `userName`,
+    `userFirstName`, `userLastName`, `userEmail`, `userPhone`, `userId` — y también acepta
+    cualquier variable propia del flujo), selector de operador, e input de valor (oculto
+    para `exists`/`not_exists`)
+  - `userRole` ya lo seteaba siempre el nodo `start` desde el fix del 2026-08-04 (ver
+    arriba, "El nodo `start` nunca detectaba un número desconocido") — no hizo falta tocar
+    nada ahí, el pedido de "que el flujo de inicio la traiga siempre" ya estaba resuelto
 
 ### Conector real de WhatsApp y Email ✅ COMPLETADO (pedido 2026-08-05)
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**

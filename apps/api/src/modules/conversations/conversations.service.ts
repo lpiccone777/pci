@@ -1697,6 +1697,38 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'condition': {
+        // Formato nuevo: una única comparación contra una variable de flowState
+        // (incluida cualquiera de las que siempre trae `start`, como `userRole`),
+        // con 2 salidas fijas por sourceHandle ('true'/'false'). Reemplaza a la
+        // lista vieja de `conditions`, que sigue funcionando para flujos viejos
+        // que no tengan `compareVariable` seteado.
+        if (data.compareVariable) {
+          const rawValue = flowState[this.stripVariableBraces(data.compareVariable)];
+          const compareValue = data.compareValue ?? '';
+          let matches: boolean;
+          switch (data.compareOperator) {
+            case 'not_equals':
+              matches = String(rawValue ?? '') !== compareValue;
+              break;
+            case 'contains':
+              matches = String(rawValue ?? '')
+                .toLowerCase()
+                .includes(compareValue.toLowerCase());
+              break;
+            case 'exists':
+              matches = rawValue !== undefined && rawValue !== null && rawValue !== '';
+              break;
+            case 'not_exists':
+              matches = rawValue === undefined || rawValue === null || rawValue === '';
+              break;
+            case 'equals':
+            default:
+              matches = String(rawValue ?? '') === compareValue;
+              break;
+          }
+          return { sourceHandle: matches ? 'true' : 'false' };
+        }
+
         const conditions = data.conditions || [];
         let matched = false;
         let targetNodeId: string | null = null;

@@ -620,7 +620,7 @@ function FlowEditorInner() {
       case 'input':
         return { text: 'Ingrese su respuesta:', variableName: '' };
       case 'condition':
-        return { conditions: [], defaultTargetNodeId: '' };
+        return { compareVariable: '', compareOperator: 'equals', compareValue: '' };
       case 'ticket_create':
         // Vacío a propósito (no 'medium' como antes): category/priority/ticketType van por
         // nombre real de InvGate — un valor en inglés inventado no matchea nada y termina
@@ -1637,27 +1637,64 @@ function NodeProperties({
       {type === 'condition' && (
         <>
           <div>
-            <label className="block text-sm font-medium mb-1">Condiciones (JSON)</label>
-            <textarea
-              value={JSON.stringify(data.conditions || [], null, 2)}
-              onChange={(e) => {
-                try {
-                  onUpdate('conditions', JSON.parse(e.target.value));
-                } catch {}
-              }}
-              className="w-full border rounded p-2 text-sm font-mono"
-              rows={6}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Nodo por defecto</label>
+            <label className="block text-sm font-medium mb-1">Variable a comparar</label>
             <input
               type="text"
-              value={data.defaultTargetNodeId || ''}
-              onChange={(e) => onUpdate('defaultTargetNodeId', e.target.value)}
-              className="w-full border rounded p-2 text-sm"
+              list="condition-system-variables"
+              value={data.compareVariable || ''}
+              onChange={(e) => onUpdate('compareVariable', e.target.value)}
+              placeholder="Ej: userRole"
+              className="w-full border rounded p-2 text-sm font-mono"
             />
+            <datalist id="condition-system-variables">
+              <option value="userRole" />
+              <option value="userRoleId" />
+              <option value="isKnownUser" />
+              <option value="userName" />
+              <option value="userFirstName" />
+              <option value="userLastName" />
+              <option value="userEmail" />
+              <option value="userPhone" />
+              <option value="userId" />
+            </datalist>
+            <p className="text-xs text-gray-400 mt-1">
+              Variables que siempre trae el nodo <b>Inicio</b>: userRole, userRoleId, isKnownUser,
+              userName, userFirstName, userLastName, userEmail, userPhone, userId. También podés
+              usar cualquier variable propia del flujo (creada con <b>Variable</b>, <b>Input</b> o{' '}
+              <b>Consultar LLM</b>).
+            </p>
           </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Comparación</label>
+            <select
+              value={data.compareOperator || 'equals'}
+              onChange={(e) => onUpdate('compareOperator', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="equals">Es igual a</option>
+              <option value="not_equals">Es distinto de</option>
+              <option value="contains">Contiene</option>
+              <option value="exists">Tiene un valor cargado</option>
+              <option value="not_exists">No tiene un valor cargado</option>
+            </select>
+          </div>
+          {!['exists', 'not_exists'].includes(data.compareOperator || 'equals') && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Valor</label>
+              <input
+                type="text"
+                value={data.compareValue || ''}
+                onChange={(e) => onUpdate('compareValue', e.target.value)}
+                placeholder="Ej: SuperAdmin"
+                className="w-full border rounded p-2 text-sm"
+              />
+            </div>
+          )}
+          <p className="text-xs text-gray-400">
+            El nodo siempre tiene 2 salidas fijas: <span className="text-green-600 font-semibold">afirmativo</span>{' '}
+            (se cumple la comparación) y <span className="text-red-600 font-semibold">negativo</span> (no se
+            cumple). Conectá cada una desde los dos puntos abajo del nodo, en el canvas.
+          </p>
         </>
       )}
 
