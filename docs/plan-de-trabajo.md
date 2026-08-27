@@ -1458,6 +1458,18 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
   respuesta libre y para `generateLlmQueryQuestion` (redacción de la pregunta), default 0 en
   esta última si el nodo no lo define
 
+**Resuelto (2026-08-27):**
+- ~~Un número desconocido que le escribía al bot quedaba registrado como fila en `User`~~
+  (crítico) — `handleMessage` llamaba `UsersService.findOrCreateByPhone` para tener a quién
+  asignarle la `Conversation`, y eso creaba un placeholder (`whatsapp-{tel}@local.pci`) para
+  cualquiera, estuviera registrado o no. Decisión: no hablamos con desconocidos. Ahora
+  `handleMessage` rechaza el mensaje apenas `findMembershipByPhone` no encuentra membresía en
+  el tenant — no crea `User`, no abre `Conversation`, no gasta LLM (mismo criterio de
+  silencio/aviso por RPC que la baja de empresa). `findOrCreateByPhone` quedó eliminada.
+  El intento se registra en archivo, no en la BD (`UnknownSenderLogService`, un mes de
+  retención — cuando haya rate limiting por número recién ahí va a hacer falta un conteo
+  persistente). Ver "No hablamos con desconocidos" en AGENTS.md
+
 ¿Por cuál seguimos?
 
 ---

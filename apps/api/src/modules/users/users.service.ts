@@ -961,11 +961,11 @@ export class UsersService {
    * Busca si el teléfono pertenece a un usuario REGISTRADO en este tenant (con un
    * rol asignado vía `UserTenant`) — no simplemente si existe una fila en `User`.
    *
-   * La diferencia importa: cualquier número que escribe por WhatsApp termina con
-   * una fila en `User` (ver `findOrCreateByPhone`, más abajo), así que "¿existe un
-   * User con este teléfono?" siempre da que sí apenas alguien escribe una vez, y
-   * nunca sirve para distinguir un número conocido de uno nuevo. "Conocido" tiene
-   * que significar "está registrado acá, con un rol", no "ya nos escribió antes".
+   * `ConversationsService.handleMessage` rechaza el mensaje sin esta membresía (no
+   * hablamos con desconocidos): "conocido" significa "está registrado acá, con un
+   * rol", no "ya nos escribió antes" — antes cualquier número que escribiera por
+   * WhatsApp terminaba con una fila en `User` (`findOrCreateByPhone`, eliminado)
+   * solo para tener a quién asignarle la conversación.
    */
   async findMembershipByPhone(phone: string, tenantId: string) {
     return this.prisma.userTenant.findFirst({
@@ -979,31 +979,6 @@ export class UsersService {
 
   async findByPhone(phone: string) {
     return this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
-  }
-
-  /**
-   * Si el número perteneció a alguien dado de baja, su teléfono quedó sufijado y este `findFirst`
-   * no lo encuentra: se crea un contacto nuevo. Es lo esperado — la persona que vuelve arranca
-   * sin el historial de la anterior.
-   */
-  async findOrCreateByPhone(phone: string, firstName?: string) {
-    let user = await this.prisma.user.findFirst({
-      where: { phone, deletedAt: null },
-    });
-
-    if (!user) {
-      user = await this.prisma.user.create({
-        data: {
-          email: `whatsapp-${phone}@local.pci`,
-          phone,
-          firstName: firstName || 'Usuario',
-          lastName: 'WhatsApp',
-          passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
-        },
-      });
-    }
-
-    return user;
   }
 
   // --- helpers ---

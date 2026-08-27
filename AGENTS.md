@@ -95,21 +95,29 @@ genuinamente cross-tenant (ver todos los tenants, configuración global) usa est
 un permiso RBAC a secas: un permiso RBAC no alcanza porque un admin de tenant podría
 auto-asignárselo.
 
-## "Conocido" en el motor de flujos
+## No hablamos con desconocidos
 
-`ConversationsService.handleMessage` resuelve `identity` (`isKnown`, `roleId`, `roleName`)
-consultando `UsersService.findMembershipByPhone(phone, tenantId)` — **contra el registro
-real de usuarios (`UserTenant` + `Role`), no contra si existe una fila en `User`**. Cualquier
-número que escribe una vez por WhatsApp termina con una fila en `User` (el placeholder que
-crea `findOrCreateByPhone`), así que "¿existe un `User` con este teléfono?" nunca sirve para
-distinguir conocido de nuevo — siempre da que sí.
+`ConversationsService.handleMessage` resuelve la identidad consultando
+`UsersService.findMembershipByPhone(phone, tenantId)` — **contra el registro real de
+usuarios (`UserTenant` + `Role`), no contra si existe una fila en `User`**. Sin membresía en
+ese tenant, el mensaje se rechaza ahí mismo (pedido 2026-08-27): no se crea ningún `User`, no
+se abre `Conversation`, no se gasta LLM. El intento queda en un log de archivo
+(`UnknownSenderLogService`, un mes de retención, mismo esquema que
+`GupshupFileLoggerService`), no en la BD — cuando exista rate limiting por número ahí sí va a
+hacer falta un conteo persistente, hoy no.
 
-Ese chequeo se resuelve una sola vez, en `handleMessage`, **antes** de tocar
-`findOrCreateByPhone`, y el resultado (`user` + `identity`) se enhebra por parámetro hasta
-`executeNode`'s `case 'start'`. Si algún día hace falta este dato en otro nodo, agregarlo
-como parámetro también — no volver a consultarlo ahí adentro. Repetir la consulta dentro del
-nodo fue exactamente el bug original: para cuando se preguntaba, el usuario ya existía
-porque un paso antes se lo había creado el propio `handleMessage`.
+Antes existía `UsersService.findOrCreateByPhone`, que creaba una fila placeholder en `User`
+(`whatsapp-{tel}@local.pci`) para cualquier número que escribiera, sin importar si estaba
+registrado — quedó eliminada. Sin esa fila fantasma, `executeFlow`/`executeNode` (incluido
+`case 'start'`) solo corren para gente ya registrada: `identity.isKnown` es efectivamente
+siempre `true` en ese punto — la rama `unknown` del nodo `start` queda como capacidad del
+motor de flujos, pero inalcanzable por este camino.
+
+El resultado (`user` + `identity`) se enhebra por parámetro desde `handleMessage` hasta
+`executeNode`'s `case 'start'` — si algún día hace falta este dato en otro nodo, agregarlo
+como parámetro también, no volver a consultarlo ahí adentro (ese fue el bug original: para
+cuando `case 'start'` preguntaba, el usuario ya existía porque `handleMessage` lo acababa de
+crear un paso antes).
 
 ## Broker / RabbitMQ — patrón RPC
 

@@ -14,6 +14,7 @@ import { ContextSourcesService } from '../context-sources/context-sources.servic
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
+import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { createHash } from 'crypto';
 
 /**
@@ -166,6 +167,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly contextSourcesService: ContextSourcesService,
     private readonly invgateService: InvgateService,
     private readonly twilioMedia: TwilioMediaService,
+    private readonly unknownSenderLog: UnknownSenderLogService,
   ) {}
 
   async onModuleInit() {
@@ -269,17 +271,45 @@ export class ConversationsService implements OnModuleInit {
 
     // 1. Identificar al usuario por teléfono, consultando el registro de usuarios.
     // "Conocido" = está registrado en este tenant, con rol (`UserTenant` + `Role`) —
-    // no simplemente "existe un User con este teléfono". Ese chequeo tiene que
-    // hacerse ANTES de crear el placeholder de WhatsApp: si se hiciera después (como
-    // hacía antes el nodo `start`), el usuario siempre iba a existir porque lo
-    // acabábamos de crear nosotros mismos un instante antes, y el número nunca se
-    // detectaba como desconocido.
+    // no simplemente "existe un User con este teléfono".
+    //
+    // No hablamos con desconocidos (pedido 2026-08-27): un número sin membresía en
+    // este tenant se rechaza acá mismo, antes de tocar la base para nada — no se crea
+    // ningún `User` placeholder, no se abre `Conversation`, no se gasta LLM. Antes se
+    // creaba una fila fantasma en `User` con `findOrCreateByPhone` solo para tener a
+    // quién asignarle la conversación; quedó eliminado (ver `UsersService`) porque
+    // ensuciaba la tabla real de usuarios con contactos que nunca fueron dados de alta.
+    // El intento queda igual registrado — pero en archivo (`UnknownSenderLogService`,
+    // un mes de retención), no en la BD: hoy es solo para poder mirar quién escribió
+    // sin estar registrado; el día que haya rate limiting por número ahí sí va a hacer
+    // falta un conteo persistente, no antes. Mismo criterio de silencio/aviso por RPC
+    // que la baja de empresa, arriba.
     const membership = await this.usersService.findMembershipByPhone(from, tenantId);
-    const user = membership?.user ?? (await this.usersService.findOrCreateByPhone(from));
+    if (!membership) {
+      this.unknownSenderLog.log({ tenantId, channel, from, bodyPreview: body.slice(0, 200) });
+      this.logger.warn(`[${tenantId}] Mensaje de ${from} ignorado: no está registrado en este tenant.`);
+      if (msg.replyTo) {
+        const notice = 'Este número no está registrado: el bot no atiende mensajes de desconocidos.';
+        await this.broker.publish(
+          msg.replyTo,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: notice },
+            tenantId,
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: false },
+        );
+        return notice;
+      }
+      return '';
+    }
+    const user = membership.user;
     const identity = {
-      isKnown: !!membership,
-      roleId: membership?.role.id ?? null,
-      roleName: membership?.role.name ?? null,
+      isKnown: true,
+      roleId: membership.role.id,
+      roleName: membership.role.name,
     };
 
     // 2. Buscar conversación activa, retomar una cerrada reciente, o crear una nueva
