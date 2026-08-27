@@ -2205,7 +2205,7 @@ function NodeProperties({
             <div className="space-y-1">
               {[
                 { value: 'email', label: 'Mail' },
-                { value: 'ticket', label: 'Ticket' },
+                { value: 'ticket', label: 'Ticket (deshabilitado)', disabled: true },
                 { value: 'phone', label: 'Teléfono (próximamente)', disabled: true },
               ].map((m) => (
                 <label
