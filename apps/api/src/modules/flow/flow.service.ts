@@ -6,9 +6,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
-import { systemTenantSlug } from '../../common/system-tenant';
 import { CreateFlowDto, UpdateFlowDto, TenantAssignmentDto } from './dto/create-flow.dto';
 import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
+import { isSystemSuperAdmin } from '../../common/system-superadmin';
+
+/** Vínculo del que llama (lo deja `TenantGuard` en `request.userTenant`), para resolver SuperAdmin. */
+type CallerUserTenant = { userId?: string; tenantId: string; roleId: string } | null | undefined;
 
 @Injectable()
 export class FlowService {
@@ -17,15 +20,26 @@ export class FlowService {
     private readonly config: ConfigService,
   ) {}
 
-  async create(data: CreateFlowDto, userId?: string, activeTenantId?: string) {
+  async create(
+    data: CreateFlowDto,
+    userId?: string,
+    activeTenantId?: string,
+    userTenant?: CallerUserTenant,
+  ) {
     const { assignments, isStart, ...flowData } = data;
+    const isSuperAdmin = await this.isSuperAdmin(userTenant);
+
+    // Autoridad sobre las empresas destino: solo se puede asignar el flujo a empresas propias
+    // (el SuperAdmin, a cualquiera). Se valida ANTES de crear el flujo, para no dejar un flujo
+    // huérfano si el payload trae una empresa ajena. Misma validación que `assignTenants`.
+    await this.assertAssignableTenants(assignments, userId, isSuperAdmin);
 
     // Aislamiento multitenant: un flujo importado/creado no puede quedar apuntando a
     // recursos de OTRA empresa (fuente de verdad, skill, usuarios de nodos, subflujos).
     // Ver `sanitizeCrossTenantRefs`. El conjunto válido es la empresa activa MÁS las
-    // que el propio payload asigna. En contexto de sistema (superadmin administrando de
-    // forma global) NO se sanea: puede vincular recursos de cualquier empresa a propósito.
-    if (!(await this.isSystemContext(activeTenantId))) {
+    // que el propio payload asigna. El SuperAdmin administra de forma global, así que NO
+    // se le sanea: puede vincular recursos de cualquier empresa a propósito.
+    if (!isSuperAdmin) {
       const validTenantIds = await this.collectValidTenantIds(
         activeTenantId,
         undefined,
@@ -52,18 +66,87 @@ export class FlowService {
   }
 
   /**
-   * ¿La empresa activa es la de sistema? En ese contexto el superadmin administra flujos de
-   * forma global y puede vincular recursos de cualquier empresa a propósito, así que el saneo
-   * cross-tenant no aplica. El corte por leakeo apunta a quien opera DENTRO de una empresa
-   * puntual (import en la empresa B, que no debe traerse la fuente de A) — ver FE-FLW-29.
+   * ¿El que llama es el SuperAdmin del sistema? Es el único que administra flujos de forma
+   * global: saltea el saneo cross-tenant (puede vincular recursos de cualquier empresa a
+   * propósito), opera sobre flujos de cualquier empresa y los asigna a cualquiera. Antes este
+   * corte era "¿la empresa activa es la de sistema?" (`isSystemContext`), que dejaba pasar a
+   * CUALQUIER miembro del tenant de sistema aunque no fuera SuperAdmin — ver `isSystemSuperAdmin`,
+   * que mira rol + tenant, no la mera pertenencia.
    */
-  private async isSystemContext(activeTenantId?: string): Promise<boolean> {
-    if (!activeTenantId) return false;
-    const systemTenant = await this.prisma.tenant.findUnique({
-      where: { slug: systemTenantSlug(this.config) },
-      select: { id: true },
+  private async isSuperAdmin(userTenant?: CallerUserTenant): Promise<boolean> {
+    return isSystemSuperAdmin(this.prisma, this.config, userTenant ?? null);
+  }
+
+  /**
+   * Corta si el flujo no es de ninguna empresa del usuario (y quien llama no es SuperAdmin). El
+   * scope lo pone la membresía del usuario, NO la empresa activa del header: la vista "Todas mis
+   * empresas" manda una empresa de respaldo en el header (no la del flujo), así que cortar por la
+   * activa rompería abrir/editar un flujo de otra de las empresas del usuario. Mismo criterio que
+   * `findMine`/`resolveReadableTenantIds`. Se tira `NotFound` (no `Forbidden`) a propósito: así no
+   * se filtra si un id existe en una empresa ajena. No va dentro de `findById` porque ese lo
+   * reusan las lecturas internas post-escritura, que no deben pasar por este corte.
+   */
+  private async assertFlowAccessible(
+    flowId: string,
+    userTenant: CallerUserTenant,
+    isSuperAdmin: boolean,
+  ): Promise<void> {
+    if (isSuperAdmin) return;
+
+    const flow = await this.prisma.flow.findUnique({
+      where: { id: flowId },
+      select: { createdBy: true, tenantFlows: { select: { tenantId: true } } },
     });
-    return !!systemTenant && systemTenant.id === activeTenantId;
+    if (!flow) throw new NotFoundException('Flujo no encontrado');
+
+    const userId = userTenant?.userId;
+
+    // Flujo sin empresas (borrador recién creado: "nace sin empresas"): accesible solo por su
+    // creador, hasta que se le asignen empresas. No aparece en ningún listado (findAll/findMine
+    // exigen `tenantFlows.some`), así que nadie más puede descubrir su id.
+    if (flow.tenantFlows.length === 0) {
+      if (userId && flow.createdBy === userId) return;
+      throw new NotFoundException('Flujo no encontrado');
+    }
+
+    // Flujo asignado: accesible si alguna de sus empresas es una donde el usuario puede ver
+    // flujos (`flows:read`) — exactamente el conjunto que la vista "Todas mis empresas" muestra.
+    if (userId) {
+      const readable = new Set(await resolveReadableTenantIds(this.prisma, userId, 'flows'));
+      if (flow.tenantFlows.some((tf) => readable.has(tf.tenantId))) return;
+    }
+    throw new NotFoundException('Flujo no encontrado');
+  }
+
+  /**
+   * Valida que todas las empresas destino de `assignments` sean del propio usuario (salvo
+   * SuperAdmin, que asigna a cualquiera). Mismo criterio para `create` y `assignTenants`: sin
+   * esto, cualquiera con `flows:create`/`update` podía enganchar un flujo a una empresa ajena
+   * mandándola en el payload (con `roleIds` vacío ni siquiera se validaban roles).
+   */
+  private async assertAssignableTenants(
+    assignments: TenantAssignmentDto[] | undefined,
+    userId: string | undefined,
+    isSuperAdmin: boolean,
+  ): Promise<void> {
+    if (isSuperAdmin) return;
+    const targetTenantIds = [
+      ...new Set((assignments ?? []).map((a) => a?.tenantId).filter((t): t is string => !!t)),
+    ];
+    if (!targetTenantIds.length) return;
+    const memberships = userId
+      ? await this.prisma.userTenant.findMany({
+          where: { userId, tenantId: { in: targetTenantIds } },
+          select: { tenantId: true },
+        })
+      : [];
+    const allowed = new Set(memberships.map((m) => m.tenantId));
+    const foreign = targetTenantIds.filter((id) => !allowed.has(id));
+    if (foreign.length) {
+      throw new ForbiddenException(
+        `No podés asignar el flujo a una empresa a la que no pertenecés: ${foreign.join(', ')}`,
+      );
+    }
   }
 
   /**
@@ -326,15 +409,36 @@ export class FlowService {
     return flow;
   }
 
-  async update(id: string, data: UpdateFlowDto, activeTenantId?: string) {
+  /**
+   * `findById` con corte de pertenencia, para el endpoint `GET /flows/:id`: solo devuelve el
+   * flujo si es de alguna de las empresas del usuario (o el que llama es SuperAdmin) — ver
+   * `assertFlowAccessible`. Se separa de `findById` porque este último lo reusan las lecturas
+   * internas post-escritura, que no llevan corte.
+   */
+  async findByIdScoped(id: string, userTenant?: CallerUserTenant) {
+    const isSuperAdmin = await this.isSuperAdmin(userTenant);
+    await this.assertFlowAccessible(id, userTenant, isSuperAdmin);
+    return this.findById(id);
+  }
+
+  async update(
+    id: string,
+    data: UpdateFlowDto,
+    activeTenantId?: string,
+    userTenant?: CallerUserTenant,
+  ) {
     const { nodes, edges, ...rest } = data;
+    const isSuperAdmin = await this.isSuperAdmin(userTenant);
+
+    // Corte de pertenencia: no se edita un flujo de una empresa ajena (el SuperAdmin, cualquiera).
+    await this.assertFlowAccessible(id, userTenant, isSuperAdmin);
 
     // Mismo saneo multitenant que en `create`: aunque el editor solo ofrezca recursos
     // válidos, un PATCH directo podría mandar ids de otra empresa. El conjunto válido
     // suma las empresas ya asignadas al flujo (`TenantFlow`) para no pisar una fuente
-    // legítima al guardar desde otra empresa activa (FLW-23). En contexto de sistema no
+    // legítima al guardar desde otra empresa activa (FLW-23). El SuperAdmin (admin global) no
     // se sanea (ver `create`). `sanitizeCrossTenantRefs` mutá los nodos en el lugar.
-    if (!(await this.isSystemContext(activeTenantId))) {
+    if (!isSuperAdmin) {
       const validTenantIds = await this.collectValidTenantIds(activeTenantId, id);
       const refs: { contextSourceId?: string | null; skillId?: string | null; nodes?: any[] } = {
         contextSourceId: rest.contextSourceId,
@@ -358,7 +462,13 @@ export class FlowService {
     return this.findById(flow.id);
   }
 
-  async delete(id: string) {
+  async delete(id: string, userTenant?: CallerUserTenant) {
+    const isSuperAdmin = await this.isSuperAdmin(userTenant);
+    // Corte de pertenencia: no se borra un flujo de una empresa ajena (el SuperAdmin, cualquiera).
+    await this.assertFlowAccessible(id, userTenant, isSuperAdmin);
+    // Borrado total: si el flujo está compartido con otras empresas, se elimina para TODAS
+    // (decisión explícita "compartido = compartido", misma limitación conocida que la edición
+    // de un flujo compartido). Alcanza con que el flujo sea de una empresa del usuario.
     await this.prisma.flow.delete({ where: { id } });
     return { message: 'Flujo eliminado' };
   }
@@ -367,34 +477,19 @@ export class FlowService {
     flowId: string,
     assignments: TenantAssignmentDto[],
     isStart = false,
-    activeTenantId?: string,
-    userId?: string,
+    userTenant?: CallerUserTenant,
   ) {
-    // Autoridad sobre las empresas destino: fuera del contexto de sistema (donde el superadmin
-    // administra flujos de forma global), un usuario solo puede vincular el flujo a empresas a
-    // las que pertenece. Sin esto, cualquiera con `flows:update` en su empresa podía enganchar
-    // el flujo a una empresa ajena mandándola en `assignments` (con `roleIds` vacío ni siquiera
-    // se validaban roles). El corte por FLUJO ajeno (SEC-03) es un tema aparte, no cubierto acá.
-    if (!(await this.isSystemContext(activeTenantId))) {
-      const targetTenantIds = [
-        ...new Set(assignments.map((a) => a?.tenantId).filter((t): t is string => !!t)),
-      ];
-      if (targetTenantIds.length) {
-        const memberships = userId
-          ? await this.prisma.userTenant.findMany({
-              where: { userId, tenantId: { in: targetTenantIds } },
-              select: { tenantId: true },
-            })
-          : [];
-        const allowed = new Set(memberships.map((m) => m.tenantId));
-        const foreign = targetTenantIds.filter((id) => !allowed.has(id));
-        if (foreign.length) {
-          throw new ForbiddenException(
-            `No podés asignar el flujo a una empresa a la que no pertenecés: ${foreign.join(', ')}`,
-          );
-        }
-      }
-    }
+    const isSuperAdmin = await this.isSuperAdmin(userTenant);
+
+    // Corte de pertenencia sobre el flujo de ORIGEN: no se reasigna un flujo de una empresa ajena
+    // (antes se validaba solo el destino, no que tuvieras relación con el flujo — el propio
+    // código lo dejaba como pendiente). El SuperAdmin administra todos.
+    await this.assertFlowAccessible(flowId, userTenant, isSuperAdmin);
+
+    // Autoridad sobre las empresas DESTINO: solo empresas propias (el SuperAdmin, a cualquiera).
+    // Sin esto, cualquiera con `flows:update` podía enganchar el flujo a una empresa ajena
+    // mandándola en `assignments` (con `roleIds` vacío ni siquiera se validaban roles).
+    await this.assertAssignableTenants(assignments, userTenant?.userId, isSuperAdmin);
 
     await this.applyTenantAssignment(flowId, assignments, isStart);
     return this.findById(flowId);

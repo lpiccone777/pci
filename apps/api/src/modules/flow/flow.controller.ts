@@ -37,7 +37,7 @@ export class FlowController {
     // El `userId` del llamante se usa para dos cosas: registrar quién creó el flujo
     // y validar que las empresas que trae el payload sean realmente suyas (el saneo
     // cross-tenant no puede confiar en un `tenantId` que mande el cliente).
-    return this.flowService.create(dto, req.user.userId, tenantId);
+    return this.flowService.create(dto, req.user.userId, tenantId, req.userTenant);
   }
 
   @Get()
@@ -79,8 +79,11 @@ export class FlowController {
 
   @Get(':id')
   @RequirePermission('flows', 'read')
-  async findById(@Param('id') id: string) {
-    return this.flowService.findById(id);
+  async findById(@Param('id') id: string, @Req() req: any) {
+    // Corte de pertenencia: solo se ve un flujo de alguna de las empresas del usuario (el
+    // superadmin, cualquiera). El `@RequirePermission` valida el permiso en TU empresa, no de
+    // quién es el flujo.
+    return this.flowService.findByIdScoped(id, req.userTenant);
   }
 
   @Patch(':id')
@@ -89,40 +92,33 @@ export class FlowController {
     @Param('id') id: string,
     @Body() dto: UpdateFlowDto,
     @CurrentTenant() tenantId: string,
+    @Req() req: any,
   ) {
-    return this.flowService.update(id, dto, tenantId);
+    return this.flowService.update(id, dto, tenantId, req.userTenant);
   }
 
   @Delete(':id')
   @RequirePermission('flows', 'delete')
-  async delete(@Param('id') id: string) {
-    return this.flowService.delete(id);
+  async delete(@Param('id') id: string, @Req() req: any) {
+    return this.flowService.delete(id, req.userTenant);
   }
 
   /**
    * Autoridad sobre las empresas destino: un usuario solo puede vincular un flujo a empresas
-   * a las que pertenece (lo valida `FlowService.assignTenants`); el superadmin, parado en el
-   * tenant de sistema, puede asignar a cualquiera. Sin esta validación, un admin con
-   * `flows:update` en su empresa podía enganchar el flujo a una empresa ajena mandándola en
-   * `assignments` (con `roleIds` vacío ni siquiera se validaban roles). No se usa
-   * `SystemTenantGuard` acá a propósito: la administración de flujos también se hace desde
-   * cada empresa, no solo desde sistema (ver los e2e BE-FLW-05/06/20).
+   * a las que pertenece; el superadmin puede asignar a cualquiera. Además, corte de pertenencia
+   * sobre el flujo de origen: no se reasigna un flujo de otra empresa (ambos los valida
+   * `FlowService.assignTenants`). No se usa `SystemTenantGuard` acá a propósito: la
+   * administración de flujos también se hace desde cada empresa, no solo desde sistema (ver los
+   * e2e BE-FLW-05/06/20).
    */
   @Post(':id/assign-tenants')
   @RequirePermission('flows', 'update')
   async assignTenants(
     @Param('id') id: string,
     @Body() dto: AssignTenantsDto,
-    @CurrentTenant() tenantId: string,
     @Req() req: any,
   ) {
-    return this.flowService.assignTenants(
-      id,
-      dto.assignments,
-      !!dto.isStart,
-      tenantId,
-      req.user.userId,
-    );
+    return this.flowService.assignTenants(id, dto.assignments, !!dto.isStart, req.userTenant);
   }
 
   @Post(':id/default')
