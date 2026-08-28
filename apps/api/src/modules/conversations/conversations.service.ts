@@ -424,8 +424,19 @@ export class ConversationsService implements OnModuleInit {
       responseText = flowResult.text;
       interactive = flowResult.interactive;
     } else {
-      // Fallback: orquestador LLM para mensajes fuera de flujo
+      // `null` acá significa que no hay ningún flujo activo para este tenant/rol —
+      // conversación libre, la toma el orquestador LLM. Un flujo que SÍ corrió pero no tuvo
+      // nada que decir (ej. `notification` en modo link avanzando en silencio hacia un `end`
+      // sin texto de cierre) llega con `flowResult.text === ''`, no acá — ver `toFlowResult`.
       responseText = await this.orchestratorLlm(conversation, body, tenantId, null, null);
+    }
+
+    // Turno silencioso a propósito (un flujo avanzó de nodo sin nada que mostrar todavía,
+    // ej. justo el caso de arriba): no hay nada que guardar ni mandar. Sin este corte, se
+    // guardaba un `Message` vacío y se publicaba un mensaje de WhatsApp en blanco.
+    if (!responseText && !interactive) {
+      this.logger.log(`[${tenantId}] Turno silencioso para ${from} (el flujo avanzó sin responder).`);
+      return '';
     }
 
     // 6. Guardar respuesta del asistente
@@ -481,7 +492,10 @@ export class ConversationsService implements OnModuleInit {
     from: string,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
   ): Promise<{ text: string; interactive?: WhatsAppInteractive } | null> {
-    // Buscar flujo activo
+    // Buscar flujo activo. `null` de acá en adelante significa EXCLUSIVAMENTE "no hay flujo
+    // activo para este tenant/rol" — las dos salidas de esta sección son las únicas; una vez
+    // que el flujo arranca, todo retorno de esta función pasa por `toFlowResult`, que ya no
+    // devuelve `null` (ver su comentario).
     let flowId = conversation.currentFlowId;
     let currentNodeId = conversation.currentNodeId;
 
@@ -620,12 +634,20 @@ export class ConversationsService implements OnModuleInit {
     return this.toFlowResult(responses, interactive);
   }
 
-  /** Junta las respuestas acumuladas de `executeFlow` en el resultado final, o `null` si no hubo ninguna. */
+  /**
+   * Junta las respuestas acumuladas de `executeFlow` en el resultado final. Siempre devuelve
+   * un objeto —nunca `null`— porque para cuando se llama, el flujo YA corrió: `null` en
+   * `executeFlow` significa exclusivamente "no hay ningún flujo activo para este tenant/rol"
+   * (las dos salidas tempranas, antes de este punto). Confundir "el flujo corrió pero no tuvo
+   * nada que decir" (ej. `notification` en modo link avanzando en silencio hacia un `end` sin
+   * texto de cierre) con "no hay flujo" era el bug: `handleMessage` trataba el primer caso
+   * como charla libre y le pasaba el turno al LLM orquestador sin que nadie lo pidiera.
+   */
   private toFlowResult(
     responses: string[],
     interactive?: WhatsAppInteractive,
-  ): { text: string; interactive?: WhatsAppInteractive } | null {
-    return responses.length ? { text: responses.join('\n\n'), interactive } : null;
+  ): { text: string; interactive?: WhatsAppInteractive } {
+    return { text: responses.join('\n\n'), interactive };
   }
 
   /** Guarda en qué punto del flujo quedó la conversación. */
