@@ -95,6 +95,20 @@ const DEFAULT_SYSTEM_PROMPT = 'Eres un asistente de soporte técnico amable y co
  */
 const CLASSIFIER_MAX_TOKENS = 300;
 
+/**
+ * `maxTokens` del extractor de variables de `llm_query` (`extractLlmQueryValues`) — MISMO
+ * problema de los clasificadores de arriba, pero acá 300 NO alcanza: esta tarea no responde
+ * una sola palabra, tiene que razonar sobre la conversación reciente entera (hasta
+ * `contextMessages` mensajes) Y emitir una línea `clave: valor` por cada variable. Con un
+ * modelo de razonamiento obligatorio (MiniMax M2.x), el pensamiento interno consume el
+ * presupuesto ANTES de emitir las líneas: `content` vuelve vacío o cortado, el parser
+ * convierte todo a NONE en silencio, y el nodo vuelve a preguntar datos que el usuario YA
+ * dio — visto en producción (2026-08-28) como "recopiló todo pero no avanza, sigue
+ * preguntando". Generoso a propósito: un proveedor no-razonador corta solo al terminar las
+ * líneas, así que el costo real no cambia.
+ */
+const LLM_QUERY_EXTRACT_MAX_TOKENS = 2000;
+
 interface NodeExecutionResult {
   responseText?: string;
   nextNodeId?: string;
@@ -607,10 +621,24 @@ export class ConversationsService implements OnModuleInit {
         return this.toFlowResult(responses, interactive);
       }
 
-      // `llm_query` sin salida es un punto final conversacional, no el fin del flujo:
-      // la conversación queda parada ahí y los mensajes siguientes van derecho al
-      // modelo, sin repetir el saludo ni los nodos previos.
-      if (!nextNodeId && node.type === 'llm_query') {
+      // `llm_query` SIN `extractVariables` (modo charla libre, no extracción) sin salida
+      // es un punto final conversacional a propósito, no el fin del flujo: la
+      // conversación queda parada ahí y los mensajes siguientes van derecho al modelo,
+      // sin repetir el saludo ni los nodos previos.
+      //
+      // En modo EXTRACCIÓN, en cambio, este mismo chequeo era el bug reportado
+      // (2026-08-28): un flujo sin arista dibujada desde el nodo (o sin
+      // `foundTargetNodeId`/`missingTargetNodeId` configurado) quedaba parado ACÁ para
+      // siempre apenas resolvía las variables — aunque ya tuviera sede/interno/lo que
+      // sea con valor real (o "no definido", que es un resultado válido y esperado, no
+      // uno pendiente). "No tengo a dónde ir configurado" no debería equivaler a "quedate
+      // charlando acá indefinidamente": una vez que la extracción terminó (con o sin
+      // éxito), lo correcto es seguir cualquier arista real que exista (ya lo intenta
+      // `resolveNextNode` arriba) o, si de verdad no hay ninguna, cerrar el flujo como
+      // cualquier otro nodo sin salida — no inventar un estado de "conversación libre"
+      // que después termina en el LLM alucinando una respuesta sin que el flujo haya
+      // hecho nada real (ej. "confirmar" un ticket que nunca se creó).
+      if (!nextNodeId && node.type === 'llm_query' && !node.data?.extractVariables?.length) {
         await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
         return this.toFlowResult(responses, interactive);
       }
@@ -2342,7 +2370,7 @@ export class ConversationsService implements OnModuleInit {
 
     const raw = await this.llmService.chat(llmMessages, {
       systemPrompt: extractPrompt,
-      maxTokens: CLASSIFIER_MAX_TOKENS,
+      maxTokens: LLM_QUERY_EXTRACT_MAX_TOKENS,
       temperature: 0,
     });
 
@@ -2350,9 +2378,27 @@ export class ConversationsService implements OnModuleInit {
     for (const line of raw.split('\n')) {
       const match = line.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
       if (!match) continue;
-      const item = items.find((i) => i.key.toLowerCase() === match[1].trim().toLowerCase());
+      // Clave normalizada, no igualdad exacta: un modelo de razonamiento suele decorar
+      // la línea aunque el prompt pida el formato pelado — "- sede: X", "**sede**: X",
+      // "Sede: X" — y el match exacto tiraba esas respuestas válidas a NONE.
+      const parsedKey = this.normalizeForMatch(match[1]);
+      const item = items.find((i) => this.normalizeForMatch(i.key) === parsedKey);
       if (!item) continue;
-      outcomes[item.key] = match[2].trim();
+      // Mismo motivo sobre el valor: sacarle markdown/comillas envolventes antes de
+      // guardarlo ("**DM - Martinez**" → "DM - Martinez").
+      outcomes[item.key] = match[2].trim().replace(/^[*_`"']+|[*_`"']+$/g, '').trim();
+    }
+
+    // Nada parseó para alguna clave pendiente: dejar rastro del output crudo — sin esto,
+    // un `content` vacío/cortado (ej. modelo de razonamiento sin presupuesto de tokens) o
+    // un formato inesperado se convierte en NONE en silencio y el nodo re-pregunta datos
+    // que el usuario ya dio, sin ninguna pista en los logs de por qué.
+    const unparsed = items.filter(({ key }) => !outcomes[key]);
+    if (unparsed.length) {
+      this.logger.warn(
+        `extractLlmQueryValues: sin línea parseable para [${unparsed.map((i) => i.key).join(', ')}] — ` +
+          `respuesta cruda del modelo (${raw.length} chars): ${JSON.stringify(raw.slice(0, 500))}`,
+      );
     }
 
     for (const { key } of items) {

@@ -621,6 +621,49 @@
     únicamente contra el catálogo cerrado de `allowedValues` — no reconoce sinónimos ni
     inventa valores fuera de esa lista, solo tolera variación cosmética de la misma
     respuesta
+- [x] **`llm_query` en modo extracción: quedaba trabado para siempre sin arista/destino configurado** (pedido 2026-08-28)
+  - Síntoma real (distinto del de arriba): con las variables YA resueltas (con valor real
+    o "no definido"), si el nodo no tenía ninguna arista dibujada en el canvas NI
+    `foundTargetNodeId`/`missingTargetNodeId` cargado a mano, el flujo no seguía a
+    ningún lado — quedaba parado en ese mismo nodo para siempre. No es un problema de
+    parchear un flujo puntual: es el motor tratando "no hay destino configurado" como
+    "quedate charlando acá indefinidamente", pensado originalmente para `llm_query` en
+    modo charla libre (sin `extractVariables`), pero aplicado también por error al modo
+    extracción — donde SÍ terminó de hacer su trabajo y no tiene sentido seguir "en
+    conversación libre" ahí
+  - Verificado en vivo (`/conversations/simulate`, con y sin arista dibujada): CON arista
+    ya andaba bien (avanza al nodo real); el bug era específicamente el caso SIN arista —
+    confirmado con log real: antes quedaba repitiendo el mismo nodo turno a turno, ahora
+    loguea `"Turno silencioso... el flujo avanzó sin responder"` — es decir, sigue de
+    largo (cierra el flujo si no hay más nada configurado) en vez de trabarse
+  - Fix: en `executeFlow`, el chequeo "`llm_query` sin salida = punto final conversacional"
+    ahora excluye explícitamente el modo extracción (`!node.data?.extractVariables?.length`)
+    — sigue aplicando tal cual para `llm_query` de charla libre (sin `extractVariables`),
+    que es donde tiene sentido quedarse conversando sin fin
+  - No hizo falta cablear nada en ningún flujo — el pedido explícito era que el motor
+    avance solo, sin depender de parchear el contenido del flujo
+- [x] **`llm_query` en modo extracción: el extractor se quedaba sin tokens con MiniMax y re-preguntaba datos ya dados** (pedido 2026-08-28, tercera capa del mismo síntoma)
+  - Con los dos fixes anteriores aplicados, el síntoma persistía: el usuario da sede e
+    interno, el nodo NO avanza y "el LLM queda atendiendo el llamado". La causa de esta
+    capa: `extractLlmQueryValues` usaba `CLASSIFIER_MAX_TOKENS` (300) — un tope calibrado
+    (ver su comentario) para clasificadores que responden UNA palabra. Este llamado no:
+    tiene que razonar sobre la conversación reciente entera Y emitir una línea
+    `clave: valor` por variable. Con MiniMax M2.x (razonamiento obligatorio, no se puede
+    apagar; `max_tokens` capea razonamiento+respuesta juntos), el pensamiento interno
+    consumía el presupuesto y `content` volvía vacío/cortado → el parser convertía todo a
+    NONE en silencio → el nodo re-preguntaba datos que el usuario YA dio, turno tras
+    turno, hasta agotar `maxAttempts` y caer a "no definido"
+  - Fix 1: `LLM_QUERY_EXTRACT_MAX_TOKENS = 2000` (constante propia, no tocar la de los
+    clasificadores de una palabra) — generoso a propósito, un proveedor no-razonador corta
+    solo al terminar las líneas así que el costo real no cambia
+  - Fix 2: parser tolerante — la clave se matchea normalizada (`normalizeForMatch`), así
+    "- sede: X" / "**sede**: X" / "Sede: X" ya no caen a NONE por decoración de la línea;
+    el valor pierde markdown/comillas envolventes antes de guardarse
+  - Fix 3: si alguna clave pendiente queda sin línea parseable, se loguea WARN con la
+    respuesta cruda del modelo — antes ese fallo era 100% invisible en los logs
+  - Verificado en vivo (multi-turno real por `/simulate`): descripción sin datos → el nodo
+    pregunta → respuesta "Estoy en DM - Martinez, interno 1025" → avanza y crea el ticket
+    en el mismo turno
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
   - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
     `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el
