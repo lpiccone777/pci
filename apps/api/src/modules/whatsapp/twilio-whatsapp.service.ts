@@ -273,9 +273,16 @@ export class TwilioWhatsAppService implements OnModuleInit {
           }
         : interactive.type === 'cta_url'
           ? {
-              // La URL real va en `{{2}}` (ver `sendInteractive`), no acá: el título del
-              // botón es lo único fijo de la forma, así el mismo template sirve para
-              // cualquier destino.
+              // Schema verificado contra twilio.com/docs/content/twilio-call-to-action
+              // (2026-08-27) — `body` + `actions[].{type:'URL', title, url}`. La URL real
+              // va en `{{2}}` (ver `sendInteractive`), no acá: el título del botón es lo
+              // único fijo de la forma, así el mismo template sirve para cualquier
+              // destino. Ojo: la doc de Twilio dice "variables supported at the end of
+              // the URL string" (pensado para templates aprobados con dominio fijo +
+              // sufijo variable) — acá la URL entera es variable, y como estos templates
+              // nunca se mandan a aprobar (van dentro de la ventana de 24hs, igual que
+              // quick-reply/list-picker), no debería toparse con esa restricción, pero no
+              // se confirmó contra tráfico real de Twilio.
               'twilio/call-to-action': {
                 body: '{{1}}',
                 actions: [{ type: 'URL', title: interactive.buttonText.slice(0, 20), url: '{{2}}' }],

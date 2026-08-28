@@ -24,9 +24,12 @@ interface GupshupCredentials {
  * interactivo INLINE en el mismo request, igual de simple que Meta: sin caché, sin BD, sin
  * llamada extra a una Content API.
  *
- * Spec verificado contra docs.gupshup.io (2026-08-14): `/reference/msg`, `/reference/quick-replies`
- * y `/reference/post_wa-api-v1-msg-1` (list). El shape del webhook entrante (`GupshupWebhookController`)
- * también sale de esas mismas páginas.
+ * Spec verificado contra docs.gupshup.io: `/reference/msg`, `/reference/quick-replies` y
+ * `/reference/post_wa-api-v1-msg-1` (list) el 2026-08-14; `/reference/cta-url` (botón de link,
+ * nodo `notification` modo link) el 2026-08-27 — la primera versión de ese tipo era una
+ * adivinanza (`quick_reply` con `options[].type: 'url'`, que no existe) y por eso el botón
+ * salía como uno de texto normal en vez de abrir el link. El shape del webhook entrante
+ * (`GupshupWebhookController`) también sale de esas mismas páginas.
  */
 @Injectable()
 export class GupshupWhatsAppService implements OnModuleInit {
@@ -147,19 +150,15 @@ export class GupshupWhatsAppService implements OnModuleInit {
       };
     }
     if (interactive.type === 'cta_url') {
-      // Botón de link en el formato quick_reply de Gupshup: mismo `type: 'quick_reply'`
-      // que uno de texto, pero con `type: 'url'` y `url` en vez de `postbackText` —
-      // sin confirmar contra tráfico real del sandbox, igual que el resto de este método.
+      // Mensaje propio de Gupshup para esto — NO es una variante de `quick_reply` (esa
+      // solo admite botones de texto/postback, ver arriba): `cta_url` es su propio
+      // `type`, verificado contra docs.gupshup.io/reference/cta-url. `display_text` es
+      // el label del botón; `body`/`url` van sueltos, no dentro de `content`.
       return {
-        type: 'quick_reply',
-        content: { type: 'text', text: body },
-        options: [
-          {
-            type: 'url',
-            title: interactive.buttonText.slice(0, 20),
-            url: interactive.url,
-          },
-        ],
+        type: 'cta_url',
+        body,
+        display_text: interactive.buttonText.slice(0, 20),
+        url: interactive.url,
       };
     }
     return {
