@@ -964,6 +964,17 @@
 - [x] Todos los endpoints del dashboard respetan el tenant activo del JWT
 
 ### Panel Admin (Next.js) ✅ COMPLETADO
+- [x] **Fix: 404 de prefetch en producción (export estático)** (reportado 2026-08-28)
+  - Bug conocido de Next.js 16 con `output: "export"` (vercel/next.js#85374): el build
+    escribe los payloads RSC del prefetch en carpetas anidadas
+    (`__next.dashboard/users/__PAGE__.txt`) pero el router del cliente los pide con el
+    nombre aplanado por puntos (`__next.dashboard.users.__PAGE__.txt`) — cada hover sobre
+    un `<Link>` tiraba un 404 en la consola. Solo ruido + prefetch deshabilitado de hecho;
+    la navegación real nunca se rompió (el router cae a navegación normal)
+  - `apps/web/scripts/fix-rsc-paths.js`, enganchado al `build` de package.json: después de
+    `next build`, COPIA cada archivo bajo un directorio `__next.*` a su alias plano
+    (copia, no renombra — si Next vuelve a pedir la forma anidada, ambas existen). Cuando
+    Next publique el fix oficial, el script deja de encontrar qué copiar y se borra
 - [x] Sistema de autenticación en frontend
   - `AuthContext` + `useAuth` hook con localStorage para JWT
   - Flujo completo: credenciales → OTP → fingerprint → dashboard
