@@ -603,6 +603,24 @@
     contexto de por qué esto no es automático hoy — no tiene relación con el proveedor,
     pero es el mismo síntoma: cambio de código en el repo que no llega al proceso vivo
     hasta reiniciarlo
+- [x] **`llm_query` en modo extracción: match de `allowedValues` demasiado estricto** (pedido 2026-08-27)
+  - Síntoma reportado: el nodo detecta que el usuario contestó (no vuelve a preguntar), pero
+    la variable no queda con el valor real — termina en `flowState[key] = 'no definido'`
+    (`LLM_QUERY_UNDEFINED_VALUE`, comportamiento intencional cuando de verdad no se pudo
+    resolver — ver el comentario de `interpolate()`, no se toca: sigue mostrando "no
+    definido" tal cual en el ticket cuando corresponde)
+  - Causa real: `extractLlmQueryValues` exigía que la respuesta del clasificador LLM
+    matcheara EXACTO (case-insensitive) contra alguno de `allowedValues`. Una diferencia
+    cosmética — tilde, punto final, "Alta prioridad" en vez de "Alta" — hacía que una
+    respuesta que el usuario SÍ dio se descartara a `NONE` igual, y con `maxAttempts`
+    default (2, sin tocar — bajarlo de intentos empeora la atención por WhatsApp) se
+    agotaba rápido y caía a "no definido" sin haber sido realmente indefinido
+  - Se agrega `normalizeForMatch()` (sin tildes, minúsculas, puntuación colapsada a
+    espacios): primero intenta igualdad normalizada, si no hay, contención en cualquier
+    sentido (agarra "alta" adentro de "alta prioridad" y viceversa). Sigue comparando
+    únicamente contra el catálogo cerrado de `allowedValues` — no reconoce sinónimos ni
+    inventa valores fuera de esa lista, solo tolera variación cosmética de la misma
+    respuesta
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
   - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
     `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el

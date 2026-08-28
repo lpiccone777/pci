@@ -2368,12 +2368,41 @@ export class ConversationsService implements OnModuleInit {
       }
       const spec = pending.find((v) => this.stripVariableBraces(v.variable) === key);
       if (spec?.allowedValues?.length) {
-        const matched = spec.allowedValues.find((v) => v.toLowerCase() === value.toLowerCase());
+        // Match normalizado en vez de exacto: el prompt le pide al modelo devolver el
+        // valor "calcado", pero en la práctica varía (tilde, mayúscula, punto final, o
+        // "Alta prioridad" en vez de "Alta") — con match exacto, una respuesta que el
+        // usuario SÍ dio terminaba descartada a NONE por una diferencia cosmética, no
+        // porque no se haya dicho. Primero intenta igualdad normalizada; si no hay,
+        // contención en cualquier sentido (agarra tanto "alta" dentro de "alta
+        // prioridad" como al revés).
+        const normalized = this.normalizeForMatch(value);
+        const matched =
+          spec.allowedValues.find((v) => this.normalizeForMatch(v) === normalized) ||
+          spec.allowedValues.find((v) => {
+            const nv = this.normalizeForMatch(v);
+            return nv.length > 0 && (normalized.includes(nv) || nv.includes(normalized));
+          });
         outcomes[key] = matched || 'NONE';
       }
     }
 
     return outcomes;
+  }
+
+  /**
+   * Normaliza para comparar valores de `llm_query.allowedValues` contra lo que devuelve
+   * el clasificador: sin tildes, minúsculas, puntuación colapsada a espacios. Pensado
+   * para tolerar variaciones cosméticas de la respuesta del modelo, no para reconocer
+   * sinónimos o texto libre — la comparación sigue siendo contra el catálogo cerrado de
+   * `allowedValues`, nunca contra un valor inventado.
+   */
+  private normalizeForMatch(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
   }
 
   /**
