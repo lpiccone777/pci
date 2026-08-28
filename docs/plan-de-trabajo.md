@@ -664,6 +664,25 @@
   - Verificado en vivo (multi-turno real por `/simulate`): descripción sin datos → el nodo
     pregunta → respuesta "Estoy en DM - Martinez, interno 1025" → avanza y crea el ticket
     en el mismo turno
+- [x] **`llm_query` en modo extracción: una sola salida, siempre por la arista — se eliminan los destinos manuales** (pedido 2026-08-28, cuarta y última capa)
+  - Con las tres capas anteriores arregladas, el flujo de test seguía mudo+reiniciando. La
+    causa final (visible recién con los WARN nuevos): el nodo tenía
+    `foundTargetNodeId`/`missingTargetNodeId` **tipeados a mano** en el editor con IDs que
+    no correspondían a ningún nodo real del flujo — y ese destino explícito le GANABA a la
+    arista correcta dibujada en el canvas. Al avanzar hacia un nodo inexistente, el motor
+    reseteaba la conversación en silencio ("flujo editado bajo los pies")
+  - Decisión de producto (pedido explícito): ambos resultados de la extracción (todas
+    resueltas / alguna en "no definido") salen por LA MISMA arista dibujada — ramificar por
+    "no definido" se hace con un nodo `condition` después. `executeLlmQueryExtraction` ya
+    no devuelve `nextNodeId`: ignora esos campos por completo
+  - Editor: se eliminan los dos campos de texto libre del panel (eran la fuente del ID
+    roto). Si un nodo viejo tiene destinos manuales guardados, el panel muestra un botón
+    rojo para limpiarlos de un click. Los campos quedan en el DTO solo para que los flujos
+    viejos pasen la validación al re-guardarse
+  - Defensas nuevas en el motor (quedan para siempre): WARN con nombre de flujo/nodo
+    cuando un destino devuelto no existe (antes: reset 100% silencioso, costó una tarde de
+    debugging), y fallback a la arista dibujada cuando el destino explícito de un nodo
+    está roto
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
   - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
     `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el

@@ -161,12 +161,18 @@ export class FlowNodeDataDto {
   @IsOptional()
   maxAttempts?: number;
 
-  /** Nodo `llm_query` en modo extracción: a dónde ir si se resolvieron todas las variables con un valor real. */
+  /**
+   * LEGACY, IGNORADO por el motor (2026-08-28): `llm_query` en modo extracción sale
+   * siempre por la arista dibujada, para ambos resultados (todas resueltas / alguna en
+   * "no definido") — ramificar se hace con un nodo `condition` después. Se mantiene en el
+   * DTO solo para que los flujos viejos que lo tengan guardado pasen la validación
+   * (`forbidNonWhitelisted`) al re-guardarse; el editor ya no lo muestra.
+   */
   @IsString()
   @IsOptional()
   foundTargetNodeId?: string;
 
-  /** Nodo `llm_query` en modo extracción: a dónde ir si alguna variable quedó en "no definido". */
+  /** LEGACY, IGNORADO por el motor — ver `foundTargetNodeId`. */
   @IsString()
   @IsOptional()
   missingTargetNodeId?: string;

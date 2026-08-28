@@ -541,7 +541,16 @@ export class ConversationsService implements OnModuleInit {
 
       const node = nodes.find((n) => n.id === nodeId);
       if (!node) {
-        // Nodo no encontrado (flujo editado bajo los pies): resetear.
+        // Nodo no encontrado (flujo editado bajo los pies, o un *TargetNodeId tipeado a
+        // mano que no corresponde a ningún nodo real): resetear. WARN explícito — este
+        // reset era completamente silencioso y del lado del usuario se ve como un turno
+        // mudo seguido del flujo arrancando de cero (2026-08-28: un foundTargetNodeId
+        // con un ID inexistente costó una tarde de debugging por este silencio).
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo destino '${nodeId}' no existe en el flujo — se resetea ` +
+            'la conversación. Si ese ID vino de foundTargetNodeId/missingTargetNodeId u otro ' +
+            'campo de destino, corregilo en el editor (o dejalo vacío para usar la arista dibujada).',
+        );
         await this.resetFlow(conversation.id);
         return this.toFlowResult(responses, interactive);
       }
@@ -611,7 +620,27 @@ export class ConversationsService implements OnModuleInit {
         return this.toFlowResult(responses, interactive);
       }
 
-      const nextNodeId = this.resolveNextNode(node, edges, result);
+      let nextNodeId = this.resolveNextNode(node, edges, result);
+
+      // Destino explícito roto (ej. un foundTargetNodeId tipeado a mano con un ID que no
+      // corresponde a ningún nodo del flujo): antes esto seguía de largo y caía en el
+      // reset silencioso del arranque del loop ("nodo no encontrado"), IGNORANDO la
+      // arista que sí estaba bien dibujada en el canvas — el ID manual le ganaba a la
+      // conexión real. Ahora, si el destino devuelto no existe, se reintenta la
+      // resolución sin él (cae a sourceHandle/primera arista, ver resolveNextNode) y se
+      // avisa por log. Solo aplica al destino que devuelve el nodo — un ID roto en una
+      // ARISTA (edge.target) sigue yendo al reset de arriba, ahí no hay fallback posible.
+      if (result.nextNodeId && nextNodeId === result.nextNodeId && !nodes.find((n) => n.id === nextNodeId)) {
+        const fallback = this.resolveNextNode(node, edges, { ...result, nextNodeId: undefined });
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo '${node.id}' devolvió el destino '${nextNodeId}', que no ` +
+            `existe en el flujo (¿ID tipeado a mano en el editor?). ` +
+            (fallback
+              ? `Se sigue por la arista dibujada hacia '${fallback}'.`
+              : 'No hay arista dibujada para caer — el flujo se cierra acá.'),
+        );
+        nextNodeId = fallback;
+      }
 
       // Un nodo que apunta a sí mismo no es un bucle a ejecutar: es "quedate acá
       // esperando el próximo mensaje". Sin esto daría MAX_FLOW_STEPS vueltas, y en
@@ -2343,10 +2372,15 @@ export class ConversationsService implements OnModuleInit {
 
     delete flowState.__awaiting;
     delete flowState.__llmQueryAttempts;
-    const allResolved = variables.every(
-      (v) => flowState[this.stripVariableBraces(v.variable)] !== LLM_QUERY_UNDEFINED_VALUE,
-    );
-    return { nextNodeId: allResolved ? data.foundTargetNodeId : data.missingTargetNodeId, flowState };
+    // Una sola salida, siempre por la arista dibujada en el canvas (pedido 2026-08-28):
+    // tanto "todas resueltas" como "alguna quedó en no definido" siguen el mismo camino —
+    // quien necesite ramificar por "no definido" pone un nodo `condition` después. Los
+    // campos foundTargetNodeId/missingTargetNodeId se IGNORAN a propósito (eran texto
+    // libre en el editor: un ID tipeado a mano con un typo mandaba el flujo a un nodo
+    // inexistente y el motor lo reseteaba en silencio — así se rompió el flujo de test
+    // que motivó todo esto). Siguen en el DTO solo para que los flujos viejos que los
+    // tengan guardados pasen la validación al re-guardarse.
+    return { flowState };
   }
 
   /**

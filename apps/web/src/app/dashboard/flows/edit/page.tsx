@@ -2019,30 +2019,24 @@ function NodeProperties({
                   definido" y seguir.
                 </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Nodo destino — todas encontradas
-                </label>
-                <input
-                  type="text"
-                  value={data.foundTargetNodeId || ''}
-                  onChange={(e) => onUpdate('foundTargetNodeId', e.target.value)}
-                  className="w-full border rounded p-2 text-sm font-mono"
-                  placeholder="ID nodo destino"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Nodo destino — alguna quedó "no definido"
-                </label>
-                <input
-                  type="text"
-                  value={data.missingTargetNodeId || ''}
-                  onChange={(e) => onUpdate('missingTargetNodeId', e.target.value)}
-                  className="w-full border rounded p-2 text-sm font-mono"
-                  placeholder="ID nodo destino"
-                />
-              </div>
+              {(data.foundTargetNodeId || data.missingTargetNodeId) && (
+                <button
+                  type="button"
+                  className="text-xs text-red-600 underline"
+                  onClick={() => {
+                    onUpdate('foundTargetNodeId', '');
+                    onUpdate('missingTargetNodeId', '');
+                  }}
+                >
+                  ⚠️ Este nodo tiene destinos manuales guardados de una versión anterior — tocá acá
+                  para limpiarlos y que siga siempre la arista dibujada.
+                </button>
+              )}
+              <p className="text-xs text-gray-400">
+                Al terminar (todas las variables con valor, o alguna en "no definido" tras agotar
+                los intentos), el flujo sigue por la arista dibujada en el canvas — misma salida
+                para ambos casos. Para ramificar por "no definido", usá un nodo Condición después.
+              </p>
             </>
           )}
         </>
