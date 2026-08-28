@@ -1691,10 +1691,22 @@ function NodeProperties({
               </p>
             </div>
           ) : (
-            <p className="text-xs text-gray-500">
-              Al tocarlo, continúa el flujo por la única salida del nodo. Si la persona escribe
-              otra cosa (agrega lo pedido, hace una consulta), la toma el LLM.
-            </p>
+            <>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!data.expectsPhoto}
+                  onChange={(e) => onUpdate('expectsPhoto', e.target.checked)}
+                />
+                Espera una foto
+              </label>
+              <p className="text-xs text-gray-500">
+                Al tocar el botón, continúa el flujo por la única salida del nodo. Si tildaste
+                "Espera una foto", mandar una imagen también avanza (ej. "Agregue sus fotos" /
+                "Sin foto": cualquiera de las dos opciones sigue el flujo). Si la persona escribe
+                otra cosa (o manda una imagen sin tener el tilde prendido), la toma el LLM.
+              </p>
+            </>
           )}
         </>
       )}

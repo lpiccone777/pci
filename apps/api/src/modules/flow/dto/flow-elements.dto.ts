@@ -92,6 +92,16 @@ export class FlowNodeDataDto {
   @IsOptional()
   buttonUrl?: string;
 
+  /**
+   * Nodo `notification` en modo `confirm`: si está en `true`, mandar una imagen cuenta
+   * como disparador para seguir el flujo, igual que tocar el botón (ej. "Agregue sus
+   * fotos" / "Sin foto" — cualquiera de las dos opciones avanza). Sin esto, solo el
+   * click del botón avanza; una imagen (o cualquier otro mensaje) cae al LLM.
+   */
+  @IsBoolean()
+  @IsOptional()
+  expectsPhoto?: boolean;
+
   @IsString()
   @IsOptional()
   subject?: string;

@@ -1799,12 +1799,17 @@ export class ConversationsService implements OnModuleInit {
         }
 
         const pressedButton = () => body.trim() === buttonLabel || body.trim() === '1';
-        // Mandó lo que se le pedía (ej. "Agregue sus fotos"): también avanza el flujo,
-        // igual que tocar el botón — no tiene sentido derivar al LLM a alguien que ya hizo
-        // lo que el nodo le pidió. `pendingAttachments` ya lo actualizó `handleMessage`
-        // (paso 2.5) antes de llegar acá, con los adjuntos de este mismo mensaje.
+        // "Espera foto" (data.expectsPhoto, tildable en el editor): si está prendido,
+        // mandar una imagen también avanza el flujo, igual que tocar el botón — no tiene
+        // sentido derivar al LLM a alguien que ya hizo lo que el nodo le pidió (ej.
+        // "Agregue sus fotos"). Sin el tilde, el nodo no espera nada en particular más
+        // que el botón, y una imagen cae al LLM como cualquier otro mensaje que no matchea.
+        // `pendingAttachments` ya lo actualizó `handleMessage` (paso 2.5) antes de llegar
+        // acá, con los adjuntos de este mismo mensaje.
         const sentImage = () =>
-          Array.isArray(flowState.pendingAttachments) && flowState.pendingAttachments.length > 0;
+          !!data.expectsPhoto &&
+          Array.isArray(flowState.pendingAttachments) &&
+          flowState.pendingAttachments.length > 0;
 
         // Ya se derivó a conversación libre (el mensaje anterior no era el botón ni
         // encajaba): sigue atendiendo con el LLM hasta que el usuario toque el botón o

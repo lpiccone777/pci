@@ -402,6 +402,9 @@ export const NotificationNode = memo(({ id, data }: any) => {
       {isLink && data?.buttonUrl && (
         <div className="mt-1 text-xs text-gray-500 line-clamp-1">{data.buttonUrl}</div>
       )}
+      {!isLink && data?.expectsPhoto && (
+        <div className="mt-1 text-xs text-gray-500">📷 una foto también avanza</div>
+      )}
     </BaseNode>
   );
 });

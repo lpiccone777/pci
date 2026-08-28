@@ -589,6 +589,20 @@
     se decide si avanzar o derivar al LLM: la primera respuesta después de mostrar el
     botón, y mientras ya está en `__llmFallback` (por si el usuario primero preguntó algo y
     después mandó la foto)
+  - **Ajuste (mismo día, tras probarlo en vivo)**: `sentImage()` era incondicional para
+    TODO nodo `notification` en modo `confirm` — el pedido real era que fuera opcional,
+    no un comportamiento implícito para cualquier notificación con botón. Se agrega el
+    campo `data.expectsPhoto` (checkbox "Espera una foto" en el panel del editor, solo
+    visible en modo `confirm`) — `sentImage()` ahora exige `data.expectsPhoto === true`
+    además de `pendingAttachments`. Sin el tilde, el nodo vuelve al comportamiento
+    original: solo el botón avanza, cualquier otra cosa (imagen incluida) cae al LLM
+  - ⚠️ Si el backend no se reinicia después de este tipo de cambio de código, sigue
+    corriendo la versión vieja — un motivo real por el que el primer intento (sin el
+    tilde) pudo no notarse probándolo en caliente contra un proceso que no había
+    recargado. Ver "Cambio de proveedor de mensajería en caliente" (más abajo) para el
+    contexto de por qué esto no es automático hoy — no tiene relación con el proveedor,
+    pero es el mismo síntoma: cambio de código en el repo que no llega al proceso vivo
+    hasta reiniciarlo
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
   - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
     `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el
