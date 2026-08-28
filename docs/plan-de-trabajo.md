@@ -575,8 +575,20 @@
   - `userRole` ya lo seteaba siempre el nodo `start` desde el fix del 2026-08-04 (ver
     arriba, "El nodo `start` nunca detectaba un número desconocido") — no hizo falta tocar
     nada ahí, el pedido de "que el flujo de inicio la traiga siempre" ya estaba resuelto
-
-### Conector real de WhatsApp y Email ✅ COMPLETADO (pedido 2026-08-05)
+- [x] **Nodo `notification`: mandar una imagen también avanza el flujo** (pedido 2026-08-27)
+  - El nodo (texto + un botón, ej. "Agregue sus fotos" / "Sin foto") solo reconocía como
+    "hizo lo pedido" que el usuario tocara el botón (`pressedButton()`, matchea el label o
+    "1"). Si en cambio mandaba las fotos que el texto le pedía, `pressedButton()` daba
+    falso y el mensaje cae al LLM (`orchestratorLlm`) en vez de seguir la única arista de
+    salida del nodo — quedaba atendido por el LLM en lugar de avanzar
+  - Se agrega `sentImage()`: chequea `flowState.pendingAttachments.length > 0`, ya
+    actualizado por `handleMessage` (paso 2.5, adjuntos de whatsapp vía Twilio) ANTES de
+    llegar a `executeNode` — no hace falta pasar los adjuntos del turno actual por ningún
+    parámetro nuevo, ya estaban ahí
+  - `pressedButton() || sentImage()` reemplaza el chequeo original en los dos puntos donde
+    se decide si avanzar o derivar al LLM: la primera respuesta después de mostrar el
+    botón, y mientras ya está en `__llmFallback` (por si el usuario primero preguntó algo y
+    después mandó la foto)
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
   - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
     `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el

@@ -1799,11 +1799,18 @@ export class ConversationsService implements OnModuleInit {
         }
 
         const pressedButton = () => body.trim() === buttonLabel || body.trim() === '1';
+        // Mandó lo que se le pedía (ej. "Agregue sus fotos"): también avanza el flujo,
+        // igual que tocar el botón — no tiene sentido derivar al LLM a alguien que ya hizo
+        // lo que el nodo le pidió. `pendingAttachments` ya lo actualizó `handleMessage`
+        // (paso 2.5) antes de llegar acá, con los adjuntos de este mismo mensaje.
+        const sentImage = () =>
+          Array.isArray(flowState.pendingAttachments) && flowState.pendingAttachments.length > 0;
 
         // Ya se derivó a conversación libre (el mensaje anterior no era el botón ni
-        // encajaba): sigue atendiendo con el LLM hasta que el usuario toque el botón.
+        // encajaba): sigue atendiendo con el LLM hasta que el usuario toque el botón o
+        // mande una imagen.
         if (flowState.__llmFallback === node.id) {
-          if (pressedButton()) {
+          if (pressedButton() || sentImage()) {
             delete flowState.__llmFallback;
             return { flowState };
           }
@@ -1824,13 +1831,12 @@ export class ConversationsService implements OnModuleInit {
         }
 
         delete flowState.__awaiting;
-        if (pressedButton()) {
+        if (pressedButton() || sentImage()) {
           return { flowState };
         }
 
-        // No tocó el botón: puede estar agregando lo que se le pidió (ej. mandó las
-        // fotos) o haciendo una consulta. Se lo pasa al LLM en vez de insistir con el
-        // botón.
+        // No tocó el botón ni mandó una imagen: puede estar preguntando algo. Se lo
+        // pasa al LLM en vez de insistir con el botón.
         flowState.__llmFallback = node.id;
         const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
         return { responseText: fallbackResponse, waitForInput: true, flowState };
