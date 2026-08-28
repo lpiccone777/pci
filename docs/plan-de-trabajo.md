@@ -811,6 +811,35 @@
   - Mientras tanto sigue funcionando Twilio para SMS (`SMS_PROVIDER` default `'twilio'`) — ya
     probado y con número/cuenta cargados en `/settings`
 
+### Cambio de proveedor de mensajería en caliente ⏳ PENDIENTE — análisis hecho, sin implementar (pedido 2026-08-27)
+- [ ] Hoy `WHATSAPP_PROVIDER`/`SMS_PROVIDER` se leen en vivo contra la BD (`AppConfigService.get()`
+      no cachea), pero cambiar el valor en `/settings` no tiene efecto hasta reiniciar el backend
+  - Causa real: no es el valor del setting, es **quién queda escuchando la cola**. Los 5
+    conectores salientes (`WhatsAppService`/Meta, `TwilioWhatsAppService`,
+    `GupshupWhatsAppService`, `TwilioSmsService`, `GupshupSmsService`) deciden una sola vez, en
+    `onModuleInit()`, si se suscriben a `whatsapp.outgoing`/`sms.outgoing` — el proceso ya
+    arrancó y ya decidió quién escucha, cambiar el setting no reevalúa nada
+  - **No alcanza con "que los 3 escuchen y filtren"**: RabbitMQ reparte cada mensaje de una
+    cola a un solo consumer entre los suscriptos (competing consumers). Si los 3 conectores de
+    WhatsApp se suscribieran siempre a la vez, cada mensaje le tocaría a uno al azar (~33% cada
+    uno), no al que dice el setting
+  - **Solución (arquitectura, no un flag)**: un único dispatcher por canal (WhatsApp y SMS) que
+    se suscribe SIEMPRE a la cola de salida, lee el proveedor activo en el momento de procesar
+    cada mensaje (no al arrancar), y llama directo al `sendText()` del servicio correspondiente
+    — reemplaza "me suscribo si soy yo" por "decido a quién le paso el mensaje, mensaje por
+    mensaje". A los 5 servicios se les saca el `onModuleInit`/`OnModuleInit`: quedan como
+    clases inyectables normales, su lógica de envío no se toca
+  - El lado ENTRANTE (webhooks) ya funciona "en caliente" — los 3 webhooks de WhatsApp están
+    siempre montados, el proveedor solo importa para el saliente. Nada que tocar ahí
+  - Riesgo/complejidad: bajo, wiring localizado, no toca la lógica de negocio de ningún
+    conector. `BrokerService` ya re-suscribe handlers guardados al reconectar, sigue andando
+    igual con un solo handler por cola en vez de hasta 3
+  - Estimación: 1-2 horas de código (2 clases dispatcher nuevas + 5 borrados de `onModuleInit`
+    + wiring de `WhatsAppModule`/`SmsModule`), más el tiempo de verificación en vivo (cambiar
+    el setting con el backend corriendo y confirmar que el próximo mensaje ya sale por el
+    proveedor nuevo sin reiniciar)
+  - Se decidió postergar la implementación — el cliente lo va a pedir cuando llegue el momento
+
 ---
 
 ## Hito 3 - Multitenant y Menús ⏳ PENDIENTE
