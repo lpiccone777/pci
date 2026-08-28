@@ -229,7 +229,24 @@ export class ConversationsService implements OnModuleInit {
         this.logger.error(
           `No se pudo resolver la empresa para ${from} (${channel}): ${err instanceof Error ? err.message : err}`,
         );
-        return '';
+        // Falló la resolución de empresa (p. ej. un choque transitorio al registrar la selección
+        // pendiente). En vez de descartar el mensaje en silencio, se avisa al usuario para que
+        // reintente. Mismo patrón de publicación que el path del selector: por RPC (/simulate, con
+        // `replyTo`) se responde por esa cola para no dejar al llamador colgado hasta el timeout;
+        // por canal real, al `${channel}.outgoing`, para que el usuario reciba el aviso.
+        const notice =
+          'Tuvimos un problema para procesar tu mensaje. Por favor, probá de nuevo en unos instantes.';
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: notice },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        return notice;
       }
       if (routing.status === 'ask') {
         // Todavía no hay empresa (ni conversación): se le pregunta y se corta. La respuesta del

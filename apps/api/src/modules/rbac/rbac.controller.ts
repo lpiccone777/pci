@@ -89,14 +89,22 @@ export class RbacController {
    * esto un rol con `users:create` pero sin `roles:read` dejaba el desplegable de rol vacío
    * y el alta trabada (FE-USR-16). Es lectura de la lista de roles, dependencia natural de
    * la gestión de usuarios — no habilita administrar roles.
+   *
+   * El detalle de permisos de cada rol solo viaja para quien administra roles (`roles:read`)
+   * o el superusuario del sistema. Al que entra solo por `users:create` se le devuelve id y
+   * nombre: lo que el desplegable de asignación necesita, sin exponerle la matriz de permisos
+   * de cada rol de la empresa. `req.userTenant` lo dejó resuelto `TenantGuard`.
    */
   @Get()
   @RequireAnyPermission(
     { resource: 'roles', action: 'read' },
     { resource: 'users', action: 'create' },
   )
-  async findAll(@CurrentTenant() tenantId: string) {
-    return this.roleService.findAll(tenantId);
+  async findAll(@CurrentTenant() tenantId: string, @Req() req: any) {
+    const includePermissions = await this.roleService.callerCanReadRoles(
+      req.userTenant.roleId,
+    );
+    return this.roleService.findAll(tenantId, { includePermissions });
   }
 
   @Get(':id')

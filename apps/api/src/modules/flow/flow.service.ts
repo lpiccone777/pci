@@ -136,7 +136,10 @@ export class FlowService {
     if (!targetTenantIds.length) return;
     const memberships = userId
       ? await this.prisma.userTenant.findMany({
-          where: { userId, tenantId: { in: targetTenantIds } },
+          // Una empresa dada de baja no cuenta como destino válido: la membresía (`UserTenant`)
+          // sobrevive a la baja lógica, así que sin este filtro se podría asignar el flujo a una
+          // empresa muerta con un request armado a mano. Mismo criterio que `resolveReadableTenantIds`.
+          where: { userId, tenantId: { in: targetTenantIds }, tenant: { deletedAt: null } },
           select: { tenantId: true },
         })
       : [];
@@ -175,7 +178,9 @@ export class FlowService {
     ];
     if (claimedTenantIds.length && userId) {
       const memberships = await this.prisma.userTenant.findMany({
-        where: { userId, tenantId: { in: claimedTenantIds } },
+        // Mismo criterio que `assertAssignableTenants`: una empresa dada de baja no habilita sus
+        // recursos para el saneo cross-tenant, aunque la membresía siga existiendo.
+        where: { userId, tenantId: { in: claimedTenantIds }, tenant: { deletedAt: null } },
         select: { tenantId: true },
       });
       for (const m of memberships) ids.add(m.tenantId);

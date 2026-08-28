@@ -126,29 +126,27 @@ export class InboundTenantRoutingService {
     const optionsJson = options as unknown as Prisma.InputJsonValue;
     const attachmentsJson = attachments as unknown as Prisma.InputJsonValue;
     const expiresAt = new Date(Date.now() + SELECTION_TTL_MS);
-    // Se crea el pendiente dentro de una transacción serializable para que dos mensajes casi
-    // simultáneos de un teléfono nuevo no se pisen el pendiente: el segundo ve el que dejó el
-    // primero (re-lectura dentro de la tx) y no lo sobreescribe a ciegas. El `upsert` suelto
-    // que había antes era atómico por la unique key, pero igual podía pisar originalBody/options.
-    await this.prisma.$transaction(
-      async (tx) => {
-        const existing = await tx.pendingTenantSelection.findUnique({
-          where: { phone_channel: { phone: from, channel } },
-        });
-        if (existing) return;
-        await tx.pendingTenantSelection.create({
-          data: {
-            phone: from,
-            channel,
-            originalBody: body,
-            originalAttachments: attachmentsJson,
-            options: optionsJson,
-            expiresAt,
-          },
-        });
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
+    // Alta idempotente del pendiente. Si dos mensajes casi simultáneos de un teléfono nuevo
+    // llegan a la vez, el segundo NO debe pisar el pendiente del primero (que guarda su
+    // `originalBody`/`options`). `skipDuplicates` resuelve el choque contra la unique
+    // `[phone, channel]` salteando la fila duplicada, sin lanzar: gana el primero y su mensaje
+    // original se conserva. Antes esto era una transacción Serializable que, ante ese mismo
+    // choque, tiraba (serialization_failure / unique_violation) sin reintentar, y la excepción
+    // subía hasta `handleMessage` y descartaba el mensaje. `skipDuplicates` logra el mismo
+    // objetivo (no clobber) sin esa arista.
+    await this.prisma.pendingTenantSelection.createMany({
+      data: [
+        {
+          phone: from,
+          channel,
+          originalBody: body,
+          originalAttachments: attachmentsJson,
+          options: optionsJson,
+          expiresAt,
+        },
+      ],
+      skipDuplicates: true,
+    });
     this.logger.log(`[selector] ${from} (${channel}) pertenece a ${options.length} empresas: se pregunta.`);
     return this.buildAsk(channel, options, false);
   }
