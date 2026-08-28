@@ -643,6 +643,21 @@ export class ConversationsService implements OnModuleInit {
         return this.toFlowResult(responses, interactive);
       }
 
+      // `llm_query` en modo extracción que resolvió sus variables pero no tiene A DÓNDE
+      // ir: es un problema de armado del flujo (falta la arista de salida en el editor,
+      // o `foundTargetNodeId`/`missingTargetNodeId`), no del motor — el flujo va a
+      // cerrar unos pasos más abajo como cualquier nodo sin salida. Se loguea fuerte
+      // porque del lado del usuario esto se ve como un "turno silencioso" seguido de un
+      // reinicio del flujo, y sin este WARN es indistinguible de un bug del motor
+      // (2026-08-28: costó una tarde entera de debugging llegar hasta acá).
+      if (!nextNodeId && node.type === 'llm_query' && node.data?.extractVariables?.length) {
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo llm_query '${node.id}' resolvió sus variables pero no ` +
+            'tiene arista de salida ni foundTargetNodeId/missingTargetNodeId — no hay a ' +
+            'dónde avanzar, el flujo se cierra acá. Conectá la salida del nodo en el editor.',
+        );
+      }
+
       nodeId = nextNodeId;
     }
 
