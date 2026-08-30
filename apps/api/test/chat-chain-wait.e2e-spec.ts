@@ -68,7 +68,7 @@ describe('2.4 Encadenamiento y tope de pasos (CHAT-CHAIN-*) / 2.5 Espera en dos 
   let tenant: { id: string };
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   /** Rol + usuario CONOCIDO (membresía real) propios de un caso, para no chocar con otros. */

@@ -128,7 +128,7 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
   }
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   /** `broker.request` directo contra SIMULATE_QUEUE, saltando el timeout fijo de 300s del

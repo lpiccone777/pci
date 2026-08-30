@@ -95,7 +95,7 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
   let tenant: { id: string };
 
   function simulate(from: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId: tenant.id });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId: tenant.id });
   }
 
   /** Crea (rol + usuario conocido + flujo de inicio) para un escenario aislado del resto. */

@@ -202,7 +202,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
       });
 
       const res = await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: userDeB.phone, body: 'Hola, tengo una consulta sobre mi cuenta', tenantId: tenantB.id });
 
       expect(res.status).toBe(201); // @Post() default
@@ -284,7 +284,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
       });
 
       const res = await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: user.phone, body: 'Hola, necesito información', tenantId: tenant.id });
 
       expect(res.status).toBe(201);

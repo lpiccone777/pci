@@ -77,7 +77,7 @@ describe('1.18 Módulos e integraciones pendientes — placeholders (BE-PH-*)', 
       assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
     });
 
-    const res = await http(t).post('/conversations/simulate').send({ from: phone, body: 'hola', tenantId: tenant.id });
+    const res = await http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from: phone, body: 'hola', tenantId: tenant.id });
 
     // `@Post()` sin `@HttpCode` → 201 (default de Nest).
     expect(res.status).toBe(201);

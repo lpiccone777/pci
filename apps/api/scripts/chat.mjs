@@ -26,6 +26,10 @@ function arg(name, fallback) {
 
 const API = arg('api', process.env.API_URL || 'http://localhost:3001');
 const FROM = arg('from', '+5491100000001');
+// /conversations/simulate ahora exige JwtAuthGuard (era el hueco BE-SEC-01). El script firma
+// un token él mismo con el JWT_SECRET local (mismo truco que `tokenFor` en los e2e) para el
+// admin del seed — o usá `--token <jwt>` / API_TOKEN si apuntás a una API que no es la local.
+let TOKEN = arg('token', process.env.API_TOKEN || '');
 // Con --route no se manda tenant: el mensaje pasa por el ruteo por membresía del teléfono,
 // igual que un canal real (incluido el selector de empresa para números multitenant). La flag
 // tiene prioridad sobre TENANT_ID del entorno: si no, esa variable dejaría --route en no-op.
@@ -61,10 +65,46 @@ async function resolveTenant() {
   }
 }
 
+/** JWT_SECRET del entorno o del .env de apps/api (el script no pasa por Nest, que sí lo carga). */
+async function readJwtSecret() {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const env = await readFile(new URL('../.env', import.meta.url), 'utf8');
+    const line = env.split('\n').find((l) => l.trim().startsWith('JWT_SECRET='));
+    return line?.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Sin --token/API_TOKEN: firma un JWT del admin del seed, igual que `tokenFor` en los e2e. */
+async function resolveToken() {
+  if (TOKEN) return;
+  try {
+    const secret = await readJwtSecret();
+    if (!secret) throw new Error('no encontré JWT_SECRET (ni en el entorno ni en apps/api/.env)');
+    const { PrismaClient } = await import('@prisma/client');
+    const prisma = new PrismaClient();
+    const admin =
+      (await prisma.user.findUnique({ where: { email: 'admin@pci.local' } })) ??
+      (await prisma.user.findFirst({ orderBy: { createdAt: 'asc' } }));
+    await prisma.$disconnect();
+    if (!admin) throw new Error('no hay usuarios en la base para firmar el token');
+    const { JwtService } = await import('@nestjs/jwt');
+    TOKEN = new JwtService({ secret }).sign({ sub: admin.id, email: admin.email }, { expiresIn: '12h' });
+    console.log(c.dim(`auth: token firmado localmente como ${admin.email}`));
+  } catch (err) {
+    console.error(c.err(`No pude armar el token para /simulate: ${err.message}`));
+    console.error(c.dim('Pasalo a mano:  pnpm --filter api chat -- --token <jwt>  (o API_TOKEN en el entorno)'));
+    process.exit(1);
+  }
+}
+
 async function send(body) {
   const res = await fetch(`${API}/conversations/simulate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
     body: JSON.stringify(tenantId ? { from: FROM, body, tenantId } : { from: FROM, body }),
   });
 
@@ -106,6 +146,7 @@ async function reset() {
 }
 
 await resolveTenant();
+await resolveToken();
 
 console.log(c.dim(`\nChat de prueba · ${API} · como ${FROM}`));
 console.log(c.dim('Comandos: /reset  /estado  /salir\n'));

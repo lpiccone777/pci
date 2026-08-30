@@ -121,7 +121,10 @@ export default function ContextSourcesPage() {
           ? '/skills/all'
           : '/skills/mine';
       const [typesData, sourcesData, skillsData] = await Promise.all([
-        apiFetch('/context-sources/types'),
+        // `/types` va autorizado contra el tenant del header (en "Todas mis empresas", el de
+        // respaldo = primera membresía): un 403 ahí no debe blanquear la página entera cuando
+        // el listado sí trajo datos — sin tipos solo se degrada el formulario de alta.
+        apiFetch('/context-sources/types').catch(() => []),
         apiFetch(sourcesEndpoint),
         apiFetch(skillsEndpoint).catch(() => []), // sin permiso `skills:read`: pestaña vacía, no rompe la principal
       ]);

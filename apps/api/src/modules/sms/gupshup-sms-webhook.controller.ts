@@ -28,7 +28,12 @@ export class GupshupSmsWebhookController {
 
     // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
     // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
-    const from = (params.phno ?? params.mobile ?? params.from ?? params.sender ?? '').trim();
+    const rawFrom = (params.phno ?? params.mobile ?? params.from ?? params.sender ?? '').trim();
+    // Gupshup manda el número SIN '+' inicial, pero `User.phone` se guarda en +E.164 y ahora es
+    // la clave del ruteo por membresía: sin normalizar, ningún usuario registrado matcheaba y
+    // todos caían al tenant de los desconocidos (mismo compensado que hace el webhook de
+    // Gupshup WhatsApp con `+${from}`).
+    const from = rawFrom && !rawFrom.startsWith('+') ? `+${rawFrom}` : rawFrom;
     const text = (params.text ?? params.msg ?? params.message ?? '').trim();
 
     if (!from || !text) {

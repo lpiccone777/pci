@@ -248,6 +248,42 @@ export class ConversationsService implements OnModuleInit {
         );
         return notice;
       }
+      if (routing.status === 'ignored') {
+        // No hay empresa que pueda atender (sin membresía y sin tenant configurado ni de
+        // sistema): silencio hacia el usuario — un saliente de error acá sería un mensaje
+        // pago POR CADA entrante. El motivo ya quedó logueado por el propio routing. Por RPC
+        // (/simulate) sí se responde, para no dejar al llamador colgado hasta el timeout.
+        if (msg.replyTo) {
+          const notice = 'No hay ninguna empresa configurada para atender este mensaje.';
+          await this.broker.publish(
+            msg.replyTo,
+            {
+              pattern: 'message.send',
+              data: { to: from, body: notice },
+              timestamp: new Date().toISOString(),
+              correlationId: msg.correlationId,
+            },
+            { assert: false },
+          );
+          return notice;
+        }
+        return '';
+      }
+      if (routing.status === 'notice') {
+        // Aviso por cambio administrativo (empresa dada de baja, membresía revocada a mitad
+        // de charla): se informa y se corta — el próximo mensaje re-rutea de cero.
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: routing.body },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        return routing.body;
+      }
       if (routing.status === 'ask') {
         // Todavía no hay empresa (ni conversación): se le pregunta y se corta. La respuesta del
         // usuario entrará como un mensaje nuevo y la matcheará el propio InboundTenantRoutingService.

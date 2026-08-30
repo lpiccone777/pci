@@ -18,6 +18,8 @@ import {
   uniqueSlug,
   uniqueEmail,
   uniquePhone,
+  setSetting,
+  deleteSetting,
 } from './support';
 import { InboundTenantRoutingService } from '../src/modules/conversations/inbound-tenant-routing.service';
 
@@ -145,5 +147,73 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
 
     expect(res).toEqual({ status: 'resolved', tenantId: tenantB.id });
     expect(await pendingOf(phone)).toBeNull();
+  });
+
+  it('BE-ITR-07: teléfono SIN empresa con WHATSAPP_TENANT_ID configurado → resuelve a ese tenant, no al de sistema', async () => {
+    const guestTenant = await createTenant(t.prisma, { slug: uniqueSlug('itr-guest'), name: 'Empresa Invitados' });
+    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', guestTenant.id);
+    try {
+      const res = await routing.resolve(uniquePhone(), 'whatsapp', 'hola');
+      expect(res).toEqual({ status: 'resolved', tenantId: guestTenant.id });
+    } finally {
+      await deleteSetting(t.prisma, 'WHATSAPP_TENANT_ID');
+    }
+  });
+
+  it('BE-ITR-08: responde al selector con el NOMBRE de la empresa (título del botón de Twilio) → resuelve igual que con el número', async () => {
+    const phone = uniquePhone();
+    await member(phone, [
+      { tenantId: tenantA.id, roleId: roleA.id },
+      { tenantId: tenantB.id, roleId: roleB.id },
+    ]);
+    await routing.resolve(phone, 'whatsapp', 'necesito ayuda');
+
+    const res = await routing.resolve(phone, 'whatsapp', 'empresa b'); // case-insensitive
+
+    expect(res).toEqual({
+      status: 'resolved',
+      tenantId: tenantB.id,
+      replayBody: 'necesito ayuda',
+      replayAttachments: [],
+    });
+  });
+
+  it('BE-ITR-09: la empresa elegida en el selector fue dada de baja en el medio → notice (aviso), pendiente borrado, sin descartar en silencio', async () => {
+    const doomed = await createTenant(t.prisma, { slug: uniqueSlug('itr-baja'), name: 'Empresa Por Cerrar' });
+    const roleDoomed = await createRole(t.prisma, { tenantId: doomed.id, name: 'ITR-BAJA' });
+    const phone = uniquePhone();
+    await member(phone, [
+      { tenantId: tenantA.id, roleId: roleA.id },
+      { tenantId: doomed.id, roleId: roleDoomed.id },
+    ]);
+    await routing.resolve(phone, 'whatsapp', 'hola');
+    await t.prisma.tenant.update({ where: { id: doomed.id }, data: { deletedAt: new Date() } });
+
+    const res = await routing.resolve(phone, 'whatsapp', '2'); // 2 = la empresa recién dada de baja
+
+    expect(res.status).toBe('notice');
+    if (res.status === 'notice') expect(res.body).toContain('ya no está disponible');
+    expect(await pendingOf(phone)).toBeNull();
+  });
+
+  it('BE-ITR-10: conversación ACTIVA en una empresa que un cambio de membresía dejó fuera del ruteo → se cierra y se avisa (notice), no se abandona en silencio', async () => {
+    const revoked = await createTenant(t.prisma, { slug: uniqueSlug('itr-rev'), name: 'Empresa Revocada' });
+    const roleRevoked = await createRole(t.prisma, { tenantId: revoked.id, name: 'ITR-REV' });
+    const phone = uniquePhone();
+    const user = await member(phone, [
+      { tenantId: revoked.id, roleId: roleRevoked.id },
+      { tenantId: tenantA.id, roleId: roleA.id },
+    ]);
+    const conv = await t.prisma.conversation.create({
+      data: { userId: user.id, tenantId: revoked.id, channel: 'whatsapp', status: 'active', externalId: phone },
+    });
+    await t.prisma.userTenant.deleteMany({ where: { userId: user.id, tenantId: revoked.id } });
+
+    const res = await routing.resolve(phone, 'whatsapp', 'sigo con lo mío');
+
+    expect(res.status).toBe('notice');
+    if (res.status === 'notice') expect(res.body).toContain('cambio administrativo');
+    const closed = await t.prisma.conversation.findUnique({ where: { id: conv.id } });
+    expect(closed!.status).toBe('closed');
   });
 });

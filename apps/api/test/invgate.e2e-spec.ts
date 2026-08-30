@@ -326,7 +326,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Necesito ayuda con la impresora del piso 3', tenantId: tenant.id });
 
     // @Post() sin @HttpCode devuelve 201 (default de Nest).
@@ -391,7 +391,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     });
 
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: '¿Cómo va mi ticket?', tenantId: tenant.id });
 
     expect(res.status).toBe(201);
@@ -449,7 +449,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Necesito una impresora nueva para mi oficina', tenantId: tenant.id });
     expect(res.status).toBe(201);
 
@@ -484,7 +484,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Tengo un problema variado', tenantId: tenant.id });
     expect(res.status).toBe(201);
 
@@ -512,7 +512,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Tengo una consulta general sobre mi cuenta', tenantId: tenant.id });
     expect(res.status).toBe(201);
 
@@ -546,7 +546,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: phone, body: 'Tengo otra consulta sobre el sistema', tenantId: tenant.id });
     expect(res.status).toBe(201);
 
@@ -579,7 +579,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
       const before = requests.length;
       await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: user.phone, body: 'Tengo una consulta sobre mi equipo', tenantId: tenant.id });
 
       const postCall = requests.slice(before).find((r) => r.url.endsWith('/api/v1/incident') && r.init?.method === 'POST');
@@ -619,7 +619,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     state.failCreateIncident = true;
     try {
       const res = await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: user.phone, body: 'El sistema no arranca esta mañana', tenantId: tenant.id });
 
       // Best-effort: la charla sigue con normalidad, sin 500 ni timeout expuesto al usuario.
@@ -802,7 +802,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     state.weirdCreateBody = true;
     try {
       const res = await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: user.phone, body: 'Necesito abrir un ticket nuevo', tenantId: tenant.id });
 
       // `createIncident` tira ("InvGate no devolvió un id de incidente creado…"),
@@ -859,7 +859,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Adjunto la foto del problema', tenantId: tenant.id });
     expect(res.status).toBe(201);
 
@@ -914,7 +914,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Te mando la imagen', tenantId: tenant.id });
 
     // La charla sigue con normalidad.
@@ -954,7 +954,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const before = requests.length;
     const res = await http(t)
-      .post('/conversations/simulate')
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
       .send({ from: user.phone, body: 'Quiero reportar un problema', tenantId: tenant.id });
     expect(res.status).toBe(201);
 

@@ -5,6 +5,10 @@ import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.
 interface TwilioIncomingPayload {
   From?: string;
   Body?: string;
+  /** Tap de un quick-reply (Content API): id de la opción — `Body` trae solo el TÍTULO visible. */
+  ButtonPayload?: string;
+  /** Tap de una fila de list-picker (Content API): id de la fila elegida. */
+  ListId?: string;
   NumMedia?: string;
   /** `MediaUrl0`..`MediaUrl9`/`MediaContentType0`..`MediaContentType9` — accedidos por índice, ver `extractMedia`. */
   [key: string]: string | undefined;
@@ -42,7 +46,11 @@ export class TwilioWebhookController {
     // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
     // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
     const from = this.extractFrom(payload.From);
-    const body = (payload.Body ?? '').trim();
+    // Para una respuesta de botón/lista se publica el ID de la opción (`ButtonPayload`/`ListId`),
+    // no el título visible que Twilio pone en `Body` — mismo criterio que Meta y Gupshup
+    // (`extractBody` devuelve `reply.id`/`postbackText`): así el nodo `menu` y el selector de
+    // empresa matchean por id sin depender del texto truncado del botón.
+    const body = (payload.ButtonPayload ?? payload.ListId ?? payload.Body ?? '').trim();
     const attachments = await this.extractMedia(payload);
 
     // Solo se descarta si no hay ni texto ni adjuntos — un mensaje solo-imagen (sin

@@ -163,6 +163,10 @@ export async function createFlow(
     contextSourceId?: string | null;
     skillId?: string | null;
     description?: string | null;
+    /** Dueño del borrador: un flujo SIN empresas solo es accesible por su creador (ver
+     *  `FlowService.assertFlowAccessible`) — un fixture sin `assign` que después se va a
+     *  operar por API necesita esto para no dar 404. */
+    createdBy?: string | null;
     assign?: FlowAssignment[];
   },
 ) {
@@ -177,6 +181,7 @@ export async function createFlow(
       context: opts.context ?? 'none',
       contextSourceId: opts.contextSourceId ?? null,
       skillId: opts.skillId ?? null,
+      createdBy: opts.createdBy ?? null,
     },
   });
   for (const a of opts.assign ?? []) {

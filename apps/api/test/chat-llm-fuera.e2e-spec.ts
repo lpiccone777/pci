@@ -139,7 +139,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   let roleVarMenu: { id: string };
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   async function unsetAllDefaults() {

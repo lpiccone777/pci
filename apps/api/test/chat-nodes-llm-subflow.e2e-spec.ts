@@ -79,7 +79,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
   let broker: BrokerService;
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   /** Empresa + rol + usuario CONOCIDO (con membresía) propios, para no compartir estado con

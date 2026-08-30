@@ -125,7 +125,7 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
   });
 
   it('BE-FLW-05: asignar como inicio a (empresa, rol) con otro flujo ya de inicio para ese par le saca el inicio al anterior', async () => {
-    const { tenant, token, role } = await buildTenantWithFlowsAccess(t, 'flw05');
+    const { tenant, token, role, user } = await buildTenantWithFlowsAccess(t, 'flw05');
     // Un segundo rol de la MISMA empresa, con SU propio flujo de inicio: no debería tocarse.
     const otherRole = await createRole(t.prisma, { tenantId: tenant.id, name: 'Otro rol', permissions: [] });
     const untouchedFlow = await createFlow(t.prisma, {
@@ -136,7 +136,8 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
       name: 'Inicio anterior',
       assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
     });
-    const newStart = await createFlow(t.prisma, { name: 'Inicio nuevo', nodes: [], edges: [] });
+    // Borrador propio (sin empresas): `createdBy` es lo que lo hace operable por su creador.
+    const newStart = await createFlow(t.prisma, { name: 'Inicio nuevo', nodes: [], edges: [], createdBy: user.id });
 
     const res = await withAuth(http(t).post(`/flows/${newStart.id}/assign-tenants`), token, tenant.id).send({
       assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
@@ -165,10 +166,10 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
   });
 
   it('BE-FLW-06: asignar con la misma empresa repetida colapsa uniendo los roles, sin romper el índice único', async () => {
-    const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw06');
+    const { tenant, token, user } = await buildTenantWithFlowsAccess(t, 'flw06');
     const roleUno = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol uno', permissions: [] });
     const roleDos = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol dos', permissions: [] });
-    const flow = await createFlow(t.prisma, { name: 'Flujo a asignar dos veces', nodes: [], edges: [] });
+    const flow = await createFlow(t.prisma, { name: 'Flujo a asignar dos veces', nodes: [], edges: [], createdBy: user.id });
 
     const res = await withAuth(http(t).post(`/flows/${flow.id}/assign-tenants`), token, tenant.id).send({
       assignments: [
@@ -273,11 +274,12 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
   });
 
   it('BE-FLW-12: PATCH /flows/:id edita nodos/aristas, no toca los campos ausentes, y sigue filtrando la whitelist', async () => {
-    const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw12');
+    const { tenant, token, user } = await buildTenantWithFlowsAccess(t, 'flw12');
     const flow = await createFlow(t.prisma, {
       name: 'Nombre original',
       nodes: [{ id: 'n1', type: 'message', data: { text: 'v1' } }],
       edges: [],
+      createdBy: user.id,
     });
 
     const res = await withAuth(http(t).patch(`/flows/${flow.id}`), token, tenant.id).send({
@@ -309,21 +311,20 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
     expect(await t.prisma.tenantFlow.findMany({ where: { flowId: flow.id } })).toHaveLength(0);
   });
 
-  // --- BE-FLW-14 (SEC-03): operar por id sobre un flujo de OTRA empresa debe cortar ---
+  // --- BE-FLW-14 (SEC-03, corregido): operar por id sobre un flujo de OTRA empresa corta ---
+  // `assertFlowAccessible` (flow.service.ts) responde 404 para no filtrar si el id existe.
   describe('BE-FLW-14 (SEC-03): acceso por id a un flujo de otra empresa', () => {
-    it.failing('BE-FLW-14: GET /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido', async () => {
+    it('BE-FLW-14: GET /flows/:id de un flujo de otra empresa devuelve 404', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14geta');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14getb') });
       const flowB = await createFlow(t.prisma, { name: 'Flujo privado de B', assign: [{ tenantId: tenantB.id }] });
 
       const res = await withAuth(http(t).get(`/flows/${flowB.id}`), tokenA, tenantA.id);
 
-      // SEGURO: un flujo de otra empresa no debería poder leerse por id. Hoy `findById` no
-      // filtra por tenant → devuelve 200 con el flujo de B igual.
-      expect([403, 404]).toContain(res.status);
+      expect(res.status).toBe(404);
     });
 
-    it.failing('BE-FLW-14: PATCH /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido', async () => {
+    it('BE-FLW-14: PATCH /flows/:id de un flujo de otra empresa devuelve 404 y no modifica nada', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14patcha');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14patchb') });
       const flowB = await createFlow(t.prisma, { name: 'Flujo privado de B (patch)', assign: [{ tenantId: tenantB.id }] });
@@ -332,42 +333,39 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
         name: 'Modificado desde A',
       });
 
-      // SEGURO: editar por id un flujo ajeno debería cortar. Hoy `update` no filtra por tenant
-      // → 200 y el nombre queda modificado.
-      expect([403, 404]).toContain(res.status);
+      expect(res.status).toBe(404);
+      const reloaded = await t.prisma.flow.findUnique({ where: { id: flowB.id } });
+      expect(reloaded!.name).toBe('Flujo privado de B (patch)');
     });
 
-    it.failing('BE-FLW-14: DELETE /flows/:id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido', async () => {
+    it('BE-FLW-14: DELETE /flows/:id de un flujo de otra empresa devuelve 404 y el flujo sobrevive', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14dela');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14delb') });
       const flowB = await createFlow(t.prisma, { name: 'Flujo privado de B (delete)', assign: [{ tenantId: tenantB.id }] });
 
       const res = await withAuth(http(t).delete(`/flows/${flowB.id}`), tokenA, tenantA.id);
 
-      // SEGURO: borrar por id un flujo ajeno debería cortar. Hoy `delete` no filtra por tenant
-      // → 200 y el flujo de B desaparece de verdad.
-      expect([403, 404]).toContain(res.status);
+      expect(res.status).toBe(404);
+      expect(await t.prisma.flow.findUnique({ where: { id: flowB.id } })).not.toBeNull();
     });
   });
 
-  // --- BE-FLW-16 (SEC-03): mismo criterio para assign-tenants y default ---
+  // --- BE-FLW-16 (SEC-03): mismo criterio para assign-tenants (corregido) y default (pendiente) ---
   describe('BE-FLW-16 (SEC-03): assign-tenants/default sobre un flujo de otra empresa', () => {
-    it.failing(
-      'BE-FLW-16: POST /flows/:id/assign-tenants con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido',
-      async () => {
-        const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw16assigna');
-        const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw16assignb') });
-        const flowB = await createFlow(t.prisma, { name: 'Flujo de B (assign)', assign: [{ tenantId: tenantB.id }] });
+    it('BE-FLW-16: POST /flows/:id/assign-tenants con el id de un flujo de otra empresa devuelve 404', async () => {
+      const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw16assigna');
+      const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw16assignb') });
+      const flowB = await createFlow(t.prisma, { name: 'Flujo de B (assign)', assign: [{ tenantId: tenantB.id }] });
 
-        const res = await withAuth(http(t).post(`/flows/${flowB.id}/assign-tenants`), tokenA, tenantA.id).send({
-          assignments: [{ tenantId: tenantA.id }],
-        });
+      const res = await withAuth(http(t).post(`/flows/${flowB.id}/assign-tenants`), tokenA, tenantA.id).send({
+        assignments: [{ tenantId: tenantA.id }],
+      });
 
-        // SEGURO: reasignar por id un flujo ajeno debería cortar. Hoy opera sin filtrar por
-        // tenant → 201 y A le roba la asignación del flujo de B.
-        expect([403, 404]).toContain(res.status);
-      },
-    );
+      expect(res.status).toBe(404);
+      // La asignación de B quedó intacta: A no le robó el flujo.
+      const tenantFlows = await t.prisma.tenantFlow.findMany({ where: { flowId: flowB.id } });
+      expect(tenantFlows.map((tf) => tf.tenantId)).toEqual([tenantB.id]);
+    });
 
     it.failing(
       'BE-FLW-16: POST /flows/:id/default con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido',
@@ -408,13 +406,13 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
   });
 
   it('BE-FLW-17: vincular una Skill a un flujo se refleja en findById; skillId:null desvincula', async () => {
-    const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw17');
+    const { tenant, token, user } = await buildTenantWithFlowsAccess(t, 'flw17');
     const skill = await createSkill(t.prisma, {
       tenantId: tenant.id,
       name: uniqueSlug('flw17-skill'),
       promptText: 'Sos un asistente de facturación.',
     });
-    const flow = await createFlow(t.prisma, { name: 'Flujo con skill', nodes: [], edges: [] });
+    const flow = await createFlow(t.prisma, { name: 'Flujo con skill', nodes: [], edges: [], createdBy: user.id });
 
     const linked = await withAuth(http(t).patch(`/flows/${flow.id}`), token, tenant.id).send({
       skillId: skill.id,
@@ -483,11 +481,11 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
   });
 
   it('BE-FLW-20: assign-tenants con un roleId de otra empresa (o inexistente) devuelve 400 y no persiste la asignación', async () => {
-    const { tenant, token } = await buildTenantWithFlowsAccess(t, 'flw20');
+    const { tenant, token, user } = await buildTenantWithFlowsAccess(t, 'flw20');
     // Rol de OTRA empresa: no puede habilitar la recepción de un flujo en `tenant`.
     const otherTenant = await createTenant(t.prisma, { slug: uniqueSlug('flw20-otra') });
     const foreignRole = await createRole(t.prisma, { tenantId: otherTenant.id, name: 'Rol ajeno', permissions: [] });
-    const flow = await createFlow(t.prisma, { name: 'Flujo a asignar (flw20)', nodes: [], edges: [] });
+    const flow = await createFlow(t.prisma, { name: 'Flujo a asignar (flw20)', nodes: [], edges: [], createdBy: user.id });
 
     // `applyTenantAssignment` valida la pertenencia de cada roleId ANTES de la transacción de
     // reemplazo (ver flow.service.ts): un rol de otra empresa corta con 400 y mensaje explícito.

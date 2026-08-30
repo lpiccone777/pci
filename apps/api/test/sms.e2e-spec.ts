@@ -353,11 +353,15 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
     }
   });
 
-  it('BE-SMS-05: POST webhooks/gupshup-sms mapea best-effort phno/text a {from, body, channel:sms} en sms.incoming', async () => {
+  it('BE-SMS-05: POST webhooks/gupshup-sms mapea best-effort phno/text a {from, body, channel:sms} en sms.incoming, normalizando el número a +E.164', async () => {
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const phone = uniquePhone().replace('+', '');
-      const res = await http(t).post('/webhooks/gupshup-sms').send({ phno: phone, text: 'Hola desde Gupshup SMS' });
+      // Gupshup manda el número SIN '+': el webhook lo normaliza a +E.164 al publicar, porque
+      // `User.phone` se guarda con '+' y ahora es la clave del ruteo por membresía (sin esto,
+      // ningún usuario registrado matcheaba y todos caían al tenant de los desconocidos).
+      const rawPhone = uniquePhone().replace('+', '');
+      const phone = `+${rawPhone}`;
+      const res = await http(t).post('/webhooks/gupshup-sms').send({ phno: rawPhone, text: 'Hola desde Gupshup SMS' });
 
       expect(res.status).toBe(200);
       const call = publishSpy.mock.calls.find((c) => c[0] === 'sms.incoming' && (c[1] as any).data?.from === phone);
@@ -378,8 +382,9 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
   it('BE-SMS-05: POST webhooks/gupshup-sms también reconoce el par alternativo mobile/msg (mapeo best-effort)', async () => {
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const phone = uniquePhone().replace('+', '');
-      const res = await http(t).post('/webhooks/gupshup-sms').send({ mobile: phone, msg: 'Otro formato de campo' });
+      const rawPhone = uniquePhone().replace('+', '');
+      const phone = `+${rawPhone}`; // mismo normalizado a +E.164 que el caso phno/text
+      const res = await http(t).post('/webhooks/gupshup-sms').send({ mobile: rawPhone, msg: 'Otro formato de campo' });
 
       expect(res.status).toBe(200);
       const call = publishSpy.mock.calls.find((c) => c[0] === 'sms.incoming' && (c[1] as any).data?.from === phone);

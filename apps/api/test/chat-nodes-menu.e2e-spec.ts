@@ -56,7 +56,7 @@ describe('2.3 Nodos del motor — menu (CHAT-N-MENU-*)', () => {
   let orchestratorAnswer: string;
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   /** Cuenta las líneas "N. texto" de una respuesta (texto numerado plano, sin interactivo). */

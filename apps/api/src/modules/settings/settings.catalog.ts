@@ -45,7 +45,8 @@ export type SettingGroup =
   | 'Mensajería: SMS (Twilio)'
   | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
-  | 'Integración: InvGate';
+  | 'Integración: InvGate'
+  | 'Desarrollo y pruebas';
 
 export interface SettingDefinition {
   key: string;
@@ -89,6 +90,17 @@ export interface SettingDefinition {
  */
 export function defaultOtpEnabled(): string {
   return String(process.env.NODE_ENV !== 'development');
+}
+
+/**
+ * Default de `CONVERSATIONS_SIMULATE_ENABLED` cuando no hay valor en BD ni en env: habilitado
+ * fuera de `NODE_ENV=production` (dev y test — Jest fija `NODE_ENV=test` si no hay uno explícito,
+ * así que los e2e siguen viendo el endpoint habilitado sin tocar nada). `/conversations/simulate`
+ * es una herramienta de desarrollo (scripts, e2e): en producción, sin fijar nada a mano, queda
+ * cerrado — mismo criterio (y mismo mecanismo) que `defaultOtpEnabled`.
+ */
+export function defaultSimulateEnabled(): string {
+  return String(process.env.NODE_ENV !== 'production');
 }
 
 export const SETTINGS_CATALOG: SettingDefinition[] = [
@@ -437,6 +449,20 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'suscripción del webhook (GET /webhooks/whatsapp). Tiene que coincidir con el que ' +
       'configures en Meta for Developers > WhatsApp > Configuration.',
   },
+  {
+    key: 'WHATSAPP_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Tenant de los teléfonos sin empresa',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se rutean los mensajes entrantes de un teléfono que NO pertenece a ' +
+      'ninguna empresa (sin membresía). Los teléfonos registrados se rutean siempre por su ' +
+      'membresía (ver InboundTenantRoutingService); esto solo decide qué bot atiende a un ' +
+      'desconocido: el del tenant configurado acá (su flujo de inicio/default). Sin definir, ' +
+      'cae al tenant de sistema. Limitación: los settings son globales, un solo número por tenant.',
+  },
   // --- Mensajería: WhatsApp (Twilio) ---
   {
     key: 'TWILIO_ACCOUNT_SID',
@@ -468,6 +494,18 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'Número habilitado para WhatsApp en Twilio, en formato E.164 con "+" (el sandbox de ' +
       'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
       'automáticamente, no incluirlo acá.',
+  },
+  {
+    key: 'TWILIO_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Tenant de los teléfonos sin empresa',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se rutean los mensajes entrantes de un teléfono sin ninguna empresa ' +
+      '(sin membresía) cuando el proveedor activo es Twilio. Mismo criterio que ' +
+      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
   },
   // --- Mensajería: WhatsApp (Gupshup) ---
   // API moderna de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey` — NO
@@ -503,6 +541,18 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     placeholder: 'dasyBot',
     description: 'Nombre de la app registrada en Gupshup contra ese número (breadcrumb del panel, ej. "dasyBot").',
   },
+  {
+    key: 'GUPSHUP_WHATSAPP_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'Tenant de los teléfonos sin empresa',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se rutean los mensajes entrantes de un teléfono sin ninguna empresa ' +
+      '(sin membresía) cuando el proveedor activo es Gupshup. Mismo criterio que ' +
+      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
+  },
   // --- Mensajería: SMS ---
   {
     key: 'SMS_PROVIDER',
@@ -535,6 +585,18 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
       'WhatsApp no sirve para esto.',
   },
+  {
+    key: 'TWILIO_SMS_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Twilio)',
+    label: 'Tenant de los teléfonos sin empresa',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se rutean los SMS entrantes de un teléfono sin ninguna empresa (sin ' +
+      'membresía) cuando el proveedor activo de SMS es Twilio. Mismo criterio que ' +
+      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
+  },
   // --- Mensajería: SMS (Gupshup) ---
   // API LEGACY "Enterprise SMS" (enterprise.smsgupshup.com) — cuenta y producto totalmente
   // distintos de la API de WhatsApp de Gupshup (grupo de arriba): auth por userid/password
@@ -560,6 +622,18 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     secret: true,
     placeholder: '••••••••',
     description: 'Contraseña de la cuenta de Enterprise SMS de Gupshup. Se guarda cifrada.',
+  },
+  {
+    key: 'GUPSHUP_SMS_TENANT_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'Tenant de los teléfonos sin empresa',
+    defaultValue: '',
+    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
+    description:
+      'A qué tenant se rutean los SMS entrantes de un teléfono sin ninguna empresa (sin ' +
+      'membresía) cuando el proveedor activo de SMS es Gupshup. Mismo criterio que ' +
+      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
   },
   // --- Mensajería: Email ---
   {
@@ -707,6 +781,19 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'categorías que no aplican a tickets del chatbot). Ej.: 1601 = "Chatbot", bajo ' +
       '"DEPTO. SISTEMAS > Soporte".',
   },
+  // --- Desarrollo y pruebas ---
+  {
+    key: 'CONVERSATIONS_SIMULATE_ENABLED',
+    type: 'boolean',
+    group: 'Desarrollo y pruebas',
+    label: 'Habilitar POST /conversations/simulate',
+    defaultValue: 'true',
+    resolveDefault: defaultSimulateEnabled,
+    description:
+      'Endpoint de desarrollo para probar flujos sin un canal real (scripts, e2e) — exige login ' +
+      '(JwtAuthGuard) pero cualquier usuario autenticado puede simular cualquier tenant/teléfono. ' +
+      'Mientras no se fije un valor explícito, en NODE_ENV=production queda desactivado (404).',
+  },
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -728,6 +815,7 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
   'Integración: InvGate',
+  'Desarrollo y pruebas',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));

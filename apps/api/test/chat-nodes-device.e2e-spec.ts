@@ -64,7 +64,7 @@ describe('2.3 Nodos del motor — device_validation (CHAT-N-DEV-*)', () => {
   }
 
   function simulate(from: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId: tenant.id });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId: tenant.id });
   }
 
   /** Usuario conocido (con membership) para este tenant/rol, con email y teléfono propios. */

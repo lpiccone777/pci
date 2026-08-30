@@ -155,7 +155,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
   let tenantSms: { id: string };
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   /** Tenant + rol + usuario conocido con un flujo de inicio propio armado con `nodes`/`edges`. */
