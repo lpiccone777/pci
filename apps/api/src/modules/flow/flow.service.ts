@@ -154,11 +154,18 @@ export class FlowService {
 
   /**
    * Empresas contra las que se valida la pertenencia de las referencias de un flujo:
-   * la empresa activa (header `X-Tenant-Id`) más las que el flujo tiene asignadas
-   * (`TenantFlow`) y, en un `create`, las que trae el propio payload. Con esto un
-   * `create`/`update` desde la empresa B acepta referencias de B; un `update` de un
-   * flujo asignado a B, hecho por el superadmin parado en sistema, también las acepta
-   * (el escenario de FLW-23: el editor puebla los dropdowns con la empresa del flujo).
+   * la empresa activa (header `X-Tenant-Id`) más las que el flujo YA tiene asignadas
+   * (`TenantFlow`) y, en un `create`, las que trae el propio payload.
+   *
+   * NINGUNA de esas dos fuentes se da por válida a ciegas: tanto las que trae el payload
+   * como las que el flujo ya tiene asignadas (compartido con otra empresa) solo cuentan si
+   * el que edita REALMENTE pertenece a ellas (`UserTenant`) — si no, un usuario de la empresa
+   * A que edita un flujo compartido con B (acceso legítimo: `assertFlowAccessible` lo permite
+   * con `flows:read` en A sola) podría colar una referencia a un recurso de B sin ser
+   * miembro de B, solo porque el flujo ya estaba compartido con ella. Antes las tenants YA
+   * asignadas se aceptaban sin este chequeo (comentario original, FLW-23: "el editor puebla
+   * los dropdowns con la empresa del flujo") — pero ESE escenario es el del SuperAdmin, que
+   * ni siquiera pasa por acá (`update()` salta este saneo entero para él).
    */
   private async collectValidTenantIds(
     activeTenantId?: string,
@@ -169,29 +176,26 @@ export class FlowService {
     const ids = new Set<string>();
     if (activeTenantId) ids.add(activeTenantId);
 
-    // Las empresas que trae el payload (`assignments`) NO se dan por válidas a ciegas: si
-    // se aceptara el `tenantId` que manda el cliente, un usuario podría listar una empresa
-    // ajena solo para que su fuente/skill/usuarios pasen el saneo cross-tenant. Cada empresa
-    // del body se acepta únicamente si el usuario realmente pertenece a ella (`UserTenant`).
-    const claimedTenantIds = [
-      ...new Set((assignments ?? []).map((a) => a?.tenantId).filter((t): t is string => !!t)),
-    ];
-    if (claimedTenantIds.length && userId) {
-      const memberships = await this.prisma.userTenant.findMany({
-        // Mismo criterio que `assertAssignableTenants`: una empresa dada de baja no habilita sus
-        // recursos para el saneo cross-tenant, aunque la membresía siga existiendo.
-        where: { userId, tenantId: { in: claimedTenantIds }, tenant: { deletedAt: null } },
-        select: { tenantId: true },
-      });
-      for (const m of memberships) ids.add(m.tenantId);
-    }
+    const claimedTenantIds = new Set(
+      (assignments ?? []).map((a) => a?.tenantId).filter((t): t is string => !!t),
+    );
 
     if (flowId) {
       const tenantFlows = await this.prisma.tenantFlow.findMany({
         where: { flowId },
         select: { tenantId: true },
       });
-      for (const tf of tenantFlows) ids.add(tf.tenantId);
+      for (const tf of tenantFlows) claimedTenantIds.add(tf.tenantId);
+    }
+
+    if (claimedTenantIds.size && userId) {
+      const memberships = await this.prisma.userTenant.findMany({
+        // Mismo criterio que `assertAssignableTenants`: una empresa dada de baja no habilita sus
+        // recursos para el saneo cross-tenant, aunque la membresía siga existiendo.
+        where: { userId, tenantId: { in: [...claimedTenantIds] }, tenant: { deletedAt: null } },
+        select: { tenantId: true },
+      });
+      for (const m of memberships) ids.add(m.tenantId);
     }
     return ids;
   }
@@ -441,10 +445,17 @@ export class FlowService {
     // Mismo saneo multitenant que en `create`: aunque el editor solo ofrezca recursos
     // válidos, un PATCH directo podría mandar ids de otra empresa. El conjunto válido
     // suma las empresas ya asignadas al flujo (`TenantFlow`) para no pisar una fuente
-    // legítima al guardar desde otra empresa activa (FLW-23). El SuperAdmin (admin global) no
-    // se sanea (ver `create`). `sanitizeCrossTenantRefs` mutá los nodos en el lugar.
+    // legítima al guardar desde otra empresa activa (FLW-23) — pero solo las que el propio
+    // editor integra: se pasa `userTenant?.userId` para que `collectValidTenantIds` las
+    // filtre por membresía real, igual que hace con las de `create`. El SuperAdmin (admin
+    // global) no se sanea (ver `create`). `sanitizeCrossTenantRefs` mutá los nodos en el lugar.
     if (!isSuperAdmin) {
-      const validTenantIds = await this.collectValidTenantIds(activeTenantId, id);
+      const validTenantIds = await this.collectValidTenantIds(
+        activeTenantId,
+        id,
+        undefined,
+        userTenant?.userId,
+      );
       const refs: { contextSourceId?: string | null; skillId?: string | null; nodes?: any[] } = {
         contextSourceId: rest.contextSourceId,
         skillId: rest.skillId,

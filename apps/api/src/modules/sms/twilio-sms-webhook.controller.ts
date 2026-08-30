@@ -1,6 +1,7 @@
-import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, Logger, Post, UseGuards } from '@nestjs/common';
 import { BrokerService } from '../broker/broker.service';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
+import { TwilioSignatureGuard } from '../../common/guards/twilio-signature.guard';
 
 interface TwilioSmsIncomingPayload {
   From?: string;
@@ -16,12 +17,13 @@ const MAX_MEDIA_ITEMS = 10;
 /**
  * Webhook de SMS entrante de Twilio. Mismo criterio que `TwilioWebhookController` (WhatsApp):
  * sin handshake de verificación (la URL se pega directo en la consola de Twilio, en el número
- * de SMS, no en el sandbox de WhatsApp), y sin verificación de firma (`X-Twilio-Signature`)
- * todavía — mismo tipo de deuda técnica que el resto de los webhooks.
+ * de SMS, no en el sandbox de WhatsApp) — pero sí lleva `TwilioSignatureGuard`, que valida
+ * `X-Twilio-Signature` si `TWILIO_WEBHOOK_PUBLIC_URL` está configurada.
  *
  * A diferencia del de WhatsApp, `From` ya viene en E.164 plano — Twilio no le agrega ningún
  * prefijo de canal a los SMS, así que no hay nada que sacarle.
  */
+@UseGuards(TwilioSignatureGuard)
 @Controller('webhooks/twilio-sms')
 export class TwilioSmsWebhookController {
   private readonly logger = new Logger(TwilioSmsWebhookController.name);

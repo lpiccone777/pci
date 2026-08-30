@@ -1323,7 +1323,7 @@ export class ConversationsService implements OnModuleInit {
     const collaboratorIds: string[] = Array.isArray(data.collaborators) ? data.collaborators : [];
 
     const assignee = assigneeIds.length
-      ? await this.pickNextAssignee(flowId, node.id, assigneeIds)
+      ? await this.pickNextAssignee(flowId, node.id, assigneeIds, tenantId)
       : null;
 
     // `data.message` es texto configurado en el editor y puede traer `{{variable}}`
@@ -1372,8 +1372,16 @@ export class ConversationsService implements OnModuleInit {
       const notifyIds = Array.from(
         new Set([assignee?.id, ...watcherIds, ...collaboratorIds].filter(Boolean)),
       ) as string[];
+      // Filtrado por `tenantId`: `data.assignees`/`watchers`/`collaborators` son userIds fijados
+      // en el editor. `sanitizeCrossTenantRefs` los sanea al guardar el flujo, pero contra el
+      // conjunto de TODAS las empresas a las que el flujo está asignado — un flujo compartido
+      // entre A y B puede legítimamente traer gente de ambas. Sin este filtro, la conversación
+      // de un cliente de A podía terminar mandándole el email de transferencia (con su nombre,
+      // teléfono y nota) a alguien que solo pertenece a B.
       const recipients = notifyIds.length
-        ? await this.prisma.user.findMany({ where: { id: { in: notifyIds } } })
+        ? await this.prisma.user.findMany({
+            where: { id: { in: notifyIds }, tenants: { some: { tenantId, tenant: { deletedAt: null } } } },
+          })
         : [];
       const userName =
         [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.phone || 'Un usuario';
@@ -1419,7 +1427,13 @@ export class ConversationsService implements OnModuleInit {
     const text = data.message ? this.interpolate(data.message, flowState) : '';
 
     if (text && recipientIds.length) {
-      const recipients = await this.prisma.user.findMany({ where: { id: { in: recipientIds } } });
+      // Mismo filtro por `tenantId` que en `executeTransferAgentNode`: un `data.recipients`
+      // configurado en el editor de un flujo compartido puede traer gente de otra empresa
+      // asignada al mismo flujo — sin esto, la conversación de un cliente de esta empresa
+      // podía terminar mandando un SMS con su nombre/nota a alguien de una empresa distinta.
+      const recipients = await this.prisma.user.findMany({
+        where: { id: { in: recipientIds }, tenants: { some: { tenantId, tenant: { deletedAt: null } } } },
+      });
       for (const recipient of recipients) {
         if (!recipient.phone) continue;
         await this.broker.publish('sms.outgoing', {
@@ -1434,14 +1448,25 @@ export class ConversationsService implements OnModuleInit {
     return { flowState };
   }
 
-  /** Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en FlowNodeRoundRobin. */
-  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[]) {
-    // `data.assignees` es config del nodo (no se actualiza sola cuando alguien se da de
-    // baja), así que filtramos acá: un colaborador soft-deleted sale de la rotación en
-    // vez de seguir recibiendo tickets/transferencias. Orden estable según `assigneeIds`,
-    // no el que devuelva la DB.
+  /**
+   * Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en
+   * FlowNodeRoundRobin. Filtra por `tenantId`, no solo por `deletedAt`: `data.assignees` es
+   * config del nodo, y un flujo compartido entre varias empresas puede legítimamente traer
+   * gente de todas ellas (`sanitizeCrossTenantRefs` sanea contra ESE conjunto al guardar, no
+   * contra la empresa puntual de cada conversación) — sin este filtro, el ticket/transferencia
+   * de un cliente de esta empresa podía terminar asignado a alguien de otra.
+   */
+  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[], tenantId: string) {
+    // `data.assignees` no se actualiza solo cuando alguien se da de baja (de la persona, o de
+    // esta empresa puntual), así que filtramos acá: sale de la rotación en vez de seguir
+    // recibiendo tickets/transferencias. Orden estable según `assigneeIds`, no el que
+    // devuelva la DB.
     const active = await this.prisma.user.findMany({
-      where: { id: { in: assigneeIds }, deletedAt: null },
+      where: {
+        id: { in: assigneeIds },
+        deletedAt: null,
+        tenants: { some: { tenantId, tenant: { deletedAt: null } } },
+      },
     });
     if (!active.length) return null;
     const activeIds = assigneeIds.filter((id) => active.some((u) => u.id === id));

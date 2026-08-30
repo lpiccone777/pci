@@ -1,6 +1,7 @@
-import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, Logger, Post, UseGuards } from '@nestjs/common';
 import { BrokerService } from '../broker/broker.service';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
+import { TwilioSignatureGuard } from '../../common/guards/twilio-signature.guard';
 
 interface TwilioIncomingPayload {
   From?: string;
@@ -23,6 +24,7 @@ const MAX_MEDIA_ITEMS = 10;
  * `hub.challenge`): la URL se pega directo en la consola de Twilio (Messaging > Try it out /
  * WhatsApp Sandbox Settings, o el número de producción) y ya empieza a mandar `POST`s.
  */
+@UseGuards(TwilioSignatureGuard)
 @Controller('webhooks/twilio')
 export class TwilioWebhookController {
   private readonly logger = new Logger(TwilioWebhookController.name);
@@ -36,8 +38,9 @@ export class TwilioWebhookController {
    * Mensajes reales entrantes. Twilio manda `application/x-www-form-urlencoded`, no JSON
    * (Nest ya lo parsea con el body parser default de Express, igual que el JSON de Meta).
    *
-   * Sin verificación de firma (`X-Twilio-Signature`) todavía — mismo tipo de deuda que
-   * `WhatsAppWebhookController`: hoy cualquiera que conozca la URL puede publicar mensajes
+   * `TwilioSignatureGuard` valida `X-Twilio-Signature` ANTES de llegar acá — sin
+   * `TWILIO_WEBHOOK_PUBLIC_URL` configurada, la verificación queda desactivada (deuda
+   * conocida, ver el guard) y cualquiera que conozca la URL puede seguir publicando mensajes
    * falsos en `whatsapp.incoming`.
    */
   @Post()

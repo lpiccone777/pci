@@ -48,6 +48,7 @@ import sharp from 'sharp';
 import { mkdtemp, rm } from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { createHmac } from 'crypto';
 
 /** Ver el comentario completo en twilio.e2e-spec.ts. */
 async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -402,23 +403,6 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
     }
   });
 
-  it.failing('BE-SMS-09: POST webhooks/twilio-sms sin firma debe rechazarse (SEC-16) @invertido', async () => {
-    const phone = uniquePhone();
-    const res = await http(t).post('/webhooks/twilio-sms').type('form').send({ From: phone, Body: 'sin firma' });
-
-    // SEGURO: sin validar X-Twilio-Signature, debería rechazar (401/403). Hoy acepta cualquiera.
-    expect([401, 403]).toContain(res.status);
-
-    // Ver el comentario equivalente en twilio.e2e-spec.ts (BE-TWA-10): esperar el pipeline de
-    // fondo evita dejar un mensaje sin ackear que RabbitMQ reencole hacia otro archivo.
-    await waitFor(async () => {
-      const msg = await t.prisma.message.findFirst({
-        where: { conversation: { externalId: phone, channel: 'sms' }, senderType: 'assistant' },
-      });
-      return !!msg;
-    });
-  });
-
   it.failing('BE-SMS-09: POST webhooks/gupshup-sms sin autenticación debe rechazarse (SEC-16) @invertido', async () => {
     const phone = uniquePhone().replace('+', '');
     const res = await http(t).post('/webhooks/gupshup-sms').send({ phno: phone, text: 'sin autenticar' });
@@ -432,6 +416,94 @@ describe('1.21 Canal SMS, webhook de entrada y aislamiento de canal (BE-SMS-01, 
       });
       return !!msg;
     });
+  });
+});
+
+/**
+ * BE-SMS-09 (SMS Twilio, SEC-16, corregido): mismo `TwilioSignatureGuard` que el canal de
+ * WhatsApp (ver twilio.e2e-spec.ts, BE-TWA-10) — describe aparte, con sus tres settings
+ * propios, para no ensuciar "webhook de entrada", que deliberadamente nunca carga credenciales.
+ */
+describe('1.21 Canal SMS, verificación de firma del webhook de Twilio (BE-SMS-09, SEC-16)', () => {
+  let t: TestApp;
+  let broker: BrokerService;
+  const publicUrl = 'https://miapp.e2e.test';
+
+  /** Mismo algoritmo que `TwilioSignatureGuard.validateSignature`. */
+  function computeSignature(fullUrl: string, params: Record<string, string>): string {
+    let data = fullUrl;
+    for (const key of Object.keys(params).sort()) data += key + params[key];
+    return createHmac('sha1', TWILIO_AUTH_TOKEN).update(data, 'utf8').digest('base64');
+  }
+
+  beforeAll(async () => {
+    const preboot = new PrismaService();
+    await preboot.$connect();
+    await setSetting(preboot, 'TWILIO_ACCOUNT_SID', TWILIO_ACCOUNT_SID);
+    await setSetting(preboot, 'TWILIO_AUTH_TOKEN', TWILIO_AUTH_TOKEN);
+    await setSetting(preboot, 'TWILIO_WEBHOOK_PUBLIC_URL', publicUrl);
+    await preboot.$disconnect();
+
+    t = await createTestApp({
+      customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok, gracias')),
+    });
+    broker = t.moduleRef.get(BrokerService);
+  }, 30000);
+
+  afterAll(async () => {
+    await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
+    await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
+    await deleteSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL');
+    await t.close();
+  });
+
+  it('BE-SMS-09a: sin header X-Twilio-Signature, se rechaza con 403', async () => {
+    const res = await http(t)
+      .post('/webhooks/twilio-sms')
+      .type('form')
+      .send({ From: uniquePhone(), Body: 'sin firma' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('BE-SMS-09b: con una firma que no matchea, se rechaza con 403', async () => {
+    const res = await http(t)
+      .post('/webhooks/twilio-sms')
+      .type('form')
+      .set('X-Twilio-Signature', 'firma-inventada-a-mano')
+      .send({ From: uniquePhone(), Body: 'firma trucha' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('BE-SMS-09c: con la firma HMAC-SHA1 correcta, se acepta y procesa el mensaje', async () => {
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const phone = uniquePhone();
+      const params = { From: phone, Body: 'con firma valida' };
+      const signature = computeSignature(`${publicUrl}/webhooks/twilio-sms`, params);
+
+      const res = await http(t)
+        .post('/webhooks/twilio-sms')
+        .type('form')
+        .set('X-Twilio-Signature', signature)
+        .send(params);
+
+      expect(res.status).toBe(200);
+      const call = publishSpy.mock.calls.find(
+        (c) => c[0] === 'sms.incoming' && (c[1] as any).data?.from === phone,
+      );
+      expect(call).toBeDefined();
+
+      await waitFor(async () => {
+        const msg = await t.prisma.message.findFirst({
+          where: { conversation: { externalId: phone, channel: 'sms' }, senderType: 'assistant' },
+        });
+        return !!msg;
+      });
+    } finally {
+      publishSpy.mockRestore();
+    }
   });
 });
 
@@ -654,9 +726,9 @@ describe('1.21 Canal SMS, media entrante MMS (BE-SMS-12)', () => {
             From: phone,
             Body: 'adjunto dos fotos',
             NumMedia: '2',
-            MediaUrl0: 'https://media.twiliocdn.test/Messages/MM12/Media/ME0',
+            MediaUrl0: `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/MM12/Media/ME0`,
             MediaContentType0: 'image/jpeg',
-            MediaUrl1: 'https://media.twiliocdn.test/Messages/MM12/Media/ME1',
+            MediaUrl1: `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/MM12/Media/ME1`,
             MediaContentType1: 'image/jpeg',
           });
         expect(res.status).toBe(200);

@@ -153,6 +153,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
   let tenantTkc: { id: string };
   let tenantTrf: { id: string };
   let tenantSms: { id: string };
+  // Rol compartido para dar de alta agentes/watchers/collaborators/recipients DENTRO de la
+  // empresa del flujo bajo prueba: `pickNextAssignee` y la resolución de destinatarios de
+  // email/SMS ahora filtran por `tenantId` (SEC-18/19), así que un agente sin membresía en
+  // esa empresa deja de ser un candidato válido — no importan sus permisos, solo pertenecer.
+  let roleTrfAgent: { id: string };
+  let roleSmsAgent: { id: string };
 
   function simulate(from: string, tenantId: string, body = 'hola') {
     return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
@@ -189,6 +195,8 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     tenantTkc = await createTenant(t.prisma, { slug: uniqueSlug('tkc') });
     tenantTrf = await createTenant(t.prisma, { slug: uniqueSlug('trf') });
     tenantSms = await createTenant(t.prisma, { slug: uniqueSlug('sms') });
+    roleTrfAgent = await createRole(t.prisma, { tenantId: tenantTrf.id, name: 'Agente TRF' });
+    roleSmsAgent = await createRole(t.prisma, { tenantId: tenantSms.id, name: 'Agente SMS' });
   });
 
   afterAll(async () => {
@@ -753,7 +761,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
   // ---------------------------------------------------------------------------------------
   describe('transfer_agent (CHAT-N-TRF-*)', () => {
     it('CHAT-N-TRF-01: methods incluye "ticket" y hay assignee → crea el ticket asignado (round robin) y guarda lastTicketId', async () => {
-      const agent = await createUser(t.prisma, { email: uniqueEmail('trf01-agent'), phone: uniquePhone(), firstName: 'Agente Uno' });
+      const agent = await createUser(t.prisma, {
+        email: uniqueEmail('trf01-agent'),
+        phone: uniquePhone(),
+        firstName: 'Agente Uno',
+        memberships: [{ tenantId: tenantTrf.id, roleId: roleTrfAgent.id }],
+      });
       const { phone, user } = await setupKnownFlow(
         tenantTrf.id,
         'TRF-01',
@@ -772,9 +785,10 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     });
 
     it('CHAT-N-TRF-02: methods incluye "email" → notifica a assignee + watchers + collaborators, deduplicados', async () => {
-      const agent = await createUser(t.prisma, { email: uniqueEmail('trf02-agent'), phone: uniquePhone(), firstName: 'Agente' });
-      const watcher = await createUser(t.prisma, { email: uniqueEmail('trf02-watcher'), phone: uniquePhone(), firstName: 'Watcher' });
-      const collab = await createUser(t.prisma, { email: uniqueEmail('trf02-collab'), phone: uniquePhone(), firstName: 'Colaborador' });
+      const membership = [{ tenantId: tenantTrf.id, roleId: roleTrfAgent.id }];
+      const agent = await createUser(t.prisma, { email: uniqueEmail('trf02-agent'), phone: uniquePhone(), firstName: 'Agente', memberships: membership });
+      const watcher = await createUser(t.prisma, { email: uniqueEmail('trf02-watcher'), phone: uniquePhone(), firstName: 'Watcher', memberships: membership });
+      const collab = await createUser(t.prisma, { email: uniqueEmail('trf02-collab'), phone: uniquePhone(), firstName: 'Colaborador', memberships: membership });
 
       const { phone } = await setupKnownFlow(
         tenantTrf.id,
@@ -820,10 +834,20 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     it(
       'CHAT-N-TRF-04: el round robin de assignees es GLOBAL por nodo, no por conversación',
       async () => {
-        const agentA = await createUser(t.prisma, { email: uniqueEmail('trf04-a'), phone: uniquePhone(), firstName: 'A' });
-        const agentB = await createUser(t.prisma, { email: uniqueEmail('trf04-b'), phone: uniquePhone(), firstName: 'B' });
-
         const role = await createRole(t.prisma, { tenantId: tenantTrf.id, name: 'TRF-04' });
+        const agentA = await createUser(t.prisma, {
+          email: uniqueEmail('trf04-a'),
+          phone: uniquePhone(),
+          firstName: 'A',
+          memberships: [{ tenantId: tenantTrf.id, roleId: role.id }],
+        });
+        const agentB = await createUser(t.prisma, {
+          email: uniqueEmail('trf04-b'),
+          phone: uniquePhone(),
+          firstName: 'B',
+          memberships: [{ tenantId: tenantTrf.id, roleId: role.id }],
+        });
+
         await createFlow(t.prisma, {
           name: 'TRF-04',
           nodes: [startNode('s'), transferAgentNode('ta', { methods: ['ticket'], assignees: [agentA.id, agentB.id] }), endNode('e')],
@@ -862,7 +886,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     );
 
     it('CHAT-N-TRF-05: methods incluye "phone" (sin implementar) → no rompe el flujo', async () => {
-      const agent = await createUser(t.prisma, { email: uniqueEmail('trf05-agent'), phone: uniquePhone(), firstName: 'Agente' });
+      const agent = await createUser(t.prisma, {
+        email: uniqueEmail('trf05-agent'),
+        phone: uniquePhone(),
+        firstName: 'Agente',
+        memberships: [{ tenantId: tenantTrf.id, roleId: roleTrfAgent.id }],
+      });
       const { phone, user } = await setupKnownFlow(
         tenantTrf.id,
         'TRF-05',
@@ -879,7 +908,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     });
 
     it('CHAT-N-TRF-06: data.message con {{variables}} se interpola antes de armar el mail y el ticket', async () => {
-      const agent = await createUser(t.prisma, { email: uniqueEmail('trf06-agent'), phone: uniquePhone(), firstName: 'Agente' });
+      const agent = await createUser(t.prisma, {
+        email: uniqueEmail('trf06-agent'),
+        phone: uniquePhone(),
+        firstName: 'Agente',
+        memberships: [{ tenantId: tenantTrf.id, roleId: roleTrfAgent.id }],
+      });
       const { phone, user } = await setupKnownFlow(
         tenantTrf.id,
         'TRF-06',
@@ -922,7 +956,13 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     it(
       'CHAT-N-TRF-08a: un assignee dado de baja sale de la rotación; pickNextAssignee rota solo sobre los activos y el dado de baja nunca recibe',
       async () => {
-        const agentA = await createUser(t.prisma, { email: uniqueEmail('trf08a-a'), phone: uniquePhone(), firstName: 'A' });
+        const role = await createRole(t.prisma, { tenantId: tenantTrf.id, name: 'TRF-08A' });
+        const agentA = await createUser(t.prisma, {
+          email: uniqueEmail('trf08a-a'),
+          phone: uniquePhone(),
+          firstName: 'A',
+          memberships: [{ tenantId: tenantTrf.id, roleId: role.id }],
+        });
         // Dado de baja (soft-delete): sigue listado en `data.assignees` del nodo (la config no se
         // actualiza sola), pero `pickNextAssignee` lo filtra por `deletedAt:null`.
         const agentDown = await createUser(t.prisma, {
@@ -931,9 +971,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
           firstName: 'Baja',
           deletedAt: new Date(),
         });
-        const agentB = await createUser(t.prisma, { email: uniqueEmail('trf08a-b'), phone: uniquePhone(), firstName: 'B' });
-
-        const role = await createRole(t.prisma, { tenantId: tenantTrf.id, name: 'TRF-08A' });
+        const agentB = await createUser(t.prisma, {
+          email: uniqueEmail('trf08a-b'),
+          phone: uniquePhone(),
+          firstName: 'B',
+          memberships: [{ tenantId: tenantTrf.id, roleId: role.id }],
+        });
         await createFlow(t.prisma, {
           name: 'TRF-08A',
           nodes: [
@@ -1020,8 +1063,9 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
   // ---------------------------------------------------------------------------------------
   describe('sms (CHAT-N-SMS-*)', () => {
     it('CHAT-N-SMS-01: interpola el message y publica en sms.outgoing por cada recipient con teléfono; saltea a los que no tienen', async () => {
-      const agentWithPhone = await createUser(t.prisma, { email: uniqueEmail('sms01-a'), phone: uniquePhone(), firstName: 'Con teléfono' });
-      const agentNoPhone = await createUser(t.prisma, { email: uniqueEmail('sms01-b'), phone: null, firstName: 'Sin teléfono' });
+      const smsMembership = [{ tenantId: tenantSms.id, roleId: roleSmsAgent.id }];
+      const agentWithPhone = await createUser(t.prisma, { email: uniqueEmail('sms01-a'), phone: uniquePhone(), firstName: 'Con teléfono', memberships: smsMembership });
+      const agentNoPhone = await createUser(t.prisma, { email: uniqueEmail('sms01-b'), phone: null, firstName: 'Sin teléfono', memberships: smsMembership });
 
       const { phone } = await setupKnownFlow(
         tenantSms.id,
@@ -1070,7 +1114,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
     });
 
     it('CHAT-N-SMS-02b: sin message → no publica nada, el flujo sigue', async () => {
-      const agent = await createUser(t.prisma, { email: uniqueEmail('sms02b'), phone: uniquePhone(), firstName: 'Agente' });
+      const agent = await createUser(t.prisma, {
+        email: uniqueEmail('sms02b'),
+        phone: uniquePhone(),
+        firstName: 'Agente',
+        memberships: [{ tenantId: tenantSms.id, roleId: roleSmsAgent.id }],
+      });
       const { phone } = await setupKnownFlow(
         tenantSms.id,
         'SMS-02B',
@@ -1097,7 +1146,12 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
         // el mismo que describe el plan igual: sin TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/
         // TWILIO_SMS_FROM en /settings, `sendText()` resuelve con un warn y un `return` (nunca
         // llega a llamar `fetch`) — el SMS se pierde en silencio.
-        const agent = await createUser(t.prisma, { email: uniqueEmail('sms03'), phone: uniquePhone(), firstName: 'Agente' });
+        const agent = await createUser(t.prisma, {
+          email: uniqueEmail('sms03'),
+          phone: uniquePhone(),
+          firstName: 'Agente',
+          memberships: [{ tenantId: tenantSms.id, roleId: roleSmsAgent.id }],
+        });
         const { phone } = await setupKnownFlow(
           tenantSms.id,
           'SMS-03',
@@ -1124,7 +1178,7 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       10000,
     );
 
-    it.failing('CHAT-N-SMS-04: un recipient de OTRA empresa no debería recibir el SMS (SEC-18) @invertido', async () => {
+    it('CHAT-N-SMS-04: un recipient de OTRA empresa no recibe el SMS (SEC-18, corregido)', async () => {
       const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('sms-other') });
       const roleOther = await createRole(t.prisma, { tenantId: tenantOther.id, name: 'Agente externo' });
       const foreignPhone = uniquePhone();
@@ -1150,12 +1204,9 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
         const toForeignPhone = publishSpy.mock.calls.filter(
           ([queue, message]) => queue === 'sms.outgoing' && (message as { data?: { to?: string } }).data?.to === foreignPhone,
         );
-        // Comportamiento SEGURO esperado: `sms.recipients` debería scopearse por tenantId, así
-        // que un userId de otra empresa no debería resolver ningún destinatario acá. Hoy
-        // `prisma.user.findMany({ where: { id: { in: recipientIds } } })` (executeSmsNode) no
-        // filtra por tenant, así que SÍ le manda el SMS — este assert falla contra el código
-        // actual y `it.failing` lo marca verde. Al agregar el filtro de tenant, este test
-        // empieza a pasar de verdad.
+        // `executeSmsNode` filtra `recipientIds` por `tenantId` (ver conversations.service.ts):
+        // un userId de otra empresa no resuelve ningún destinatario, aunque siga listado en
+        // `data.recipients` del nodo (un flujo compartido puede traer gente de varias empresas).
         expect(toForeignPhone).toHaveLength(0);
       } finally {
         publishSpy.mockRestore();

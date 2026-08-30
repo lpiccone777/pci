@@ -46,6 +46,7 @@ import sharp from 'sharp';
 import { mkdtemp, rm, readFile, writeFile, utimes } from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { createHmac } from 'crypto';
 
 /**
  * Espera hasta que `check()` devuelva `true` o vence el timeout. Hace falta porque publicar en
@@ -279,30 +280,93 @@ describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-
     }
   });
 
-  it.failing('BE-TWA-10: POST webhooks/twilio sin X-Twilio-Signature válida debe rechazarse (SEC-16) @invertido', async () => {
-    const phone = uniquePhone();
+});
+
+/**
+ * BE-TWA-10 (SEC-16, corregido): `TwilioSignatureGuard` valida `X-Twilio-Signature` una vez
+ * configurada `TWILIO_WEBHOOK_PUBLIC_URL`. Describe APARTE (con sus tres settings propios) para
+ * no ensuciar "webhook de entrada", que deliberadamente nunca carga credenciales.
+ */
+describe('1.19 Canal WhatsApp — Twilio, verificación de firma del webhook (BE-TWA-10, SEC-16)', () => {
+  let t: TestApp;
+  let broker: BrokerService;
+  const publicUrl = 'https://miapp.e2e.test';
+
+  /** Mismo algoritmo que `TwilioSignatureGuard.validateSignature`. */
+  function computeSignature(fullUrl: string, params: Record<string, string>): string {
+    let data = fullUrl;
+    for (const key of Object.keys(params).sort()) data += key + params[key];
+    return createHmac('sha1', TWILIO_AUTH_TOKEN).update(data, 'utf8').digest('base64');
+  }
+
+  beforeAll(async () => {
+    const preboot = new PrismaService();
+    await preboot.$connect();
+    await setSetting(preboot, 'TWILIO_ACCOUNT_SID', TWILIO_ACCOUNT_SID);
+    await setSetting(preboot, 'TWILIO_AUTH_TOKEN', TWILIO_AUTH_TOKEN);
+    await setSetting(preboot, 'TWILIO_WEBHOOK_PUBLIC_URL', publicUrl);
+    await preboot.$disconnect();
+
+    t = await createTestApp({
+      customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok, gracias')),
+    });
+    broker = t.moduleRef.get(BrokerService);
+  }, 30000);
+
+  afterAll(async () => {
+    await deleteSetting(t.prisma, 'TWILIO_ACCOUNT_SID');
+    await deleteSetting(t.prisma, 'TWILIO_AUTH_TOKEN');
+    await deleteSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL');
+    await t.close();
+  });
+
+  it('BE-TWA-10a: sin header X-Twilio-Signature, se rechaza con 403', async () => {
     const res = await http(t)
       .post('/webhooks/twilio')
       .type('form')
-      .send({ From: `whatsapp:${phone}`, Body: 'sin firma' });
+      .send({ From: `whatsapp:${uniquePhone()}`, Body: 'sin firma' });
 
-    // SEGURO: sin validar la firma HMAC con el auth token, debería rechazar (401/403).
-    // Hoy `TwilioWebhookController.receive` no valida `X-Twilio-Signature` en absoluto y
-    // siempre acepta (200) — agravante señalado en el plan: el webhook está activo aunque
-    // WHATSAPP_PROVIDER no sea 'twilio'.
-    expect([401, 403]).toContain(res.status);
+    expect(res.status).toBe(403);
+  });
 
-    // Al aceptar hoy el POST, dispara el mismo pipeline de fondo que BE-TWA-03/04 — esperarlo
-    // evita dejar un mensaje sin ackear cuando `afterAll` cierre la app: sin esto, RabbitMQ lo
-    // reencola y el SIGUIENTE archivo de test que se suscriba a `whatsapp.outgoing` (con otro
-    // provider activo) puede terminar recibiéndolo — un falso positivo cruzado entre archivos,
-    // detectado corriendo la suite completa (no solo este archivo en aislamiento).
-    await waitFor(async () => {
-      const msg = await t.prisma.message.findFirst({
-        where: { conversation: { externalId: phone }, senderType: 'assistant' },
+  it('BE-TWA-10b: con una firma que no matchea, se rechaza con 403', async () => {
+    const res = await http(t)
+      .post('/webhooks/twilio')
+      .type('form')
+      .set('X-Twilio-Signature', 'firma-inventada-a-mano')
+      .send({ From: `whatsapp:${uniquePhone()}`, Body: 'firma trucha' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('BE-TWA-10c: con la firma HMAC-SHA1 correcta (URL pública + params ordenados), se acepta y procesa el mensaje', async () => {
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const phone = uniquePhone();
+      const params = { From: `whatsapp:${phone}`, Body: 'con firma valida' };
+      const signature = computeSignature(`${publicUrl}/webhooks/twilio`, params);
+
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .set('X-Twilio-Signature', signature)
+        .send(params);
+
+      expect(res.status).toBe(200);
+      const call = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === phone,
+      );
+      expect(call).toBeDefined();
+
+      await waitFor(async () => {
+        const msg = await t.prisma.message.findFirst({
+          where: { conversation: { externalId: phone }, senderType: 'assistant' },
+        });
+        return !!msg;
       });
-      return !!msg;
-    });
+    } finally {
+      publishSpy.mockRestore();
+    }
   });
 });
 
@@ -605,7 +669,7 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
     // "PDF": no es imagen, no se redimensiona; se guarda tal cual con extensión .pdf.
     const pdfBytes = Buffer.from('%PDF-1.4\nfake pdf payload\n%%EOF');
 
-    const base = `https://media.twiliocdn.test/Messages/MM1/Media`;
+    const base = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/MM1/Media`;
     const mock = installBinaryFetchMock((url) => {
       if (url.endsWith('ME0')) return { body: orientedJpeg };
       if (url.endsWith('ME1')) return { body: bigGif };
@@ -687,7 +751,7 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
       const phone2 = uniquePhone();
       const payload: Record<string, string> = { From: `whatsapp:${phone2}`, NumMedia: '12' };
       for (let i = 0; i < 12; i++) {
-        payload[`MediaUrl${i}`] = `https://media.twiliocdn.test/Messages/MM2/Media/ME${i}`;
+        payload[`MediaUrl${i}`] = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/MM2/Media/ME${i}`;
         payload[`MediaContentType${i}`] = 'image/png';
       }
       const res2 = await http(t).post('/webhooks/twilio').type('form').send(payload);
@@ -711,7 +775,7 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
     try {
       // --- (A) URL 404: el adjunto se saltea, el mensaje se publica igual con su body ---
       // URL sin el SID adentro, para que el warn (que loguea la URL) no lo arrastre.
-      const url404 = 'https://media.twiliocdn.test/Messages/MMbad/Media/MEbad';
+      const url404 = 'https://api.twilio.com/2010-04-01/Accounts/ACnotloggeddddddddddddddddddddd/Messages/MMbad/Media/MEbad';
       const mockA = installFetchMock(() => ({ status: 404, body: 'not found' }));
       const publishSpyA = jest.spyOn(broker, 'publish');
       try {
@@ -744,7 +808,7 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
         const res = await http(t)
           .post('/webhooks/twilio')
           .type('form')
-          .send({ From: `whatsapp:${phone}`, Body: 'hola', NumMedia: '1', MediaUrl0: 'https://media.twiliocdn.test/Messages/MMx/Media/MEnocreds', MediaContentType0: 'image/jpeg' });
+          .send({ From: `whatsapp:${phone}`, Body: 'hola', NumMedia: '1', MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACnotloggeddddddddddddddddddddd/Messages/MMx/Media/MEnocreds', MediaContentType0: 'image/jpeg' });
         expect(res.status).toBe(200);
 
         expect(mockB.requests).toHaveLength(0); // sin credenciales no llega a `fetch`
@@ -798,7 +862,7 @@ describe('1.19 Canal WhatsApp — Twilio, media entrante (BE-TWA-12..15)', () =>
       const res = await http(t)
         .post('/webhooks/twilio')
         .type('form')
-        .send({ From: `whatsapp:${phone}`, Body: 'foto pesada', NumMedia: '1', MediaUrl0: 'https://media.twiliocdn.test/Messages/MMh/Media/MEhuge', MediaContentType0: 'image/jpeg' });
+        .send({ From: `whatsapp:${phone}`, Body: 'foto pesada', NumMedia: '1', MediaUrl0: `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/MMh/Media/MEhuge`, MediaContentType0: 'image/jpeg' });
       expect(res.status).toBe(200);
 
       const call = publishSpy.mock.calls.find(

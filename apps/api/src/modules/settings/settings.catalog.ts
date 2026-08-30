@@ -484,6 +484,20 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     description: 'Auth Token de la cuenta de Twilio (Console > Account Info). Se guarda cifrado.',
   },
   {
+    key: 'TWILIO_WEBHOOK_PUBLIC_URL',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'URL pública para verificar la firma de los webhooks',
+    defaultValue: '',
+    placeholder: 'https://miapp.com',
+    description:
+      'Protocolo + host públicos (sin path, sin barra final) por los que Twilio llega a esta ' +
+      'API — la misma que está pegada en la consola de Twilio para los webhooks de WhatsApp ' +
+      '(/webhooks/twilio) y SMS (/webhooks/twilio-sms). Se usa para validar `X-Twilio-Signature` ' +
+      'en cada POST entrante. Sin configurar, la verificación queda desactivada y cualquiera que ' +
+      'conozca la URL puede publicar mensajes falsos (deuda conocida).',
+  },
+  {
     key: 'TWILIO_WHATSAPP_FROM',
     type: 'string',
     group: 'Mensajería: WhatsApp (Twilio)',
