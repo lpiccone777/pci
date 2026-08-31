@@ -44,7 +44,7 @@ describe('2.6 Conocido vs desconocido (CHAT-KNOWN-*)', () => {
   let role: { id: string };
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   async function unsetAllDefaults() {

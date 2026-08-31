@@ -1,7 +1,5 @@
 import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
-import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
-import { PrismaService } from '../../prisma/prisma.service';
 
 interface GupshupInnerPayload {
   /** 'text' | 'button_reply' | 'list_reply' | 'image' | ... */
@@ -30,11 +28,7 @@ interface GupshupWebhookPayload {
 export class GupshupWebhookController {
   private readonly logger = new Logger(GupshupWebhookController.name);
 
-  constructor(
-    private readonly appConfig: AppConfigService,
-    private readonly broker: BrokerService,
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly broker: BrokerService) {}
 
   @Post()
   @HttpCode(200)
@@ -45,15 +39,8 @@ export class GupshupWebhookController {
       return { status: 'ok' };
     }
 
-    const tenantId = await this.resolveTenantId();
-    if (!tenantId) {
-      this.logger.error(
-        'Mensaje de Gupshup recibido pero no hay tenant configurado ' +
-          '(GUPSHUP_WHATSAPP_TENANT_ID en /settings, ni ningún tenant en el sistema).',
-      );
-      return { status: 'ignored' };
-    }
-
+    // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
+    // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
     const from = payload.payload?.sender?.phone;
     const body = this.extractBody(payload.payload);
     if (!from || body === null) {
@@ -66,7 +53,6 @@ export class GupshupWebhookController {
     await this.broker.publish('whatsapp.incoming', {
       pattern: 'message.received',
       data: { from: `+${from}`, body, channel: 'whatsapp' },
-      tenantId,
       timestamp: new Date().toISOString(),
     });
 
@@ -86,19 +72,5 @@ export class GupshupWebhookController {
     }
     if (inner.type === 'text') return inner.payload?.text ?? null;
     return null;
-  }
-
-  /** A qué tenant se asignan los mensajes entrantes. Mismo criterio que `WhatsAppWebhookController.resolveTenantId`. */
-  private async resolveTenantId(): Promise<string | null> {
-    const configured = await this.appConfig.get('GUPSHUP_WHATSAPP_TENANT_ID');
-    if (configured) return configured;
-
-    // Sin esto, si la empresa más vieja se da de baja, los mensajes entrantes le siguen
-    // resolviendo a ella y `ConversationsService.handleMessage` los descarta en silencio.
-    const first = await this.prisma.tenant.findFirst({
-      where: { deletedAt: null },
-      orderBy: { createdAt: 'asc' },
-    });
-    return first?.id ?? null;
   }
 }

@@ -167,7 +167,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
   // --- BE-SKL-08 (SEC-17): un Flow compartido entre A (dueña de la skill) y B no debe filtrar
   // el texto de la skill de A hacia una charla de B ---
   it.failing(
-    'BE-SKL-08: una charla del tenant B en un Flow compartido con A no debe recibir la Skill de A (SEC-17)',
+    'BE-SKL-08: una charla del tenant B en un Flow compartido con A no debe recibir la Skill de A (SEC-17) @invertido',
     async () => {
       const tenantA = await createTenant(t.prisma, { slug: uniqueSlug('skl08a') });
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('skl08b') });
@@ -202,7 +202,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
       });
 
       const res = await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: userDeB.phone, body: 'Hola, tengo una consulta sobre mi cuenta', tenantId: tenantB.id });
 
       expect(res.status).toBe(201); // @Post() default
@@ -219,7 +219,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
 
   // --- BE-SKL-09 (SEC-17): POST/PATCH /flows con un skillId de OTRA empresa debe rechazar ---
   describe('BE-SKL-09 (SEC-17): skillId de otra empresa en /flows', () => {
-    it.failing('BE-SKL-09: POST /flows con un skillId de otra empresa debe devolver 400/403 (SEC-17)', async () => {
+    it.failing('BE-SKL-09: POST /flows con un skillId de otra empresa debe devolver 400/403 (SEC-17) @invertido', async () => {
       const tenantA = await createTenant(t.prisma, { slug: uniqueSlug('skl09posta') });
       const skillDeA = await createSkill(t.prisma, { tenantId: tenantA.id, name: uniqueSlug('skl09-skill'), promptText: 'texto' });
       const { tenant: tenantB, token: tokenB } = await buildTenantWithPerms(t, 'skl09postb', FLOW_CRUD_PERMS);
@@ -237,7 +237,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
       expect([400, 403]).toContain(res.status);
     });
 
-    it.failing('BE-SKL-09: PATCH /flows/:id con un skillId de otra empresa debe devolver 400/403 (SEC-17)', async () => {
+    it.failing('BE-SKL-09: PATCH /flows/:id con un skillId de otra empresa debe devolver 400/403 (SEC-17) @invertido', async () => {
       const tenantA = await createTenant(t.prisma, { slug: uniqueSlug('skl09patcha') });
       const skillDeA = await createSkill(t.prisma, { tenantId: tenantA.id, name: uniqueSlug('skl09-skill-patch'), promptText: 'texto' });
       const { tenant: tenantB, token: tokenB } = await buildTenantWithPerms(t, 'skl09patchb', FLOW_CRUD_PERMS);
@@ -255,7 +255,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
   // --- BE-SKL-10 (robustez, sin número de hallazgo): una Skill isActive:false no debería
   // concatenarse al prompt aunque el flujo la tenga vinculada ---
   it.failing(
-    'BE-SKL-10: una Skill marcada isActive:false no debería concatenarse al prompt del flujo que la usa',
+    'BE-SKL-10: una Skill marcada isActive:false no debería concatenarse al prompt del flujo que la usa @invertido',
     async () => {
       const tenant = await createTenant(t.prisma, { slug: uniqueSlug('skl10') });
       const skillInactiva = await createSkill(t.prisma, {
@@ -284,7 +284,7 @@ describe('1.23 Skills (BE-SKL-*)', () => {
       });
 
       const res = await http(t)
-        .post('/conversations/simulate')
+        .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
         .send({ from: user.phone, body: 'Hola, necesito información', tenantId: tenant.id });
 
       expect(res.status).toBe(201);

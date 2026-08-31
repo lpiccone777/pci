@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { systemTenantSlug } from '../../common/system-tenant';
 import { isProtectedRole } from '../rbac/protected-role';
 import {
@@ -133,20 +134,7 @@ export class UsersService {
    * filtra por el permiso que el usuario tiene en ella.
    */
   async findMine(userId: string) {
-    const myMemberships = await this.prisma.userTenant.findMany({
-      where: { userId, tenant: { deletedAt: null } },
-      include: {
-        role: { select: { permissions: { select: { resource: true, action: true } } } },
-      },
-    });
-
-    const readableTenantIds = myMemberships
-      .filter((m) =>
-        m.role.permissions.some(
-          (p) => p.resource === 'users' && p.action === 'read',
-        ),
-      )
-      .map((m) => m.tenantId);
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'users');
 
     if (readableTenantIds.length === 0) return [];
 
@@ -258,7 +246,7 @@ export class UsersService {
   }
 
   async create(tenantId: string, requesterId: string, dto: CreateUserDto) {
-    await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
+    await this.assertRoleBelongsToTenant(tenantId, dto.roleId, requesterId);
 
     const areaId = dto.areaId || null;
     if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
@@ -323,7 +311,7 @@ export class UsersService {
 
     // Rol y área tienen que pertenecer a SU empresa: sin esto se colaría RBAC entre empresas.
     for (const m of dto.memberships) {
-      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId, requesterId);
       if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
     }
 
@@ -378,7 +366,7 @@ export class UsersService {
    * email en el sistema) que se devuelve para que quien importa se la pase al usuario.
    */
   async bulkImport(tenantId: string, requesterId: string, dto: BulkImportUsersDto) {
-    await this.assertRoleBelongsToTenant(tenantId, dto.defaultRoleId);
+    await this.assertRoleBelongsToTenant(tenantId, dto.defaultRoleId, requesterId);
     const areaId = dto.defaultAreaId || null;
     if (areaId) await this.assertAreaBelongsToTenant(tenantId, areaId);
 
@@ -597,7 +585,7 @@ export class UsersService {
     const membership: { roleId?: string; areaId?: string | null } = {};
 
     if (dto.roleId) {
-      await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
+      await this.assertRoleBelongsToTenant(tenantId, dto.roleId, requesterId);
       membership.roleId = dto.roleId;
     }
 
@@ -721,12 +709,12 @@ export class UsersService {
     // Validaciones de permiso, rol y área antes de tocar nada.
     for (const m of toCreate) {
       await this.assertCanManageUsersInTenant(requesterId, m.tenantId, 'create');
-      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId, requesterId, isSuper);
       if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
     }
     for (const m of toUpdate) {
       await this.assertCanManageUsersInTenant(requesterId, m.tenantId, 'update');
-      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId);
+      await this.assertRoleBelongsToTenant(m.tenantId, m.roleId, requesterId, isSuper);
       if (m.areaId) await this.assertAreaBelongsToTenant(m.tenantId, m.areaId);
     }
 
@@ -977,6 +965,25 @@ export class UsersService {
     });
   }
 
+  /**
+   * Todas las membresías activas del teléfono, con empresa y rol — versión plural de
+   * `findMembershipByPhone`. La usa el ruteo de tenant entrante para decidir qué empresa
+   * atiende: una sola → directo; varias → se le pregunta al usuario; ninguna → tenant de
+   * sistema. Excluye usuario y empresas dados de baja. Ordena por antigüedad de la empresa
+   * para que la lista ofrecida sea estable.
+   */
+  async findMembershipsByPhone(phone: string) {
+    return this.prisma.userTenant.findMany({
+      where: { user: { phone, deletedAt: null }, tenant: { deletedAt: null } },
+      include: {
+        user: { select: USER_SELECT },
+        role: { select: { id: true, name: true } },
+        tenant: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: { tenant: { createdAt: 'asc' } },
+    });
+  }
+
   async findByPhone(phone: string) {
     return this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
   }
@@ -1092,11 +1099,31 @@ export class UsersService {
     }
   }
 
-  /** El rol tiene que existir y pertenecer al tenant: si no, se filtra RBAC entre tenants. */
-  private async assertRoleBelongsToTenant(tenantId: string, roleId: string) {
-    const role = await this.prisma.role.findFirst({ where: { id: roleId, tenantId } });
+  /**
+   * El rol tiene que existir y pertenecer al tenant: si no, se filtra RBAC entre tenants.
+   * Además, el rol protegido `SuperAdmin` (ver `isProtectedRole`) solo lo puede asignar OTRO
+   * SuperAdmin: sin este corte, cualquiera con `users:create`/`users:update` en el tenant de
+   * sistema podía ver el id de ese rol vía `GET /roles` y otorgárselo a sí mismo o a un tercero
+   * mandándolo como `roleId` — pertenece de verdad a ese tenant, así que la validación de
+   * pertenencia sola no alcanzaba para frenarlo. `isSuper` se puede pasar ya resuelto, mismo
+   * criterio que `hasUsersPermissionInTenant`.
+   */
+  private async assertRoleBelongsToTenant(
+    tenantId: string,
+    roleId: string,
+    requesterId: string,
+    isSuper?: boolean,
+  ) {
+    const role = await this.prisma.role.findFirst({
+      where: { id: roleId, tenantId },
+      select: { name: true, tenant: { select: { slug: true } } },
+    });
     if (!role) {
       throw new BadRequestException('El rol no existe o no pertenece a este tenant');
+    }
+    const isProtected = isProtectedRole(role.name, role.tenant.slug, systemTenantSlug(this.config));
+    if (isProtected && !(isSuper ?? (await this.isSystemSuperUser(requesterId)))) {
+      throw new ForbiddenException('Solo el superusuario del sistema puede asignar ese rol');
     }
   }
 

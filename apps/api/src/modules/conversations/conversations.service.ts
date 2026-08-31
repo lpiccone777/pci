@@ -11,6 +11,7 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService } from '../context-sources/context-sources.service';
+import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-tenant-routing.service';
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
@@ -134,6 +135,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly contextSourcesService: ContextSourcesService,
     private readonly invgateService: InvgateService,
     private readonly twilioMedia: TwilioMediaService,
+    private readonly inboundTenantRouting: InboundTenantRoutingService,
   ) {}
 
   async onModuleInit() {
@@ -155,8 +157,12 @@ export class ConversationsService implements OnModuleInit {
    * —a través del broker, no en memoria— la respuesta que `handleMessage` publica
    * de vuelta. Simula el funcionamiento real: RabbitMQ de punta a punta, no una
    * llamada directa que se salte la cola.
+   *
+   * `tenantId` opcional: con valor, `handleMessage` usa esa empresa y corta el ruteo
+   * (probar el flujo de un tenant puntual); sin valor, pasa por el ruteo por membresía
+   * como un canal real (incluido el selector de empresa, que vuelve como texto acá).
    */
-  async simulateIncomingMessage(from: string, body: string, tenantId: string): Promise<string> {
+  async simulateIncomingMessage(from: string, body: string, tenantId?: string): Promise<string> {
     const reply = await this.broker.request(
       SIMULATE_QUEUE,
       {
@@ -196,14 +202,111 @@ export class ConversationsService implements OnModuleInit {
     // viejo que todavía no lo mande. Determina de qué `Conversation` se habla (un mismo
     // usuario puede tener una charla activa por WhatsApp y otra por SMS al mismo tiempo,
     // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
-    const {
-      from,
-      body,
-      channel = 'whatsapp',
-      attachments = [],
-    } = msg.data as { from: string; body: string; channel?: string; attachments?: StoredAttachment[] };
-    const tenantId = msg.tenantId!;
+    const { from, channel = 'whatsapp' } = msg.data as {
+      from: string;
+      body: string;
+      channel?: string;
+      attachments?: StoredAttachment[];
+    };
+    // `body` y `attachments` son `let`: si el usuario venía respondiendo el selector de
+    // empresa, se reemplazan por los del mensaje original que disparó la pregunta, para
+    // reprocesarlo (texto Y adjuntos) en la empresa elegida.
+    let body = (msg.data as { body: string }).body;
+    let attachments: StoredAttachment[] =
+      (msg.data as { attachments?: StoredAttachment[] }).attachments ?? [];
     const outgoingQueue = `${channel}.outgoing`;
+
+    // Resolución de la empresa. `/simulate` y el RPC mandan `tenantId` explícito y cortan acá;
+    // los mensajes reales de canal llegan SIN tenant y se rutean por la membresía del teléfono
+    // (una empresa → directo; varias → se pregunta; ninguna → tenant de sistema). Ver
+    // InboundTenantRoutingService.
+    let tenantId = msg.tenantId;
+    if (!tenantId) {
+      let routing: InboundRoutingResult;
+      try {
+        routing = await this.inboundTenantRouting.resolve(from, channel, body, attachments);
+      } catch (err) {
+        this.logger.error(
+          `No se pudo resolver la empresa para ${from} (${channel}): ${err instanceof Error ? err.message : err}`,
+        );
+        // Falló la resolución de empresa (p. ej. un choque transitorio al registrar la selección
+        // pendiente). En vez de descartar el mensaje en silencio, se avisa al usuario para que
+        // reintente. Mismo patrón de publicación que el path del selector: por RPC (/simulate, con
+        // `replyTo`) se responde por esa cola para no dejar al llamador colgado hasta el timeout;
+        // por canal real, al `${channel}.outgoing`, para que el usuario reciba el aviso.
+        const notice =
+          'Tuvimos un problema para procesar tu mensaje. Por favor, probá de nuevo en unos instantes.';
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: notice },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        return notice;
+      }
+      if (routing.status === 'ignored') {
+        // No hay empresa que pueda atender (sin membresía y sin tenant configurado ni de
+        // sistema): silencio hacia el usuario — un saliente de error acá sería un mensaje
+        // pago POR CADA entrante. El motivo ya quedó logueado por el propio routing. Por RPC
+        // (/simulate) sí se responde, para no dejar al llamador colgado hasta el timeout.
+        if (msg.replyTo) {
+          const notice = 'No hay ninguna empresa configurada para atender este mensaje.';
+          await this.broker.publish(
+            msg.replyTo,
+            {
+              pattern: 'message.send',
+              data: { to: from, body: notice },
+              timestamp: new Date().toISOString(),
+              correlationId: msg.correlationId,
+            },
+            { assert: false },
+          );
+          return notice;
+        }
+        return '';
+      }
+      if (routing.status === 'notice') {
+        // Aviso por cambio administrativo (empresa dada de baja, membresía revocada a mitad
+        // de charla): se informa y se corta — el próximo mensaje re-rutea de cero.
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: routing.body },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        return routing.body;
+      }
+      if (routing.status === 'ask') {
+        // Todavía no hay empresa (ni conversación): se le pregunta y se corta. La respuesta del
+        // usuario entrará como un mensaje nuevo y la matcheará el propio InboundTenantRoutingService.
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: routing.body, interactive: routing.interactive },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        this.logger.log(`[selector] Empresa preguntada a ${from} (${channel}).`);
+        return routing.interactive
+          ? `${routing.body}\n\n${this.formatInteractiveAsText(routing.interactive)}`
+          : routing.body;
+      }
+      tenantId = routing.tenantId;
+      if (routing.replayBody !== undefined) body = routing.replayBody;
+      if (routing.replayAttachments?.length) attachments = routing.replayAttachments;
+    }
+    if (!tenantId) return '';
 
     this.logger.log(`[${tenantId}] Mensaje de ${from}: ${body.substring(0, 50)}...`);
 
@@ -1220,7 +1323,7 @@ export class ConversationsService implements OnModuleInit {
     const collaboratorIds: string[] = Array.isArray(data.collaborators) ? data.collaborators : [];
 
     const assignee = assigneeIds.length
-      ? await this.pickNextAssignee(flowId, node.id, assigneeIds)
+      ? await this.pickNextAssignee(flowId, node.id, assigneeIds, tenantId)
       : null;
 
     // `data.message` es texto configurado en el editor y puede traer `{{variable}}`
@@ -1269,8 +1372,16 @@ export class ConversationsService implements OnModuleInit {
       const notifyIds = Array.from(
         new Set([assignee?.id, ...watcherIds, ...collaboratorIds].filter(Boolean)),
       ) as string[];
+      // Filtrado por `tenantId`: `data.assignees`/`watchers`/`collaborators` son userIds fijados
+      // en el editor. `sanitizeCrossTenantRefs` los sanea al guardar el flujo, pero contra el
+      // conjunto de TODAS las empresas a las que el flujo está asignado — un flujo compartido
+      // entre A y B puede legítimamente traer gente de ambas. Sin este filtro, la conversación
+      // de un cliente de A podía terminar mandándole el email de transferencia (con su nombre,
+      // teléfono y nota) a alguien que solo pertenece a B.
       const recipients = notifyIds.length
-        ? await this.prisma.user.findMany({ where: { id: { in: notifyIds } } })
+        ? await this.prisma.user.findMany({
+            where: { id: { in: notifyIds }, tenants: { some: { tenantId, tenant: { deletedAt: null } } } },
+          })
         : [];
       const userName =
         [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.phone || 'Un usuario';
@@ -1316,7 +1427,13 @@ export class ConversationsService implements OnModuleInit {
     const text = data.message ? this.interpolate(data.message, flowState) : '';
 
     if (text && recipientIds.length) {
-      const recipients = await this.prisma.user.findMany({ where: { id: { in: recipientIds } } });
+      // Mismo filtro por `tenantId` que en `executeTransferAgentNode`: un `data.recipients`
+      // configurado en el editor de un flujo compartido puede traer gente de otra empresa
+      // asignada al mismo flujo — sin esto, la conversación de un cliente de esta empresa
+      // podía terminar mandando un SMS con su nombre/nota a alguien de una empresa distinta.
+      const recipients = await this.prisma.user.findMany({
+        where: { id: { in: recipientIds }, tenants: { some: { tenantId, tenant: { deletedAt: null } } } },
+      });
       for (const recipient of recipients) {
         if (!recipient.phone) continue;
         await this.broker.publish('sms.outgoing', {
@@ -1331,14 +1448,25 @@ export class ConversationsService implements OnModuleInit {
     return { flowState };
   }
 
-  /** Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en FlowNodeRoundRobin. */
-  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[]) {
-    // `data.assignees` es config del nodo (no se actualiza sola cuando alguien se da de
-    // baja), así que filtramos acá: un colaborador soft-deleted sale de la rotación en
-    // vez de seguir recibiendo tickets/transferencias. Orden estable según `assigneeIds`,
-    // no el que devuelva la DB.
+  /**
+   * Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en
+   * FlowNodeRoundRobin. Filtra por `tenantId`, no solo por `deletedAt`: `data.assignees` es
+   * config del nodo, y un flujo compartido entre varias empresas puede legítimamente traer
+   * gente de todas ellas (`sanitizeCrossTenantRefs` sanea contra ESE conjunto al guardar, no
+   * contra la empresa puntual de cada conversación) — sin este filtro, el ticket/transferencia
+   * de un cliente de esta empresa podía terminar asignado a alguien de otra.
+   */
+  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[], tenantId: string) {
+    // `data.assignees` no se actualiza solo cuando alguien se da de baja (de la persona, o de
+    // esta empresa puntual), así que filtramos acá: sale de la rotación en vez de seguir
+    // recibiendo tickets/transferencias. Orden estable según `assigneeIds`, no el que
+    // devuelva la DB.
     const active = await this.prisma.user.findMany({
-      where: { id: { in: assigneeIds }, deletedAt: null },
+      where: {
+        id: { in: assigneeIds },
+        deletedAt: null,
+        tenants: { some: { tenantId, tenant: { deletedAt: null } } },
+      },
     });
     if (!active.length) return null;
     const activeIds = assigneeIds.filter((id) => active.some((u) => u.id === id));

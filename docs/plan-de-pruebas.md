@@ -1,8 +1,10 @@
 # 🧪 Plan de pruebas — PCI Chatbot
 
-> **Actualizado hasta el commit `c2ebde8`** en la rama `juang-dev` — «Merge pull request #6 from
-> lpiccone777/martin-dev» (2026-08-18). Incluye los canales Twilio y Gupshup (WhatsApp y SMS), la
-> integración con InvGate y el modelo Skill por flujo.
+> **Actualizado hasta el commit `45c6f2b`** en la rama `juang-dev` — «test(web): la batería e2e
+> vuelve a correr contra el backoffice actualizado» (2026-08-25). Incorpora la importación masiva de
+> usuarios desde Excel, el nodo `llm_query` multi-variable con `temperature` configurable, la media
+> entrante de Twilio (imágenes al ticket de InvGate), la separación del superusuario del sistema del
+> simple miembro de la empresa de sistema, y cierra **SEC-08** (`ticket_query` scopeado por empresa).
 
 Documento de casos de prueba del sistema. Tres secciones independientes:
 
@@ -29,7 +31,7 @@ Sección 3.
 ### Prioridad de un caso
 
 La prioridad se asigna **por bloque**, no caso por caso: dentro de un bloque los casos comparten
-riesgo, y una columna extra en 565 filas sería ruido más que ayuda. La columna **P** del tablero
+riesgo, y una columna extra en 577 filas sería ruido más que ayuda. La columna **P** del tablero
 la fija para cada bloque.
 
 - **`P0` — bloqueante.** Autenticación, permisos, aislamiento entre empresas, secretos, datos de
@@ -42,9 +44,30 @@ la fija para cada bloque.
 
 - **`P2` — deseable.** Comportamiento responsive. Se ejecuta si hay margen 🟢
 
-**Los 35 casos invertidos son `P0` por definición**, sin importar en qué bloque
-estén: describen el comportamiento seguro que hoy no existe. Liberar con alguno en `❌` es una
+**Los 45 casos invertidos son `P0` por definición**, sin importar en qué bloque
+estén: describen el comportamiento seguro o correcto que hoy no existe (incluye los 11 de la
+auditoría de frontend multiempresa del 2026-08-21). Liberar con alguno en `❌` es una
 decisión de riesgo tomada a propósito, no un descuido del tablero.
+
+### Caso excluido (⏭️)
+
+Un resultado esperado que arranca con **⏭️ Excluido** describe un caso que **no se
+automatiza**: el gesto es difícil de reproducir de forma confiable en un test end-to-end y
+su valor relativo es bajo. La descripción del comportamiento esperado se conserva igual —
+sigue siendo válida para una verificación manual—, pero el caso queda fuera de la batería
+automatizada. Distinto de `❌` (comportamiento correcto que hoy no existe): un caso `⏭️`
+puede funcionar perfecto; simplemente se decide no cubrirlo con automatización.
+
+### Caso bloqueado por infraestructura real (🔌)
+
+Un resultado esperado que arranca con **🔌 Bloqueado (infra real)** describe un caso cuyo
+comportamiento es correcto y deseable, pero que **no corre en la batería automatizada** porque
+exige infraestructura externa viva que no se puede simular sin terminar probando el mock en vez
+del sistema: un **servidor SMTP real**, una **API key real** de un proveedor de LLM externo, o el
+backend levantado en una configuración de entorno particular. El test existe pero queda como
+`skip` con la anotación `[BLOQUEADO: …]`. Distinto de `⏭️` (gesto difícil de reproducir y de bajo
+valor) y de `❌` (comportamiento correcto que hoy no existe): un caso `🔌` está implementado y se
+verifica **a mano** contra la infraestructura real cuando hace falta.
 
 ### Entorno de pruebas
 
@@ -92,41 +115,42 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **568 casos** · Backend 312 · Chatbot 142 · Frontend 114 · de los cuales **275 son `P0`**
-(259 por la prioridad del bloque + los 16 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
-BE-WHK-08, BE-TWA-10, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-10, BE-IG-11, BE-SKL-08, BE-SKL-09,
-BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11 y CHAT-LLMF-12).
+Total del plan: **623 casos** · Backend 333 · Chatbot 152 · Frontend 138 · de los cuales **311 son `P0`**
+(283 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
+BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
+FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **312** |
+| **Backend (§1)** | | **333** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
 | 1.4 Tenants | 🟠 P1 | 11 |
-| 1.5 Usuarios | 🔴 P0 | 26 |
+| 1.5 Usuarios | 🔴 P0 | 35 |
 | 1.6 Áreas | 🟠 P1 | 23 |
 | 1.7 Configuración y secretos | 🔴 P0 | 20 |
-| 1.8 Flujos | 🟠 P1 | 19 |
+| 1.8 Flujos | 🟠 P1 | 21 |
 | 1.9 Fuentes de verdad | 🟠 P1 | 19 |
 | 1.10 LLM | 🟠 P1 | 20 |
 | 1.11 Broker | 🟠 P1 | 13 |
 | 1.12 Webhook WhatsApp | 🟠 P1 | 10 |
 | 1.13 Salida WhatsApp | 🟠 P1 | 9 |
 | 1.14 Canal de email | 🔴 P0 | 8 |
-| 1.15 Datos, seed y migraciones | 🔴 P0 | 5 |
+| 1.15 Datos, seed y migraciones | 🔴 P0 | 6 |
 | 1.16 Endpoints públicos | 🟠 P1 | 3 |
 | 1.17 Seguridad transversal | 🔴 P0 | 3 |
 | 1.18 Placeholders | 🚧 | 6 |
-| 1.19 Canal WhatsApp — Twilio | 🟠 P1 | 11 |
+| 1.19 Canal WhatsApp — Twilio | 🟠 P1 | 15 |
 | 1.20 Canal WhatsApp — Gupshup | 🟠 P1 | 7 |
-| 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 10 |
-| 1.22 Integración InvGate | 🟠 P1 | 14 |
+| 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
+| 1.22 Integración InvGate | 🟠 P1 | 17 |
 | 1.23 Skills | 🟠 P1 | 10 |
-| **Chatbot (§2)** | | **142** |
+| **Chatbot (§2)** | | **152** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
 | 2.2 Arranque de flujo | 🔴 P0 | 5 |
-| 2.3 Nodos del motor | 🔴 P0 | 82 |
+| 2.3 Nodos del motor | 🔴 P0 | 92 |
 | 2.4 Encadenamiento | 🟠 P1 | 5 |
 | 2.5 Espera en dos fases | 🟠 P1 | 3 |
 | 2.6 Conocido vs desconocido | 🔴 P0 | 4 |
@@ -137,31 +161,39 @@ BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11 y CHAT-LLMF-12).
 | 2.11 Cierre por inactividad | 🟠 P1 | 4 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **114** |
-| 3.1 Infraestructura | 🔴 P0 | 15 |
+| **Frontend (§3)** | | **138** |
+| 3.1 Infraestructura | 🔴 P0 | 19 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
-| 3.4 Usuarios | 🟠 P1 | 14 |
+| 3.4 Usuarios | 🟠 P1 | 20 |
 | 3.5 Roles | 🟠 P1 | 10 |
-| 3.6 Tenants | 🟠 P1 | 5 |
+| 3.6 Tenants | 🟠 P1 | 7 |
 | 3.7 Áreas | 🟠 P1 | 5 |
-| 3.8 Configuración | 🟠 P1 | 15 |
-| 3.9 Fuentes de verdad | 🟠 P1 | 10 |
-| 3.10 Flujos (editor) | 🟠 P1 | 21 |
+| 3.8 Configuración | 🟠 P1 | 17 |
+| 3.9 Fuentes de verdad | 🟠 P1 | 12 |
+| 3.10 Flujos (editor) | 🟠 P1 | 29 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **568** |
+| **TOTAL** | | **623** |
 
-> **Nota:** 35 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro deseado, hoy
-> no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 26 están ligados a los
-> **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa BE-TWA-10 / BE-GUP-06 /
-> BE-SMS-09, y `SEC-17` agrupa BE-SKL-08 / BE-SKL-09). Los otros **9** son de **robustez o calidad**, sin
-> número de hallazgo: BE-EML-03 (canal de email caído), BE-MT-12 y FE-INF-13 (menú del superusuario),
-> CHAT-N-LLM-04 (nodo LLM sin blindar), BE-SMS-07 (Gupshup SMS descarta el menú), BE-IG-10 (cachés de
-> InvGate sin invalidar en caliente), BE-SKL-10 (`isActive` de Skill sin efecto en el motor) y
-> CHAT-LLMF-11 / CHAT-LLMF-12 (prompt injection y alucinación desde la fuente de verdad). El escenario de
-> datos sobre el que corre todo el plan está en el **Apéndice C**; las matrices de comprobación
-> transversales, en el **Apéndice B**.
+> **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
+> deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
+> ligados a los **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa BE-TWA-10 /
+> BE-GUP-06 / BE-SMS-09, y `SEC-17` agrupa BE-SKL-08 / BE-SKL-09; **SEC-08 ya quedó cerrado** —
+> CHAT-N-TKQ-03 pasó a `✅`). Los otros **20** son de **robustez, calidad o UX**, sin número de hallazgo:
+> BE-EML-03 (canal de email caído), CHAT-N-LLM-04 (nodo LLM sin blindar), BE-SMS-07 (Gupshup SMS descarta
+> el menú), BE-SKL-10 (`isActive` de Skill sin efecto en el motor), CHAT-LLMF-11 / CHAT-LLMF-12 (prompt
+> injection y alucinación desde la fuente de verdad), BE-FLW-21 (validación floja de los parámetros de
+> extracción de `llm_query`), BE-TWA-14 (media de Twilio sin tope de bytes), FE-FLW-29 (importar un flujo
+> no sanea los ids embebidos cross-tenant), y los **11 de la auditoría de frontend multiempresa**
+> (2026-08-21): FE-INF-16 (no redirige al salir de una pantalla solo-sistema), FE-USR-15 (falso "cambios
+> sin guardar"), FE-USR-16 (`users:create` sin `roles:read`), FE-TEN-06 / FE-TEN-07 (cache del sidebar
+> stale), FE-CS-11 / FE-CS-12 (Fuentes de verdad ignora el modo consolidado), FE-FLW-22 / FE-FLW-23
+> (editor de flujos: empresa activa vs. la del flujo), FE-FLW-24 (500 del catálogo InvGate) y FE-FLW-25
+> (Flujos oculta el 403). **Casos ya corregidos** (pasaron a `✅` en esta actualización): SEC-08 /
+> CHAT-N-TKQ-03, BE-MT-12 y FE-INF-13 (superusuario), BE-IG-10 (creator_id de InvGate en caliente). El
+> escenario de datos sobre el que corre todo el plan está en el **Apéndice C**; las matrices de
+> comprobación transversales, en el **Apéndice B**.
 
 ---
 
@@ -263,7 +295,7 @@ header `X-Tenant-Id`; `TenantGuard` valida la pertenencia contra `UserTenant` y 
 | BE-MT-09 | **Aislamiento de datos:** listar recursos por tenant (roles, usuarios, flujos) parado en el tenant A | Sólo devuelve datos del tenant A, nunca del B |
 | BE-MT-10 | Membresía en un tenant que está dado de baja | No cuenta como pertenencia (queries filtran `tenant.deletedAt: null`) |
 | BE-MT-11 | Enviar `tenantId` en el body en lugar del header | Se ignora; el tenant sale de `@CurrentTenant()` |
-| BE-MT-12 | El **superusuario del sistema** parado en una empresa común (header con el id de esa empresa) llama a **todas** las operaciones con candado de superusuario: configuración, ABM de empresas, y las vistas de todas las empresas de usuarios, roles, áreas y flujos | **Debe** responder 200 en todas, **por el mismo mecanismo que ya deja pasar al resto del menú**: cuando el superusuario se para en una empresa de la que no es miembro, `TenantGuard` le deja como vínculo activo el de la **empresa de sistema** (BE-MT-06), y de ese vínculo salen sus permisos. El candado tiene que leer ese vínculo —igual que `RolesGuard` con todos los demás ítems—, no la empresa elegida en el selector. Un administrador de empresa común sigue recibiendo 403 aunque se auto-asigne el permiso: no tiene vínculo con la empresa de sistema y no puede dárselo. Todas son **globales por naturaleza** (la configuración es única en toda la base y las vistas de todas las empresas no dependen de cuál esté elegida), así que devuelven lo mismo esté parado donde esté. ⚠️ Hoy el candado es el único de la cadena que mira la **empresa activa** en vez del vínculo, y devuelve 403 en todas apenas el superusuario sale de la empresa de sistema: `❌` hasta que lea lo mismo que el resto. **Las dos pantallas del menú (Configuración y Tenants) son el síntoma visible; el resto viaja con el mismo cambio** porque el candado es una sola pieza compartida |
+| BE-MT-12 | El **superusuario del sistema** parado en una empresa común (header con el id de esa empresa) llama a **todas** las operaciones con candado de superusuario: configuración, ABM de empresas, y las vistas de todas las empresas de usuarios, roles, áreas y flujos | **Debe** responder 200 en todas, **por el mismo mecanismo que ya deja pasar al resto del menú**: cuando el superusuario se para en una empresa de la que no es miembro, `TenantGuard` le deja como vínculo activo el de la **empresa de sistema** (BE-MT-06), y de ese vínculo salen sus permisos. El candado tiene que leer ese vínculo —igual que `RolesGuard` con todos los demás ítems—, no la empresa elegida en el selector. Un administrador de empresa común sigue recibiendo 403 aunque se auto-asigne el permiso: no tiene vínculo con la empresa de sistema y no puede dárselo. Todas son **globales por naturaleza** (la configuración es única en toda la base y las vistas de todas las empresas no dependen de cuál esté elegida), así que devuelven lo mismo esté parado donde esté. ✅ Implementado: el candado lee el **vínculo resuelto** (`SystemTenantGuard` mira `request.userTenant`, y `TenantGuard.resolveAsSystemUser` deja el vínculo de sistema y exige rol SuperAdmin), no la empresa activa, así que responde 200 esté parado donde esté. **Las dos pantallas del menú (Configuración y Tenants) son el síntoma visible; el resto viaja con el mismo cambio** porque el candado es una sola pieza compartida |
 | BE-MT-13 | Un usuario que **es miembro del tenant de sistema pero con un rol común** (no SuperAdmin) manda el header de una empresa de la que **no** es miembro | 403 "No tenés acceso a este tenant". Complemento adversarial de BE-MT-06: pertenecer al tenant de sistema **no** alcanza para pararse en cualquier empresa; solo el rol protegido `SuperAdmin` hereda ese poder. `TenantGuard.resolveAsSystemUser` corta por el **rol** (`isProtectedRole`), no por la mera pertenencia al tenant de sistema, así que este usuario recibe el mismo 403 que un usuario ajeno (BE-MT-05). Sin esta distinción, cualquier miembro de la empresa de sistema operaría como superusuario — exactamente el hueco que cerró el PR |
 
 ## 1.4 Tenants — gestión y doble candado de superusuario
@@ -290,7 +322,9 @@ header `X-Tenant-Id`; `TenantGuard` valida la pertenencia contra `UserTenant` y 
 **Precondición:** una persona = 1 fila `User` + N membresías `UserTenant`. Cuatro campos son
 **únicos globales**: `email`, `phone`, `internalPhone` (interno telefónico), `invgateUserId`.
 Las operaciones multiempresa (`/users/multi`, `/users/:id/full`) autorizan **por empresa**
-dentro del servicio (empresas en el body), no por header.
+dentro del servicio (empresas en el body), no por header. La **importación masiva**
+(`POST /users/bulk-import`) crea muchas personas de un Excel en una transacción, con rol/área
+únicos para todo el lote, contraseñas temporales autogeneradas y reporte parcial de fallidas.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
@@ -320,6 +354,15 @@ dentro del servicio (empresas en el body), no por header.
 | BE-USR-24 | `PATCH /users/:id` con phone/internalPhone/invgateUserId ya en uso por otro activo | 409 (la validación se excluye a sí mismo: reguardar sus propios datos no choca) |
 | BE-USR-25 | `PATCH /users/:id` con `areaId` vacío/`null` vs. ausente | Vacío/`null` deja al usuario sin área; que la clave no venga = no se toca el área |
 | BE-USR-26 | `PATCH /users/:id/full` (edición multiempresa): agrega, cambia rol/área y quita empresas | Diff atómico; cada operación pide su permiso en ESA empresa (create/update/delete); si queda sin ninguna → baja lógica; quitarse a uno mismo → 400 |
+| BE-USR-27 | `POST /users/bulk-import` con un lote válido (Nombre/Apellido/Email + `defaultRoleId` del tenant) | 201 con `summary.created=N`, `failed=0`; crea persona + membresía en el tenant activo con ese rol; cada creado con `tempPassword` autogenerada. Hereda `JwtAuthGuard, TenantGuard, RolesGuard` + `users:create`; opera sobre el tenant del header, **no** cross-tenant (no lleva `SystemTenantGuard`) |
+| BE-USR-28 | `bulk-import` con `defaultAreaId` de un área del tenant | Todas las membresías del lote quedan con esa área |
+| BE-USR-29 | `bulk-import` con un email del archivo que ya existe (activo) en la empresa | Reporte parcial: esa fila va a `failed` con motivo, el resto se crea. El `createMany` usa `skipDuplicates`, así que un choque TOCTOU entre el pre-check y la transacción no aborta el lote |
+| BE-USR-30 | `bulk-import` con dos filas del mismo email/phone/interno/invgate **dentro del archivo** | La segunda va a `failed` ("duplicado en el archivo"); la primera se crea |
+| BE-USR-31 | `bulk-import` con filas sin email o sin nombre/apellido | **400 del lote entero** (igual que BE-USR-32): el `ValidationPipe` global rechaza el DTO por el `@IsEmail`/`@IsNotEmpty` de cada fila (`@ValidateNested`) **antes** de llegar al servicio — mensaje `rows.<i>.El email no es válido` / `El nombre es obligatorio`. Las ramas `'Falta el email'`/`'Falta nombre o apellido'` de `bulkImport` son **código muerto** por este camino; el reporte parcial (`failed`) queda solo para los **duplicados** (BE-USR-29/30), que tienen formato válido y pasan el DTO. Verificado con POST directo al endpoint |
+| BE-USR-32 | `bulk-import` con más de 10.000 filas, o con un email inválido / campo sobre-largo | >10.000 → 400 (`@ArrayMaxSize(10000)`); formato inválido (`@IsEmail`/`@MaxLength`) → **400 del lote entero** (validación de DTO, no reporte parcial). El body admite hasta 10 MB (`json({ limit:'10mb' })` en `main.ts`) |
+| BE-USR-33 | `bulk-import` con `defaultRoleId` o `defaultAreaId` de **otro** tenant | 400 "…no existe o no pertenece a este tenant" (`assertRoleBelongsToTenant` / `assertAreaBelongsToTenant`) |
+| BE-USR-34 | `bulk-import` parado (header `X-Tenant-Id`) en una empresa donde el solicitante **no** es miembro | 403 (`TenantGuard`), salvo superusuario del sistema. El aislamiento no depende del body |
+| BE-USR-35 | Sensibilidad de la respuesta: `created[].tempPassword` viaja en claro (no hay invitación por email) | Documentar que la respuesta y el CSV que descarga el backoffice contienen contraseñas en texto plano — dato sensible, uso acotado a la carga inicial |
 
 ## 1.6 Áreas — CRUD por empresa y aislamiento
 
@@ -381,7 +424,7 @@ Las claves válidas son sólo las del catálogo. Los secretos se cifran con AES-
 | BE-SET-15 | `GET /settings/:key` de una key del catálogo vs. una key inexistente | La del catálogo: valor resuelto con `source` (los secretos, enmascarado + `isSet`); una key fuera del catálogo: 400 con la lista de keys válidas |
 | BE-SET-16 | `PATCH /settings/:key` | Equivale a `POST /settings` (`upsert`): fija el valor con las mismas validaciones (catálogo, rango, enum, secreto cifrado) |
 | BE-SET-17 | `DELETE /settings/:key` de una key **sin** valor en BD | 404 "…no tiene valor en BD (usa env var o default)" |
-| BE-SET-18 | Guardar los secretos de los canales nuevos e InvGate (`TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) | Se guardan **cifrados** (AES-256-GCM); el `GET` los enmascara + `isSet`. Los identificadores **no** secretos (`TWILIO_ACCOUNT_SID`, `GUPSHUP_SMS_USERID`, `INVGATE_API_USER`, números `*_FROM`, `*_TENANT_ID`) van en claro |
+| BE-SET-18 | Guardar los secretos de los canales nuevos e InvGate (`TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) | Se guardan **cifrados** (AES-256-GCM); el `GET` los enmascara + `isSet`. Los identificadores **no** secretos (`TWILIO_ACCOUNT_SID`, `GUPSHUP_SMS_USERID`, `INVGATE_API_USER`, números `*_FROM`) van en claro |
 | BE-SET-19 | Selectores de proveedor `WHATSAPP_PROVIDER` (`meta`/`twilio`/`gupshup`) y `SMS_PROVIDER` (`twilio`/`gupshup`) | Cascada estándar BD → env → default (`meta`/`twilio`); un valor fuera del enum → 400 (`allowedValues`). ⚠️ A diferencia de `LLM_PROVIDER`, se leen **una sola vez al arrancar**: cambiarlos no re-suscribe los consumers sin reiniciar (ver BE-TWA-02) |
 | BE-SET-20 | Descripciones de `TWILIO_ACCOUNT_SID` e `INVGATE_API_USER` | Dicen "solo escritura por consistencia" pero están `secret:false`: el `GET` los devuelve **en claro**. Inocuo (un SID no es sensible), pero la descripción sugiere algo que el flag no cumple — anotar la discrepancia |
 
@@ -413,6 +456,8 @@ transacción.
 | BE-FLW-17 | Vincular una Skill a un flujo con `skillId` (y desvincular con `skillId:null`) | 200; `findById` incluye `skill { id, name, promptText }` y en runtime el `promptText` se concatena al system prompt base (`buildBasePrompt`). Reemplaza en el editor al dropdown viejo `context` (que sobrevive `@IsIn(FLOW_CONTEXT_VALUES)`, DEPRECATED, sólo por compatibilidad — BE-FLW-15). El aislamiento por empresa del `skillId` se cubre en BE-SKL-08/09 |
 | BE-FLW-18 | `GET /flows/mine` (vista "Todas mis empresas") de un usuario con `flows:read` **solo en la empresa B**, parado en la **A** (header) donde **no** lo tiene | 200 con los flujos de B, **no 403**. La autorización es por-empresa adentro de `FlowService.findMine` (filtra cada empresa por su `flows:read`), no sobre el tenant activo — por eso `/flows/mine` **no** lleva `@RequirePermission`, igual que `/areas/mine` (BE-ARE-05), `/users/mine` (BE-USR-19) y `/roles/mine` (BE-RBAC-16). Reponer el decorator lo evaluaría contra el rol de A y cortaría con 403 a quien sí tiene el permiso en otra empresa: regresión que este caso detecta |
 | BE-FLW-19 | `GET /flows/mine` de un usuario **sin `flows:read` en ninguna** de sus empresas | 200 con `[]`, **no 403** (mismo criterio que BE-ARE-06 / BE-USR-19). La ausencia de permiso da lista vacía, no error: otra red de seguridad contra un `@RequirePermission` repuesto en el controlador |
+| BE-FLW-20 | `POST /flows/:id/assign-tenants` con un `roleId` que pertenece a **otro** tenant (o inexistente) | 400 "El rol … no existe o no pertenece al tenant …": `applyTenantAssignment` valida la pertenencia de cada `roleId` antes de la transacción de reemplazo (mismo criterio que `assertRoleBelongsToTenant`) |
+| BE-FLW-21 | Nodo `llm_query` con `temperature`, `maxAttempts` o items de `extractVariables` fuera de rango/forma por API directa (`temperature:999`, `maxAttempts:"abc"`, item sin esquema) | **Debería** validarse (rango de `temperature`, `@Min` de `maxAttempts`, `@ValidateNested` de cada item). ⚠️ Hoy el DTO valida `temperature`/`extractVariables` solo con `@IsNumber`/`@IsArray` y `maxAttempts` sin `@IsNumber`: pasan sin control y llegan al motor: `❌` (robustez, sin número de hallazgo) |
 
 ## 1.9 Fuentes de verdad (context sources)
 
@@ -437,7 +482,7 @@ por `fetch` directo desde el controlador.
 | BE-CS-08 | `PATCH /context-sources/:id` **sin** enviar un campo `secret` que ya estaba cargado | Conserva el secreto cifrado (campo ausente = "no tocar") |
 | BE-CS-09 | `PATCH` enviando un campo `secret` explícito en `null`/`''` | Borra ese secreto |
 | BE-CS-10 | `PATCH` intentando cambiar el `type` | El `type` no se toca (no está en el `UpdateDto`): sólo cambian `name`/`config`/`isActive` |
-| BE-CS-11 | `DELETE /context-sources/:id` de una fuente **vinculada a un flujo** | Verificar el comportamiento real: el FK `Flow.contextSourceId` es `SetNull`, y el servicio puede además informar qué flujos la usan antes de borrar |
+| BE-CS-11 | `DELETE /context-sources/:id` de una fuente **vinculada a un flujo** | **409 `ConflictException`, no borra**: el servicio cuenta los flujos que la usan y corta con "…está vinculada a N flujo(s). Desvinculala antes de eliminarla." antes de tocar la BD. El `onDelete: SetNull` del schema queda como defensa en profundidad muerta por este camino (nunca se llega). Coherente con FE-CS-07 |
 | BE-CS-12 | `DELETE /context-sources/:id` de una fuente sin uso | 200, la elimina |
 | BE-CS-13 | `POST /context-sources/:id/test-connection` de una fuente alcanzable | Publica por el broker (RPC), responde `{ ok:true, message, latencyMs, statusCode? }` dentro de `TEST_TIMEOUT_MS` (20s) |
 | BE-CS-14 | `test-connection` de una fuente inalcanzable o que no responde | `{ ok:false, message }` con el motivo; no cuelga (corta a los 20s) |
@@ -454,22 +499,22 @@ por `fetch` directo desde el controlador.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
-| BE-LLM-01 | `chat()` con proveedor OpenAI configurado y key válida | Devuelve la respuesta del modelo |
+| BE-LLM-01 | `chat()` con proveedor OpenAI configurado y key válida | Devuelve la respuesta del modelo. 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
 | BE-LLM-02 | Proveedor sin API key (los que la requieren) | 400 al resolver la config |
 | BE-LLM-03 | OpenCode Go sin `OPENCODEGO_API_URL` (`baseUrl`) | 400 (para este proveedor la base URL es obligatoria, la key no) |
 | BE-LLM-04 | Alias de proveedor (`google`→gemini, `anthropic`→claude, `opencode`→opencodego) | Resuelve al proveedor correcto |
 | BE-LLM-05 | Proveedor desconocido en `LLM_PROVIDER` | Warn + fallback a OpenAI |
-| BE-LLM-06 | `GET /settings/providers/:provider/models` con key válida | Lista de modelos con `source: api` (caché de 5 min) |
-| BE-LLM-07 | Mismo endpoint con `?refresh=true` | Saltea la caché y reconsulta |
+| BE-LLM-06 | `GET /settings/providers/:provider/models` con key válida | Lista de modelos con `source: api` (caché de 5 min). 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
+| BE-LLM-07 | Mismo endpoint con `?refresh=true` | Saltea la caché y reconsulta. 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
 | BE-LLM-08 | Proveedor caído o timeout (8s) al listar modelos | `source: fallback` + motivo. Para la mayoría cae a una lista conocida; **excepción `opencodego`**, cuyo `FALLBACK_MODELS` es vacío a propósito (los modelos dependen de la instancia) → la UI cae al campo de texto libre |
 | BE-LLM-09 | Proveedor cuya SPA responde HTML 200 en `/models` | Detecta el content-type y responde con mensaje claro, no crashea |
 | BE-LLM-10 | Merge de parámetros (`temperature`, `maxTokens`, `systemPrompt`): caller > BD > env > default | Prevalece el más específico |
 | BE-LLM-11 | OpenCode Go: respuesta con partes `reasoning` y `text` | Sólo el `text` llega; el `reasoning` nunca se expone |
 | BE-LLM-12 | OpenCode Go: `OPENCODEGO_AGENT` por defecto | Es `plan` (no `build`), no ejecuta herramientas sobre el server |
-| BE-LLM-13 | `chat()` con proveedor **Claude** (alias `anthropic`) y key válida | Usa el SDK de Anthropic: separa el mensaje `system` del resto de los turnos, aplica `maxTokens` (default 1024) y `temperature` (default 0.7), y devuelve **sólo** las partes de tipo `text` de la respuesta (ignora las que no lo son) |
-| BE-LLM-14 | `chat()` con proveedor **Gemini** (alias `google`) y key válida | Gemini **no** tiene rol `system`: mapea `assistant`→`model` y todo lo demás (incluido `system`) a `user`, manda todos los turnos menos el último como `history` y el último con `sendMessage`. Verificar el borde de un historial que arranca con un `system` (queda como turno `user`) y dejar documentado cómo arma los turnos |
-| BE-LLM-15 | `chat()` con proveedor **OpenRouter** y key válida | Usa el SDK de OpenAI contra `https://openrouter.ai/api/v1` (o la `baseUrl` configurada); formato OpenAI estándar (`temperature`/`maxTokens` con default 0.7/1024) |
-| BE-LLM-16 | `chat()` con proveedor **MiniMax** y key válida | Mismo camino OpenAI-compatible que OpenAI/OpenRouter, sólo cambia la base URL por defecto: `https://api.minimax.io/v1` (o la `baseUrl` configurada) |
+| BE-LLM-13 | `chat()` con proveedor **Claude** (alias `anthropic`) y key válida | Usa el SDK de Anthropic: separa el mensaje `system` del resto de los turnos, aplica `maxTokens` (default 1024) y `temperature` (default 0.7), y devuelve **sólo** las partes de tipo `text` de la respuesta (ignora las que no lo son). 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
+| BE-LLM-14 | `chat()` con proveedor **Gemini** (alias `google`) y key válida | Gemini **no** tiene rol `system`: mapea `assistant`→`model` y todo lo demás (incluido `system`) a `user`, manda todos los turnos menos el último como `history` y el último con `sendMessage`. Verificar el borde de un historial que arranca con un `system` (queda como turno `user`) y dejar documentado cómo arma los turnos. 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
+| BE-LLM-15 | `chat()` con proveedor **OpenRouter** y key válida | Usa el SDK de OpenAI contra `https://openrouter.ai/api/v1` (o la `baseUrl` configurada); formato OpenAI estándar (`temperature`/`maxTokens` con default 0.7/1024). 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
+| BE-LLM-16 | `chat()` con proveedor **MiniMax** y key válida | Mismo camino OpenAI-compatible que OpenAI/OpenRouter, sólo cambia la base URL por defecto: `https://api.minimax.io/v1` (o la `baseUrl` configurada). 🔌 **Bloqueado (infra real):** requiere una API key real de un proveedor externo — el test queda como `skip` documentado |
 | BE-LLM-17 | Respuesta de MiniMax M2.x que trae un bloque de razonamiento `<think>…</think>` | `LlmService.chat()` (**único** punto de entrada de todo el LLM) lo filtra **siempre** (`stripThinking`), sin importar el proveedor. `MiniMaxProvider` además pide `reasoning_split` para que el razonamiento venga en un campo aparte que se ignora. El razonamiento interno **nunca** llega al usuario final |
 | BE-LLM-18 | Respuesta con un `<think>` **abierto sin cerrar** (el modelo se quedó sin tokens a mitad del razonamiento) | `stripThinking` corta desde el tag abierto; la respuesta puede quedar **vacía** — deliberado: mejor vacío que mostrar el razonamiento crudo |
 | BE-LLM-19 | Clasificadores de intención (cierre de charla, cancelación, opción de menú) con un modelo de razonamiento obligatorio | Con `maxTokens = CLASSIFIER_MAX_TOKENS` (**300**, antes 10-20) el razonamiento no agota el presupuesto y el clasificador llega a emitir la palabra. ⚠️ Antes del fix devolvían siempre "no" en silencio: la charla nunca cerraba, nunca cancelaba y nunca matcheaba una opción por interpretación LLM |
@@ -501,20 +546,19 @@ conexión).
 ## 1.12 Webhook de WhatsApp — recepción
 
 **Precondición:** `webhooks/whatsapp` sin `JwtAuthGuard` (Meta no manda token propio). El GET
-valida el verify token; el POST publica en `whatsapp.incoming`.
+valida el verify token; el POST publica en `whatsapp.incoming` **sin resolver la empresa** (eso
+ahora lo hace el orquestador por la membresía del teléfono, ver §1.24).
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
 | BE-WHK-01 | GET de verificación con `hub.verify_token` correcto y `mode=subscribe` | Devuelve el `challenge` como cuerpo de la respuesta (Content-Type `text/html` por el default de Nest para un string) |
 | BE-WHK-02 | GET de verificación con token incorrecto | 403 "verify_token inválido" |
-| BE-WHK-03 | POST con un mensaje de texto | 200 `{ status: ok }`, publica `{ from: +<num>, body }` en `whatsapp.incoming` |
+| BE-WHK-03 | POST con un mensaje de texto | 200 `{ status: ok }`, publica `{ from: +<num>, body }` en `whatsapp.incoming` **sin `tenantId`** (la empresa se resuelve aguas abajo por membresía, §1.24) |
 | BE-WHK-04 | POST con una respuesta interactiva (botón/lista) | Publica el `id` de la opción como `body` |
 | BE-WHK-05 | POST con un tipo no soportado (imagen, audio) | Se ignora ese mensaje (warn), 200 igual |
 | BE-WHK-06 | POST sin `messages` (ej. `statuses` de entrega) | 200 `{ status: ok }`, no genera nada |
-| BE-WHK-07 | POST sin tenant configurado ni tenant en el sistema | 200 `{ status: ignored }`, loguea error |
 | BE-WHK-08 | POST con `X-Hub-Signature-256` **ausente o inválida** | **Se rechaza** (401/403) antes de encolar: la firma se valida con el App Secret de Meta. ⚠️ Hoy se **procesa igual** sin validar firma (SEC-04): `❌` hasta validar `X-Hub-Signature-256` |
 | BE-WHK-09 | POST con `X-Hub-Signature-256` **válida** | 200 `{ status: ok }`, publica en `whatsapp.incoming` (el camino legítimo sigue funcionando tras sumar la validación) |
-| BE-WHK-10 | POST **sin** `WHATSAPP_TENANT_ID` pero con al menos una empresa en el sistema | Asigna el mensaje al tenant **más antiguo** (fallback de desarrollo) y publica en `whatsapp.incoming` |
 
 ## 1.13 Conector de salida de WhatsApp (`WhatsAppService`)
 
@@ -553,12 +597,12 @@ desarrollo.
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
 | BE-EML-01 | Disparar un envío **sin** host configurado | No falla: registra el aviso y sigue. El cuerpo del mensaje **no** debería escribirse (hoy sí se escribe, junto con el código del segundo factor — ver BE-AUTH-21 y SEC-10) |
-| BE-EML-02 | Disparar un envío con host válido y credenciales correctas | El mensaje llega; el log deja constancia del destinatario y el asunto, nunca del cuerpo |
+| BE-EML-02 | Disparar un envío con host válido y credenciales correctas | El mensaje llega; el log deja constancia del destinatario y el asunto, nunca del cuerpo. 🔌 **Bloqueado (infra real):** requiere un servidor SMTP real vivo — el test queda como `skip` documentado |
 | BE-EML-03 | **Login con segundo factor y un servidor de correo configurado pero caído** (host inalcanzable o credenciales inválidas) | **Debe** cortar con un error controlado ("no pudimos enviarte el código, probá de nuevo") y no dejar un código huérfano vivo. ⚠️ Hoy el fallo del envío **se propaga sin capturar**: el login devuelve 500 con el código ya guardado en memoria: `❌` hasta blindar el envío |
-| BE-EML-04 | Mismo fallo del servidor de correo, pero durante una **notificación de transferencia a agente** dentro de una conversación | La conversación no se rompe: el usuario recibe respuesta igual y el fallo del aviso queda en el log |
+| BE-EML-04 | Mismo fallo del servidor de correo, pero durante una **notificación de transferencia a agente** dentro de una conversación | La conversación no se rompe: el usuario recibe respuesta igual y el fallo del aviso queda en el log. 🔌 **Bloqueado (infra real):** requiere un servidor SMTP real vivo — el test queda como `skip` documentado |
 | BE-EML-05 | Envío **sin** remitente configurado | Usa el remitente por defecto del sistema, no falla por falta de `from` |
-| BE-EML-06 | Puerto y "conexión segura" tomados de la configuración | Puerto 587 por defecto con conexión segura desactivada; con 465 y conexión segura activada también conecta |
-| BE-EML-07 | Host configurado **sin** usuario ni contraseña | Conecta sin autenticación (servidor interno de relay), no exige credenciales |
+| BE-EML-06 | Puerto y "conexión segura" tomados de la configuración | Puerto 587 por defecto con conexión segura desactivada; con 465 y conexión segura activada también conecta. 🔌 **Bloqueado (infra real):** requiere un servidor SMTP real vivo — el test queda como `skip` documentado |
+| BE-EML-07 | Host configurado **sin** usuario ni contraseña | Conecta sin autenticación (servidor interno de relay), no exige credenciales. 🔌 **Bloqueado (infra real):** requiere un servidor SMTP real vivo — el test queda como `skip` documentado |
 | BE-EML-08 | La contraseña del servidor de correo, leída desde la API | Enmascarada + el indicador de "cargada", nunca en claro; tampoco aparece en logs (mismo trato que las claves de los proveedores de modelo) |
 
 ## 1.15 Datos, seed y migraciones
@@ -574,6 +618,7 @@ el resto de las secciones da por hecho.
 | BE-DAT-03 | Correr el seed **dos veces seguidas** | Es idempotente: no duplica filas ni pisa cambios hechos a mano sobre esos registros |
 | BE-DAT-04 | Dar de baja una empresa y revisar sus datos | Sus roles, áreas, usuarios y flujos dejan de aparecer en las vistas de todas las empresas, pero las filas siguen existiendo: la baja es lógica, nunca borrado físico |
 | BE-DAT-05 | Borrar un flujo y un área (borrados **físicos**) | El borrado en cascada limpia lo dependiente (asignaciones de empresa y rol del flujo) y no deja filas huérfanas apuntando a lo borrado |
+| BE-DAT-06 | Aplicar la migración de backfill de `TenantFlowRole` sobre flujos de inicio preexistentes | Rellena `TenantFlowRole` para cada `TenantFlow` con `isStart=true` y **cero roles**, insertando una fila por cada `Role` del **mismo** tenant (`ON CONFLICT DO NOTHING`); no toca los que ya tienen roles cargados a mano ni cruza roles de otro tenant. Sin el backfill, los flujos de inicio ya configurados dejarían de servirse a cualquier usuario conocido |
 
 ## 1.16 Endpoints públicos (`AppController`)
 
@@ -635,6 +680,10 @@ Template pre-creado por **forma** de menú, cacheado en la tabla `TwilioContentT
 | BE-TWA-09 | `sendText` sin `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_WHATSAPP_FROM` | Warn y **no** envía (retorna sin lanzar): el consumer no se rompe (paridad con BE-WAO-02) |
 | BE-TWA-10 | `POST webhooks/twilio` **sin** `X-Twilio-Signature` válida | **Debe** rechazarse validando el HMAC con el auth token antes de encolar. ⚠️ Hoy **acepta cualquier POST** sin validar firma (SEC-16): `❌`. Agravante: el webhook está activo **aunque `WHATSAPP_PROVIDER`≠twilio** |
 | BE-TWA-11 | Carrera: dos requests crean el mismo Content Template a la vez | `P2002` en `shapeHash` único; el que pierde usa el `ContentSid` **huérfano** que él creó (válido en Twilio, distinto del persistido en BD). Documentar la divergencia memoria-vs-BD y el template sin uso en la cuenta de Twilio |
+| BE-TWA-12 | `POST webhooks/twilio` con `MediaUrl0..N` (imagen) | `TwilioMediaService` baja cada adjunto con `Authorization: Basic` (SID/token de `/settings`), auto-orienta por EXIF y redimensiona a ≤1920×1080 (`sharp`, solo jpeg/png/webp; gif/pdf sin resize) y publica el mensaje con `attachments` en `whatsapp.incoming`. Un mensaje solo-imagen (sin caption) ya no se descarta. Tope `MAX_MEDIA_ITEMS=10` |
+| BE-TWA-13 | Media con URL falsa/404, sin credenciales, o cron de retención | URL no-2xx o sin credenciales → `warn` y se saltea ese adjunto (no rompe la charla); el `@Cron('*/2 …')` borra los temporales de más de 10 min sin consumir. Ni el SID ni el token se loguean |
+| BE-TWA-14 | Adjunto de media **muy grande** (o muchos juntos) | **Debería** haber un tope de bytes en la descarga. ⚠️ Hoy `res.arrayBuffer()` carga el archivo entero en memoria y el único freno es el timeout de 20s (no chequea `Content-Length`): `❌` (robustez, sin número de hallazgo) |
+| BE-TWA-15 | El webhook de Twilio publica en `whatsapp.incoming` **sin** `tenantId` | La empresa se resuelve aguas abajo por membresía (§1.24); se eliminó el ruteo por `*_TENANT_ID` + fallback al tenant más viejo |
 
 ## 1.20 Canal WhatsApp — Gupshup (`GupshupWhatsAppService` + `GupshupWebhookController`)
 
@@ -675,6 +724,8 @@ secreto). SMS **no** tiene interactivo: los menús se degradan a texto numerado.
 | BE-SMS-08 | Twilio SMS reusando la cuenta de WhatsApp | Usa `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`, saca el prefijo `whatsapp:` y envía desde `TWILIO_SMS_FROM` |
 | BE-SMS-09 | `POST webhooks/twilio-sms` o `webhooks/gupshup-sms` sin firma/autenticación | **Debe** rechazar. ⚠️ Hoy ambos aceptan cualquier POST (SEC-16): `❌` |
 | BE-SMS-10 | Gupshup SMS legacy: inspeccionar la request de salida | ⚠️ Manda `userid`/`password` en la **query string** de un `GET` → pueden filtrarse a logs de proxies (SEC-21): `❌`. La verificación de éxito (`startsWith('success')` sobre texto plano) es frágil |
+| BE-SMS-11 | Nodo `sms` saliente a un número argentino guardado como `+549…` | El destinatario `To` pasa por `stripArgentinaMobileNine` (`+549 11…` → `+5411…`, el SMS por red celular no usa el 9); un número no argentino cae a `+${digits}` sin romper. El `From` sigue con `normalizeRecipient` |
+| BE-SMS-12 | `POST webhooks/twilio-sms` con media (MMS de 2 imágenes) | Reusa `TwilioMediaService` (misma descarga/resize/retención que WhatsApp): ambas imágenes se bajan y viajan al próximo `ticket_create` como adjuntos |
 
 ## 1.22 Integración InvGate (`InvgateService` + catálogo)
 
@@ -696,11 +747,14 @@ con permiso `flows:read` (no un permiso propio).
 | BE-IG-07 | `creator_id` en cada ticket | Siempre el usuario técnico (`INVGATE_API_USER`), nunca el usuario final; el Basic Auth usa siempre las credenciales del técnico |
 | BE-IG-08 | InvGate caído o mal configurado durante `ticket_create` | Best-effort: `warn`, el `Ticket` local ya existe y la charla sigue (timeout de 15s, no re-encola) |
 | BE-IG-09 | `INVGATE_API_KEY` leída desde `/settings` | Enmascarada + `isSet`, nunca en claro; cifrada AES-256-GCM; nunca logueada (`sanitize` redacta el token de los errores) |
-| BE-IG-10 | Cambiar `INVGATE_API_URL`/`INVGATE_API_USER` en `/settings` en caliente y crear un ticket | **Debería** tomar la config nueva sin reiniciar. ⚠️ Hoy los cachés en memoria (`creatorId`/`status`/`priority`/`type`/`category`) **no se invalidan**; peor, `resolveCreatorId` **cachea `null` permanente**: si al arranque el técnico no matcheó, corregirlo en `/settings` **no crea tickets** hasta reiniciar: `❌` (robustez, sin número de hallazgo) |
+| BE-IG-10 | Corregir `INVGATE_API_USER` en `/settings` en caliente (técnico que al arranque no matcheaba) y crear un ticket | ✅ `resolveCreatorId` ya **no cachea el fallo**: solo guarda el `creatorId` cuando resolvió a un id real, así que corregir el usuario técnico en `/settings` vuelve a sincronizar sin reiniciar. Residual menor: los otros cachés de catálogo (`status`/`priority`/`type`/`category`) siguen sin invalidarse en caliente, pero no bloquean la creación de tickets |
 | BE-IG-11 | `INVGATE_API_URL` con esquema `http://` | **Debe** exigirse HTTPS: con `http://` el Basic Auth viaja en **texto claro** por la red (SEC-20): `❌` |
 | BE-IG-12 | Rama de catálogo con más de 4000 categorías bajo el `parent` | `listCategoriesByParent` corta a 4000 (20 páginas × 200) **sin avisar** → faltarían opciones sin error. Documentar el tope silencioso |
 | BE-IG-13 | Script `pnpm --filter api invgate:check` (`invgate-check.mjs`) | Chequea conectividad y lista IDs reales del catálogo por consola (fuera de Nest); falla con mensaje claro si faltan credenciales o si la auth da 401. Acepta `--find-user <valor> --by phone\|username\|email` |
 | BE-IG-14 | Crear/consultar ticket **end-to-end** contra InvGate real | Placeholder (ver BE-PH-01): el valor cargado como token resultó ser la contraseña de portal de un usuario; pendiente que el admin genere un token de API real |
+| BE-IG-15 | `createIncident` cuando InvGate responde sin `id` ni `request_id` (o un body raro) | Tira error "InvGate no devolvió un id de incidente creado…"; `syncTicketToInvgate` lo atrapa y devuelve `null` → el `Ticket` local existe igual, y ya no se persiste `invgateId:"undefined"` |
+| BE-IG-16 | `ticket_create` con adjuntos de imagen | Los adjuntos van a InvGate como `multipart/form-data` (campo `attachments[]`, timeout propio de 30s); si la subida falla, degrada a ticket sin adjunto sin cortar la charla |
+| BE-IG-17 | Descripción/comentario con saltos de línea hacia InvGate | `toInvgateHtml` convierte `\r\n|\r|\n` → `<br>` (campos WYSIWYG de InvGate); el `Ticket.description` local sigue en texto plano |
 
 ## 1.23 Skills (`SkillsService` + `SkillsController`)
 
@@ -722,6 +776,29 @@ cadena estándar `@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)` y permisos
 | BE-SKL-08 | Un `Flow` compartido (`TenantFlow` N:N) entre la empresa **A** (dueña de la skill) y **B**; una charla del tenant **B** pasa por ese flujo | **No debe** filtrar: la skill de A no tendría que inyectarse en las conversaciones de B. ⚠️ Hoy `findById` carga `skill.promptText` **sin re-chequear el tenant en curso** → el texto de A entra en el prompt de B. A diferencia de la fuente de verdad (que falla-seguro por tenant), la skill **filtra en silencio** (SEC-17): `❌` |
 | BE-SKL-09 | `POST`/`PATCH /flows` con un `skillId` de **otra** empresa | **Debe** rechazar (no pertenece al tenant activo). ⚠️ Hoy `FlowService.create/update` propagan `skillId` por spread **sin validar pertenencia**; la FK sólo valida existencia (SEC-17): `❌` |
 | BE-SKL-10 | Marcar una Skill como `isActive:false` y usar un flujo vinculado a ella | **Debería** dejar de concatenarse. ⚠️ Hoy el motor **no chequea `isActive`** (`findById` ni lo trae): el texto se inyecta igual. El flag es letra muerta en el motor: `❌` (robustez, sin número de hallazgo) |
+
+## 1.24 Ruteo de tenant entrante por membresía (`InboundTenantRoutingService`)
+
+**Precondición:** el tenant que atiende un mensaje **entrante** ya no sale de configuración por
+canal (`WHATSAPP_TENANT_ID` y hermanos + el fallback al tenant más viejo, **eliminados**), sino de
+la **membresía del teléfono**. Los webhooks (§1.12, §1.19–1.21) publican el mensaje **sin
+`tenantId`**; `ConversationsService.handleMessage` delega la resolución en
+`InboundTenantRoutingService.resolve(from, channel, body)`. Un mensaje que llega **con** `tenantId`
+explícito (p. ej. `/conversations/simulate`) saltea el ruteo y usa esa empresa.
+
+Orden de decisión: pendiente de selección → conversación **activa** en alguna empresa → 1 membresía
+(directo) / ≥2 (se pregunta) / 0 (tenant de sistema). El estado intermedio de la pregunta vive en
+`PendingTenantSelection` (por teléfono+canal, expira a las 12h). En WhatsApp el selector va como
+lista/botones interactivos; en SMS como texto numerado.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-ITR-01 | Teléfono miembro de **una sola** empresa | `resolve` → `{ resolved, tenantId }` de esa empresa, sin preguntar ni crear pendiente |
+| BE-ITR-02 | Teléfono **sin ninguna** empresa (desconocido) | `resolve` → tenant de **sistema** (`SYSTEM_TENANT_SLUG`), que lo atiende con su flujo global (`Flow.isDefault`) |
+| BE-ITR-03 | Teléfono **multiempresa** | `resolve` → `{ ask }` con el selector; crea `PendingTenantSelection` con las opciones (ordenadas por antigüedad de la empresa) y el mensaje original |
+| BE-ITR-04 | Responder el selector con el **número** de la empresa | `resolve` → `{ resolved, tenantId elegido, replayBody }` (reprocesa el mensaje original); borra el pendiente |
+| BE-ITR-05 | Responder el selector con algo **inválido** | `resolve` → `{ ask }` otra vez; conserva el pendiente (se re-pregunta; expira a las 12h) |
+| BE-ITR-06 | Multiempresa con una **conversación activa** en una empresa | `resolve` → esa empresa (continúa la charla), sin volver a preguntar. Una charla **cerrada** ya no cuenta: el próximo mensaje vuelve a preguntar |
 
 ---
 
@@ -817,6 +894,8 @@ config del nodo en el editor.
 | CHAT-N-MENU-12 | Menú raíz del flujo (pila `__menuStack` vacía) | **No** ofrece "Volver" (no hay menú anterior al cual regresar) |
 | CHAT-N-MENU-13 | Elegir "Volver" (por número, por label, o "volvé"/"atrás" interpretado por el LLM) | Desapila el tope y regresa a ese menú; si el menú anterior es de **otro flujo** (se llegó por `subflow`), cruza el límite reusando el mecanismo de cambio de flujo |
 | CHAT-N-MENU-14 | Un menú que ya tiene 10 opciones y le toca sumar "Volver" | Se pasa del límite de lista de WhatsApp y cae a **texto plano numerado** (sin límite, sin romper) |
+| CHAT-N-MENU-15 | En modo `__llmFallback`, el usuario escribe **exactamente** una opción válida (número, label o value) o "Volver" | Limpia `__llmFallback`, sale del LLM libre y procesa la selección; si no coincide exacto, sigue en LLM libre. Antes quedaba atrapado en LLM aunque tipeara la opción correcta. El match es estricto (value/label/índice), no difuso |
+| CHAT-N-MENU-16 | Elegir el botón "Volver" (id `__volver`) con una gestión abierta | **No** dispara el chequeo de cancelar/cerrar charla: `looksLikeCancelAttempt` excluye el id exacto `__volver` (antes matcheaba por `includes('volver')`). Escribir "volver" a mano sí evalúa cancelación (intencional) |
 
 ### `input`
 
@@ -849,13 +928,15 @@ config del nodo en el editor.
 | CHAT-N-TKC-01 | `ticket_create` con subject/description de `data` o del estado | Crea el ticket con `userId`+`tenantId`, guarda `lastTicketId`, responde "Ticket #… creado" |
 | CHAT-N-TKC-02 | `ticket_create` sin subject explícito | Usa los primeros 100 caracteres del mensaje |
 | CHAT-N-TKC-03 | `ticket_create` tomando `priority` y `description` del nodo o del estado | `priority` = `data.priority` (o `medium` por defecto); `description` = `data.description` → `flowState.description` → mensaje, en ese orden |
-| CHAT-N-TKC-04 | La creación del ticket falla (BD caída) dentro del nodo | Documenta el límite: `prisma.ticket.create` no está protegido, la excepción se propaga y hoy corta la charla (mismo patrón de robustez que CHAT-N-LLM-04 / SEC-15). Aplica a cualquier nodo con I/O de BD |
+| CHAT-N-TKC-04 | La creación del ticket falla (BD caída) dentro del nodo | `prisma.ticket.create` no está protegido: la excepción se propaga y hoy corta la charla. **Límite de robustez documentado, no `❌`** — y la diferencia con CHAT-N-LLM-04 (que sí es `❌`) es deliberada: aquél es `❌` porque sus nodos **hermanos** `menu`/`input` **sí** blindan la llamada al LLM y `llm_query` quedó inconsistente (defecto puntual con fix claro); acá, en cambio, **ningún** nodo blinda su I/O de BD — es un límite arquitectónico **uniforme** (familia SEC-15), no una inconsistencia entre hermanos. Si se blinda, hacerlo para todos los nodos con I/O de BD a la vez |
 | CHAT-N-TKQ-01 | `ticket_query` con `lastTicketId` del propio tenant | Devuelve asunto y estado del ticket |
 | CHAT-N-TKQ-02 | `ticket_query` sin ticket disponible | "No encontré el ticket solicitado." |
-| CHAT-N-TKQ-03 | `ticket_query` con una variable de ticket que apunta a un ticket de **otro tenant** | **No lo devuelve**: la consulta filtra por el tenant (y por dueño cuando corresponde) → "No encontré el ticket solicitado." ⚠️ Hoy lo **devuelve igual** (SEC-08): `❌` hasta filtrar por tenant |
+| CHAT-N-TKQ-03 | `ticket_query` con una variable de ticket que apunta a un ticket de **otro tenant** | ✅ **No lo devuelve**: `ticket.findFirst` filtra por `tenantId` (match exacto por `id` **o** `invgateId`, sin coincidencia parcial) → "No encontré el ticket solicitado." Cierra **SEC-08** |
 | CHAT-N-TKC-05 | `ticket_create` con `category`/`priority`/`ticketType` elegidos **por nombre** en el editor | Crea el `Ticket` local y lo sincroniza a InvGate **best-effort**; los nombres se resuelven contra el catálogo real (BE-IG-05). Si InvGate falla, el ticket local queda igual y la charla sigue (BE-IG-08) |
 | CHAT-N-TKC-06 | `ticket_create` cuando el usuario final **no** matchea un `customer_id` de InvGate | El ticket **local** se crea igual; la sincronización a InvGate se saltea con `warn` (no corta la charla) |
 | CHAT-N-TKQ-04 | `ticket_query` de un ticket **sincronizado** con InvGate | `refreshInvgateStatus` trae el estado real y lo traduce a nombre legible; si InvGate no responde, cae al estado local (best-effort) |
+| CHAT-N-TKC-07 | Usuario manda una o varias imágenes y después dispara `ticket_create` | Los adjuntos se acumulan en `flowState.pendingAttachments` al llegar (un mensaje solo-imagen guarda el placeholder `[N imagen(es) adjunta(s)]`) y se consumen al crear el ticket (se leen y borran del disco); viajan a InvGate. Sin ticket, el cron de retención los limpia a los 10 min |
+| CHAT-N-TKQ-05 | `lastTicketId` y el identificador que consulta `ticket_query` | Al sincronizar, `lastTicketId` pasa a ser el **número real de InvGate** (cae al cuid local si InvGate falla); `ticket_query` acepta cualquiera de los dos (`OR:[{id},{invgateId}]`, scopeado por tenant) y muestra `#${invgateId ?? id}` |
 
 ### `transfer_agent`
 
@@ -868,6 +949,7 @@ config del nodo en el editor.
 | CHAT-N-TRF-05 | `methods` incluye `phone` | Sin implementar: no debe romper el flujo |
 | CHAT-N-TRF-06 | Nodo `transfer_agent` cuya nota `data.message` trae `{{variables}}` (ej. `{{descripcion}}`) | La nota se **interpola** antes de armar el mail y el ticket: el agente recibe los valores reales, no los `{{ }}` crudos. Regresión del bug en que la nota no pasaba por `interpolate` como sí lo hace el texto del chat |
 | CHAT-N-TRF-07 | `methods` incluye `email` pero no hay assignee ni watchers ni collaborators (o `methods` vacío) | No manda ningún mail ni crea ticket; no rompe, sigue a la próxima arista. Borde de configuración incompleta |
+| CHAT-N-TRF-08 | `transfer_agent` con un assignee **dado de baja** en la rotación | `pickNextAssignee` filtra `deletedAt:null` y rota solo sobre los activos: el dado de baja nunca recibe. Si **ninguno** queda activo, devuelve `null` sin romper el flujo |
 
 ### `sms`
 
@@ -894,6 +976,11 @@ conector SMS activo (`SMS_PROVIDER`, ver §1.21).
 | CHAT-N-LLM-05 | `llm_query` de un flujo con una **Skill** vinculada | El `promptText` de la Skill se concatena al system prompt base (`buildBasePrompt`). ⚠️ En modo `replace` (**default**) un `systemPrompt` propio del nodo **reemplaza el base entero — y con él se pierde la Skill** para ese nodo; puede sorprender a quien configuró la Skill esperando que aplique en todos lados |
 | CHAT-N-LLM-06 | `llm_query` con `data.systemPromptMode:'append'` y un `systemPrompt` propio | El prompt del nodo se **agrega a continuación** del base (`base + nodo`); en `replace` (default) lo reemplaza. Un `systemPromptMode` inválido cae a `replace` (el DTO valida sólo `@IsString`, sin `@IsIn(['replace','append'])`) |
 | CHAT-N-LLM-07 | `llm_query` de un flujo con una `ContextSource` vinculada | Consulta la fuente **siempre** (ver CHAT-LLMF-07, comportamiento nuevo): inyecta la respuesta como mensaje `system` autoritativo antes de responder. Antes el nodo ignoraba por completo la fuente |
+| CHAT-N-LLM-08 | `llm_query` con `extractVariables` y el dato **ya dicho** en la charla | Un solo llamado al LLM (temperature 0) extrae el valor, lo valida contra `allowedValues` (case-insensitive), lo guarda en el estado y **no** pregunta; ramifica por `foundTargetNodeId` |
+| CHAT-N-LLM-09 | `llm_query` en modo extracción con una variable **ausente** | Se detiene y pregunta (`waitForInput`, reusa `__awaiting`), lleva la cuenta en `__llmQueryAttempts`; con la respuesta resuelve y avanza |
+| CHAT-N-LLM-10 | El usuario se niega (`REFUSED`) o agota `maxAttempts` (default 2) | La variable queda en `'no definido'` y ramifica por `missingTargetNodeId`; **no** inventa un valor ni entra en loop infinito de preguntas |
+| CHAT-N-LLM-11 | Respuesta fuera de `allowedValues` (un valor no listado) | No matchea → `NONE` → vuelve a preguntar; nunca guarda un valor arbitrario |
+| CHAT-N-LLM-12 | `llm_query` conversacional con `data.temperature` seteado vs. ausente | Con valor, se pasa al `chat`; ausente, respeta la cascada de `/settings` (el spread condicional evita pisar el default con `undefined`). La extracción/clasificación corre siempre a temperature 0 |
 
 ### `delay` / `variable` / `webhook` / `subflow`
 
@@ -1037,6 +1124,12 @@ permisos, validaciones en vivo), **responsive** (§3.11) y **seguridad de la UI*
 Recordatorio transversal: la UI ocultar/mostrar por permisos es **defensa en profundidad**, no la
 autorización real — esa la impone el backend (Sección 1). Ver §3.12.
 
+> Esta sección incluye además los hallazgos de la **auditoría de cambio de empresa en el sidebar**
+> (usuarios multiempresa, 2026-08-21): el manejo del modo consolidado "Todas las empresas", la
+> reactividad de las pantallas y del selector del sidebar al cambiar de empresa, y la coherencia de
+> los avisos de permiso. Están repartidos en §3.1, §3.4, §3.6, §3.9 y §3.10, marcados `❌` cuando
+> describen el comportamiento deseado que hoy falta.
+
 ## 3.1 Infraestructura transversal (sesión, tenant activo, menú)
 
 **Qué se prueba:** el cliente HTTP (`apiFetch`), el contexto de autenticación (`useAuth`), el
@@ -1057,9 +1150,13 @@ guard de rutas (`AuthGuard`) y el sidebar dinámico. El JWT y el tenant activo v
 | FE-INF-10 | Opción "🌐 Todas las empresas" (superadmin) / "🌐 Todas mis empresas" (común con >1) | Activa el modo consolidado (`__all__`); el resto de las pantallas usan las vistas `/all` o `/mine` |
 | FE-INF-11 | "Cerrar sesión" | Limpia token, `activeTenant` y cachés; redirige a `/login` |
 | FE-INF-12 | Un error del backend en cualquier pantalla | Muestra el `message` del backend (no un genérico); las pantallas que dependen de `err.body` (conflictos) lo aprovechan |
-| FE-INF-13 | **Superadmin recorriendo el selector de empresas:** sistema → una empresa común → otra empresa común → "🌐 Todas las empresas" | El menú muestra **siempre las mismas 8 opciones**, incluidas "Tenants" y "Configuración": el selector cambia **qué datos se ven**, nunca **qué opciones existen**. Entrar a esas dos pantallas parado en una empresa común funciona (ver BE-MT-12). ⚠️ Hoy ambas **desaparecen** apenas elige una empresa común y reaparecen al volver a la de sistema o al modo consolidado, porque su visibilidad depende de la empresa seleccionada y no de quién es la persona: `❌` hasta corregirlo |
+| FE-INF-13 | **Superadmin recorriendo el selector de empresas:** sistema → una empresa común → otra empresa común → "🌐 Todas las empresas" | ✅ El menú muestra **siempre las mismas 8 opciones**, incluidas "Tenants" y "Configuración": el sidebar arma el menú del superadmin sin filtrar por empresa (`isSuperAdmin ? menuDefinition : filtrado`), así que el selector cambia **qué datos se ven**, nunca **qué opciones existen**. Entrar a esas dos pantallas parado en una empresa común funciona (ver BE-MT-12) |
 | FE-INF-14 | Cualquier respuesta de una request autenticada trae `X-Access-Token` | `apiFetch` lee el header y **pisa** `localStorage.token`; la próxima request ya usa el token nuevo (sesión deslizante del lado cliente, ver BE-AUTH-26). No toca el estado de React. Con actividad continua la sesión ya no se cae a los 15 min |
 | FE-INF-15 | Un **401 con token presente** en cualquier request del panel | `apiFetch` llama a `clearSession()` (única fuente de qué keys de `localStorage` borra) y redirige a `/login` de inmediato — antes la UI mostraba datos viejos o fallaba en silencio hasta recargar a mano. Un 401 de login/OTP (sin `Authorization`) **no** cae acá |
+| FE-INF-16 | Parado en **Tenants** o **Configuración** (pantallas solo-sistema), cambiar el selector del sidebar a una empresa **no-sistema** | **Debe** sacar al usuario de esa URL —que ya no figura en el menú— y llevarlo al dashboard. ⚠️ Hoy el reload lo deja en la **misma URL huérfana**: la pantalla lo maneja con elegancia ("Esta operación solo puede realizarse desde el tenant de sistema", no crashea) pero **no redirige**, dejando una página con error fuera del menú. UX menor (el error ya está bien manejado): `❌` hasta agregar la redirección |
+| FE-INF-17 | En modo consolidado, comparar el **selector de empresas del sidebar** con el filtro **"Empresa:" de la página** (ej. Usuarios) | El sidebar lista **todas** las empresas; el filtro de la página lista **sólo** las que tienen filas en ese listado, así que una empresa sin filas (ej. una recién creada, 0 usuarios) aparece en el sidebar pero **no** en el filtro. **No es un bug:** decisión de diseño aceptable (no tiene sentido filtrar hacia una empresa sin filas que mostrar); se documenta sólo porque genera una diferencia visible entre los dos selectores |
+| FE-INF-18 | Un **miembro común** del tenant de sistema (rol distinto de SuperAdmin) recorre el panel | **No** ve el menú completo ni la opción "🌐 Todas las empresas" global: el sidebar distingue `isSystemMember` de `isSuperAdmin` (`user.isSuperAdmin` lo calcula el backend en `/auth/me`), y `useAuth` ya no hereda el rol de sistema a un no-superadmin. Regresión de privilegio que separa "pertenecer al tenant de sistema" de "ser superusuario" |
+| FE-INF-19 | Build estático (`output:'export'` + `trailingSlash`) y navegación del panel | Las rutas se emiten como `carpeta/index.html`; los `router.push` llevan barra final y el editor de flujos viaja por query (`/dashboard/flows/edit/?id=…`, antes `/flows/[id]`, que el export no soporta sin `generateStaticParams`). Verificar que no queden links rotos ni redirects de más |
 
 ## 3.2 Login y OTP (2FA)
 
@@ -1105,6 +1202,12 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-USR-12 | Botones Editar/Eliminar por fila en consolidado | Habilitados según `hasPermissionInTenant` de la empresa de esa fila |
 | FE-USR-13 | Cerrar un modal con cambios sin guardar (Escape o click afuera) | Pide confirmación antes de descartar |
 | FE-USR-14 | Clic en una fila (fuera de los botones de acción) | Abre el modal de **detalle de solo lectura**, con botón "Editar" si el usuario tiene permiso |
+| FE-USR-15 | Abrir "Nuevo usuario" y cancelar (Escape o click afuera) **sin tocar nada** | **No debería** avisar de cambios sin guardar (no se editó nada). ⚠️ Hoy salta igual el confirm "Tenés cambios sin guardar. ¿Descartarlos?" porque el modal **pre-agrega la empresa activa** como membresía (`presetTenantId`) y eso ya cuenta como "cambio" en la comparación. Menor: `❌` hasta que el preset no dispare el aviso (complementa FE-USR-13, el confirm legítimo cuando sí hubo cambios) |
+| FE-USR-16 | Alta de usuarios con un rol que tiene `users:read` + `users:create` pero **sin** `roles:read` (rol `Alta sin roles`, ver Apéndice C) | **Debería** poder completar el alta, o al menos avisar con claridad. ⚠️ Hoy el desplegable **Rol** (obligatorio) se llena con `GET /roles` → **403** → queda vacío → "Crear" **deshabilitado**: el alta es imposible. Peor, dos mensajes engañosos: dice "Esta empresa no tiene roles" cuando **sí** los tiene (confunde "sin permiso" con "sin datos"), y muestra la empresa preseleccionada como **UUID crudo**. No es falla de seguridad (el backend enforce el 403), es una brecha de UX entre dos permisos acoplados: `❌` hasta distinguir el 403 de "sin roles" y resolver el nombre de la empresa |
+| FE-USR-17 | Botón "Importar desde Excel" → modal de 3 pasos (subir → mapear → resultado) | Parsea `.xlsx/.xls/.csv` en el navegador (primera hoja, primera fila = headers), mapea columnas a campos (requeridos Nombre/Apellido/Email), postea a `/users/bulk-import` con el `X-Tenant-Id` activo y muestra creados (con contraseña temporal, botón "Descargar CSV") y fallidos con fila+motivo |
+| FE-USR-18 | El botón "Importar desde Excel" en modo "Todas las empresas" | No aparece (solo con `canCreate` y parado en una empresa puntual); el modal tampoco monta en consolidado |
+| FE-USR-19 | Subir un archivo no soportado / vacío / sin filas, o con más de 10.000 filas | Mensaje de error en el modal, no avanza / no postea (corte cliente `MAX_ROWS=10000`, además del `@ArrayMaxSize` del backend) |
+| FE-USR-20 | Mapeo de columnas con headers vacíos o repetidos | Las columnas sin header se renombran "Columna N"; el mapeo es por índice (una columna a un solo campo); sin los 3 requeridos no deja importar |
 
 ## 3.5 Roles y matriz de permisos (`/dashboard/roles`)
 
@@ -1132,6 +1235,8 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-TEN-03 | Crear/editar una empresa | Nombre y slug (único, validación local); `POST /tenants` o `PATCH /tenants/:id` |
 | FE-TEN-04 | Empresa de sistema | Slug bloqueado (no editable) y sin opción de baja (botón gris con motivo) |
 | FE-TEN-05 | Baja lógica y reactivación por fila | Confirmación inline (roja para baja, verde para restaurar); `DELETE` / `POST /tenants/:id/restore` |
+| FE-TEN-06 | Crear una empresa desde Tenants y mirar el **selector de empresas del sidebar** | La empresa nueva **debería** aparecer también en el selector del sidebar. ⚠️ Hoy aparece de inmediato en la **tabla** de la pantalla pero **no** en el selector, que cachea `/tenants/all` al montar y queda con la lista vieja hasta **refrescar** la página (crear en Tenants sólo refresca la tabla local; no hay estado compartido ni evento que avise al sidebar): `❌` hasta que el alta refresque el selector |
+| FE-TEN-07 | **Renombrar**, dar de **baja** o **restaurar** una empresa y mirar el selector del sidebar | Igual que FE-TEN-06: el cambio **debería** reflejarse en el selector. ⚠️ Hoy la tabla se actualiza pero el selector del sidebar sigue con el valor viejo hasta recargar (mismo cache stale de `/tenants/all`; extiende FE-TEN-06 —que era sólo "crear"— a los otros tres disparadores): `❌` |
 
 ## 3.7 Áreas (`/dashboard/areas`)
 
@@ -1159,12 +1264,14 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-SET-07 | Dropdown de "Modelo" de un proveedor | Se llena con `GET /settings/providers/:provider/models`; ofrece "Otro — escribir a mano"; indica si vino "consultada al proveedor" o "lista conocida" |
 | FE-SET-08 | Cambiar de pestaña de proveedor | Carga sus modelos automáticamente (una vez, cacheada) |
 | FE-SET-09 | Punto de estado por pestaña | Azul = proveedor activo, ámbar = configuración incompleta |
-| FE-SET-10 | Falta `SETTINGS_ENCRYPTION_KEY` en el entorno | Banner rojo con el comando para generarla; guardar un secreto lo **rechaza el backend** (la UI muestra el banner pero no deshabilita el botón "Guardar") |
+| FE-SET-10 | Falta `SETTINGS_ENCRYPTION_KEY` en el entorno | Banner rojo con el comando para generarla; guardar un secreto lo **rechaza el backend** (la UI muestra el banner pero no deshabilita el botón "Guardar"). 🔌 **Bloqueado (infra real):** requiere el backend levantado **sin** `SETTINGS_ENCRYPTION_KEY` (el stack efímero la hereda de `apps/api/.env`) — el test queda como `skip` documentado |
 | FE-SET-11 | Guardar la key/host de un proveedor | Tras guardar, el dropdown de modelos se refresca solo |
 | FE-SET-12 | Elegir "Otro — escribir a mano" en el dropdown de modelos | Cambia a un input de texto libre; un valor guardado fuera del catálogo se conserva marcado "(actual)" |
 | FE-SET-13 | Botón "Cancelar" de un setting con cambios | Revierte el draft al valor efectivo, sin llamar al backend |
 | FE-SET-14 | Pestañas nuevas: Mensajería WhatsApp (Twilio) / (Gupshup), Mensajería SMS (Twilio) / (Gupshup), Integración InvGate | Aparecen los grupos con sus campos; los secretos (🔒 `TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) arrancan vacíos con enmascarado. El layout pasó a grid de 2 columnas (sacó `max-w-4xl`) para acomodar tantos grupos |
 | FE-SET-15 | Selectores de proveedor `WHATSAPP_PROVIDER` / `SMS_PROVIDER` | Dropdown con los valores del enum. ⚠️ Su descripción aclara que el cambio **requiere reiniciar el backend** (a diferencia del texto general de `/settings` que promete "sin reiniciar") — anotar la excepción |
+| FE-SET-16 | Pestañas de `/settings` agrupadas por tema | Jerarquía de 3 niveles (Seguridad, LLM, Mensajería con sub-temas WhatsApp/SMS y proveedores Twilio/Gupshup, Integraciones) navegable por flechas (WAI-ARIA); un grupo del catálogo no mapeado cae en la pestaña "Otros", no desaparece; el punto de estado (activo/incompleto) se propaga a las ramas |
+| FE-SET-17 | Tipear en varias filas con drafts sin guardar y guardar una | Solo se resetea el draft de la fila guardada (mergea esa fila y refresca el estado de proveedores con `refreshStatus`), **sin pisar** lo tipeado en las demás — antes un `load()` completo borraba todos los drafts |
 
 ## 3.9 Fuentes de verdad (`/dashboard/context-sources`)
 
@@ -1180,8 +1287,10 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-CS-08 | Botones de ABM según permisos | `context-sources:create/update/delete` |
 | FE-CS-09 | La pantalla se parte en dos pestañas: **Conexiones** / **Skills** | La pestaña Skills muestra el CRUD de skills; la de Conexiones es el listado de fuentes de siempre |
 | FE-CS-10 | Alta/edición de una **Skill** en la pestaña Skills | Formulario con `name` y `promptText` (texto libre) + toggle activa/inactiva; `POST`/`PATCH /skills`; los botones se gatean por `skills:create/update/delete` |
+| FE-CS-11 | Fuentes de verdad en modo consolidado (**Todas las empresas / Todas mis empresas**) | **Debería** consolidar como Usuarios/Áreas/Roles (columna Empresa, juntando las fuentes de todas las empresas) o, como mínimo, **esconder el alta** y pedir "elegí una empresa en el selector" (como hacen Áreas/Roles). ⚠️ Hoy **no consolida**: cae **en silencio** a una sola empresa (la de sistema para el superadmin; la primera membresía para el común), muestra "No hay fuentes de verdad configuradas en esta empresa" **aunque existan** en otras, y deja el formulario **"Crear" activo** — si se completa, guarda la fuente en esa empresa de respaldo **sin avisar en cuál**: `❌` hasta manejar el modo consolidado |
+| FE-CS-12 | La pestaña **Skills** de esta pantalla en el mismo modo consolidado | Mismo problema y mismo arreglo que FE-CS-11: hoy muestra vacío (empresa de sistema) y deja "Crear" activo. El hallazgo abarca **las dos pestañas** (Conexiones y Skills) de Fuentes de verdad: `❌` |
 
-## 3.10 Flujos IVR — listado y editor (`/dashboard/flows`, `/dashboard/flows/[id]`)
+## 3.10 Flujos IVR — listado y editor (`/dashboard/flows`, `/dashboard/flows/edit?id=…`)
 
 **Precondición:** el listado usa `/flows/all` (superadmin) o `/flows` (común). El editor es
 `@xyflow/react` (ReactFlow). La barra de asignación de empresas/roles sólo aparece si el usuario
@@ -1193,9 +1302,9 @@ puede listar todas las empresas.
 | FE-FLW-02 | Botones "Nuevo/Editar/Default/Eliminar" | Según `flows:create/update/delete` |
 | FE-FLW-03 | Marcar un flujo como "Default" | `POST /flows/:id/default`; se refleja en la tarjeta |
 | FE-FLW-04 | Abrir el editor de un flujo nuevo (`/new`) | Crea un nodo `start` por defecto; canvas listo |
-| FE-FLW-05 | Arrastrar un tipo de la paleta al canvas | Crea el nodo con su `data` por defecto en la posición soltada |
-| FE-FLW-06 | Conectar dos nodos (arrastrar de un handle a otro) | Crea la arista; `start` tiene dos salidas (`known`/`unknown`), `menu` una por opción |
-| FE-FLW-07 | Borrar una arista | Botón × al pasar el mouse (no al click); la arista desaparece del estado (usa `deleteElements`) |
+| FE-FLW-05 | Arrastrar un tipo de la paleta al canvas | ⏭️ **Excluido** (gesto de canvas difícil de automatizar, aporta poco valor): usa drag-and-drop nativo de HTML5. Crea el nodo con su `data` por defecto en la posición soltada |
+| FE-FLW-06 | Conectar dos nodos (arrastrar de un handle a otro) | ⏭️ **Excluido** (gesto de canvas difícil de automatizar, aporta poco valor): drag preciso entre handles SVG. Crea la arista; `start` tiene dos salidas (`known`/`unknown`), `menu` una por opción |
+| FE-FLW-07 | Borrar una arista | ⏭️ **Excluido** (gesto de canvas difícil de automatizar, aporta poco valor): hover exacto sobre un `<path>` SVG para revelar el ×. Botón × al pasar el mouse (no al click); la arista desaparece del estado (usa `deleteElements`) |
 | FE-FLW-08 | Seleccionar un nodo | El panel derecho muestra los campos propios de su tipo (texto, opciones, `variableName`, `systemPrompt`, etc.) |
 | FE-FLW-09 | Nodo `transfer_agent` | Métodos email/ticket (phone deshabilitado), asignados con orden (round robin), observadores y colaboradores |
 | FE-FLW-10 | Header: Contexto y "Fuente de verdad" | El dropdown de fuente lista las `ContextSource` activas del tenant; se vincula al flujo |
@@ -1204,12 +1313,20 @@ puede listar todas las empresas.
 | FE-FLW-13 | Guardar un flujo nuevo vs. existente | Nuevo: `POST /flows`. Existente: `PATCH /flows/:id` + `POST /flows/:id/assign-tenants` |
 | FE-FLW-14 | Guardar sin empresas asignadas | Pide confirmación ("quedará sin empresas") |
 | FE-FLW-15 | Payload de guardado | Sólo `{id,type,position,data}` de nodos y los campos declarados de aristas (limpia `measured`/`selected`/`dragging` de ReactFlow, así el backend no rechaza con 400) |
-| FE-FLW-16 | Borrar el nodo/arista seleccionado con Backspace/Delete | Se elimina del canvas (`deleteKeyCode`) |
+| FE-FLW-16 | Borrar el nodo/arista seleccionado con Backspace/Delete | ⏭️ **Excluido** (gesto de canvas difícil de automatizar, aporta poco valor): depende de selección previa y foco del canvas. Se elimina del canvas (`deleteKeyCode`) |
 | FE-FLW-17 | Reordenar asignados con ↑/↓ en `transfer_agent` | Cambia el orden del round robin; se persiste en el `data` del nodo al guardar |
 | FE-FLW-18 | Header del editor: selector de **Skill** | Reemplaza al dropdown viejo "context"; lista `GET /skills` (filtra `isActive`) y vincula la Skill al flujo (`skillId`); "sin skill" desvincula |
-| FE-FLW-19 | Nodo **SMS** (verde) en la paleta | Se arrastra al canvas; su panel tiene `message` + selector de **destinatarios** (usuarios del tenant, mismo criterio que `transfer_agent`, no números a mano) |
+| FE-FLW-19 | Nodo **SMS** (verde) en la paleta | ⏭️ **Excluido** (gesto de canvas difícil de automatizar, aporta poco valor): hereda el drag nativo de la paleta (ver FE-FLW-05). Se arrastra al canvas; su panel tiene `message` + selector de **destinatarios** (usuarios del tenant, mismo criterio que `transfer_agent`, no números a mano) |
 | FE-FLW-20 | Nodo **Generar Ticket** (`ticket_create`) con catálogo InvGate | `category`/`priority`/`ticketType` como dropdowns poblados desde `GET /invgate/catalog/*`; si el catálogo no cargó, **caen a input de texto libre**; más el campo descripción. La tarjeta del nodo muestra categoría y tipo |
 | FE-FLW-21 | Nodo `llm_query`: toggle `systemPromptMode` | "reemplaza" / "agrega" respecto del prompt base del flujo (ver CHAT-N-LLM-06) |
+| FE-FLW-22 | Dentro del editor de un flujo (`/dashboard/flows/edit?id=…`), cambiar la empresa en el selector del sidebar | **Debería** sacar al usuario del editor y devolverlo al listado de flujos (el flujo abierto puede ser de otra empresa). ⚠️ Hoy el reload lo deja **en el mismo editor, con el flujo abierto y editable** aunque sea de otra empresa: el editor **no** recarga el flujo por la empresa nueva pero sus desplegables por-empresa **sí**, quedando un estado mezclado (flujo de una empresa, "Fuente de verdad" de **otra**) que permite **vincular la fuente de una empresa a un flujo de otra**. La barrera real la impone el backend (hoy también sin scope, ver SEC-03 / BE-FLW-14): `❌` hasta sacar del editor al cambiar de empresa |
+| FE-FLW-23 | Abrir un flujo (o "Nuevo Flujo") en "Todas las empresas" y revisar los dropdowns **Skill**, **Fuente de verdad**, **Sub-flujo** y los pickers de usuario de *Transferir Agente* | **Deberían** poblarse según la empresa **del flujo**, no la empresa **activa**. ⚠️ Hoy se pueblan con la empresa activa (o la traducida en consolidado): abrir un flujo de `tenant1` en "Todas las empresas" deja "Fuente de verdad" **vacío** aunque `tenant1` tenga fuente. Riesgo de integridad: una fuente/skill ya asignada se ve como "Sin fuente" y **puede borrarse al guardar**, y permite cruzar datos de una empresa a un flujo de otra. Complemento de FE-FLW-22 (aquél es la no-redirección; éste, el **contenido** cruzado de los dropdowns): `❌` |
+| FE-FLW-24 | Abrir cualquier flujo en el editor y mirar la red/consola | Los catálogos de InvGate **no deberían** dar 500. ⚠️ Hoy `GET /invgate/catalog/priorities` y `/invgate/catalog/types` responden **500** en cada apertura del editor (el de `categories` no falla). La UI **degrada bien** (el nodo Generar Ticket cae a texto libre por el `try/catch` de la carga del catálogo, ver FE-FLW-20), pero ensucia consola/logs. Causa (backend): InvGate sin configurar debería devolver lista vacía o un 4xx controlado, no un 500. Robustez: `❌` hasta que el catálogo no tire 500 |
+| FE-FLW-25 | Entrar a `/dashboard/flows` con un usuario **sin** `flows:read` (ej. el rol `Sin permisos`, por URL directa) | **Debería** mostrar "Permiso denegado: flows:read", como las pantallas hermanas (Áreas, Roles, Usuarios y Fuentes de verdad ante su propio 403). ⚠️ Hoy `GET /flows` da **403** y la pantalla muestra "No hay flujos configurados." —el `catch` sólo hace `console.error` y deja la lista vacía, sin estado de error—, así que el usuario **no distingue** "empresa sin flujos" de "no tengo acceso". Flujos es la **única** de su clase que oculta el 403: `❌` hasta igualar el aviso de las hermanas (misma postura que FE-SEC-05) |
+| FE-FLW-26 | Botón "Duplicar" un flujo | `GET /flows/:id` + `POST /flows` con `name+" (copia)"`, nodos/aristas/`contextSourceId`/`skillId`; redirige al editor del nuevo (nace sin empresas asignadas). Gateado por `flows:create` |
+| FE-FLW-27 | Botón "Exportar" | Descarga un `.flow.json` (`name/description/nodes/edges/contextSourceId/skillId`); gateado por `flows:read` |
+| FE-FLW-28 | Botón "Importar" un `.flow.json` | Valida superficialmente (`name` presente, `nodes`/`edges` arrays) y hace `POST /flows`; un JSON sin esos campos → alert de formato inválido, no llama a la API. Gateado por `flows:create` |
+| FE-FLW-29 | Importar en la empresa B un `.flow.json` exportado de A (o editado) con ids embebidos (`contextSourceId`/`skillId`/`userId` de assignees/recipients, `flowId` de un `subflow`) | **Debería** sanear/validar esos ids contra la empresa destino. ⚠️ Hoy `POST /flows` guarda `nodes`/`edges` como blob sin validar los ids internos: el flujo se crea con referencias colgadas o apuntando a recursos de otro tenant (acotado porque nace sin empresas hasta asignarlo): `❌` (robustez/seguridad, sin número de hallazgo) |
 
 ## 3.11 Responsive
 
@@ -1325,12 +1442,14 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
   teléfono + UA" documentada, pero conviene registrar que ser reversible la agrava.
 - **Sugerencia:** al menos hashear (SHA-256) el valor; sumar señales al fingerprint.
 
-### SEC-08 — Fuga entre empresas al consultar un ticket en el flujo (`ticket_query`)
-- **Qué pasa:** el nodo que consulta un ticket lo busca por id **sin filtrar por la empresa**.
-  Si el flujo alimenta el id desde una variable que llenó el usuario, este puede pasar el id
+### SEC-08 — Fuga entre empresas al consultar un ticket en el flujo (`ticket_query`) — ✅ RESUELTO
+- **Qué pasaba:** el nodo que consulta un ticket lo buscaba por id **sin filtrar por la empresa**.
+  Si el flujo alimenta el id desde una variable que llenó el usuario, este podía pasar el id
   de un ticket de otra empresa y recibir su asunto y estado.
 - **Impacto:** lectura de datos de tickets de otros tenants.
-- **Sugerencia:** filtrar la consulta por el tenant (y por el dueño cuando corresponda).
+- **✅ Resuelto:** `ticket_query` usa ahora `ticket.findFirst({ where: { tenantId, OR: [{ id }, { invgateId }] } })`
+  — match exacto por `id` o número de InvGate, scopeado por empresa, sin coincidencia parcial.
+  Verificado en CHAT-N-TKQ-03.
 
 ### SEC-09 — Una condición con regex inválida rompe el flujo
 - **Qué pasa:** el nodo `condition` compila la expresión regular configurada sin proteger la
@@ -1392,8 +1511,8 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
   Gupshup no se verifica de ninguna forma. Agravante: los cuatro quedan activos **aunque
   `WHATSAPP_PROVIDER`/`SMS_PROVIDER` no sean ese proveedor**.
 - **Cómo se explota:** quien conozca la URL publica mensajes falsos con cualquier remitente en
-  `whatsapp.incoming`/`sms.incoming`; el sistema los asigna al tenant configurado (o al más antiguo)
-  y los procesa como reales.
+  `whatsapp.incoming`/`sms.incoming`; el sistema los rutea al tenant según la membresía del teléfono
+  (o al de sistema si no pertenece a ninguna empresa) y los procesa como reales.
 - **Impacto:** suplantación de usuarios por la puerta pública, avance de flujos, gasto de LLM y hasta
   creación de tickets. Mismo efecto que SEC-04 (webhook de Meta), ahora multiplicado por cuatro canales.
 - **Sugerencia:** validar `X-Twilio-Signature` con el auth token antes de encolar; para Gupshup, un
@@ -1521,7 +1640,7 @@ comportamiento **seguro**: hoy están en `❌` y pasan a `✅` cuando se corrige
 - SEC-05 → BE-SEC-02
 - SEC-06 → BE-AUTH-17
 - SEC-07 → BE-AUTH-20
-- SEC-08 → CHAT-N-TKQ-03
+- SEC-08 → CHAT-N-TKQ-03 ✅ (cerrado: `ticket_query` scopeado por `tenantId`)
 - SEC-09 → CHAT-N-CND-06
 - SEC-10 → BE-AUTH-21
 - SEC-11 → CHAT-LLMF-03
@@ -1537,7 +1656,7 @@ comportamiento **seguro**: hoy están en `❌` y pasan a `✅` cuando se corrige
 - SEC-21 → BE-SMS-10 (Gupshup SMS con credenciales en la query string)
 
 Los **21 hallazgos** quedan con caso de aceptación propio; ninguno depende ya sólo de cobertura
-indirecta.
+indirecta. **SEC-08 ya está cerrado** (CHAT-N-TKQ-03 en `✅`).
 
 ---
 
@@ -1627,6 +1746,7 @@ plan. Se arma una vez, sobre una base recién migrada y con el seed aplicado.
 | `acme` | `Sin permisos` | Ninguno (para los negativos de 403) |
 | `acme` | `Rol vacío` | Ninguno y **sin usuarios asignados** (para probar el borrado de un rol) |
 | `acme` | `Recepción inactiva` | Ninguno relevante; existe sólo para portar un flujo de inicio **inactivo** (`F-INACTIVO`) sin chocar con el par `(acme, Soporte N1)` que ya usa `F-PRINCIPAL` |
+| `acme` | `Alta sin roles` | `users:read` + `users:create`, **sin** `roles:read` (para FE-USR-16 / N7: el alta de usuarios queda rota porque el dropdown de rol obligatorio se llena con `GET /roles` → 403) |
 | `globex` | `Soporte N1` | Mismo nombre que el de Acme: verifica que el nombre es único **por empresa** |
 
 ## C.3 — Áreas
@@ -1647,6 +1767,7 @@ plan. Se arma una vez, sobre una base recién migrada y con el seed aplicado.
 | `caro@acme.test` | `acme` / Soporte N1 **y** `globex` / Soporte N1 | `+5491100000003` | Multiempresa: header obligatorio, modo consolidado |
 | `dario@acme.test` | `acme` / Sin permisos | `+5491100000004` | Todos los 403 de RBAC |
 | `eva@acme.test` | `acme` / Soporte N1, **dada de baja** | `+5491100000005` | Baja lógica, campos únicos liberados, sesión tras la baja |
+| `flor@acme.test` | `acme` / Alta sin roles | `+5491100000006` | Alta de usuarios sin poder leer los roles (FE-USR-16) |
 | — (sin usuario) | — | `+5491199999999` | Número **desconocido** del bot |
 
 > El interno telefónico y el id de Invgate se cargan sólo en `ana@acme.test`, para tener un

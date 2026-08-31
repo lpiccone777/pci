@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { CreateSkillDto, UpdateSkillDto } from './dto/skill.dto';
 
 /**
@@ -23,6 +24,36 @@ export class SkillsService {
     return this.prisma.skill.findMany({
       where: { tenantId },
       orderBy: { name: 'asc' },
+    });
+  }
+
+  /**
+   * Skills de TODAS las empresas (vista consolidada "Todas las empresas" del superadmin).
+   * Cross-tenant → `SystemTenantGuard` en el controller. Incluye la empresa de cada fila
+   * para la columna "Empresa". Espejo de `AreasService.findAllCrossTenant`.
+   */
+  async findAllCrossTenant() {
+    return this.prisma.skill.findMany({
+      where: { tenant: { deletedAt: null } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
+    });
+  }
+
+  /**
+   * Skills de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
+   * común). Acotado a las empresas donde su rol tiene `skills:read`. Espejo de
+   * `AreasService.findMine`.
+   */
+  async findMine(userId: string) {
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'skills');
+
+    if (readableTenantIds.length === 0) return [];
+
+    return this.prisma.skill.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
     });
   }
 

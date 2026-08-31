@@ -58,9 +58,13 @@ export class WhatsAppService implements OnModuleInit {
     ]);
 
     if (!token || !phoneNumberId) {
-      this.logger.warn(
+      // `error`, no `warn`: acá se pierde la respuesta del bot para este consultante — no hay
+      // forma de avisarle por el mismo canal que está roto, así que lo mínimo es que esta falla
+      // sea tan visible como cualquier otra de entrega (mismo nivel que el error de red/API de
+      // abajo), no un warning fácil de pasar por alto en un log ruidoso.
+      this.logger.error(
         `No se pudo enviar WhatsApp a ${to}: falta WHATSAPP_API_TOKEN o ` +
-          'WHATSAPP_PHONE_NUMBER_ID en /settings.',
+          'WHATSAPP_PHONE_NUMBER_ID en /settings. El consultante se queda sin la respuesta del bot.',
       );
       return;
     }
@@ -100,6 +104,11 @@ export class WhatsAppService implements OnModuleInit {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
+      // DEUDA TÉCNICA (no crítico hoy): un 429 de Meta (rate limit) cae acá igual que cualquier
+      // otro error — se loguea y el mensaje se pierde (el broker lo nackea sin reintentar, ver
+      // `BrokerService.safeNack`), sin backoff ni respetar el header `Retry-After` que manda la
+      // Cloud API. Bajo volumen esto no importa; si el envío escala, hace falta un manejo
+      // específico de 429 (reintento con backoff, o encolar para reenviar más tarde).
       this.logger.error(
         `WhatsApp API respondió ${res.status} al mandarle a ${to}: ${detail.slice(0, 500)}`,
       );

@@ -57,7 +57,6 @@ const TOUCHED_KEYS = [
   'GUPSHUP_SMS_USERID',
   'INVGATE_API_USER',
   'TWILIO_WHATSAPP_FROM',
-  'TWILIO_TENANT_ID',
   'WHATSAPP_PROVIDER',
   'SMS_PROVIDER',
 ];
@@ -415,7 +414,6 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
     const plainPairs: Array<[string, string]> = [
       ['TWILIO_ACCOUNT_SID', 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
       ['TWILIO_WHATSAPP_FROM', '+14155238886'],
-      ['TWILIO_TENANT_ID', 'cm-fake-tenant-id-be-set-18'],
       ['GUPSHUP_SMS_USERID', '20001234'],
       ['INVGATE_API_USER', 'chatbot_test'],
     ];

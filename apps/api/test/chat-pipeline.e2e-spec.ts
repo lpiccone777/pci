@@ -73,7 +73,7 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
   const FULL_REPLY = `${FLOW_TEXT_START}\n\n${FLOW_TEXT_END}`;
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   async function unsetAllDefaults() {

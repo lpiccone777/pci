@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { TENANTS_CHANGED_EVENT } from '@/lib/system-tenant';
+
+/** Avisa al selector del sidebar que la lista de empresas cambió (ver TENANTS_CHANGED_EVENT). */
+function notifyTenantsChanged() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(TENANTS_CHANGED_EVENT));
+}
 
 interface TenantData {
   id: string;
@@ -87,6 +93,7 @@ export default function TenantsPage() {
       setFeedback({ kind: 'ok', text: res?.message || `Empresa ${tenant.name} dada de baja.` });
       setDeletingId(null);
       await load();
+      notifyTenantsChanged();
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
@@ -101,6 +108,7 @@ export default function TenantsPage() {
       setFeedback({ kind: 'ok', text: res?.message || `Empresa ${tenant.name} reactivada.` });
       setRestoringId(null);
       await load();
+      notifyTenantsChanged();
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
@@ -112,6 +120,8 @@ export default function TenantsPage() {
     setEditing(null);
     setFeedback(message);
     await load();
+    // Alta o renombre de una empresa: refrescar el selector del sidebar (FE-TEN-06/07).
+    notifyTenantsChanged();
   }
 
   if (loading) return <p className="text-gray-500">Cargando...</p>;

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService as NestConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsCipher } from './secrets.cipher';
-import { defaultOtpEnabled } from '../modules/settings/settings.catalog';
+import { defaultOtpEnabled, defaultSimulateEnabled } from '../modules/settings/settings.catalog';
 
 @Injectable()
 export class AppConfigService {
@@ -67,5 +67,16 @@ export class AppConfigService {
 
   async deviceFingerprintTtlDays(): Promise<number> {
     return this.getNumber('DEVICE_FINGERPRINT_TTL_DAYS', 90);
+  }
+
+  /**
+   * ¿`POST /conversations/simulate` está habilitado? Mismo mecanismo que `otpEnabled()`: el
+   * default sale de `defaultSimulateEnabled()` (deshabilitado en `NODE_ENV=production`), pero
+   * un valor explícito en BD o env manda. Es una herramienta de desarrollo/test — el endpoint
+   * solo exige estar logueado (`JwtAuthGuard`), no que el caller tenga relación con el tenant o
+   * teléfono que simula, así que en producción conviene poder cerrarlo del todo sin tocar código.
+   */
+  async simulateEnabled(): Promise<boolean> {
+    return this.getBoolean('CONVERSATIONS_SIMULATE_ENABLED', defaultSimulateEnabled() === 'true');
   }
 }

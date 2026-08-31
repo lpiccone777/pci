@@ -128,7 +128,7 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
   }
 
   function simulate(from: string, tenantId: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
   }
 
   /** `broker.request` directo contra SIMULATE_QUEUE, saltando el timeout fijo de 300s del
@@ -192,17 +192,23 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
     ));
 
     // --- Transfer: start (known) -> transfer_agent (round robin) -> end. Un solo turno. ---
-    agentTransfer1 = await createUser(t.prisma, { email: uniqueEmail('agente1'), phone: uniquePhone(), firstName: 'Agente1' });
-    agentTransfer2 = await createUser(t.prisma, { email: uniqueEmail('agente2'), phone: uniquePhone(), firstName: 'Agente2' });
-    ({ tenant: tTransfer, role: rTransfer, flow: flowTransfer } = await setupScenario(
-      'e2etransfer',
-      [
+    // Tenant/rol armados a mano (no vía `setupScenario`): los agentes necesitan membresía en
+    // tTransfer ANTES de crear el flujo — `pickNextAssignee` filtra candidatos por `tenantId`
+    // (SEC-19), así que hacen falta el tenant y el rol primero.
+    tTransfer = await createTenant(t.prisma, { slug: uniqueSlug('e2etransfer') });
+    rTransfer = await createRole(t.prisma, { tenantId: tTransfer.id, name: 'Rol e2etransfer' });
+    agentTransfer1 = (await knownUser(tTransfer, rTransfer, 'agente1')).user;
+    agentTransfer2 = (await knownUser(tTransfer, rTransfer, 'agente2')).user;
+    flowTransfer = await createFlow(t.prisma, {
+      name: `Flujo e2etransfer ${uniqueSlug()}`,
+      nodes: [
         startNode('s'),
         transferAgentNode('tr', { methods: ['ticket'], assignees: [agentTransfer1.id, agentTransfer2.id] }),
         endNode('e'),
-      ],
-      [edge('s', 'tr', 'known'), edge('tr', 'e')],
-    ));
+      ] as never,
+      edges: [edge('s', 'tr', 'known'), edge('tr', 'e')] as never,
+      assign: [{ tenantId: tTransfer.id, isStart: true, roleIds: [rTransfer.id] }],
+    });
 
     // --- Burst: start (known) -> llm_query (terminal, sin salida). Un turno, una llamada LLM. ---
     ({ tenant: tBurst, role: rBurst } = await setupScenario(

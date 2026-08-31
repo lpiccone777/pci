@@ -95,7 +95,7 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
   let tenant: { id: string };
 
   function simulate(from: string, body = 'hola') {
-    return http(t).post('/conversations/simulate').send({ from, body, tenantId: tenant.id });
+    return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId: tenant.id });
   }
 
   /** Crea (rol + usuario conocido + flujo de inicio) para un escenario aislado del resto. */
@@ -439,7 +439,7 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
     // comentario de cabecera del archivo. NO se usa /simulate acá (colgaría 300s). ---
 
     it.failing(
-      'CHAT-N-CND-06: regex inválida no debe romper el flujo — compilación protegida (SEC-09)',
+      'CHAT-N-CND-06: regex inválida no debe romper el flujo — compilación protegida (SEC-09) @invertido',
       async () => {
         const { phone } = await setupScenario({
           label: 'cnd06',
@@ -480,7 +480,7 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
     );
 
     it.failing(
-      'CHAT-N-CND-08: value ausente en una condición keyword no debe romper el flujo (SEC-09)',
+      'CHAT-N-CND-08: value ausente en una condición keyword no debe romper el flujo (SEC-09) @invertido',
       async () => {
         const { phone } = await setupScenario({
           label: 'cnd08',

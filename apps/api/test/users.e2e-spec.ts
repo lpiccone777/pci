@@ -29,6 +29,7 @@ import {
   uniqueSlug,
   uid,
 } from './support';
+import * as bcrypt from 'bcrypt';
 
 /** Réplica exacta del sufijo de baja lógica (`UsersService` → `deletionSuffix`), para PRECOMPUTAR
  *  qué email va a generar una baja en un instante dado (BE-USR-16). Los asserts son siempre
@@ -1208,5 +1209,358 @@ describe('1.5 Usuarios (BE-USR-*)', () => {
 
     expect(res.status).toBe(403);
     expect(res.body.message).toBe('No pertenecés a alguna de las empresas seleccionadas');
+  });
+
+  // --- BE-USR-27..35: carga masiva (POST /users/bulk-import) ---
+  //
+  // Contrato del servicio (`UsersService.bulkImport`, users.service.ts L380-582):
+  //   respuesta = {
+  //     summary: { total, created, failed },   // NÚMEROS (created.length / failed.length)
+  //     created: [{ email, firstName, lastName, tempPassword }],
+  //     failed:  [{ row, email, reason }],
+  //   }
+  // El endpoint es `@Post('bulk-import')` sin `@HttpCode`, así que un lote aceptado da 201.
+  // Hereda la cadena de clase `@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)` + a nivel de
+  // ruta `@RequirePermission('users','create')`, y opera sobre el tenant del header (como
+  // `create`), NO cross-tenant (users.controller.ts L128-136).
+
+  /** Fila mínima válida del Excel ya mapeada (email + nombre + apellido). */
+  const validRow = (label: string) => ({
+    email: uniqueEmail(label),
+    firstName: 'Nombre',
+    lastName: 'Apellido',
+  });
+
+  it('BE-USR-27: bulk-import de un lote válido devuelve 201 y crea persona + membresía con tempPassword por fila', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr27') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr27-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+    const rows = [validRow('usr27-a'), validRow('usr27-b'), validRow('usr27-c')];
+
+    const res = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows,
+    });
+
+    expect(res.status).toBe(201); // @Post() sin @HttpCode → default de Nest
+    // summary.created / failed son NÚMEROS (users.service.ts L578: created.length / failed.length)
+    expect(res.body.summary).toEqual({ total: 3, created: 3, failed: 0 });
+    expect(res.body.created).toHaveLength(3);
+    expect(res.body.failed).toEqual([]);
+
+    // Cada creado trae su contraseña temporal autogenerada (users.service.ts L484,555-562).
+    for (const c of res.body.created as any[]) {
+      expect(typeof c.tempPassword).toBe('string');
+      expect(c.tempPassword.length).toBeGreaterThan(0);
+    }
+
+    // Persona + membresía en el TENANT ACTIVO con el rol default (createMany de User + UserTenant,
+    // users.service.ts L516-548).
+    for (const row of rows) {
+      const created = await t.prisma.user.findFirst({ where: { email: row.email } });
+      expect(created).not.toBeNull();
+      const membership = await t.prisma.userTenant.findUnique({
+        where: { userId_tenantId: { userId: created!.id, tenantId: tenant.id } },
+      });
+      expect(membership).not.toBeNull();
+      expect(membership!.roleId).toBe(role.id);
+    }
+  });
+
+  it('BE-USR-28: bulk-import con defaultAreaId deja todas las membresías del lote con esa área', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr28') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const area = await createArea(t.prisma, { tenantId: tenant.id, name: 'Área 28' });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr28-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+    const rows = [validRow('usr28-a'), validRow('usr28-b')];
+
+    const res = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      defaultAreaId: area.id,
+      rows,
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.summary).toEqual({ total: 2, created: 2, failed: 0 });
+
+    // `areaId` es único para todo el lote (users.service.ts L382,544-546).
+    for (const row of rows) {
+      const created = await t.prisma.user.findFirst({ where: { email: row.email } });
+      const membership = await t.prisma.userTenant.findUnique({
+        where: { userId_tenantId: { userId: created!.id, tenantId: tenant.id } },
+      });
+      expect(membership!.areaId).toBe(area.id);
+    }
+  });
+
+  it('BE-USR-29: bulk-import con un email ya activo en la empresa reporta esa fila en failed y crea el resto', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr29') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr29-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+
+    // Un usuario ACTIVO cuyo email ya existe (uniqueEmail siempre devuelve minúsculas).
+    const dupEmail = uniqueEmail('usr29-dup');
+    await createUser(t.prisma, {
+      email: dupEmail,
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const fresh = validRow('usr29-nueva');
+
+    const res = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [{ email: dupEmail, firstName: 'Choca', lastName: 'Email' }, fresh],
+    });
+
+    // Reporte parcial: la fila del email tomado va a failed, la nueva se crea.
+    expect(res.status).toBe(201);
+    expect(res.body.summary).toEqual({ total: 2, created: 1, failed: 1 });
+    expect(res.body.created[0].email).toBe(fresh.email);
+    // NOTA: en la práctica esta fila la corta el pre-check de disponibilidad contra la base
+    // (users.service.ts L471-472), NO el `skipDuplicates` del createMany (ese es solo el
+    // fallback TOCTOU, L508-513). El motivo real es el del pre-check:
+    expect(res.body.failed[0]).toMatchObject({
+      email: dupEmail,
+      reason: 'Ya existe un usuario con ese email',
+    });
+  });
+
+  it('BE-USR-30: bulk-import con filas duplicadas DENTRO del archivo — la primera se crea, la segunda va a failed', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr30') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr30-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+
+    // Email repetido en el archivo (users.service.ts L400-403).
+    const email = uniqueEmail('usr30-mismo');
+    const resEmail = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [
+        { email, firstName: 'Primera', lastName: 'Fila' },
+        { email, firstName: 'Segunda', lastName: 'Fila' },
+      ],
+    });
+    expect(resEmail.status).toBe(201);
+    expect(resEmail.body.summary).toEqual({ total: 2, created: 1, failed: 1 });
+    // La fila 1 del Excel son los headers, así que la 2da fila de datos es `row: 3`
+    // (users.service.ts L392-394).
+    expect(resEmail.body.failed[0]).toMatchObject({
+      row: 3,
+      email,
+      reason: 'Email duplicado en el archivo',
+    });
+
+    // Teléfono repetido en el archivo (users.service.ts L404-407).
+    const phone = uniquePhone();
+    const resPhone = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [
+        { email: uniqueEmail('usr30-p1'), firstName: 'Con', lastName: 'Tel', phone },
+        { email: uniqueEmail('usr30-p2'), firstName: 'Choca', lastName: 'Tel', phone },
+      ],
+    });
+    expect(resPhone.status).toBe(201);
+    expect(resPhone.body.summary).toEqual({ total: 2, created: 1, failed: 1 });
+    expect(resPhone.body.failed[0].reason).toBe('Teléfono duplicado en el archivo');
+  });
+
+  it('BE-USR-31: bulk-import con filas sin email o sin nombre/apellido devuelve 400 del lote entero (ValidationPipe)', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr31') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr31-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+
+    const asMessages = (m: unknown): string[] => (Array.isArray(m) ? m : [m]) as string[];
+
+    // Fila con email inválido → `@IsEmail` de BulkImportUserRowDto (user.dto.ts L259) corta el
+    // lote ENTERO vía `@ValidateNested` (L305). El ValidationPipe global (whitelist+transform)
+    // ya está aplicado por createTestApp. El mensaje llega prefijado con la ruta anidada
+    // (`rows.<i>.<mensaje>`).
+    const resEmail = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [{ email: '', firstName: 'Nombre', lastName: 'Apellido' }],
+    });
+    expect(resEmail.status).toBe(400);
+    const emailMsgs = asMessages(resEmail.body.message);
+    expect(emailMsgs.some((m) => m.includes('El email no es válido'))).toBe(true);
+    expect(emailMsgs.some((m) => /^rows\.\d+\./.test(m))).toBe(true);
+
+    // Fila con nombre vacío → `@IsNotEmpty` (user.dto.ts L263).
+    const resName = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [{ email: uniqueEmail('usr31-ok'), firstName: '', lastName: 'Apellido' }],
+    });
+    expect(resName.status).toBe(400);
+    expect(asMessages(resName.body.message).some((m) => m.includes('El nombre es obligatorio'))).toBe(
+      true,
+    );
+  });
+
+  it('BE-USR-32: bulk-import con >10.000 filas o con formato inválido devuelve 400 del lote entero', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr32') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr32-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+
+    const asMessages = (m: unknown): string[] => (Array.isArray(m) ? m : [m]) as string[];
+
+    // >10.000 filas → `@ArrayMaxSize(10000)` (user.dto.ts L304). Las filas van VÁLIDAS A PROPÓSITO:
+    // si estuvieran incompletas (`{}`), cada una dispararía además los errores anidados de
+    // `@ValidateNested` (email/nombre/apellido), y el ValidationPipe devuelve esos mensajes por
+    // fila en vez del de `@ArrayMaxSize` — el mensaje de tamaño solo queda garantizado cuando es
+    // la ÚNICA restricción que falla. Con filas válidas el lote pesa ~1mb: el test app replica el
+    // `json({ limit:'10mb' })` de main.ts (ver support/app.ts), así que no lo corta un 413.
+    const tooMany = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: Array.from({ length: 10001 }, (_, i) => validRow(`usr32-many-${i}`)),
+    });
+    expect(tooMany.status).toBe(400);
+    expect(
+      asMessages(tooMany.body.message).some((m) => m.includes('Máximo 10000 filas por importación')),
+    ).toBe(true);
+
+    // Formato inválido de una fila (`@MaxLength(80)` en firstName, user.dto.ts L264) → 400.
+    const tooLong = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [{ email: uniqueEmail('usr32-long'), firstName: 'x'.repeat(81), lastName: 'Apellido' }],
+    });
+    expect(tooLong.status).toBe(400);
+    expect(asMessages(tooLong.body.message).some((m) => m.includes('80'))).toBe(true);
+  });
+
+  it('BE-USR-33: bulk-import con defaultRoleId o defaultAreaId de OTRO tenant devuelve 400', async () => {
+    const tenantA = await createTenant(t.prisma, { slug: uniqueSlug('usr33-a') });
+    const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('usr33-b') });
+    const roleA = await createRole(t.prisma, {
+      tenantId: tenantA.id,
+      name: 'Gestor A',
+      permissions: ['users:create'],
+    });
+    const roleB = await createRole(t.prisma, { tenantId: tenantB.id, name: 'Rol ajeno B' });
+    const areaB = await createArea(t.prisma, { tenantId: tenantB.id, name: 'Área ajena B' });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr33-req'),
+      memberships: [{ tenantId: tenantA.id, roleId: roleA.id }],
+    });
+    const token = tokenFor(t, requester);
+
+    // Rol de otro tenant → assertRoleBelongsToTenant (users.service.ts L381,1096-1101).
+    const resRole = await withAuth(http(t).post('/users/bulk-import'), token, tenantA.id).send({
+      defaultRoleId: roleB.id,
+      rows: [validRow('usr33-r')],
+    });
+    expect(resRole.status).toBe(400);
+    expect(resRole.body.message).toBe('El rol no existe o no pertenece a este tenant');
+
+    // Área de otro tenant → assertAreaBelongsToTenant (users.service.ts L383,1104-1109).
+    const resArea = await withAuth(http(t).post('/users/bulk-import'), token, tenantA.id).send({
+      defaultRoleId: roleA.id,
+      defaultAreaId: areaB.id,
+      rows: [validRow('usr33-ar')],
+    });
+    expect(resArea.status).toBe(400);
+    expect(resArea.body.message).toBe('El área no existe o no pertenece a este tenant');
+  });
+
+  it('BE-USR-34: bulk-import parado en una empresa donde el solicitante NO es miembro devuelve 403 (TenantGuard)', async () => {
+    const tenantA = await createTenant(t.prisma, { slug: uniqueSlug('usr34-a') });
+    const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('usr34-b') });
+    const roleA = await createRole(t.prisma, {
+      tenantId: tenantA.id,
+      name: 'Gestor A',
+      permissions: ['users:create'],
+    });
+    const roleB = await createRole(t.prisma, { tenantId: tenantB.id, name: 'Rol B' });
+    // El solicitante es miembro de A, pero NO de B (y no es superusuario de sistema).
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr34-req'),
+      memberships: [{ tenantId: tenantA.id, roleId: roleA.id }],
+    });
+    const token = tokenFor(t, requester);
+
+    // El header apunta a B: TenantGuard corta antes que ValidationPipe y RolesGuard
+    // (tenant.guard.ts L82-88). La excepción "salvo superusuario del sistema" (L85-93) no aplica.
+    const res = await withAuth(http(t).post('/users/bulk-import'), token, tenantB.id).send({
+      defaultRoleId: roleB.id,
+      rows: [validRow('usr34')],
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('No tenés acceso a este tenant');
+  });
+
+  it('BE-USR-35: la respuesta bulk-import devuelve created[].tempPassword en texto plano (verificable contra el hash)', async () => {
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('usr35') });
+    const role = await createRole(t.prisma, {
+      tenantId: tenant.id,
+      name: 'Gestor',
+      permissions: ['users:create'],
+    });
+    const requester = await createUser(t.prisma, {
+      email: uniqueEmail('usr35-req'),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    const token = tokenFor(t, requester);
+    const row = validRow('usr35');
+
+    const res = await withAuth(http(t).post('/users/bulk-import'), token, tenant.id).send({
+      defaultRoleId: role.id,
+      rows: [row],
+    });
+
+    expect(res.status).toBe(201);
+    const createdRow = (res.body.created as any[]).find((c) => c.email === row.email);
+    expect(createdRow).toBeDefined();
+
+    // La contraseña temporal viaja EN CLARO (dato sensible acotado a la carga inicial). Se
+    // verifica que es la contraseña REAL: el hash bcrypt guardado en la base valida contra ella.
+    expect(typeof createdRow.tempPassword).toBe('string');
+    const persisted = await t.prisma.user.findFirst({ where: { email: row.email } });
+    expect(persisted).not.toBeNull();
+    expect(await bcrypt.compare(createdRow.tempPassword, persisted!.passwordHash)).toBe(true);
   });
 });

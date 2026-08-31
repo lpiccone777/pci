@@ -45,7 +45,13 @@ interface AuthContextType {
    */
   hasPermissionInTenant: (tenantId: string, resource: string, action: string) => boolean;
   activeTenant: string | null;
-  setActiveTenant: (id: string) => void;
+  /**
+   * Cambia la empresa activa. `redirectTo` (opcional) navega a esa ruta en vez de recargar
+   * en el lugar: lo usa el sidebar para sacar al usuario de una pantalla que ya no
+   * corresponde a la empresa nueva (el editor de un flujo ajeno → FE-FLW-22; una pantalla
+   * solo-sistema al pasar a una empresa común → FE-INF-16).
+   */
+  setActiveTenant: (id: string, redirectTo?: string) => void;
   /**
    * Superusuario del sistema (rol SuperAdmin en el tenant de sistema): puede pararse en
    * cualquier empresa y operar cross-tenant. Un usuario común miembro del tenant de sistema
@@ -150,14 +156,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSession();
   }, []);
 
-  const setActiveTenant = useCallback((id: string) => {
+  const setActiveTenant = useCallback((id: string, redirectTo?: string) => {
     // No tocamos el estado de React antes de recargar. Cambiarlo dispara un re-render que
     // vuelve a lanzar los fetch de la pantalla con el tenant nuevo, y la recarga los aborta
     // a mitad de camino: ese era el "NetworkError" en rojo que se alcanzaba a ver al cambiar
     // de empresa. La recarga sola alcanza —el API opera por el header X-Tenant-Id, no por el
     // JWT—, y el tenant activo se relee de localStorage al montar.
     localStorage.setItem('activeTenant', id);
-    window.location.reload();
+    // `redirectTo` cuando la pantalla actual ya no corresponde a la empresa nueva: navegar
+    // a esa ruta también recarga (misma resolución por header), pero deja al usuario en una
+    // pantalla válida en vez de una huérfana.
+    if (redirectTo) window.location.assign(redirectTo);
+    else window.location.reload();
   }, []);
 
   const isSuperAdmin = useMemo(() => !!user?.isSuperAdmin, [user]);

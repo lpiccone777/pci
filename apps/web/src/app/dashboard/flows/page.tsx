@@ -23,6 +23,11 @@ export default function FlowsPage() {
   const router = useRouter();
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Error de carga (típicamente el 403 "Permiso denegado: flows:read"): sin esto la
+  // pantalla se tragaba el error y mostraba "No hay flujos configurados", indistinguible
+  // de una empresa sin flujos. Mismo criterio que Áreas/Roles/Usuarios, que muestran el
+  // mensaje del backend.
+  const [error, setError] = useState<string | null>(null);
 
   // "Todas las empresas": vista consolidada de todos los flujos. En una empresa concreta el
   // listado se filtra por ella, igual que el listado de usuarios.
@@ -34,6 +39,7 @@ export default function FlowsPage() {
 
   const loadFlows = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       let data: Flow[];
       if (isSuperAdmin) {
@@ -65,8 +71,12 @@ export default function FlowsPage() {
         data = await apiFetch('/flows');
       }
       setFlows(data);
-    } catch (err) {
-      console.error('Error loading flows:', err);
+    } catch (err: any) {
+      // Distinguir "sin permiso" de "sin flujos": guardamos el mensaje del backend
+      // (`Permiso denegado: flows:read` en un 403) para mostrarlo, en vez de dejar la
+      // lista vacía en silencio.
+      setError(err?.message || 'No se pudieron cargar los flujos.');
+      setFlows([]);
     } finally {
       setLoading(false);
     }
@@ -213,6 +223,12 @@ export default function FlowsPage() {
         )}
       </div>
 
+      {error && (
+        <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
       <div className="grid gap-4">
         {flows.map((flow) => (
           <div
@@ -302,7 +318,7 @@ export default function FlowsPage() {
           </div>
         ))}
 
-        {flows.length === 0 && (
+        {flows.length === 0 && !error && (
           <div className="text-center py-12 text-gray-500">
             No hay flujos configurados.{' '}
             {hasPermission('flows', 'create') && (

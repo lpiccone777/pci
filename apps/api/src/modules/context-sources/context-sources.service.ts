@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { SecretsCipher } from '../../config/secrets.cipher';
 import { BrokerService } from '../broker/broker.service';
 import { CreateContextSourceDto, UpdateContextSourceDto } from './dto/context-source.dto';
@@ -55,6 +56,45 @@ export class ContextSourcesService {
     const sources = await this.prisma.contextSource.findMany({
       where: { tenantId },
       orderBy: { name: 'asc' },
+    });
+    return sources.map((s) => this.toSafeDto(s));
+  }
+
+  /**
+   * Fuentes de TODAS las empresas (vista consolidada "Todas las empresas" del superadmin).
+   * Operación cross-tenant → `SystemTenantGuard` en el controller. Mismo shape que `findAll`
+   * pero con la empresa de cada fila, para la columna "Empresa". Espejo de
+   * `AreasService.findAllCrossTenant`.
+   */
+  async findAllCrossTenant() {
+    const sources = await this.prisma.contextSource.findMany({
+      // No listar fuentes de empresas dadas de baja: la empresa desaparece del selector,
+      // así que su contenido no debe seguir apareciendo en la vista consolidada.
+      where: { tenant: { deletedAt: null } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
+    });
+    return sources.map((s) => this.toSafeDto(s));
+  }
+
+  /**
+   * Fuentes de TODAS las empresas del propio usuario (vista "Todas mis empresas" del usuario
+   * común). Acotado a las empresas donde su rol tiene `context-sources:read`. El scope lo pone
+   * el userId, no el header. Espejo de `AreasService.findMine`.
+   */
+  async findMine(userId: string) {
+    const readableTenantIds = await resolveReadableTenantIds(
+      this.prisma,
+      userId,
+      'context-sources',
+    );
+
+    if (readableTenantIds.length === 0) return [];
+
+    const sources = await this.prisma.contextSource.findMany({
+      where: { tenantId: { in: readableTenantIds } },
+      orderBy: [{ tenant: { name: 'asc' } }, { name: 'asc' }],
+      include: { tenant: { select: { id: true, name: true, slug: true } } },
     });
     return sources.map((s) => this.toSafeDto(s));
   }

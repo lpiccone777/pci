@@ -336,9 +336,11 @@ describe('1.9 Fuentes de verdad — context sources (BE-CS-*)', () => {
 
     // El servicio NO deja que el FK SetNull se dispare solo: cuenta los flujos que la usan
     // y bloquea el borrado con 409 antes de tocar la base (ver ContextSourcesService.remove).
+    // El `onDelete: SetNull` del schema queda como defensa muerta por este camino.
     expect(res.status).toBe(409);
     expect(res.body.message).toContain('1');
     expect(res.body.message.toLowerCase()).toContain('flujo');
+    expect(res.body.message).toContain('Desvinculala antes de eliminarla');
 
     const stillThere = await t.prisma.contextSource.findUnique({ where: { id: source.id } });
     expect(stillThere).not.toBeNull();

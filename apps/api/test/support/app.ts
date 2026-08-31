@@ -13,6 +13,8 @@
  */
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule, TestingModuleBuilder } from '@nestjs/testing';
+import { JwtService } from '@nestjs/jwt';
+import { json } from 'express';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { EmailService } from '../../src/modules/auth/email.service';
@@ -37,6 +39,12 @@ export interface TestApp {
   moduleRef: TestingModule;
   /** Emails capturados (códigos OTP, notificaciones de transferencia). */
   email: RecordingEmailService;
+  /**
+   * Token JWT del admin del seed (`admin@pci.local`), para endpoints con `JwtAuthGuard` puro
+   * (sin TenantGuard/RolesGuard), como `POST /conversations/simulate`. Los tests de permisos
+   * finos siguen firmando su propio token con `tokenFor`.
+   */
+  authToken: string;
   /** Cierra la app (y con ella la conexión a RabbitMQ y Prisma). */
   close: () => Promise<void>;
 }
@@ -66,6 +74,13 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
 
     moduleRef = await builder.compile();
     app = moduleRef.createNestApplication();
+
+    // Mismo body-limit que `main.ts` (`app.use(json({ limit: '10mb' }))`): el default de Express
+    // (100kb) alcanza para el resto de la API, pero la carga masiva de usuarios (bulk-import) puede
+    // mandar miles de filas y superarlo. Sin esto, un lote grande dispara un 413 del body-parser
+    // ANTES de llegar a la validación del DTO, y no se puede observar el 400 de `@ArrayMaxSize`
+    // (BE-USR-32). Solo sube el límite: no cambia la validación de ningún otro spec.
+    app.use(json({ limit: '10mb' }));
 
     // Mismo pipe global que `main.ts`. Imprescindible para los casos de whitelist/validación.
     app.useGlobalPipes(
@@ -106,11 +121,18 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
     create: { key: 'DEVICE_FINGERPRINT_TTL_DAYS', value: '90' },
   });
 
+  // Token del admin del seed para los endpoints con JwtAuthGuard puro (ver TestApp.authToken).
+  // `JwtStrategy.validate` exige que el `sub` exista en la base: el admin del seed siempre está.
+  const admin = await prisma.user.findUniqueOrThrow({ where: { email: 'admin@pci.local' } });
+  const jwt = moduleRef.get(JwtService, { strict: false });
+  const authToken = jwt.sign({ sub: admin.id, email: admin.email }, { expiresIn: '2h' });
+
   return {
     app,
     prisma,
     moduleRef,
     email,
+    authToken,
     close: async () => {
       // Neutralizar el reconnect-zombie del broker antes de cerrar. `BrokerService.disconnect()`
       // (que corre en onModuleDestroy) NO saca el listener `connection.on('close', ...)` que

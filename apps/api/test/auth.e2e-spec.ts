@@ -298,7 +298,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-17 (SEC-06): el refresh token NO debe valer como access token ---
-  it.failing('BE-AUTH-17: usar el refreshToken como Bearer debe devolver 401 (SEC-06)', async () => {
+  it.failing('BE-AUTH-17: usar el refreshToken como Bearer debe devolver 401 (SEC-06) @invertido', async () => {
     await setSetting(t.prisma, 'OTP_ENABLED', 'false');
     const user = await createUser(t.prisma, { email: uniqueEmail('auth17'), password: DEFAULT_PASSWORD });
     const login = await loginViaApi(t, user.email, DEFAULT_PASSWORD, UA);
@@ -312,7 +312,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-18 (SEC-13): la validación de OTP debe usar la longitud configurada, no un fijo de 6 ---
-  it.failing('BE-AUTH-18: con OTP_CODE_LENGTH=5 el código de 5 dígitos debe aceptarse (SEC-13)', async () => {
+  it.failing('BE-AUTH-18: con OTP_CODE_LENGTH=5 el código de 5 dígitos debe aceptarse (SEC-13) @invertido', async () => {
     await setSetting(t.prisma, 'OTP_ENABLED', 'true');
     await setSetting(t.prisma, 'OTP_CODE_LENGTH', '5');
     const phone = uniquePhone();
@@ -337,7 +337,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-19 (SEC-01): la verificación de OTP debe estar acotada (rate limit / lockout) ---
-  it.failing('BE-AUTH-19: la fuerza bruta contra verify-otp debe estar acotada con 429 (SEC-01)', async () => {
+  it.failing('BE-AUTH-19: la fuerza bruta contra verify-otp debe estar acotada con 429 (SEC-01) @invertido', async () => {
     const attempts: number[] = [];
     for (let i = 0; i < 20; i++) {
       const res = await http(t)
@@ -353,7 +353,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-20 (SEC-07): el fingerprint debe ser un hash no reversible (SHA-256) ---
-  it.failing('BE-AUTH-20: el fingerprint del dispositivo debe ser un hash SHA-256 no reversible (SEC-07)', async () => {
+  it.failing('BE-AUTH-20: el fingerprint del dispositivo debe ser un hash SHA-256 no reversible (SEC-07) @invertido', async () => {
     await setSetting(t.prisma, 'OTP_ENABLED', 'true');
     const phone = uniquePhone();
     const user = await createUser(t.prisma, { email: uniqueEmail('auth20'), password: DEFAULT_PASSWORD, phone });
@@ -366,7 +366,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-21 (SEC-10): el cuerpo del OTP no debe escribirse en los logs ---
-  it.failing('BE-AUTH-21: sin SMTP, el envío del OTP no debe volcar el código en los logs (SEC-10)', async () => {
+  it.failing('BE-AUTH-21: sin SMTP, el envío del OTP no debe volcar el código en los logs (SEC-10) @invertido', async () => {
     // Directo sobre SmtpEmailService (la frontera de correo real), con el host SIN configurar:
     // ahí corre el path "stub" que hoy loguea el cuerpo del mail —con el código— en consola. Es
     // exactamente el código del hallazgo, sin depender de cómo esté el .env del entorno.
@@ -393,7 +393,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-22 (SEC-14): la estrategia JWT debe rechazar el token de un usuario dado de baja ---
-  it.failing('BE-AUTH-22: un token de un usuario dado de baja debe rechazarse en endpoints protegidos (SEC-14)', async () => {
+  it.failing('BE-AUTH-22: un token de un usuario dado de baja debe rechazarse en endpoints protegidos (SEC-14) @invertido', async () => {
     const tenant = await createTenant(t.prisma, { slug: uniqueSlug('auth22') });
     const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Lector', permissions: ['areas:read'] });
     const user = await createUser(t.prisma, {
@@ -489,7 +489,7 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
   });
 
   // --- BE-AUTH-28 (SEC-19): debe haber revocación server-side (logout que invalida el token) ---
-  it.failing('BE-AUTH-28: el logout debe revocar el token server-side (SEC-19)', async () => {
+  it.failing('BE-AUTH-28: el logout debe revocar el token server-side (SEC-19) @invertido', async () => {
     await setSetting(t.prisma, 'OTP_ENABLED', 'false');
     const user = await createUser(t.prisma, { email: uniqueEmail('auth28'), password: DEFAULT_PASSWORD });
     const login = await loginViaApi(t, user.email, DEFAULT_PASSWORD, UA);
