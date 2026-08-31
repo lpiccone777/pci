@@ -21,7 +21,13 @@ const RETENTION_WEEKS = 4;
 export class UnknownSenderLogService {
   private readonly logger = new Logger(UnknownSenderLogService.name);
 
-  log(data: { tenantId: string; channel: string; from: string; bodyPreview: string }): void {
+  /**
+   * `tenantId` es opcional: el ruteo por membresía (`InboundTenantRoutingService`) puede
+   * rechazar un teléfono ANTES de saber a qué empresa hubiera ido — no pertenece a ninguna,
+   * así que no hay tenant que loguear. El rechazo dentro de una empresa ya resuelta (mensaje
+   * `/simulate` contra un `tenantId` puntual) sí lo trae.
+   */
+  log(data: { tenantId?: string; channel: string; from: string; bodyPreview: string }): void {
     const line = JSON.stringify({ ts: new Date().toISOString(), ...data });
     try {
       mkdirSync(LOG_DIR, { recursive: true });

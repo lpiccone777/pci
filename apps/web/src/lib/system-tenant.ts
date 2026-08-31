@@ -35,6 +35,15 @@ export const ALL_TENANTS = '__all__';
 export const SYSTEM_TENANT_ID_KEY = 'systemTenantId';
 
 /**
+ * Evento de ventana que avisa que la lista de empresas cambió (alta, renombre, baja o
+ * restauración desde la pantalla de Tenants). El selector del sidebar cachea `/tenants/all`
+ * al montar; sin este aviso, su lista quedaba desactualizada hasta recargar la página
+ * (hallazgos FE-TEN-06/07 y N2). La pantalla de Tenants lo emite tras cada mutación exitosa
+ * y el sidebar lo escucha para volver a traer la lista.
+ */
+export const TENANTS_CHANGED_EVENT = 'pci:tenants-changed';
+
+/**
  * Dónde se guarda una empresa "de respaldo" del usuario común: la primera de sus membresías.
  *
  * En "Todas las empresas" el usuario común no tiene empresa de sistema a la que apuntar (no

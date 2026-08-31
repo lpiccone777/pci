@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Build aislado de la API para los tests e2e (ver apps/web/e2e/support/ephemeral-stack.ts)
+dist-e2e/
 .next/
 .turbo/
 coverage/

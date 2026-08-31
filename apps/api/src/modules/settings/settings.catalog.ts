@@ -44,7 +44,8 @@ export type SettingGroup =
   | 'Mensajería: SMS'
   | 'Mensajería: SMS (Twilio)'
   | 'Mensajería: Email'
-  | 'Integración: InvGate';
+  | 'Integración: InvGate'
+  | 'Desarrollo y pruebas';
 
 export interface SettingDefinition {
   key: string;
@@ -88,6 +89,17 @@ export interface SettingDefinition {
  */
 export function defaultOtpEnabled(): string {
   return String(process.env.NODE_ENV !== 'development');
+}
+
+/**
+ * Default de `CONVERSATIONS_SIMULATE_ENABLED` cuando no hay valor en BD ni en env: habilitado
+ * fuera de `NODE_ENV=production` (dev y test — Jest fija `NODE_ENV=test` si no hay uno explícito,
+ * así que los e2e siguen viendo el endpoint habilitado sin tocar nada). `/conversations/simulate`
+ * es una herramienta de desarrollo (scripts, e2e): en producción, sin fijar nada a mano, queda
+ * cerrado — mismo criterio (y mismo mecanismo) que `defaultOtpEnabled`.
+ */
+export function defaultSimulateEnabled(): string {
+  return String(process.env.NODE_ENV !== 'production');
 }
 
 export const SETTINGS_CATALOG: SettingDefinition[] = [
@@ -436,20 +448,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'suscripción del webhook (GET /webhooks/whatsapp). Tiene que coincidir con el que ' +
       'configures en Meta for Developers > WhatsApp > Configuration.',
   },
-  {
-    key: 'WHATSAPP_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número de WhatsApp. ' +
-      'Limitación temporal: como los settings todavía son globales (no por tenant), un ' +
-      'solo número de WhatsApp sirve a un solo tenant. Sin definir, usa el tenant más ' +
-      'antiguo del sistema.',
-  },
-
   // --- Mensajería: WhatsApp (Twilio) ---
   {
     key: 'TWILIO_ACCOUNT_SID',
@@ -471,6 +469,23 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     description: 'Auth Token de la cuenta de Twilio (Console > Account Info). Se guarda cifrado.',
   },
   {
+    key: 'TWILIO_WEBHOOK_PUBLIC_URL',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'URL pública para verificar la firma de los webhooks',
+    defaultValue: '',
+    placeholder: 'https://miapp.com',
+    description:
+      'SOLO protocolo + host (ej. "https://miapp.com"), SIN el path del webhook y sin barra ' +
+      'final — el path (/webhooks/twilio o /webhooks/twilio-sms) lo agrega la API sola, no lo ' +
+      'incluyas acá aunque sea lo que está pegado en la consola de Twilio: si cargás la URL ' +
+      'completa del webhook, el path queda duplicado y la firma nunca va a matchear, cortando ' +
+      'TODOS los mensajes entrantes por Twilio con un simple "firma inválida" en el log. Se usa ' +
+      'para validar `X-Twilio-Signature` en cada POST entrante. Sin configurar, la verificación ' +
+      'queda desactivada y cualquiera que conozca la URL puede publicar mensajes falsos (deuda ' +
+      'conocida).',
+  },
+  {
     key: 'TWILIO_WHATSAPP_FROM',
     type: 'string',
     group: 'Mensajería: WhatsApp (Twilio)',
@@ -482,19 +497,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
       'automáticamente, no incluirlo acá.',
   },
-  {
-    key: 'TWILIO_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp (Twilio)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número de Twilio. Misma ' +
-      'limitación que WHATSAPP_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
-      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
   // --- Mensajería: WhatsApp (Gupshup) ---
   // API de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey`. Estas mismas
   // credenciales las reusa también GupshupSmsService (SMS_PROVIDER=gupshup, channel='sms'
@@ -529,19 +531,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     placeholder: 'dasyBot',
     description: 'Nombre de la app registrada en Gupshup contra ese número (breadcrumb del panel, ej. "dasyBot").',
   },
-  {
-    key: 'GUPSHUP_WHATSAPP_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp (Gupshup)',
-    label: 'Tenant que recibe los mensajes',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se asignan los mensajes entrantes por este número. Misma limitación que ' +
-      'WHATSAPP_TENANT_ID/TWILIO_TENANT_ID: un solo número sirve a un solo tenant mientras los ' +
-      'settings sean globales. Sin definir, usa el tenant más antiguo del sistema.',
-  },
-
   // --- Mensajería: SMS ---
   {
     key: 'SMS_PROVIDER',
@@ -575,7 +564,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
       'WhatsApp no sirve para esto.',
   },
-
   // --- Mensajería: Email ---
   {
     key: 'EMAIL_SMTP_HOST',
@@ -629,6 +617,28 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     defaultValue: '',
     placeholder: '"Plataforma Conversacional Inteligente Soporte" <soporte@tuempresa.com>',
     description: 'Se usa como remitente en los emails salientes (ej. el código OTP).',
+  },
+  {
+    key: 'OTP_EMAIL_SUBJECT',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Asunto del email de verificación (login web)',
+    defaultValue: 'Código de verificación - Plataforma Conversacional Inteligente Chatbot',
+    description:
+      'Asunto del email con el código OTP del login del backoffice (2FA al entrar desde un ' +
+      'dispositivo nuevo). No es el mismo email que "validación de dispositivo" del chat de ' +
+      'WhatsApp — ver DEVICE_VALIDATION_EMAIL_SUBJECT.',
+  },
+  {
+    key: 'DEVICE_VALIDATION_EMAIL_SUBJECT',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Asunto del email de validación de dispositivo (nodo de flujo)',
+    defaultValue: 'Código de validación de dispositivo - Plataforma Conversacional Inteligente',
+    description:
+      'Asunto del email con el código que manda el nodo de flujo de validación de dispositivo, ' +
+      'cuando alguien escribe por WhatsApp desde un dispositivo nuevo. No es el mismo email que ' +
+      'el login del backoffice — ver OTP_EMAIL_SUBJECT.',
   },
 
   // --- Integración: InvGate ---
@@ -722,6 +732,19 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'categorías que no aplican a tickets del chatbot). Ej.: 1601 = "Chatbot", bajo ' +
       '"DEPTO. SISTEMAS > Soporte".',
   },
+  // --- Desarrollo y pruebas ---
+  {
+    key: 'CONVERSATIONS_SIMULATE_ENABLED',
+    type: 'boolean',
+    group: 'Desarrollo y pruebas',
+    label: 'Habilitar POST /conversations/simulate',
+    defaultValue: 'true',
+    resolveDefault: defaultSimulateEnabled,
+    description:
+      'Endpoint de desarrollo para probar flujos sin un canal real (scripts, e2e) — exige login ' +
+      '(JwtAuthGuard) pero cualquier usuario autenticado puede simular cualquier tenant/teléfono. ' +
+      'Mientras no se fije un valor explícito, en NODE_ENV=production queda desactivado (404).',
+  },
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -742,6 +765,7 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: SMS (Twilio)',
   'Mensajería: Email',
   'Integración: InvGate',
+  'Desarrollo y pruebas',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));

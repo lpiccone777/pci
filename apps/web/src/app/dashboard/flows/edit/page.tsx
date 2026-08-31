@@ -58,11 +58,16 @@ interface ContextSourceOption {
   id: string;
   name: string;
   type: string;
+  // Empresa dueña de esta fuente, para etiquetar la opción en el dropdown cuando el flujo
+  // pertenece a varias empresas (dos fuentes de empresas distintas pueden llamarse igual).
+  tenantName?: string;
 }
 
 interface SkillOption {
   id: string;
   name: string;
+  // Empresa dueña de este skill, ver ContextSourceOption.tenantName.
+  tenantName?: string;
 }
 
 /** Entrada de catálogo de InvGate (categoría/prioridad/tipo) — ver GET /invgate/catalog/*. */
@@ -216,15 +221,20 @@ function FlowEditorInner() {
     // con el header de sistema explícito (ver loadTenants), así aparece parado en cualquier
     // empresa. Para el usuario común queda vacía y los checkboxes no se muestran.
     loadTenants();
-    loadUsers();
-    loadContextSources();
-    loadSkills();
-    loadFlowOptions();
     loadInvgateCatalog();
 
     if (!isNew) {
+      // Los cuatro dropdowns por-empresa (usuarios/fuentes/skills/subflujos) los carga
+      // `loadFlow` con la empresa del flujo, no la activa (FE-FLW-23). No se cargan acá
+      // para no arrancar una carga con la empresa activa que gane la carrera y pise la
+      // correcta.
       loadFlow();
     } else {
+      // Flujo nuevo: no hay empresa propia todavía, así que los dropdowns van con la activa.
+      loadUsers();
+      loadContextSources();
+      loadSkills();
+      loadFlowOptions();
       // Create default start node
       setNodes([
         {
@@ -256,46 +266,80 @@ function FlowEditorInner() {
     }
   }
 
-  async function loadUsers() {
+  // Estos cuatro dropdowns (usuarios, fuentes de verdad, skills, subflujos) muestran recursos
+  // por-empresa. Al abrir un flujo EXISTENTE se cargan con la UNIÓN de la empresa activa y la
+  // empresa del flujo (ver `loadFlow`): así el selector lista la fuente/skill DEL FLUJO aunque
+  // estemos parados en otra empresa (FE-FLW-23), sin dejar afuera las de la empresa activa que
+  // el flujo también podría usar (FE-FLW-18). Cada carga MERGEA por id sobre lo que ya hay, en
+  // vez de reemplazar, para que las dos empresas convivan. Para un flujo nuevo no hay empresa
+  // propia todavía, así que se carga solo la activa (tenantId undefined).
+  function tenantHeader(tenantId?: string): RequestInit | undefined {
+    return tenantId ? { headers: { 'X-Tenant-Id': tenantId } } : undefined;
+  }
+
+  function mergeById<T extends { id: string; tenantName?: string }>(prev: T[], next: T[]): T[] {
+    const byId = new Map(prev.map((x) => [x.id, x]));
+    for (const x of next) {
+      const existing = byId.get(x.id);
+      // Preservar la etiqueta de empresa: una carga sin `tenantName` (la de la empresa activa)
+      // no debe pisar una que sí la trae (la de una empresa del flujo). Como las cargas son
+      // asíncronas y no están ordenadas, sin esto una fuente/skill podría quedar sin empresa
+      // según cuál request conteste último. Para listas sin `tenantName` (usuarios/subflujos)
+      // ambos lados quedan `undefined` y gana el nuevo, igual que antes.
+      byId.set(x.id, existing?.tenantName && !x.tenantName ? existing : x);
+    }
+    return [...byId.values()];
+  }
+
+  async function loadUsers(tenantId?: string) {
     try {
-      const data = await apiFetch('/users');
-      setAllUsers(data);
+      const data = await apiFetch('/users', tenantHeader(tenantId));
+      setAllUsers((prev) => mergeById(prev, data));
     } catch {
-      // Sin permiso `users:read` en el tenant actual: los selectores de
-      // colaboradores/observadores del nodo transfer_agent quedan vacíos.
-      setAllUsers([]);
+      // Sin permiso `users:read` en esa empresa: no sumamos nada (conservamos lo ya cargado).
     }
   }
 
-  async function loadContextSources() {
+  async function loadContextSources(tenant?: { id: string; name: string }) {
     try {
-      const data = await apiFetch('/context-sources');
-      setContextSources(data.filter((s: any) => s.isActive));
+      const data = await apiFetch('/context-sources', tenantHeader(tenant?.id));
+      setContextSources((prev) =>
+        mergeById(
+          prev,
+          data
+            .filter((s: any) => s.isActive)
+            .map((s: any) => ({ ...s, tenantName: tenant?.name })),
+        ),
+      );
     } catch {
-      // Sin permiso `context-sources:read` en el tenant actual: el selector queda
-      // vacío, igual que allTenants/allUsers cuando falta el permiso equivalente.
-      setContextSources([]);
+      // Sin permiso `context-sources:read` en esa empresa: conservamos lo ya cargado.
     }
   }
 
-  /** Skills del tenant activo, para el dropdown que reemplaza al viejo "context". */
-  async function loadSkills() {
+  /** Skills de la empresa activa y de TODAS las empresas del flujo, para el dropdown que reemplaza al viejo "context". */
+  async function loadSkills(tenant?: { id: string; name: string }) {
     try {
-      const data = await apiFetch('/skills');
-      setSkills(data.filter((s: any) => s.isActive));
+      const data = await apiFetch('/skills', tenantHeader(tenant?.id));
+      setSkills((prev) =>
+        mergeById(
+          prev,
+          data
+            .filter((s: any) => s.isActive)
+            .map((s: any) => ({ ...s, tenantName: tenant?.name })),
+        ),
+      );
     } catch {
-      // Sin permiso `skills:read` en el tenant actual: el selector queda vacío.
-      setSkills([]);
+      // Sin permiso `skills:read` en esa empresa: conservamos lo ya cargado.
     }
   }
 
-  /** Flujos del tenant activo, para el dropdown "ID del flujo" del nodo `subflow`. */
-  async function loadFlowOptions() {
+  /** Flujos de la empresa activa y la del flujo, para el dropdown "ID del flujo" del nodo `subflow`. */
+  async function loadFlowOptions(tenantId?: string) {
     try {
-      const data = await apiFetch('/flows');
-      setFlowOptions(data.map((f: any) => ({ id: f.id, name: f.name })));
+      const data = await apiFetch('/flows', tenantHeader(tenantId));
+      setFlowOptions((prev) => mergeById(prev, data.map((f: any) => ({ id: f.id, name: f.name }))));
     } catch {
-      setFlowOptions([]);
+      // Conservamos lo ya cargado.
     }
   }
 
@@ -330,6 +374,12 @@ function FlowEditorInner() {
         type: e.type || 'default',
       })),
     );
+    // Un flujo sin empresas asignadas (borrador) no tiene ninguna empresa de la cual cargar
+    // los dropdowns, así que la fuente/skill ya vinculadas quedarían sin `<option>` y el
+    // selector se vería vacío pese a estar guardadas. Se inyecta la opción que el propio GET
+    // trae embebida, para que el valor persistido siempre se muestre.
+    if (flow.contextSource) setContextSources((prev) => mergeById(prev, [flow.contextSource]));
+    if (flow.skill) setSkills((prev) => mergeById(prev, [flow.skill]));
   }
 
   async function loadFlow() {
@@ -346,6 +396,34 @@ function FlowEditorInner() {
       // Precargar los roles de las empresas ya asignadas: así el contador "X/Y" y
       // los chips del modal quedan completos apenas se abre.
       loadRolesForTenants(loaded.map((a) => a.tenantId));
+
+      // Cargar los dropdowns por-empresa con la UNIÓN de la empresa activa y las del flujo: así
+      // la fuente/skill/usuarios/subflujos del flujo aparecen aunque estemos parados en otra
+      // empresa (FE-FLW-23), sin perder los de la empresa activa que el flujo también podría
+      // usar (FE-FLW-18). Cada carga MERGEA por id sobre lo ya cargado.
+      //
+      // Skills y fuentes de verdad se cargan para TODAS las empresas del flujo, no solo la
+      // primera: un flujo compartido entre varias empresas puede vincular una skill/fuente de
+      // cualquiera de ellas, y cada opción se etiqueta con su empresa (`tenantName`) para que
+      // no se confundan dos con el mismo nombre. Usuarios y subflujos siguen tomando solo la
+      // primera empresa asignada — misma limitación previa, fuera de este cambio.
+      const flowTenantId = tenantFlows[0]?.tenant?.id;
+      loadContextSources();
+      loadSkills();
+      loadUsers();
+      loadFlowOptions();
+      for (const tf of tenantFlows) {
+        const t = tf.tenant;
+        if (t?.id) {
+          loadContextSources({ id: t.id, name: t.name });
+          loadSkills({ id: t.id, name: t.name });
+        }
+      }
+      if (flowTenantId) {
+        loadUsers(flowTenantId);
+        loadFlowOptions(flowTenantId);
+      }
+
       loadVariants();
     } catch (err) {
       console.error('Error loading flow:', err);
@@ -794,6 +872,7 @@ function FlowEditorInner() {
               {skills.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
+                  {s.tenantName ? ` · ${s.tenantName}` : ''}
                 </option>
               ))}
             </select>
@@ -813,6 +892,7 @@ function FlowEditorInner() {
               {contextSources.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name} ({s.type})
+                  {s.tenantName ? ` · ${s.tenantName}` : ''}
                 </option>
               ))}
             </select>
@@ -1831,6 +1911,21 @@ function NodeProperties({
             catalog={invgateTypes}
             placeholder="Nombre exacto del tipo en InvGate, o {{variable}}"
           />
+          <div>
+            <label className="block text-sm font-medium mb-1">Mensaje final</label>
+            <textarea
+              value={data.text || ''}
+              onChange={(e) => onUpdate('text', e.target.value)}
+              placeholder="Ej: Ticket #{{lastTicketId}} creado. Un agente te contactará pronto."
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Admite <code>{'{{variable}}'}</code> de la charla, incluido <code>{'{{lastTicketId}}'}</code> (el
+              número del ticket recién creado). Vacío: no se manda ningún mensaje acá — el flujo sigue de largo
+              por la arista de este nodo sin interrumpir la charla.
+            </p>
+          </div>
         </>
       )}
 

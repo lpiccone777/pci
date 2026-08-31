@@ -1,7 +1,6 @@
 import { Body, Controller, ForbiddenException, Get, HttpCode, Logger, Post, Query } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
-import { PrismaService } from '../../prisma/prisma.service';
 
 interface WhatsAppIncomingMessage {
   from: string;
@@ -32,7 +31,6 @@ export class WhatsAppWebhookController {
   constructor(
     private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
-    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -65,15 +63,8 @@ export class WhatsAppWebhookController {
   @Post()
   @HttpCode(200)
   async receive(@Body() payload: WhatsAppWebhookPayload) {
-    const tenantId = await this.resolveTenantId();
-    if (!tenantId) {
-      this.logger.error(
-        'Mensaje de WhatsApp recibido pero no hay tenant configurado ' +
-          '(WHATSAPP_TENANT_ID en /settings, ni ningún tenant en el sistema).',
-      );
-      return { status: 'ignored' };
-    }
-
+    // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
+    // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
     for (const entry of payload.entry ?? []) {
       for (const change of entry.changes ?? []) {
         for (const message of change.value?.messages ?? []) {
@@ -88,7 +79,6 @@ export class WhatsAppWebhookController {
           await this.broker.publish('whatsapp.incoming', {
             pattern: 'message.received',
             data: { from: `+${message.from}`, body, channel: 'whatsapp' },
-            tenantId,
             timestamp: new Date().toISOString(),
           });
         }
@@ -113,24 +103,5 @@ export class WhatsAppWebhookController {
       if (reply?.id) return reply.id;
     }
     return null;
-  }
-
-  /**
-   * A qué tenant se asignan los mensajes entrantes. Limitación temporal: los
-   * settings todavía son globales (no por tenant), así que un solo número de
-   * WhatsApp sirve a un solo tenant. Sin `WHATSAPP_TENANT_ID`, cae al tenant más
-   * antiguo para no romper en desarrollo con uno solo.
-   */
-  private async resolveTenantId(): Promise<string | null> {
-    const configured = await this.appConfig.get('WHATSAPP_TENANT_ID');
-    if (configured) return configured;
-
-    // Sin esto, si la empresa más vieja se da de baja, los mensajes entrantes le siguen
-    // resolviendo a ella y `ConversationsService.handleMessage` los descarta en silencio.
-    const first = await this.prisma.tenant.findFirst({
-      where: { deletedAt: null },
-      orderBy: { createdAt: 'asc' },
-    });
-    return first?.id ?? null;
   }
 }

@@ -15,6 +15,12 @@ interface User {
   email: string;
   firstName: string | null;
   lastName: string | null;
+  /**
+   * Superusuario del sistema: rol SuperAdmin en el tenant de sistema. Lo calcula el backend
+   * en `/auth/me` (misma lógica que los guards cross-tenant); el frontend nunca lo deduce por
+   * pertenencia, porque un usuario común puede ser miembro del tenant de sistema con otro rol.
+   */
+  isSuperAdmin: boolean;
   tenants: Array<{
     tenantId: string;
     tenant: { id: string; name: string; slug: string };
@@ -39,9 +45,19 @@ interface AuthContextType {
    */
   hasPermissionInTenant: (tenantId: string, resource: string, action: string) => boolean;
   activeTenant: string | null;
-  setActiveTenant: (id: string) => void;
-  /** Pertenece a la empresa de sistema: puede pararse en cualquier otra empresa. */
-  isSystemUser: boolean;
+  /**
+   * Cambia la empresa activa. `redirectTo` (opcional) navega a esa ruta en vez de recargar
+   * en el lugar: lo usa el sidebar para sacar al usuario de una pantalla que ya no
+   * corresponde a la empresa nueva (el editor de un flujo ajeno → FE-FLW-22; una pantalla
+   * solo-sistema al pasar a una empresa común → FE-INF-16).
+   */
+  setActiveTenant: (id: string, redirectTo?: string) => void;
+  /**
+   * Superusuario del sistema (rol SuperAdmin en el tenant de sistema): puede pararse en
+   * cualquier empresa y operar cross-tenant. Un usuario común miembro del tenant de sistema
+   * NO lo es. Ver `isSuperAdmin` en el modelo `User`.
+   */
+  isSuperAdmin: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -140,20 +156,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSession();
   }, []);
 
-  const setActiveTenant = useCallback((id: string) => {
+  const setActiveTenant = useCallback((id: string, redirectTo?: string) => {
     // No tocamos el estado de React antes de recargar. Cambiarlo dispara un re-render que
     // vuelve a lanzar los fetch de la pantalla con el tenant nuevo, y la recarga los aborta
     // a mitad de camino: ese era el "NetworkError" en rojo que se alcanzaba a ver al cambiar
     // de empresa. La recarga sola alcanza —el API opera por el header X-Tenant-Id, no por el
     // JWT—, y el tenant activo se relee de localStorage al montar.
     localStorage.setItem('activeTenant', id);
-    window.location.reload();
+    // `redirectTo` cuando la pantalla actual ya no corresponde a la empresa nueva: navegar
+    // a esa ruta también recarga (misma resolución por header), pero deja al usuario en una
+    // pantalla válida en vez de una huérfana.
+    if (redirectTo) window.location.assign(redirectTo);
+    else window.location.reload();
   }, []);
 
-  const isSystemUser = useMemo(
-    () => !!user?.tenants?.some((t) => t.tenant.slug === SYSTEM_TENANT_SLUG),
-    [user],
-  );
+  const isSuperAdmin = useMemo(() => !!user?.isSuperAdmin, [user]);
 
   /**
    * El vínculo con el que se resuelven los permisos.
@@ -166,11 +183,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   const activeMembership = useMemo(() => {
     if (!user || !activeTenant) return null;
-    return (
-      user.tenants?.find((t) => t.tenantId === activeTenant) ??
-      user.tenants?.find((t) => t.tenant.slug === SYSTEM_TENANT_SLUG) ??
-      null
-    );
+    const direct = user.tenants?.find((t) => t.tenantId === activeTenant);
+    if (direct) return direct;
+    // Respaldo SOLO para el superusuario: parado en una empresa de la que no es miembro,
+    // manda su rol de sistema. Un usuario común nunca llega acá (el selector solo lista sus
+    // empresas), y si llegara no debe heredar el rol de sistema aunque pertenezca a él.
+    if (!user.isSuperAdmin) return null;
+    return user.tenants?.find((t) => t.tenant.slug === SYSTEM_TENANT_SLUG) ?? null;
   }, [user, activeTenant]);
 
   const hasPermission = useCallback(
@@ -200,11 +219,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasPermissionInTenant = useCallback(
     (tenantId: string, resource: string, action: string) => {
-      // El vínculo con esa empresa; si no es miembro (superusuario del sistema operando sobre
-      // otra empresa), cae a su rol de sistema — mismo respaldo que `activeMembership`.
+      // El vínculo con esa empresa; si no es miembro y es el superusuario del sistema operando
+      // sobre otra empresa, cae a su rol de sistema — mismo respaldo (y misma condición) que
+      // `activeMembership`. El usuario común no hereda el rol de sistema aunque pertenezca a él.
+      const direct = user?.tenants?.find((t) => t.tenantId === tenantId);
       const membership =
-        user?.tenants?.find((t) => t.tenantId === tenantId) ??
-        user?.tenants?.find((t) => t.tenant.slug === SYSTEM_TENANT_SLUG);
+        direct ??
+        (user?.isSuperAdmin
+          ? user?.tenants?.find((t) => t.tenant.slug === SYSTEM_TENANT_SLUG)
+          : undefined);
       return (
         membership?.role?.permissions?.some(
           (p) => p.resource === resource && p.action === action,
@@ -216,7 +239,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, isLoading, login, verifyOtp, logout, hasPermission, hasPermissionInTenant, activeTenant, setActiveTenant, isSystemUser }}
+      value={{ user, token, isLoading, login, verifyOtp, logout, hasPermission, hasPermissionInTenant, activeTenant, setActiveTenant, isSuperAdmin }}
     >
       {children}
     </AuthContext.Provider>

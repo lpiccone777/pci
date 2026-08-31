@@ -3,6 +3,14 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { ALL_TENANTS } from '@/lib/system-tenant';
+
+/** Empresa de una fila en la vista consolidada "Todas las empresas". */
+interface TenantRef {
+  id: string;
+  name: string;
+  slug: string;
+}
 
 interface FieldOption {
   value: string;
@@ -36,6 +44,8 @@ interface ContextSourceData {
   createdAt: string;
   /** Campos no-secretos con su valor real; los `secret` vienen enmascarados + `<key>IsSet`. */
   config: Record<string, any>;
+  /** Presente solo en la vista consolidada "Todas las empresas" (endpoints /all y /mine). */
+  tenant?: TenantRef;
 }
 
 interface TestResult {
@@ -51,10 +61,15 @@ interface SkillData {
   promptText: string;
   isActive: boolean;
   createdAt: string;
+  /** Presente solo en la vista consolidada "Todas las empresas". */
+  tenant?: TenantRef;
 }
 
 export default function ContextSourcesPage() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, activeTenant, isSuperAdmin } = useAuth();
+  // "Todas las empresas": vista consolidada de solo lectura (columna Empresa, sin alta), igual
+  // que Áreas/Roles. El alta a ciegas en una empresa de respaldo era el hallazgo FE-CS-11/12.
+  const isAllTenants = activeTenant === ALL_TENANTS;
   const [tab, setTab] = useState<'connections' | 'skills'>('connections');
   const [types, setTypes] = useState<TypeDef[]>([]);
   const [sources, setSources] = useState<ContextSourceData[]>([]);
@@ -93,10 +108,25 @@ export default function ContextSourcesPage() {
 
   async function load() {
     try {
+      // En "Todas las empresas" se consolida (superadmin → /all; usuario común → /mine),
+      // igual que Áreas/Roles. En una empresa concreta, el listado scopeado de siempre.
+      const sourcesEndpoint = !isAllTenants
+        ? '/context-sources'
+        : isSuperAdmin
+          ? '/context-sources/all'
+          : '/context-sources/mine';
+      const skillsEndpoint = !isAllTenants
+        ? '/skills'
+        : isSuperAdmin
+          ? '/skills/all'
+          : '/skills/mine';
       const [typesData, sourcesData, skillsData] = await Promise.all([
-        apiFetch('/context-sources/types'),
-        apiFetch('/context-sources'),
-        apiFetch('/skills').catch(() => []), // sin permiso `skills:read`: pestaña vacía, no rompe la principal
+        // `/types` va autorizado contra el tenant del header (en "Todas mis empresas", el de
+        // respaldo = primera membresía): un 403 ahí no debe blanquear la página entera cuando
+        // el listado sí trajo datos — sin tipos solo se degrada el formulario de alta.
+        apiFetch('/context-sources/types').catch(() => []),
+        apiFetch(sourcesEndpoint),
+        apiFetch(skillsEndpoint).catch(() => []), // sin permiso `skills:read`: pestaña vacía, no rompe la principal
       ]);
       setTypes(typesData);
       setSources(sourcesData);
@@ -346,7 +376,14 @@ export default function ContextSourcesPage() {
       {error && <p className="text-red-500 mb-4">{error}</p>}
       {notice && <p className="text-green-600 mb-4">{notice}</p>}
 
-      {tab === 'connections' && showForm && (
+      {isAllTenants && (
+        <div className="mb-6 rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Estás viendo <strong>todas las empresas</strong> (solo lectura). Para crear o editar,
+          elegí una empresa puntual en el selector del panel lateral.
+        </div>
+      )}
+
+      {tab === 'connections' && showForm && !isAllTenants && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 space-y-3">
           <h2 className="font-semibold text-gray-700">
             {editingId ? 'Editar fuente de verdad' : 'Nueva fuente de verdad'}
@@ -506,7 +543,7 @@ export default function ContextSourcesPage() {
         </form>
       )}
 
-      {tab === 'connections' && !editingId && !canCreate && sources.length === 0 && (
+      {tab === 'connections' && !editingId && !canCreate && !isAllTenants && sources.length === 0 && (
         <p className="text-gray-400 text-sm mb-4">No tenés permiso para crear fuentes de verdad.</p>
       )}
 
@@ -516,17 +553,20 @@ export default function ContextSourcesPage() {
           <thead className="bg-gray-100 text-gray-700">
             <tr>
               <th className="text-left px-4 py-2">Nombre</th>
+              {isAllTenants && <th className="text-left px-4 py-2">Empresa</th>}
               <th className="text-left px-4 py-2">Tipo</th>
               <th className="text-left px-4 py-2">Estado</th>
-              <th className="text-left px-4 py-2">Conexión</th>
-              {(canUpdate || canDelete) && <th className="px-4 py-2"></th>}
+              {!isAllTenants && <th className="text-left px-4 py-2">Conexión</th>}
+              {!isAllTenants && (canUpdate || canDelete) && <th className="px-4 py-2"></th>}
             </tr>
           </thead>
           <tbody>
             {sources.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-gray-400">
-                  No hay fuentes de verdad configuradas en esta empresa.
+                <td colSpan={6} className="px-4 py-6 text-center text-gray-400">
+                  {isAllTenants
+                    ? 'No hay fuentes de verdad configuradas en ninguna empresa.'
+                    : 'No hay fuentes de verdad configuradas en esta empresa.'}
                 </td>
               </tr>
             )}
@@ -535,6 +575,9 @@ export default function ContextSourcesPage() {
               return (
                 <tr key={s.id} className="border-t hover:bg-gray-50">
                   <td className="px-4 py-2">{s.name}</td>
+                  {isAllTenants && (
+                    <td className="px-4 py-2 text-gray-500">{s.tenant?.name ?? '—'}</td>
+                  )}
                   <td className="px-4 py-2 text-gray-500">
                     {types.find((t) => t.type === s.type)?.label ?? s.type}
                   </td>
@@ -545,21 +588,23 @@ export default function ContextSourcesPage() {
                       <span className="text-gray-400">Inactiva</span>
                     )}
                   </td>
-                  <td className="px-4 py-2">
-                    <button
-                      onClick={() => testConnection(s)}
-                      disabled={testing === s.id}
-                      className="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 border border-blue-200 rounded disabled:opacity-50"
-                    >
-                      {testing === s.id ? 'Probando...' : 'Probar conexión'}
-                    </button>
-                    {result && (
-                      <p className={`text-xs mt-1 ${result.ok ? 'text-green-600' : 'text-red-500'}`}>
-                        {result.ok ? '✓' : '✗'} {result.message}
-                      </p>
-                    )}
-                  </td>
-                  {(canUpdate || canDelete) && (
+                  {!isAllTenants && (
+                    <td className="px-4 py-2">
+                      <button
+                        onClick={() => testConnection(s)}
+                        disabled={testing === s.id}
+                        className="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 border border-blue-200 rounded disabled:opacity-50"
+                      >
+                        {testing === s.id ? 'Probando...' : 'Probar conexión'}
+                      </button>
+                      {result && (
+                        <p className={`text-xs mt-1 ${result.ok ? 'text-green-600' : 'text-red-500'}`}>
+                          {result.ok ? '✓' : '✗'} {result.message}
+                        </p>
+                      )}
+                    </td>
+                  )}
+                  {!isAllTenants && (canUpdate || canDelete) && (
                     <td className="px-4 py-2 text-right whitespace-nowrap">
                       {canUpdate && (
                         <button
@@ -591,7 +636,7 @@ export default function ContextSourcesPage() {
 
       {tab === 'skills' && (
         <>
-          {(skillEditingId ? canUpdateSkill : canCreateSkill) && (
+          {(skillEditingId ? canUpdateSkill : canCreateSkill) && !isAllTenants && (
             <form onSubmit={submitSkill} className="bg-white p-4 rounded shadow mb-6 space-y-3">
               <h2 className="font-semibold text-gray-700">
                 {skillEditingId ? 'Editar skill' : 'Nuevo skill'}
@@ -656,7 +701,7 @@ export default function ContextSourcesPage() {
             </form>
           )}
 
-          {!skillEditingId && !canCreateSkill && skills.length === 0 && (
+          {!skillEditingId && !canCreateSkill && !isAllTenants && skills.length === 0 && (
             <p className="text-gray-400 text-sm mb-4">No tenés permiso para crear skills.</p>
           )}
 
@@ -665,22 +710,28 @@ export default function ContextSourcesPage() {
               <thead className="bg-gray-100 text-gray-700">
                 <tr>
                   <th className="text-left px-4 py-2">Nombre</th>
+                  {isAllTenants && <th className="text-left px-4 py-2">Empresa</th>}
                   <th className="text-left px-4 py-2">Texto</th>
                   <th className="text-left px-4 py-2">Estado</th>
-                  {(canUpdateSkill || canDeleteSkill) && <th className="px-4 py-2"></th>}
+                  {!isAllTenants && (canUpdateSkill || canDeleteSkill) && <th className="px-4 py-2"></th>}
                 </tr>
               </thead>
               <tbody>
                 {skills.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-4 py-6 text-center text-gray-400">
-                      No hay skills configurados en esta empresa.
+                    <td colSpan={5} className="px-4 py-6 text-center text-gray-400">
+                      {isAllTenants
+                        ? 'No hay skills configurados en ninguna empresa.'
+                        : 'No hay skills configurados en esta empresa.'}
                     </td>
                   </tr>
                 )}
                 {skills.map((s) => (
                   <tr key={s.id} className="border-t hover:bg-gray-50">
                     <td className="px-4 py-2">{s.name}</td>
+                    {isAllTenants && (
+                      <td className="px-4 py-2 text-gray-500">{s.tenant?.name ?? '—'}</td>
+                    )}
                     <td className="px-4 py-2 text-gray-500 max-w-xs truncate" title={s.promptText}>
                       {s.promptText}
                     </td>
@@ -691,7 +742,7 @@ export default function ContextSourcesPage() {
                         <span className="text-gray-400">Inactivo</span>
                       )}
                     </td>
-                    {(canUpdateSkill || canDeleteSkill) && (
+                    {!isAllTenants && (canUpdateSkill || canDeleteSkill) && (
                       <td className="px-4 py-2 text-right whitespace-nowrap">
                         {canUpdateSkill && (
                           <button

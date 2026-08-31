@@ -1,12 +1,15 @@
-import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
-import { AppConfigService } from '../../config/app-config.service';
+import { Body, Controller, HttpCode, Logger, Post, UseGuards } from '@nestjs/common';
 import { BrokerService } from '../broker/broker.service';
-import { PrismaService } from '../../prisma/prisma.service';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
+import { TwilioSignatureGuard } from '../../common/guards/twilio-signature.guard';
 
 interface TwilioIncomingPayload {
   From?: string;
   Body?: string;
+  /** Tap de un quick-reply (Content API): id de la opción — `Body` trae solo el TÍTULO visible. */
+  ButtonPayload?: string;
+  /** Tap de una fila de list-picker (Content API): id de la fila elegida. */
+  ListId?: string;
   NumMedia?: string;
   /** `MediaUrl0`..`MediaUrl9`/`MediaContentType0`..`MediaContentType9` — accedidos por índice, ver `extractMedia`. */
   [key: string]: string | undefined;
@@ -21,14 +24,13 @@ const MAX_MEDIA_ITEMS = 10;
  * `hub.challenge`): la URL se pega directo en la consola de Twilio (Messaging > Try it out /
  * WhatsApp Sandbox Settings, o el número de producción) y ya empieza a mandar `POST`s.
  */
+@UseGuards(TwilioSignatureGuard)
 @Controller('webhooks/twilio')
 export class TwilioWebhookController {
   private readonly logger = new Logger(TwilioWebhookController.name);
 
   constructor(
-    private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
-    private readonly prisma: PrismaService,
     private readonly twilioMedia: TwilioMediaService,
   ) {}
 
@@ -36,24 +38,22 @@ export class TwilioWebhookController {
    * Mensajes reales entrantes. Twilio manda `application/x-www-form-urlencoded`, no JSON
    * (Nest ya lo parsea con el body parser default de Express, igual que el JSON de Meta).
    *
-   * Sin verificación de firma (`X-Twilio-Signature`) todavía — mismo tipo de deuda que
-   * `WhatsAppWebhookController`: hoy cualquiera que conozca la URL puede publicar mensajes
+   * `TwilioSignatureGuard` valida `X-Twilio-Signature` ANTES de llegar acá — sin
+   * `TWILIO_WEBHOOK_PUBLIC_URL` configurada, la verificación queda desactivada (deuda
+   * conocida, ver el guard) y cualquiera que conozca la URL puede seguir publicando mensajes
    * falsos en `whatsapp.incoming`.
    */
   @Post()
   @HttpCode(200)
   async receive(@Body() payload: TwilioIncomingPayload) {
-    const tenantId = await this.resolveTenantId();
-    if (!tenantId) {
-      this.logger.error(
-        'Mensaje de Twilio recibido pero no hay tenant configurado ' +
-          '(TWILIO_TENANT_ID en /settings, ni ningún tenant en el sistema).',
-      );
-      return { status: 'ignored' };
-    }
-
+    // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
+    // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
     const from = this.extractFrom(payload.From);
-    const body = (payload.Body ?? '').trim();
+    // Para una respuesta de botón/lista se publica el ID de la opción (`ButtonPayload`/`ListId`),
+    // no el título visible que Twilio pone en `Body` — mismo criterio que Meta y Gupshup
+    // (`extractBody` devuelve `reply.id`/`postbackText`): así el nodo `menu` y el selector de
+    // empresa matchean por id sin depender del texto truncado del botón.
+    const body = (payload.ButtonPayload ?? payload.ListId ?? payload.Body ?? '').trim();
     const attachments = await this.extractMedia(payload);
 
     // Solo se descarta si no hay ni texto ni adjuntos — un mensaje solo-imagen (sin
@@ -69,7 +69,6 @@ export class TwilioWebhookController {
     await this.broker.publish('whatsapp.incoming', {
       pattern: 'message.received',
       data: { from, body, channel: 'whatsapp', attachments },
-      tenantId,
       timestamp: new Date().toISOString(),
     });
 
@@ -98,19 +97,5 @@ export class TwilioWebhookController {
   private extractFrom(from?: string): string | null {
     if (!from) return null;
     return from.replace(/^whatsapp:/, '') || null;
-  }
-
-  /** A qué tenant se asignan los mensajes entrantes. Mismo criterio que `WhatsAppWebhookController.resolveTenantId`. */
-  private async resolveTenantId(): Promise<string | null> {
-    const configured = await this.appConfig.get('TWILIO_TENANT_ID');
-    if (configured) return configured;
-
-    // Sin esto, si la empresa más vieja se da de baja, los mensajes entrantes le siguen
-    // resolviendo a ella y `ConversationsService.handleMessage` los descarta en silencio.
-    const first = await this.prisma.tenant.findFirst({
-      where: { deletedAt: null },
-      orderBy: { createdAt: 'asc' },
-    });
-    return first?.id ?? null;
   }
 }

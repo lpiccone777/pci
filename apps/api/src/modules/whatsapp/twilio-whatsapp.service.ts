@@ -139,10 +139,27 @@ export class TwilioWhatsAppService implements OnModuleInit {
     to: string,
     creds: TwilioCredentials,
     body: string,
-    interactive: WhatsAppInteractive,
+    rawInteractive: WhatsAppInteractive,
   ): Promise<void> {
+    // Confirmado con un caso real (2026-08-31): un título de ticket con una variable de
+    // flujo sin resolver (`"Urgencia - Sede {{sede}}"` — `sede` nunca se guardó en
+    // `flowState` con ese nombre exacto) llegó tal cual a una fila del `list-picker` y
+    // Twilio la rechazó con 21656 al mandar el mensaje, aunque la creación del Content
+    // Template no fallara. `{{`/`}}` es sintaxis reservada de Twilio para SUS variables
+    // (`{{1}}`, `{{2}}`) en cualquier parte del template — no solo en el body — así que
+    // cualquier texto dinámico (ticket, comentario, lo que sea) que por error de
+    // configuración o de datos de origen traiga una llave sin cerrar/resolver rompe el
+    // envío. Se lo saca acá, en el punto de entrada, en vez de confiar en que el dato de
+    // origen siempre venga limpio: `interactive` sanitizado alimenta tanto el hash de
+    // caché (`resolveContentSid`) como la creación y el envío, así los tres ven el mismo
+    // texto.
+    const interactive = this.sanitizeInteractive(rawInteractive);
     const contentSid = await this.resolveContentSid(creds, interactive);
-    const variables: Record<string, string> = { '1': body || ' ' };
+    // Mismo motivo que arriba, más saltos de línea/tabs (pasa con cualquier body
+    // multilínea, como el detalle de un ticket) — un texto plano (`sendPlainText`, el
+    // fallback si esto falla) sí soporta salto de línea normal, el saneo es SOLO para
+    // esta variable de Content API.
+    const variables: Record<string, string> = { '1': this.sanitizeContentVariable(body) || ' ' };
     // La URL del botón de link viaja como variable `{{2}}`: el template se cachea solo
     // por el título del botón (ver `hashInteractiveShape`), así que un mismo nodo con
     // URLs distintas por conversación (ej. un link con id de ticket) reusa un único
@@ -155,6 +172,47 @@ export class TwilioWhatsAppService implements OnModuleInit {
       ContentVariables: JSON.stringify(variables),
     });
     await this.callMessagesApi(to, creds, params);
+  }
+
+  /** Saca `{{`/`}}` del texto que compone la FORMA del Content Template (ver `sendInteractive`). */
+  private stripCurlyBraces(value: string): string {
+    return value.replace(/[{}]/g, '');
+  }
+
+  private sanitizeInteractive(interactive: WhatsAppInteractive): WhatsAppInteractive {
+    if (interactive.type === 'button') {
+      return {
+        ...interactive,
+        buttons: interactive.buttons.map((b) => ({ ...b, title: this.stripCurlyBraces(b.title) })),
+      };
+    }
+    if (interactive.type === 'cta_url') {
+      return { ...interactive, buttonText: this.stripCurlyBraces(interactive.buttonText) };
+    }
+    return {
+      ...interactive,
+      buttonText: this.stripCurlyBraces(interactive.buttonText),
+      rows: interactive.rows.map((r) => ({
+        ...r,
+        title: this.stripCurlyBraces(r.title),
+        description: r.description ? this.stripCurlyBraces(r.description) : r.description,
+      })),
+    };
+  }
+
+  /**
+   * `ContentVariables` de Twilio: el 21656 real (2026-08-31, ver `sanitizeInteractive`) era
+   * por `{{`/`}}` sin resolver en el texto, no por los saltos de línea — un cuerpo multilínea
+   * (ej. el detalle de un ticket, `ticket_query`) se manda tal cual, con su salto de línea
+   * real, y funciona. Se deja el saneo de tabs (nunca aportan nada visible en WhatsApp) y de
+   * espacios repetidos, y se saca `{{`/`}}` por el mismo motivo que en `sanitizeInteractive`.
+   */
+  private sanitizeContentVariable(value: string): string {
+    return value
+      .replace(/\t+/g, ' ')
+      .replace(/[{}]/g, '')
+      .replace(/ {2,}/g, ' ')
+      .trim();
   }
 
   /**

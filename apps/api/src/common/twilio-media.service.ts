@@ -12,6 +12,18 @@ export type { StoredAttachment };
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 
 /**
+ * Host real de las URLs de media de Twilio. `downloadAndStore` recibe `mediaUrl` tal cual
+ * viene en el payload del webhook (`MediaUrl0`..`MediaUrl9`) — sin verificación de firma
+ * de WhatsApp (`TwilioSignatureGuard` sí cubre el webhook de entrada, no esta URL de media
+ * específica), así que hoy sigue siendo un campo que un tercero podría falsificar. Sin este
+ * chequeo, un `MediaUrl0` apuntando a un host propio haría que el server le pegue con las
+ * credenciales REALES de Twilio (`TWILIO_ACCOUNT_SID`/`AUTH_TOKEN`) en el header
+ * `Authorization` — filtración de credenciales, o directamente un SSRF contra
+ * infraestructura interna.
+ */
+const TWILIO_MEDIA_HOST = 'api.twilio.com';
+
+/**
  * Vida máxima de un adjunto en disco sin usar (ver `cleanupExpired`): si en 10 minutos el
  * flujo no llegó a un `ticket_create`/`transfer_agent` que lo consuma, se borra solo —
  * pedido explícito 2026-08-20, para no acumular imágenes de charlas que nunca llegan a
@@ -50,6 +62,16 @@ export class TwilioMediaService {
     return { accountSid, authToken };
   }
 
+  /** Solo `https://api.twilio.com/...` — ver el comentario de `TWILIO_MEDIA_HOST`. */
+  private isTwilioMediaUrl(mediaUrl: string): boolean {
+    try {
+      const url = new URL(mediaUrl);
+      return url.protocol === 'https:' && url.hostname === TWILIO_MEDIA_HOST;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Descarga un único adjunto de Twilio, lo redimensiona si hace falta (ver
    * `resizeIfNeeded`) y lo guarda en disco. `null` ante cualquier falla (sin
@@ -57,6 +79,14 @@ export class TwilioMediaService {
    * integraciones: nunca corta la charla por esto.
    */
   async downloadAndStore(mediaUrl: string, contentType: string | undefined): Promise<StoredAttachment | null> {
+    if (!this.isTwilioMediaUrl(mediaUrl)) {
+      this.logger.warn(
+        `Adjunto descartado: '${mediaUrl}' no es una URL de ${TWILIO_MEDIA_HOST} — se rechaza antes de ` +
+          'mandarle las credenciales de Twilio, para no exponerlas a un host arbitrario.',
+      );
+      return null;
+    }
+
     const creds = await this.credentials();
     if (!creds) {
       this.logger.warn(

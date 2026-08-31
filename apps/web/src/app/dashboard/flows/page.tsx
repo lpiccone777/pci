@@ -19,10 +19,15 @@ interface Flow {
 }
 
 export default function FlowsPage() {
-  const { hasPermission, activeTenant, isSystemUser } = useAuth();
+  const { hasPermission, activeTenant, isSuperAdmin } = useAuth();
   const router = useRouter();
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Error de carga (típicamente el 403 "Permiso denegado: flows:read"): sin esto la
+  // pantalla se tragaba el error y mostraba "No hay flujos configurados", indistinguible
+  // de una empresa sin flujos. Mismo criterio que Áreas/Roles/Usuarios, que muestran el
+  // mensaje del backend.
+  const [error, setError] = useState<string | null>(null);
 
   // "Todas las empresas": vista consolidada de todos los flujos. En una empresa concreta el
   // listado se filtra por ella, igual que el listado de usuarios.
@@ -34,9 +39,10 @@ export default function FlowsPage() {
 
   const loadFlows = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       let data: Flow[];
-      if (isSystemUser) {
+      if (isSuperAdmin) {
         // El superadmin administra los flujos de forma global: trae todos con el header de
         // sistema. En "Todas las empresas" se muestran tal cual; parado en una empresa
         // concreta se filtran a los asignados a esa empresa MÁS los que no tienen ninguna
@@ -53,17 +59,28 @@ export default function FlowsPage() {
                 f.tenantFlows.length === 0 ||
                 f.tenantFlows.some((tf) => tf.tenant.id === activeTenant),
             );
+      } else if (isAllTenants) {
+        // Usuario común en "Todas mis empresas": vista consolidada de los flujos de todas sus
+        // empresas (una fila por flujo, con sus chips de empresa). `/flows` scopearía a una sola
+        // empresa —la de respaldo a la que `apiFetch` traduce el centinela—, así que se usa el
+        // endpoint dedicado, que junta las empresas donde el usuario tiene `flows:read`.
+        data = await apiFetch('/flows/mine');
       } else {
-        // Usuario común: listado scopeado a su empresa activa (contrato de /flows sin cambios).
+        // Usuario común en una empresa concreta: listado scopeado a esa empresa (contrato de
+        // /flows sin cambios).
         data = await apiFetch('/flows');
       }
       setFlows(data);
-    } catch (err) {
-      console.error('Error loading flows:', err);
+    } catch (err: any) {
+      // Distinguir "sin permiso" de "sin flujos": guardamos el mensaje del backend
+      // (`Permiso denegado: flows:read` en un 403) para mostrarlo, en vez de dejar la
+      // lista vacía en silencio.
+      setError(err?.message || 'No se pudieron cargar los flujos.');
+      setFlows([]);
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants, isSystemUser, systemTenantId, activeTenant]);
+  }, [isAllTenants, isSuperAdmin, systemTenantId, activeTenant]);
 
   useEffect(() => {
     loadFlows();
@@ -206,6 +223,12 @@ export default function FlowsPage() {
         )}
       </div>
 
+      {error && (
+        <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
       <div className="grid gap-4">
         {flows.map((flow) => (
           <div
@@ -295,7 +318,7 @@ export default function FlowsPage() {
           </div>
         ))}
 
-        {flows.length === 0 && (
+        {flows.length === 0 && !error && (
           <div className="text-center py-12 text-gray-500">
             No hay flujos configurados.{' '}
             {hasPermission('flows', 'create') && (

@@ -315,6 +315,9 @@ export const TicketCreateNode = memo(({ id, data }: any) => (
     {data?.ticketType && (
       <div className="text-xs text-gray-500">Tipo: {data.ticketType}</div>
     )}
+    {data?.text && (
+      <div className="text-xs text-gray-500">Mensaje: {data.text}</div>
+    )}
   </BaseNode>
 ));
 

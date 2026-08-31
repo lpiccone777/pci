@@ -15,7 +15,11 @@
 
 # next.js
 /.next/
+/.next-e2e/
 /out/
+
+# tsconfig descartable del build e2e (lo genera y reescribe Next; ver e2e/support/ephemeral-stack.ts)
+/tsconfig.e2e.json
 
 # production
 /build

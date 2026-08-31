@@ -711,10 +711,11 @@
     hoy cualquiera que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`.
     Mismo tipo de deuda que `/conversations/simulate` sin guard — cerrar antes de exponerlo
     fuera de una prueba acotada
-  - ⚠️ **Un solo tenant por número de WhatsApp**: el webhook resuelve el tenant destino por
-    el nuevo setting `WHATSAPP_TENANT_ID` (o el tenant más antiguo si no está definido) —
-    limitación directa de que los settings todavía son globales, no por tenant (ver el
-    pendiente en "Configuración del sistema")
+  - **Ruteo del tenant por membresía del teléfono** (ya no por configuración): el webhook
+    solo publica a `whatsapp.incoming`; qué empresa atiende lo decide
+    `InboundTenantRoutingService` según a qué empresas pertenece el número (una → directo,
+    varias → selector, ninguna → tenant de sistema). El viejo setting `WHATSAPP_TENANT_ID`
+    ("tenant que recibe los mensajes") se eliminó — ver "Ruteo de tenant entrante por membresía"
 - [x] **Email real por SMTP** — reemplaza `StubEmailService` (que solo logueaba en consola)
   - `SmtpEmailService` usa `nodemailer`, resuelve host/puerto/usuario/contraseña/remitente
     vía `AppConfigService` **en cada envío** (no una vez al arrancar), así un cambio desde
@@ -724,7 +725,7 @@
   - `StubEmailService` se borró — quedaba redundante, el fallback ya está en el service real
 - [x] **Nuevas secciones en `/settings`**: "Mensajería: WhatsApp" (`WHATSAPP_API_TOKEN` secret,
       `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
-      secret, `WHATSAPP_TENANT_ID`) y "Mensajería: Email" (`EMAIL_SMTP_HOST/PORT/SECURE/
+      secret) y "Mensajería: Email" (`EMAIL_SMTP_HOST/PORT/SECURE/
       USER/PASS`, `EMAIL_FROM`) — mismo patrón cifrado/cascada BD→env→default que las
       claves de LLM. Los tokens quedaron cargados en BD durante las pruebas, cifrados con
       `SecretsCipher`
@@ -785,10 +786,11 @@
     misma cola que usa el webhook de Meta, cero cambios en `ConversationsService`
   - ⚠️ **Sin verificación de firma** (`X-Twilio-Signature`): mismo tipo de deuda que el
     webhook de Meta
-  - ⚠️ **Un solo tenant por número de Twilio**: mismo criterio y misma limitación que
-    `WHATSAPP_TENANT_ID`, ahora `TWILIO_TENANT_ID`
+  - **Ruteo del tenant por membresía**: igual que el webhook de Meta, el tenant destino ya no
+    se resuelve por configuración (el viejo `TWILIO_TENANT_ID` se eliminó) — lo decide
+    `InboundTenantRoutingService` aguas abajo
 - [x] **Nueva sección en `/settings`**: "Mensajería: WhatsApp (Twilio)" (`TWILIO_ACCOUNT_SID`,
-      `TWILIO_AUTH_TOKEN` secret, `TWILIO_WHATSAPP_FROM`, `TWILIO_TENANT_ID`), más
+      `TWILIO_AUTH_TOKEN` secret, `TWILIO_WHATSAPP_FROM`), más
       `WHATSAPP_PROVIDER` (enum) agregado al principio del grupo "Mensajería: WhatsApp"
       existente
 
@@ -863,7 +865,7 @@
     equivalente en `WhatsAppInteractive` — se reusa `buttonText` ahí, cosmético nada más. A
     confirmar contra tráfico real del sandbox antes de depender de esto en producción
   - Nuevo grupo en `/settings`: "Mensajería: WhatsApp (Gupshup)" (`GUPSHUP_API_KEY` secret,
-    `GUPSHUP_WHATSAPP_SOURCE`, `GUPSHUP_APP_NAME`, `GUPSHUP_WHATSAPP_TENANT_ID`) — número
+    `GUPSHUP_WHATSAPP_SOURCE`, `GUPSHUP_APP_NAME`) — número
     emisor y nombre de app ya cargados (WABA real, activa: `+15553788248` / app "dasyBot"),
     falta el `apikey` para poder activar el proveedor
 - [x] **`SMS_PROVIDER` (setting nuevo)** — hasta ahora Twilio era el único conector de SMS y
@@ -933,6 +935,35 @@
     el setting con el backend corriendo y confirmar que el próximo mensaje ya sale por el
     proveedor nuevo sin reiniciar)
   - Se decidió postergar la implementación — el cliente lo va a pedir cuando llegue el momento
+
+### Ruteo de tenant entrante por membresía + selector multiempresa ✅ COMPLETADO (pedido 2026-08-26)
+- [x] **La empresa que atiende un mensaje entrante se deduce de a quién pertenece el número,
+      no de una configuración fija** — reemplaza el viejo esquema "un tenant fijo por canal"
+      (`WHATSAPP_TENANT_ID`/`TWILIO_TENANT_ID`/`GUPSHUP_*_TENANT_ID` + fallback al tenant más
+      antiguo). Los webhooks (Meta/Twilio/Gupshup, WhatsApp y SMS) solo publican a `*.incoming`
+      **sin** `tenantId`; el ruteo se resuelve aguas abajo
+- [x] **`InboundTenantRoutingService.resolve()`** (`apps/api/src/modules/conversations/`) —
+      orden de decisión por teléfono+canal:
+  - Hay una **selección pendiente** (el usuario está respondiendo "¿con qué empresa?") → ese
+    mensaje es la respuesta; se reprocesa el mensaje original (texto + adjuntos)
+  - Hay una **conversación activa** en alguna de sus empresas → se continúa ahí (la elección
+    dura la conversación; una charla nueva vuelve a preguntar)
+  - Según cantidad de membresías (`UsersService.findMembershipsByPhone`): **1 → directo**,
+    **≥2 → pregunta** con un selector (interactivo en WhatsApp, texto numerado en SMS o con más
+    de 10 empresas), **0 → se ignora** ("No hablamos con desconocidos", resuelto 2026-08-27 más
+    abajo: sin membresía en ninguna empresa no hay flujo/tenant de fallback, el mensaje se
+    descarta antes de tocar `User`/`Conversation`)
+- [x] **`PendingTenantSelection`** (tabla nueva, migración incluida) guarda el estado del
+      selector: teléfono+canal únicos, mensaje/adjuntos originales, opciones y expiración (12hs,
+      igual que la ventana de resume). Alta idempotente (`createMany` con `skipDuplicates` sobre
+      la unique `[phone, channel]`) para que dos mensajes casi simultáneos de un número nuevo no
+      se pisen el pendiente: gana el primero y el segundo se saltea sin error, sin descartar el
+      mensaje entrante
+- [x] **Se quitó "Tenant que recibe los mensajes" de `/settings`** en los 5 canales y del
+      `.env.example`; el catálogo ya no expone ningún `*_TENANT_ID`
+- [x] **Probar sin WhatsApp**: el chat por consola suma `--route` y `/simulate` acepta no fijar
+      empresa, ejercitando el mismo ruteo y el selector. Batería e2e nueva
+      (`inbound-tenant-routing.e2e-spec.ts`) y plan de pruebas (§1.24) actualizados
 
 ---
 
@@ -1146,8 +1177,7 @@
     ("OpenCode Go necesita el host configurado") en vez de fallar dentro del SDK
 - [ ] ⏳ Settings por tenant: hoy imposible porque `Setting.key` es `@unique` global.
       Requiere migrar a `@@unique([key, tenantId])` y ajustar los `findUnique` de
-      `AppConfigService` y `LlmProviderFactory`. Se vuelve más urgente con WhatsApp real:
-      hoy un solo número de WhatsApp solo puede servir a un tenant (`WHATSAPP_TENANT_ID`)
+      `AppConfigService` y `LlmProviderFactory`
 - [x] **Pestañas en `/settings`** (pedido 2026-08-05) — la página se había vuelto
       interminable: 5 proveedores de LLM + Mensajería apilados verticalmente en una sola
       columna
@@ -1513,23 +1543,21 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 4. ~~Implementar el nodo `webhook` (hoy stub)~~ — implementado 2026-08-26
 5. Webhook de WhatsApp sin verificar `X-Hub-Signature-256` (App Secret de Meta) — cualquiera
    que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`
-6. `WHATSAPP_TENANT_ID` es un solo valor global: un número de WhatsApp = un tenant, hasta
-   que existan settings por tenant
-7. Sin rate limit de solicitudes de teléfonos desconocidos (no registrados en el tenant):
+6. Sin rate limit de solicitudes de teléfonos desconocidos (no registrados en el tenant):
    hoy `handleMessage` crea un `User`/`Conversation` nuevo por cada mensaje entrante sin
    límite — un número desconocido puede spamear el flujo (y disparar llamadas a LLM/email/
    ticket) sin ninguna contención
-8. `Flow.context` (enum viejo de 4 valores fijos) sigue vivo en paralelo a
+7. `Flow.context` (enum viejo de 4 valores fijos) sigue vivo en paralelo a
    `Flow.contextSourceId` (fuente de verdad real) — no se migró ni se sacó del editor.
    Decidir si se termina deprecando del todo una vez que la ejecución real de fuentes de
    verdad esté andando (ver Hito "Fuentes de verdad")
-9. Plantillas aprobadas de WhatsApp (mensajes iniciados por el negocio fuera de la ventana
+8. Plantillas aprobadas de WhatsApp (mensajes iniciados por el negocio fuera de la ventana
    de 24hs) sin implementar para **ningún** proveedor, ni Meta ni Twilio — decisión explícita
    (2026-08-13), sin caso de uso real todavía. Ojo al retomarlo: Meta y Twilio tienen
    registros de plantillas separados y no intercambiables (`name`+`language` en Meta vs
    `ContentSid` de Content API en Twilio) — aprobar una plantilla de un lado no la habilita
    del otro
-10. Webhook de Twilio (`POST /webhooks/twilio`) sin verificar `X-Twilio-Signature` — mismo
+9. Webhook de Twilio (`POST /webhooks/twilio`) sin verificar `X-Twilio-Signature` — mismo
     tipo de deuda que el punto 5, ahora también para el conector de Twilio
 
 **E. Fuentes de verdad — segunda etapa (ejecución real)**
@@ -1539,7 +1567,7 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
    FK única (no por tenant) si un flujo compartido lo necesita
 
 **F. Audio (STT/TTS) — pedido explícitamente para después**
-1. `WHATSAPP_TENANT_ID` (recepción) y `WhatsAppService` (envío) solo manejan `type: text`
+1. El webhook de recepción y `WhatsAppService` (envío) solo manejan `type: text`
    hoy — hace falta extender el webhook para descargar audio de la Media API de Meta y
    `WhatsAppService` para subir y mandar `type: audio`
 2. La interfaz `LlmProvider` es puramente texto (`generateCompletion(): Promise<string>`) —
@@ -1614,7 +1642,11 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
   silencio/aviso por RPC que la baja de empresa). `findOrCreateByPhone` quedó eliminada.
   El intento se registra en archivo, no en la BD (`UnknownSenderLogService`, un mes de
   retención — cuando haya rate limiting por número recién ahí va a hacer falta un conteo
-  persistente). Ver "No hablamos con desconocidos" en AGENTS.md
+  persistente). Ver "No hablamos con desconocidos" en AGENTS.md. Integrado con el ruteo por
+  membresía (arriba, "Ruteo de tenant entrante"): `InboundTenantRoutingService.resolve()`
+  corta con `status: 'ignored'` apenas el teléfono no tiene NINGUNA membresía (antes de
+  resolver tenant alguno); el chequeo de `findMembershipByPhone` que sigue en `handleMessage`
+  queda como red de seguridad para `/simulate` (tenant explícito, sin pasar por el ruteo)
 
 ¿Por cuál seguimos?
 

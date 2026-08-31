@@ -1,7 +1,5 @@
 import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
-import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService } from '../broker/broker.service';
-import { PrismaService } from '../../prisma/prisma.service';
 import { GupshupFileLoggerService } from './gupshup-file-logger.service';
 import { GupshupMediaService } from '../../common/gupshup-media.service';
 import { StoredAttachment } from '../../common/media-storage.util';
@@ -49,10 +47,12 @@ interface GupshupWebhookPayload {
 export class GupshupWebhookController {
   private readonly logger = new Logger(GupshupWebhookController.name);
 
+  // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
+  // (ver InboundTenantRoutingService), no acá — por eso `receive()` publica sin `tenantId`.
+  // `AppConfigService`/`PrismaService` (para el viejo `GUPSHUP_WHATSAPP_TENANT_ID`/"empresa más
+  // antigua") ya no hacen falta acá: los sacó el ruteo por membresía.
   constructor(
-    private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
-    private readonly prisma: PrismaService,
     private readonly fileLog: GupshupFileLoggerService,
     private readonly gupshupMedia: GupshupMediaService,
   ) {}
@@ -85,16 +85,8 @@ export class GupshupWebhookController {
       return { status: 'ok' };
     }
 
-    const tenantId = await this.resolveTenantId();
-    if (!tenantId) {
-      this.logger.error(
-        'Mensaje de Gupshup recibido pero no hay tenant configurado ' +
-          '(GUPSHUP_WHATSAPP_TENANT_ID en /settings, ni ningún tenant en el sistema).',
-      );
-      this.fileLog.log('inbound.no_tenant', {});
-      return { status: 'ignored' };
-    }
-
+    // La empresa que atiende el mensaje se resuelve aguas abajo por la membresía del teléfono
+    // (ver InboundTenantRoutingService), no acá — por eso se publica sin `tenantId`.
     const inbound = payload.payload as GupshupInnerPayload | undefined;
     const from = inbound?.sender?.phone;
     const body = this.extractBody(inbound);
@@ -112,12 +104,11 @@ export class GupshupWebhookController {
       return { status: 'ok' };
     }
 
-    this.fileLog.log('inbound.processed', { from, body, attachments: attachments.length, tenantId });
+    this.fileLog.log('inbound.processed', { from, body, attachments: attachments.length });
 
     await this.broker.publish('whatsapp.incoming', {
       pattern: 'message.received',
       data: { from: `+${from}`, body: body ?? '', channel: 'whatsapp', attachments },
-      tenantId,
       timestamp: new Date().toISOString(),
     });
 
@@ -146,19 +137,5 @@ export class GupshupWebhookController {
     if (inner?.type !== 'image' || !inner.payload?.url) return [];
     const stored = await this.gupshupMedia.downloadAndStore(inner.payload.url, inner.payload.contentType);
     return stored ? [stored] : [];
-  }
-
-  /** A qué tenant se asignan los mensajes entrantes. Mismo criterio que `WhatsAppWebhookController.resolveTenantId`. */
-  private async resolveTenantId(): Promise<string | null> {
-    const configured = await this.appConfig.get('GUPSHUP_WHATSAPP_TENANT_ID');
-    if (configured) return configured;
-
-    // Sin esto, si la empresa más vieja se da de baja, los mensajes entrantes le siguen
-    // resolviendo a ella y `ConversationsService.handleMessage` los descarta en silencio.
-    const first = await this.prisma.tenant.findFirst({
-      where: { deletedAt: null },
-      orderBy: { createdAt: 'asc' },
-    });
-    return first?.id ?? null;
   }
 }

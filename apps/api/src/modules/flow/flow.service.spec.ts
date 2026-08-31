@@ -12,8 +12,9 @@ describe('FlowService.findActiveFlowForTenant — variantes de feriado/guardia',
     flowAlternative: { findUnique: flowAlternativeFindUnique },
   } as any;
   const scheduleCalendarService = { resolveStatus } as any;
+  const config = { get: jest.fn() } as any;
 
-  const service = new FlowService(prisma, scheduleCalendarService);
+  const service = new FlowService(prisma, scheduleCalendarService, config);
 
   const TENANT = 'tenant-1';
   const ROLE = 'role-1';

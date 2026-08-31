@@ -3,6 +3,11 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
+  "maxWorkers": 1,
+  "forceExit": true,
+  "globalSetup": "<rootDir>/global-setup.ts",
+  "globalTeardown": "<rootDir>/global-teardown.ts",
+  "setupFiles": ["<rootDir>/setup-env.ts"],
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   }

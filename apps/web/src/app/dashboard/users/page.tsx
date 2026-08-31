@@ -141,7 +141,7 @@ export default function UsersPage() {
     hasPermissionInTenant,
     user: currentUser,
     activeTenant,
-    isSystemUser,
+    isSuperAdmin,
   } = useAuth();
 
   // "Todas las empresas": vista consolidada (una fila por membresía, con columna Empresa).
@@ -170,29 +170,27 @@ export default function UsersPage() {
 
   const canCreate = hasPermission('users', 'create');
 
-  // Empresas donde el usuario común puede dar de alta: es miembro con permiso de crear
-  // usuarios y de ver roles (el rol es obligatorio, así que sin verlos no podría completar).
+  // Empresas donde el usuario común puede dar de alta: alcanza con `users:create`. El rol es
+  // obligatorio en el alta, pero `GET /roles` ya es accesible con `users:create` (no hace falta
+  // `roles:read` aparte), así que exigir también `roles:read` acá dejaba afuera empresas donde
+  // el alta SÍ se puede completar y mostraba su nombre como UUID crudo (FE-USR-16 / N7).
   // Para el superadmin es `null`: el formulario trae la lista completa desde `/tenants/all`.
   const creatableTenants = useMemo<TenantOption[] | null>(() => {
-    if (isSystemUser) return null;
+    if (isSuperAdmin) return null;
     return (currentUser?.tenants ?? [])
-      .filter(
-        (m) =>
-          m.role?.permissions?.some(
-            (p) => p.resource === 'users' && p.action === 'create',
-          ) &&
-          m.role?.permissions?.some(
-            (p) => p.resource === 'roles' && p.action === 'read',
-          ),
+      .filter((m) =>
+        m.role?.permissions?.some(
+          (p) => p.resource === 'users' && p.action === 'create',
+        ),
       )
       .map((m) => ({ id: m.tenant.id, name: m.tenant.name, slug: m.tenant.slug }));
-  }, [currentUser, isSystemUser]);
+  }, [currentUser, isSuperAdmin]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       if (isAllTenants) {
-        setUsers(await apiFetch(isSystemUser ? '/users/all' : '/users/mine'));
+        setUsers(await apiFetch(isSuperAdmin ? '/users/all' : '/users/mine'));
       } else {
         setUsers(await apiFetch('/users'));
       }
@@ -201,7 +199,7 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants, isSystemUser]);
+  }, [isAllTenants, isSuperAdmin]);
 
   useEffect(() => {
     load();
@@ -801,6 +799,19 @@ function UserModal({
   );
   const tenantName = (id: string) => tenantChoices.find((t) => t.id === id)?.name ?? id;
 
+  // El modal se abre con la empresa activa ya pre-agregada como membresía (presetTenantId).
+  // Esa membresía intacta —sin rol ni área elegidos— NO es un cambio del usuario: contarla
+  // hacía saltar el "¿descartar cambios?" al cerrar un alta recién abierta sin tocar nada
+  // (FE-USR-15). Solo cuenta como cambio si se le eligió rol/área, se agregó otra empresa,
+  // o la única membresía no es el preset.
+  const onlyUntouchedPreset =
+    !!presetTenantId &&
+    memberships.length === 1 &&
+    memberships[0].tenantId === presetTenantId &&
+    !memberships[0].roleId &&
+    !memberships[0].areaId;
+  const membershipsChanged = memberships.length > 0 && !onlyUntouchedPreset;
+
   const changed =
     form.firstName.length > 0 ||
     form.lastName.length > 0 ||
@@ -809,7 +820,7 @@ function UserModal({
     form.internalPhone.length > 0 ||
     form.invgateUserId.length > 0 ||
     form.password.length > 0 ||
-    memberships.length > 0;
+    membershipsChanged;
 
   const requestClose = useCallback(() => {
     if (saving) return;

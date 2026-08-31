@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
 import { isCatalogedPermission } from './permissions.catalog';
 import { effectivePermissions, isProtectedRole } from './protected-role';
@@ -111,12 +112,45 @@ export class RoleService {
     }
   }
 
-  async findAll(tenantId: string) {
+  /**
+   * ¿El que llama puede ver el detalle de permisos de cada rol, o solo la lista para asignarlos?
+   *
+   * `GET /roles` está abierto a `users:create` además de `roles:read`, porque el alta de usuarios
+   * necesita la lista de roles para el desplegable de asignación. Pero un rol con solo
+   * `users:create` no tiene por qué recibir la matriz de permisos de cada rol de la empresa: le
+   * alcanza con id y nombre. Devuelve la forma completa solo si el rol del que llama administra
+   * roles (`roles:read`) o es el superusuario del sistema (acceso irrestricto). El `roleId` es el
+   * del vínculo activo (`request.userTenant`), que para el superadmin operando sobre una empresa
+   * ajena es su rol de sistema. Mismo criterio que `RolesGuard`.
+   */
+  async callerCanReadRoles(roleId: string): Promise<boolean> {
+    const role = await this.prisma.role.findUnique({
+      where: { id: roleId },
+      select: {
+        name: true,
+        tenant: { select: { slug: true } },
+        permissions: { select: { resource: true, action: true } },
+      },
+    });
+    if (!role) return false;
+    if (isProtectedRole(role.name, role.tenant.slug, this.systemSlug)) return true;
+    return role.permissions.some(
+      (p) => p.resource === 'roles' && p.action === 'read',
+    );
+  }
+
+  async findAll(tenantId: string, opts?: { includePermissions?: boolean }) {
     const roles = await this.prisma.role.findMany({
       where: { tenantId },
       include: ROLE_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
+    if (opts?.includePermissions === false) {
+      // Recorte de menor privilegio: quien llega con `users:create` pero sin `roles:read` solo
+      // necesita id y nombre para el desplegable de asignación; no se le manda la matriz de
+      // permisos de cada rol de la empresa.
+      return roles.map((r) => ({ id: r.id, name: r.name }));
+    }
     return roles.map((r) => this.toResponse(r));
   }
 
@@ -154,20 +188,7 @@ export class RoleService {
    * de `UsersService.findMine` y `AreasService.findMine`.
    */
   async findMine(userId: string) {
-    const myMemberships = await this.prisma.userTenant.findMany({
-      where: { userId, tenant: { deletedAt: null } },
-      include: {
-        role: { select: { permissions: { select: { resource: true, action: true } } } },
-      },
-    });
-
-    const readableTenantIds = myMemberships
-      .filter((m) =>
-        m.role.permissions.some(
-          (p) => p.resource === 'roles' && p.action === 'read',
-        ),
-      )
-      .map((m) => m.tenantId);
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'roles');
 
     if (readableTenantIds.length === 0) return [];
 

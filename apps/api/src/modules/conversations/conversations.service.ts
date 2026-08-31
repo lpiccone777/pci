@@ -11,6 +11,7 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService } from '../context-sources/context-sources.service';
+import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-tenant-routing.service';
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
@@ -182,6 +183,7 @@ export class ConversationsService implements OnModuleInit {
     private readonly invgateService: InvgateService,
     private readonly twilioMedia: TwilioMediaService,
     private readonly unknownSenderLog: UnknownSenderLogService,
+    private readonly inboundTenantRouting: InboundTenantRoutingService,
   ) {}
 
   async onModuleInit() {
@@ -198,8 +200,12 @@ export class ConversationsService implements OnModuleInit {
    * —a través del broker, no en memoria— la respuesta que `handleMessage` publica
    * de vuelta. Simula el funcionamiento real: RabbitMQ de punta a punta, no una
    * llamada directa que se salte la cola.
+   *
+   * `tenantId` opcional: con valor, `handleMessage` usa esa empresa y corta el ruteo
+   * (probar el flujo de un tenant puntual); sin valor, pasa por el ruteo por membresía
+   * como un canal real (incluido el selector de empresa, que vuelve como texto acá).
    */
-  async simulateIncomingMessage(from: string, body: string, tenantId: string): Promise<string> {
+  async simulateIncomingMessage(from: string, body: string, tenantId?: string): Promise<string> {
     const reply = await this.broker.request(
       SIMULATE_QUEUE,
       {
@@ -240,14 +246,115 @@ export class ConversationsService implements OnModuleInit {
     // viejo que todavía no lo mande. Determina de qué `Conversation` se habla (un mismo
     // usuario puede tener una charla activa por WhatsApp y otra por SMS al mismo tiempo,
     // son independientes) y a qué cola de salida (`${channel}.outgoing`) va la respuesta.
-    const {
-      from,
-      body,
-      channel = 'whatsapp',
-      attachments = [],
-    } = msg.data as { from: string; body: string; channel?: string; attachments?: StoredAttachment[] };
-    const tenantId = msg.tenantId!;
+    const { from, channel = 'whatsapp' } = msg.data as {
+      from: string;
+      body: string;
+      channel?: string;
+      attachments?: StoredAttachment[];
+    };
+    // `body` y `attachments` son `let`: si el usuario venía respondiendo el selector de
+    // empresa, se reemplazan por los del mensaje original que disparó la pregunta, para
+    // reprocesarlo (texto Y adjuntos) en la empresa elegida.
+    let body = (msg.data as { body: string }).body;
+    let attachments: StoredAttachment[] =
+      (msg.data as { attachments?: StoredAttachment[] }).attachments ?? [];
     const outgoingQueue = `${channel}.outgoing`;
+
+    // Resolución de la empresa. `/simulate` y el RPC mandan `tenantId` explícito y cortan acá;
+    // los mensajes reales de canal llegan SIN tenant y se rutean por la membresía del teléfono
+    // (una empresa → directo; varias → se pregunta; ninguna → tenant de sistema). Ver
+    // InboundTenantRoutingService.
+    let tenantId = msg.tenantId;
+    if (!tenantId) {
+      let routing: InboundRoutingResult;
+      try {
+        routing = await this.inboundTenantRouting.resolve(from, channel, body, attachments);
+      } catch (err) {
+        this.logger.error(
+          `No se pudo resolver la empresa para ${from} (${channel}): ${err instanceof Error ? err.message : err}`,
+        );
+        // Falló la resolución de empresa (p. ej. un choque transitorio al registrar la selección
+        // pendiente). En vez de descartar el mensaje en silencio, se avisa al usuario para que
+        // reintente. Mismo patrón de publicación que el path del selector: por RPC (/simulate, con
+        // `replyTo`) se responde por esa cola para no dejar al llamador colgado hasta el timeout;
+        // por canal real, al `${channel}.outgoing`, para que el usuario reciba el aviso.
+        const notice =
+          'Tuvimos un problema para procesar tu mensaje. Por favor, probá de nuevo en unos instantes.';
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: notice },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        return notice;
+      }
+      if (routing.status === 'ignored') {
+        // No hablamos con desconocidos (pedido 2026-08-27): el teléfono no pertenece a
+        // ninguna empresa — silencio hacia el usuario, sin crear `User` ni `Conversation` ni
+        // gastar LLM (mismo criterio que el rechazo de la línea "1. Identificar al usuario"
+        // más abajo, que cubre el caso de `/simulate` contra un tenant puntual). El intento
+        // queda igual registrado en archivo. Por RPC (/simulate sin tenantId) sí se responde,
+        // para no dejar al llamador colgado hasta el timeout.
+        this.unknownSenderLog.log({ channel, from, bodyPreview: body.slice(0, 200) });
+        this.logger.warn(`Mensaje de ${from} (${channel}) ignorado: no pertenece a ninguna empresa.`);
+        if (msg.replyTo) {
+          const notice = 'Este número no está registrado: el bot no atiende mensajes de desconocidos.';
+          await this.broker.publish(
+            msg.replyTo,
+            {
+              pattern: 'message.send',
+              data: { to: from, body: notice },
+              timestamp: new Date().toISOString(),
+              correlationId: msg.correlationId,
+            },
+            { assert: false },
+          );
+          return notice;
+        }
+        return '';
+      }
+      if (routing.status === 'notice') {
+        // Aviso por cambio administrativo (empresa dada de baja, membresía revocada a mitad
+        // de charla): se informa y se corta — el próximo mensaje re-rutea de cero.
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: routing.body },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        return routing.body;
+      }
+      if (routing.status === 'ask') {
+        // Todavía no hay empresa (ni conversación): se le pregunta y se corta. La respuesta del
+        // usuario entrará como un mensaje nuevo y la matcheará el propio InboundTenantRoutingService.
+        await this.broker.publish(
+          msg.replyTo ?? outgoingQueue,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: routing.body, interactive: routing.interactive },
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: !msg.replyTo },
+        );
+        this.logger.log(`[selector] Empresa preguntada a ${from} (${channel}).`);
+        return routing.interactive
+          ? `${routing.body}\n\n${this.formatInteractiveAsText(routing.interactive)}`
+          : routing.body;
+      }
+      tenantId = routing.tenantId;
+      if (routing.replayBody !== undefined) body = routing.replayBody;
+      if (routing.replayAttachments?.length) attachments = routing.replayAttachments;
+    }
+    if (!tenantId) return '';
 
     this.logger.log(`[${tenantId}] Mensaje de ${from}: ${body.substring(0, 50)}...`);
 
@@ -446,10 +553,26 @@ export class ConversationsService implements OnModuleInit {
     }
 
     // Turno silencioso a propósito (un flujo avanzó de nodo sin nada que mostrar todavía,
-    // ej. justo el caso de arriba): no hay nada que guardar ni mandar. Sin este corte, se
-    // guardaba un `Message` vacío y se publicaba un mensaje de WhatsApp en blanco.
+    // ej. justo el caso de arriba): no hay nada que guardar ni mandar por un canal real — sin
+    // este corte, se guardaba un `Message` vacío y se publicaba un mensaje de WhatsApp en
+    // blanco. Pero por RPC (`/simulate`, con `replyTo`) SÍ hay que publicar algo: `simulate()`
+    // espera una respuesta con `broker.request()`, y sin este publish la request quedaba
+    // colgada hasta SIMULATE_TIMEOUT_MS (5 min) en vez de devolver la respuesta vacía de una.
     if (!responseText && !interactive) {
       this.logger.log(`[${tenantId}] Turno silencioso para ${from} (el flujo avanzó sin responder).`);
+      if (msg.replyTo) {
+        await this.broker.publish(
+          msg.replyTo,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: '' },
+            tenantId,
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: false },
+        );
+      }
       return '';
     }
 
@@ -1220,9 +1343,13 @@ export class ConversationsService implements OnModuleInit {
     flowState.__deviceValidationCode = code;
     flowState.__deviceValidationExpiresAt = Date.now() + ttlSeconds * 1000;
 
+    const defaultSubject = 'Código de validación de dispositivo - Plataforma Conversacional Inteligente';
+    const subject =
+      (await this.appConfig.get('DEVICE_VALIDATION_EMAIL_SUBJECT', defaultSubject)) || defaultSubject;
+
     await this.emailService.send({
       to: email,
-      subject: 'Código de validación de dispositivo - Plataforma Conversacional Inteligente',
+      subject,
       text: `Tu código de validación es: ${code}. Válido por ${Math.round(ttlSeconds / 60)} minutos.`,
     });
 
@@ -1421,29 +1548,32 @@ export class ConversationsService implements OnModuleInit {
 
   /**
    * Nodo `ticket_query`, paso "ver detalle": trae el incidente puntual por id
-   * (`GET incident`, siempre en vivo) y arma el texto con estado, prioridad, fecha
-   * y agente asignado. `customerId` es el cliente de InvGate del USUARIO que está
-   * preguntando — si el incidente encontrado le pertenece a otro cliente, se
-   * considera "no encontrado" (mismo criterio que el filtro por `tenantId` en el
-   * resto de los accesos a `Ticket`: `body` puede ser cualquier texto tipeado a
-   * mano, no solo el id de una fila que se le mostró, así que sin este chequeo
-   * cualquiera podría ver el ticket de otra persona adivinando un id bajo).
+   * (`GET incident`, siempre en vivo, con `comments=true`) y arma el texto con
+   * estado, prioridad, fecha, agente asignado y el ÚLTIMO comentario (no la
+   * descripción original del ticket, que es lo que el usuario ya sabe porque la
+   * escribió él mismo — lo útil acá es la última novedad). `customerId` es el
+   * cliente de InvGate del USUARIO que está preguntando — si el incidente
+   * encontrado le pertenece a otro cliente, se considera "no encontrado" (mismo
+   * criterio que el filtro por `tenantId` en el resto de los accesos a `Ticket`:
+   * `body` puede ser cualquier texto tipeado a mano, no solo el id de una fila
+   * que se le mostró, así que sin este chequeo cualquiera podría ver el ticket
+   * de otra persona adivinando un id bajo).
    */
   private async buildTicketDetailText(incidentId: string, customerId: number): Promise<string | null> {
-    const incident = await this.invgateService.getIncident(incidentId).catch(() => null);
+    const incident = await this.invgateService.getIncident(incidentId, { includeComments: true }).catch(() => null);
     if (!incident || Number(incident.user_id) !== customerId) return null;
 
-    const [statusName, priorityName, assignedName] = await Promise.all([
+    const [statusName, priorityName, assignedName, lastComment] = await Promise.all([
       incident.status_id !== undefined ? this.invgateService.getStatusName(incident.status_id) : Promise.resolve('sin definir'),
       incident.priority_id !== undefined
         ? this.invgateService.getPriorityName(Number(incident.priority_id))
         : Promise.resolve('sin definir'),
       this.resolveAssignedAgentName(incident.assigned_id),
+      this.resolveLastCustomerVisibleComment(incident.comments),
     ]);
 
     const ref = (incident.pretty_id as string | undefined) ?? `#${incident.id}`;
     const created = incident.created_at ? new Date(String(incident.created_at)).toLocaleDateString('es-AR') : 'sin dato';
-    const description = incident.description ? this.stripInvgateHtml(String(incident.description)) : null;
 
     const lines = [
       `Ticket ${ref}: ${incident.title ?? ''}`,
@@ -1452,8 +1582,56 @@ export class ConversationsService implements OnModuleInit {
       `Creado: ${created}`,
       `Asignado a: ${assignedName ?? 'sin asignar'}`,
     ];
-    if (description) lines.push(`Descripción: ${description}`);
+    lines.push(
+      lastComment
+        ? lastComment.authorName
+          ? `Último comentario (${lastComment.authorName}): ${lastComment.text}`
+          : `Último comentario: ${lastComment.text}`
+        : 'Sin comentarios aún.',
+    );
     return lines.join('\n');
+  }
+
+  /**
+   * Último comentario VISIBLE PARA EL CLIENTE de un incidente (`incident.comments`, viene de
+   * `GET incident?comments=true`) — nunca uno interno (`customer_visible: false`): sería una
+   * nota privada del equipo, no algo para mostrarle al usuario que está consultando su ticket.
+   *
+   * ⚠️ Forma de cada comentario sin confirmar contra tráfico real todavía (misma deuda que el
+   * resto de esta integración, ver el comentario de cabecera de `InvgateService`) — relevada
+   * contra la documentación pública (`message`/`author_id`/`created_at`/`customer_visible`),
+   * no contra una respuesta real capturada. Devuelve `null` ante cualquier forma inesperada
+   * (campo con otro nombre, no es array, etc.) en vez de romper el detalle del ticket por esto.
+   */
+  private async resolveLastCustomerVisibleComment(
+    rawComments: unknown,
+  ): Promise<{ text: string; authorName: string | null } | null> {
+    if (!Array.isArray(rawComments) || !rawComments.length) return null;
+
+    const visible = rawComments.filter((c): c is Record<string, unknown> => {
+      if (!c || typeof c !== 'object') return false;
+      const v = (c as Record<string, unknown>).customer_visible;
+      return v === true || v === 1 || v === '1';
+    });
+    if (!visible.length) return null;
+
+    // Más reciente primero: `created_at` (epoch o ISO-8601, ambos comparan bien como texto
+    // creciente/decreciente salvo casos borde) con `msg_num`/`id` como desempate si faltara.
+    const sorted = [...visible].sort((a, b) => {
+      const byDate = String(b.created_at ?? '').localeCompare(String(a.created_at ?? ''));
+      if (byDate !== 0) return byDate;
+      return Number(b.msg_num ?? b.id ?? 0) - Number(a.msg_num ?? a.id ?? 0);
+    });
+
+    const last = sorted[0];
+    const rawText = last.message ?? last.comment ?? last.text;
+    if (typeof rawText !== 'string' || !rawText.trim()) return null;
+
+    const authorId = last.author_id;
+    const authorName =
+      authorId !== undefined && authorId !== null ? await this.resolveAssignedAgentName(authorId) : null;
+
+    return { text: this.stripInvgateHtml(rawText), authorName };
   }
 
   /** Nombre completo del agente de InvGate asignado a un incidente, o `null` sin asignar/sin resolver. */
@@ -1490,7 +1668,7 @@ export class ConversationsService implements OnModuleInit {
     const collaboratorIds: string[] = Array.isArray(data.collaborators) ? data.collaborators : [];
 
     const assignee = assigneeIds.length
-      ? await this.pickNextAssignee(flowId, node.id, assigneeIds)
+      ? await this.pickNextAssignee(flowId, node.id, assigneeIds, tenantId)
       : null;
 
     // `data.message` es texto configurado en el editor y puede traer `{{variable}}`
@@ -1539,8 +1717,16 @@ export class ConversationsService implements OnModuleInit {
       const notifyIds = Array.from(
         new Set([assignee?.id, ...watcherIds, ...collaboratorIds].filter(Boolean)),
       ) as string[];
+      // Filtrado por `tenantId`: `data.assignees`/`watchers`/`collaborators` son userIds fijados
+      // en el editor. `sanitizeCrossTenantRefs` los sanea al guardar el flujo, pero contra el
+      // conjunto de TODAS las empresas a las que el flujo está asignado — un flujo compartido
+      // entre A y B puede legítimamente traer gente de ambas. Sin este filtro, la conversación
+      // de un cliente de A podía terminar mandándole el email de transferencia (con su nombre,
+      // teléfono y nota) a alguien que solo pertenece a B.
       const recipients = notifyIds.length
-        ? await this.prisma.user.findMany({ where: { id: { in: notifyIds } } })
+        ? await this.prisma.user.findMany({
+            where: { id: { in: notifyIds }, tenants: { some: { tenantId, tenant: { deletedAt: null } } } },
+          })
         : [];
       const userName =
         [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.phone || 'Un usuario';
@@ -1586,7 +1772,13 @@ export class ConversationsService implements OnModuleInit {
     const text = data.message ? this.interpolate(data.message, flowState) : '';
 
     if (text && recipientIds.length) {
-      const recipients = await this.prisma.user.findMany({ where: { id: { in: recipientIds } } });
+      // Mismo filtro por `tenantId` que en `executeTransferAgentNode`: un `data.recipients`
+      // configurado en el editor de un flujo compartido puede traer gente de otra empresa
+      // asignada al mismo flujo — sin esto, la conversación de un cliente de esta empresa
+      // podía terminar mandando un SMS con su nombre/nota a alguien de una empresa distinta.
+      const recipients = await this.prisma.user.findMany({
+        where: { id: { in: recipientIds }, tenants: { some: { tenantId, tenant: { deletedAt: null } } } },
+      });
       for (const recipient of recipients) {
         if (!recipient.phone) continue;
         await this.broker.publish('sms.outgoing', {
@@ -1601,23 +1793,47 @@ export class ConversationsService implements OnModuleInit {
     return { flowState };
   }
 
-  /** Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en FlowNodeRoundRobin. */
-  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[]) {
-    // `data.assignees` es config del nodo (no se actualiza sola cuando alguien se da de
-    // baja), así que filtramos acá: un colaborador soft-deleted sale de la rotación en
-    // vez de seguir recibiendo tickets/transferencias. Orden estable según `assigneeIds`,
-    // no el que devuelva la DB.
+  /**
+   * Elige el próximo de `assigneeIds` en orden, rotando sobre el índice persistido en
+   * FlowNodeRoundRobin. Filtra por `tenantId`, no solo por `deletedAt`: `data.assignees` es
+   * config del nodo, y un flujo compartido entre varias empresas puede legítimamente traer
+   * gente de todas ellas (`sanitizeCrossTenantRefs` sanea contra ESE conjunto al guardar, no
+   * contra la empresa puntual de cada conversación) — sin este filtro, el ticket/transferencia
+   * de un cliente de esta empresa podía terminar asignado a alguien de otra.
+   */
+  private async pickNextAssignee(flowId: string, nodeId: string, assigneeIds: string[], tenantId: string) {
+    // `data.assignees` no se actualiza solo cuando alguien se da de baja (de la persona, o de
+    // esta empresa puntual), así que filtramos acá: sale de la rotación en vez de seguir
+    // recibiendo tickets/transferencias. Orden estable según `assigneeIds`, no el que
+    // devuelva la DB.
     const active = await this.prisma.user.findMany({
-      where: { id: { in: assigneeIds }, deletedAt: null },
+      where: {
+        id: { in: assigneeIds },
+        deletedAt: null,
+        tenants: { some: { tenantId, tenant: { deletedAt: null } } },
+      },
     });
     if (!active.length) return null;
     const activeIds = assigneeIds.filter((id) => active.some((u) => u.id === id));
 
-    const state = await this.prisma.flowNodeRoundRobin.upsert({
-      where: { flowId_nodeId: { flowId, nodeId } },
-      update: {},
-      create: { flowId, nodeId, lastIndex: -1 },
-    });
+    let state: { lastIndex: number };
+    try {
+      state = await this.prisma.flowNodeRoundRobin.upsert({
+        where: { flowId_nodeId: { flowId, nodeId } },
+        update: {},
+        create: { flowId, nodeId, lastIndex: -1 },
+      });
+    } catch (err) {
+      // Dos conversaciones distintas pueden tocar el mismo nodo round-robin por primera vez
+      // casi al mismo tiempo — el `create` del upsert de la que "pierde la carrera" choca
+      // contra el `@@unique([flowId, nodeId])` (mismo patrón que `persistContentSid` en
+      // `TwilioWhatsAppService`). No es un error real: solo hace falta leer la fila que ya
+      // quedó creada por la otra.
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      state = await this.prisma.flowNodeRoundRobin.findUniqueOrThrow({
+        where: { flowId_nodeId: { flowId, nodeId } },
+      });
+    }
 
     const nextIndex = (state.lastIndex + 1) % activeIds.length;
     await this.prisma.flowNodeRoundRobin.update({
@@ -2025,13 +2241,18 @@ export class ConversationsService implements OnModuleInit {
           },
           await this.loadAttachments(pendingAttachments),
         );
-        // `lastTicketId` (lo que consulta `ticket_query` después) y lo que ve el usuario
-        // acá: preferí SIEMPRE el número de InvGate — el cuid interno no le sirve a nadie
-        // fuera del sistema. Sin sync (InvGate caído, mal configurado, etc.) cae al id
-        // local — sigue siendo un ticket válido, solo que no llegó a InvGate todavía.
+        // `lastTicketId` (lo que consulta `ticket_query` después) y lo que puede mostrar
+        // `data.text` acá: preferí SIEMPRE el número de InvGate — el cuid interno no le
+        // sirve a nadie fuera del sistema. Sin sync (InvGate caído, mal configurado,
+        // etc.) cae al id local — sigue siendo un ticket válido, solo que no llegó a
+        // InvGate todavía.
         flowState.lastTicketId = invgateTicketId ?? ticket.id;
+        // Mensaje final 100% a cargo de quien arma el flujo: sin `data.text` configurado
+        // no hay ningún texto fijo — antes SIEMPRE se mandaba "Ticket #X creado..." sin
+        // forma de sacarlo ni de personalizarlo. `{{lastTicketId}}` (recién seteado
+        // arriba) y cualquier otra variable de la charla quedan disponibles para armarlo.
         return {
-          responseText: `Ticket #${flowState.lastTicketId} creado. Un agente te contactará pronto.`,
+          responseText: data.text ? this.interpolate(data.text, flowState) : undefined,
           flowState,
         };
       }

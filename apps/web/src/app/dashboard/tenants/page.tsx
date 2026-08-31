@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { TENANTS_CHANGED_EVENT } from '@/lib/system-tenant';
+
+/** Avisa al selector del sidebar que la lista de empresas cambió (ver TENANTS_CHANGED_EVENT). */
+function notifyTenantsChanged() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(TENANTS_CHANGED_EVENT));
+}
 
 interface TenantData {
   id: string;
@@ -87,6 +93,7 @@ export default function TenantsPage() {
       setFeedback({ kind: 'ok', text: res?.message || `Empresa ${tenant.name} dada de baja.` });
       setDeletingId(null);
       await load();
+      notifyTenantsChanged();
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
@@ -101,6 +108,7 @@ export default function TenantsPage() {
       setFeedback({ kind: 'ok', text: res?.message || `Empresa ${tenant.name} reactivada.` });
       setRestoringId(null);
       await load();
+      notifyTenantsChanged();
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message });
     } finally {
@@ -112,9 +120,31 @@ export default function TenantsPage() {
     setEditing(null);
     setFeedback(message);
     await load();
+    // Alta o renombre de una empresa: refrescar el selector del sidebar (FE-TEN-06/07).
+    notifyTenantsChanged();
   }
 
   if (loading) return <p className="text-gray-500">Cargando...</p>;
+
+  // Si la carga inicial falla y no hay nada para mostrar (típicamente porque la empresa
+  // activa dejó de ser la de sistema, ver SystemTenantGuard), reemplazamos toda la pantalla
+  // por esta tarjeta en vez de dejar la grilla vacía con los botones de alta/baja habilitados
+  // igual. Mismo patrón que la pantalla de Configuración (`settings/page.tsx`).
+  if (feedback?.kind === 'error' && tenants.length === 0) {
+    return (
+      <div>
+        <h1 className="text-2xl font-bold mb-4 text-gray-800">Tenants</h1>
+        <div className="bg-white p-6 rounded shadow max-w-2xl">
+          <p className="text-red-600 font-medium mb-2">No se pudo cargar el listado de empresas</p>
+          <p className="text-sm text-gray-600 mb-3 font-mono">{feedback.text}</p>
+          <p className="text-sm text-gray-500">
+            La administración de empresas solo es accesible desde el tenant de sistema y con
+            permisos <code className="bg-gray-100 px-1 rounded">tenants:read</code>.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

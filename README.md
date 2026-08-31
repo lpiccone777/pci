@@ -288,7 +288,7 @@ pnpm dev:api                  # en una terminal
 pnpm --filter api chat        # en otra
 ```
 
-Escribís y te contesta, igual que si fuera WhatsApp. Resuelve solo el tenant y el teléfono de prueba.
+Escribís y te contesta, igual que si fuera WhatsApp. Por defecto resuelve solo el tenant (la empresa más antigua) y el teléfono de prueba.
 
 | Comando | Qué hace |
 |---------|----------|
@@ -297,6 +297,8 @@ Escribís y te contesta, igual que si fuera WhatsApp. Resuelve solo el tenant y 
 | `/salir` | Termina |
 
 Opciones: `pnpm --filter api chat -- --tenant <id> --from +5491100000001 --api http://localhost:3001`
+
+Con `--route` no se fija ninguna empresa: el mensaje se rutea por la **membresía del teléfono** (`--from`), igual que un canal real — una empresa → directo, varias → te muestra el **selector de empresa** (respondés con el número), ninguna → el tenant de sistema. Sirve para probar el ruteo nuevo sin WhatsApp.
 
 ### Un solo mensaje, por HTTP
 
@@ -308,6 +310,8 @@ Invoke-RestMethod -Uri "http://localhost:3001/conversations/simulate" -Method Po
     tenantId = "<id-del-tenant>"
   } | ConvertTo-Json)
 ```
+
+`tenantId` es **opcional**: si lo omitís, el mensaje se rutea por la membresía del teléfono (`from`) igual que un canal real —incluido el selector de empresa para números multitenant, que vuelve como texto en `reply`—; si lo pasás, prueba el flujo de esa empresa puntual y saltea el ruteo.
 
 `POST /conversations/simulate` **devuelve la respuesta del bot** en el campo `reply`. A diferencia de una llamada directa, el mensaje pasa por **RabbitMQ de punta a punta**: publica en una cola propia (`whatsapp.simulate.incoming`, separada de la real `whatsapp.incoming`) y espera —a través del broker, no en memoria— la respuesta que el mismo `ConversationsService.handleMessage` publica de vuelta. Es la simulación real, no un atajo.
 

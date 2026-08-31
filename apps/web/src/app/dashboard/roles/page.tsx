@@ -63,7 +63,7 @@ function usersPhrase(count: number) {
 }
 
 export default function RolesPage() {
-  const { hasPermission, hasPermissionInTenant, user, activeTenant, isSystemUser } = useAuth();
+  const { hasPermission, hasPermissionInTenant, user, activeTenant, isSuperAdmin } = useAuth();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -147,7 +147,7 @@ export default function RolesPage() {
         return;
       }
       // Consolidada: el superadmin trae todo el sistema; el usuario común, solo sus empresas.
-      const roleData = await apiFetch(isSystemUser ? '/roles/all' : '/roles/mine');
+      const roleData = await apiFetch(isSuperAdmin ? '/roles/all' : '/roles/mine');
       setRoles(roleData);
       // El catálogo de permisos alimenta la matriz del modal de edición. `/roles/catalog` pide
       // `roles:read` en el tenant del header: para el superadmin la empresa de sistema alcanza,
@@ -155,7 +155,7 @@ export default function RolesPage() {
       // una empresa donde sí (la de cualquier rol visible). Sin roles visibles no hace falta.
       if (roleData.length > 0) {
         const headers =
-          !isSystemUser && roleData[0]?.tenant?.id
+          !isSuperAdmin && roleData[0]?.tenant?.id
             ? { headers: { 'X-Tenant-Id': roleData[0].tenant.id } }
             : undefined;
         setCatalog(await apiFetch('/roles/catalog', headers));
@@ -165,7 +165,7 @@ export default function RolesPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAllTenants, isSystemUser]);
+  }, [isAllTenants, isSuperAdmin]);
 
   useEffect(() => {
     load();
@@ -247,7 +247,7 @@ export default function RolesPage() {
 
       {isAllTenants && (
         <p className="text-sm text-gray-500 mb-6">
-          Roles de {isSystemUser ? 'todas las empresas' : 'todas tus empresas'}. Podés modificar
+          Roles de {isSuperAdmin ? 'todas las empresas' : 'todas tus empresas'}. Podés modificar
           o eliminar cada uno en su empresa; para crear uno nuevo, elegí una empresa en el
           selector lateral.
         </p>

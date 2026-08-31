@@ -12,9 +12,8 @@ import { TenantGuard } from '../../common/guards/tenant.guard';
  * (`@RequirePermission('flows', 'read')`, no un permiso nuevo): quien puede ver/editar
  * flujos puede consultar este catálogo, nadie más lo necesita.
  *
- * InvGate es una integración global, no por tenant (mismo criterio que
- * `WHATSAPP_TENANT_ID`/`TWILIO_TENANT_ID`) — por eso no lleva `@CurrentTenant()` ni
- * filtra nada por empresa, a diferencia de `/flows`.
+ * InvGate es una integración global, no por tenant — por eso no lleva `@CurrentTenant()`
+ * ni filtra nada por empresa, a diferencia de `/flows`.
  */
 @Controller('invgate/catalog')
 @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
