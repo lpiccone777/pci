@@ -44,11 +44,10 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000
 const TWILIO_ACCOUNT_SID = 'ACtest00000000000000000000000000';
 const TWILIO_AUTH_TOKEN = 'authtoken-test';
 const TWILIO_SMS_FROM = '+15005550006';
-// GupshupSmsService reusa las credenciales de WhatsApp Gupshup (2026-08-27: la cuenta legacy
-// Enterprise SMS quedó con el alta rota) — no hay settings propios de SMS para Gupshup.
+// GupshupSmsService comparte la API key con WhatsApp (es de la cuenta, no del canal) pero tiene
+// su propia app: el endpoint de SMS (`/sms/v1/message/{appId}`) va por UUID, no por nombre.
 const GUPSHUP_API_KEY = 'gupshup-api-key-test';
-const GUPSHUP_WHATSAPP_SOURCE = '15553788248';
-const GUPSHUP_APP_NAME = 'dasyBotTest';
+const GUPSHUP_SMS_APP_ID = 'd7233f89-bf13-27e4-70d1-a981b1427249';
 
 describe('1.21 Canal SMS, selección de proveedor — Twilio (BE-SMS-02)', () => {
   let t: TestApp;
@@ -114,8 +113,7 @@ describe('1.21 Canal SMS, selección de proveedor — Gupshup (BE-SMS-03, BE-SMS
     await preboot.$connect();
     await setSetting(preboot, 'SMS_PROVIDER', 'gupshup');
     await setSetting(preboot, 'GUPSHUP_API_KEY', GUPSHUP_API_KEY);
-    await setSetting(preboot, 'GUPSHUP_WHATSAPP_SOURCE', GUPSHUP_WHATSAPP_SOURCE);
-    await setSetting(preboot, 'GUPSHUP_APP_NAME', GUPSHUP_APP_NAME);
+    await setSetting(preboot, 'GUPSHUP_SMS_APP_ID', GUPSHUP_SMS_APP_ID);
     await preboot.$disconnect();
 
     t = await createTestApp();
@@ -124,8 +122,7 @@ describe('1.21 Canal SMS, selección de proveedor — Gupshup (BE-SMS-03, BE-SMS
   afterAll(async () => {
     await deleteSetting(t.prisma, 'SMS_PROVIDER');
     await deleteSetting(t.prisma, 'GUPSHUP_API_KEY');
-    await deleteSetting(t.prisma, 'GUPSHUP_WHATSAPP_SOURCE');
-    await deleteSetting(t.prisma, 'GUPSHUP_APP_NAME');
+    await deleteSetting(t.prisma, 'GUPSHUP_SMS_APP_ID');
     await t.close();
   }, 30000);
 
@@ -318,10 +315,9 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
     }
   });
 
-  it('BE-SMS-10: Gupshup SMS (SEC-21, corregido con el cambio de endpoint 2026-08-27) no manda la API key por query string: va en el header apikey de un POST', async () => {
+  it('BE-SMS-10: Gupshup SMS (SEC-21, corregido con el cambio de endpoint 2026-08-27) no manda la API key por query string: va en el header Authorization de un POST', async () => {
     await setSetting(t.prisma, 'GUPSHUP_API_KEY', GUPSHUP_API_KEY);
-    await setSetting(t.prisma, 'GUPSHUP_WHATSAPP_SOURCE', GUPSHUP_WHATSAPP_SOURCE);
-    await setSetting(t.prisma, 'GUPSHUP_APP_NAME', GUPSHUP_APP_NAME);
+    await setSetting(t.prisma, 'GUPSHUP_SMS_APP_ID', GUPSHUP_SMS_APP_ID);
     const { requests, restore } = installFetchMock((url) =>
       url.includes('api.gupshup.io') ? { status: 202, body: { status: 'submitted', messageId: 'msgid' } } : { status: 404 },
     );
@@ -331,18 +327,48 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
       expect(requests).toHaveLength(1);
       const req = requests[0];
 
-      // La API key no viaja en la URL (logs de proxies, historial): va en el header `apikey`
-      // de un POST — el endpoint moderno (`api.gupshup.io`) ya no es el GET con query string
-      // de la cuenta legacy Enterprise SMS que este caso documentaba.
+      // La API key no viaja en la URL (logs de proxies, historial): va en el header
+      // `Authorization` de un POST — el endpoint moderno (`api.gupshup.io`) ya no es el GET con
+      // query string de la cuenta legacy Enterprise SMS que este caso documentaba.
       expect(req.url).not.toContain(GUPSHUP_API_KEY);
       expect(req.init?.method).toBe('POST');
       const headers = req.init?.headers as Record<string, string>;
-      expect(headers.apikey).toBe(GUPSHUP_API_KEY);
+      expect(headers.Authorization).toBe(GUPSHUP_API_KEY);
     } finally {
       restore();
       await deleteSetting(t.prisma, 'GUPSHUP_API_KEY');
-      await deleteSetting(t.prisma, 'GUPSHUP_WHATSAPP_SOURCE');
-      await deleteSetting(t.prisma, 'GUPSHUP_APP_NAME');
+      await deleteSetting(t.prisma, 'GUPSHUP_SMS_APP_ID');
+    }
+  });
+
+  it('BE-SMS-10b: Gupshup SMS pega al endpoint de SMS (/sms/v1/message/{appId}), NO al de WhatsApp (/wa/api/v1/msg)', async () => {
+    // Regresión del 2026-08-31: pegarle a `/wa/api/v1/msg` con `channel: 'sms'` devuelve 202
+    // pero Gupshup entrega el mensaje por WhatsApp, no como SMS (confirmado con tráfico real).
+    await setSetting(t.prisma, 'GUPSHUP_API_KEY', GUPSHUP_API_KEY);
+    await setSetting(t.prisma, 'GUPSHUP_SMS_APP_ID', GUPSHUP_SMS_APP_ID);
+    const { requests, restore } = installFetchMock((url) =>
+      url.includes('api.gupshup.io') ? { status: 202, body: { status: 'submitted', messageId: 'msgid' } } : { status: 404 },
+    );
+    try {
+      await gupshupSms.sendText('+5491158855098', 'texto de prueba');
+
+      expect(requests).toHaveLength(1);
+      const req = requests[0];
+
+      expect(req.url).toBe(`https://api.gupshup.io/sms/v1/message/${GUPSHUP_SMS_APP_ID}`);
+      expect(req.url).not.toContain('/wa/');
+
+      // Cuerpo del SMS: `message` es texto plano, no el JSON `{type,text}` de WhatsApp, y no
+      // viaja ningún `channel` (era el parámetro que Gupshup ignoraba).
+      const body = new URLSearchParams(req.init?.body as string);
+      expect(body.get('destination')).toBe('5491158855098');
+      expect(body.get('message')).toBe('texto de prueba');
+      expect(body.get('channel')).toBeNull();
+      expect(body.get('src.name')).toBeNull();
+    } finally {
+      restore();
+      await deleteSetting(t.prisma, 'GUPSHUP_API_KEY');
+      await deleteSetting(t.prisma, 'GUPSHUP_SMS_APP_ID');
     }
   });
 });

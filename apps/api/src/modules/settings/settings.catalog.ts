@@ -43,6 +43,7 @@ export type SettingGroup =
   | 'Mensajería: WhatsApp (Gupshup)'
   | 'Mensajería: SMS'
   | 'Mensajería: SMS (Twilio)'
+  | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
   | 'Integración: InvGate'
   | 'Desarrollo y pruebas';
@@ -498,9 +499,9 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'automáticamente, no incluirlo acá.',
   },
   // --- Mensajería: WhatsApp (Gupshup) ---
-  // API de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey`. Estas mismas
-  // credenciales las reusa también GupshupSmsService (SMS_PROVIDER=gupshup, channel='sms'
-  // sobre este mismo endpoint) — no hay un grupo de settings separado para SMS de Gupshup.
+  // API de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey`. Solo WhatsApp:
+  // el SMS de Gupshup va por otro endpoint y con otro header (ver "Mensajería: SMS (Gupshup)").
+  // `GUPSHUP_API_KEY` sí lo comparten los dos — la API key es de la cuenta, no del canal.
   {
     key: 'GUPSHUP_API_KEY',
     type: 'string',
@@ -540,11 +541,39 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     defaultValue: 'twilio',
     description:
       'Qué conector se suscribe a la cola de envío saliente de SMS: "twilio" (grupo ' +
-      '"Mensajería: SMS (Twilio)") o "gupshup" (reusa GUPSHUP_API_KEY/GUPSHUP_WHATSAPP_SOURCE/' +
-      'GUPSHUP_APP_NAME del grupo "Mensajería: WhatsApp (Gupshup)", no tiene settings propios). ' +
+      '"Mensajería: SMS (Twilio)") o "gupshup" (grupo "Mensajería: SMS (Gupshup)"). ' +
       'Solo uno puede estar activo a la vez — se lee una sola vez al arrancar el backend, igual ' +
       'que WHATSAPP_PROVIDER.',
     allowedValues: ['twilio', 'gupshup'],
+  },
+
+  // --- Mensajería: SMS (Gupshup) ---
+  // API de SMS de Gupshup (`api.gupshup.io/sms/v1/message/{appId}`), auth por header
+  // `Authorization`. OJO: es un endpoint DISTINTO al de WhatsApp (`/wa/api/v1/msg`, header
+  // `apikey`) — hasta 2026-08-31 este conector pegaba al de WhatsApp con `channel: 'sms'`, que
+  // Gupshup acepta con 202 pero entrega como mensaje de WhatsApp, no como SMS (confirmado con
+  // tráfico real). Reusa `GUPSHUP_API_KEY` porque la API key es de la cuenta, no del canal.
+  {
+    key: 'GUPSHUP_SMS_APP_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'App ID (UUID)',
+    defaultValue: '',
+    placeholder: 'd7233f89-bf13-27e4-70d1-a981b1427249',
+    description:
+      'ID de la app de Gupshup, en formato UUID — NO el nombre (GUPSHUP_APP_NAME, que usa ' +
+      'WhatsApp): va en la URL del endpoint de SMS. Sale del panel de Gupshup.',
+  },
+  {
+    key: 'GUPSHUP_SMS_SOURCE',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'Sender ID (opcional)',
+    defaultValue: '',
+    placeholder: 'GSDSMS',
+    description:
+      'Identificador del emisor. Según la documentación de Gupshup solo aplica a India — en el ' +
+      'resto de los países lo asigna Gupshup automáticamente, así que normalmente va vacío.',
   },
 
   // --- Mensajería: SMS (Twilio) ---
@@ -763,6 +792,7 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: WhatsApp (Gupshup)',
   'Mensajería: SMS',
   'Mensajería: SMS (Twilio)',
+  'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
   'Integración: InvGate',
   'Desarrollo y pruebas',

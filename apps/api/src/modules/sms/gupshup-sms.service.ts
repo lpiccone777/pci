@@ -4,38 +4,43 @@ import { BrokerService, BrokerMessage } from '../broker/broker.service';
 import { GupshupFileLoggerService } from '../whatsapp/gupshup-file-logger.service';
 
 const TIMEOUT_MS = 10_000;
-const API_URL = 'https://api.gupshup.io/wa/api/v1/msg';
+const API_BASE_URL = 'https://api.gupshup.io/sms/v1/message';
 
 interface GupshupSmsCredentials {
   apiKey: string;
-  source: string;
-  appName: string;
+  appId: string;
+  source?: string;
 }
 
 /**
- * Conector de SMS vía Gupshup — API "unificada" (`api.gupshup.io/wa/api/v1/msg`, `channel: 'sms'`),
- * NO la legacy "Enterprise SMS" (`enterprise.smsgupshup.com`) que este archivo usaba antes.
+ * Conector de SMS vía Gupshup — API de SMS (`api.gupshup.io/sms/v1/message/{appId}`).
  *
- * Reusa a propósito las MISMAS credenciales que `GupshupWhatsAppService`
- * (`GUPSHUP_API_KEY`/`GUPSHUP_WHATSAPP_SOURCE`/`GUPSHUP_APP_NAME`) en vez de un grupo de
- * settings propio: es el mismo endpoint, la misma cuenta/app de Gupshup, y la única diferencia
- * real es `channel: 'sms'` en el body en vez de `'whatsapp'`.
+ * ⚠️ Este endpoint NO es el mismo que el de WhatsApp, y la diferencia importa:
  *
- * Motivo del cambio (2026-08-27): la cuenta legacy de Enterprise SMS (`enterprise.smsgupshup.com`)
- * tiene el alta rota del lado de Gupshup — no se pudo crear, y contactar soporte no destrabó nada
- * en el momento. El cliente usa Gupshup igual, así que se probó en vivo esta ruta alternativa.
+ * | | WhatsApp (`GupshupWhatsAppService`) | SMS (este archivo) |
+ * |---|---|---|
+ * | URL | `api.gupshup.io/wa/api/v1/msg` | `api.gupshup.io/sms/v1/message/{appId}` |
+ * | Auth | header `apikey` | header `Authorization` |
+ * | Cuerpo | `channel`/`source`/`destination`/`src.name`/`message` (JSON) | `destination`/`message` (texto plano)/`source` |
+ * | App | `GUPSHUP_APP_NAME` (nombre, ej. "dasyBot") | `GUPSHUP_SMS_APP_ID` (UUID) |
  *
- * ⚠️ **Sin confirmar entrega real todavía.** La API devuelve siempre `202 {"status":"submitted",
- * "messageId":...}` — 6 envíos de prueba contra 2 apps/API keys distintas de Gupshup, todos
- * "submitted", CERO entregados al celular de destino, y sin ningún rastro (ni éxito ni error) en
- * el dashboard de Gupshup para ninguno de los `messageId`. Se probó también el whitelist de
- * sandbox (mandar "Sandbox" a los números de Gupshup) sin confirmación de alta.
+ * Historia (importante para no volver a romperlo):
+ * - Hasta 2026-08-27 usaba la API legacy "Enterprise SMS" (`enterprise.smsgupshup.com`), que se
+ *   dejó porque el alta de esa cuenta estaba rota del lado de Gupshup.
+ * - Del 2026-08-27 al 2026-08-31 pegaba al endpoint de **WhatsApp** (`/wa/api/v1/msg`) con
+ *   `channel: 'sms'` en el body, asumiendo que era un endpoint unificado. Gupshup responde
+ *   `202 {"status":"submitted"}` a eso, así que parecía andar — pero ignora el `channel` y
+ *   **entrega el mensaje por WhatsApp, no como SMS** (confirmado con tráfico real: el usuario
+ *   recibió el "SMS" por WhatsApp). Eso también explica los 6 envíos de prueba que quedaron
+ *   "submitted" sin llegar nunca y sin rastro en el panel de Gupshup.
  *
- * Además, `docs.gupshup.io` documenta este endpoint **solo para WhatsApp** ("no SMS variants
- * shown") — usar `channel: 'sms'` acá es una superficie no documentada que la API acepta
- * (devuelve 202, no 400/404) pero que evidentemente no está resultando en un SMS real, al menos
- * con esta cuenta. Se integra igual porque es la única vía de Gupshup que la API valida, mientras
- * se espera confirmación de soporte de Gupshup sobre por qué no hay entrega ni rastro en su panel.
+ * `GUPSHUP_API_KEY` sí se comparte con WhatsApp a propósito: la API key es de la cuenta de
+ * Gupshup, no del canal. Lo que NO se comparte es la app (nombre vs UUID) ni el header de auth.
+ *
+ * ⚠️ Sin confirmar contra tráfico real todavía. Además, la documentación de Gupshup lista como
+ * destinos permitidos de esta API solo Brasil, México, Colombia, Perú e India — Argentina no
+ * figura. Si los envíos a números `+549` fallan o quedan sin entregar, es probable que sea por
+ * eso y haya que confirmarlo con soporte de Gupshup, no un problema de esta integración.
  */
 @Injectable()
 export class GupshupSmsService implements OnModuleInit {
@@ -63,40 +68,40 @@ export class GupshupSmsService implements OnModuleInit {
   }
 
   private async credentials(): Promise<GupshupSmsCredentials | null> {
-    const [apiKey, source, appName] = await Promise.all([
+    const [apiKey, appId, source] = await Promise.all([
       this.appConfig.get('GUPSHUP_API_KEY'),
-      this.appConfig.get('GUPSHUP_WHATSAPP_SOURCE'),
-      this.appConfig.get('GUPSHUP_APP_NAME'),
+      this.appConfig.get('GUPSHUP_SMS_APP_ID'),
+      this.appConfig.get('GUPSHUP_SMS_SOURCE'),
     ]);
-    if (!apiKey || !source || !appName) return null;
-    return { apiKey, source, appName };
+    if (!apiKey || !appId) return null;
+    return { apiKey, appId, source: source || undefined };
   }
 
   async sendText(to: string, body: string): Promise<void> {
     const creds = await this.credentials();
     if (!creds) {
       this.logger.warn(
-        `No se pudo enviar SMS (Gupshup) a ${to}: falta GUPSHUP_API_KEY, GUPSHUP_WHATSAPP_SOURCE ` +
-          'o GUPSHUP_APP_NAME en /settings (mismo grupo "Mensajería: WhatsApp (Gupshup)" que usa WhatsApp).',
+        `No se pudo enviar SMS (Gupshup) a ${to}: falta GUPSHUP_API_KEY (grupo "Mensajería: ` +
+          'WhatsApp (Gupshup)") o GUPSHUP_SMS_APP_ID (grupo "Mensajería: SMS (Gupshup)") en /settings.',
       );
       this.fileLog.log('sms.send.missing_credentials', { to });
       return;
     }
 
     const params = new URLSearchParams({
-      channel: 'sms',
-      source: this.normalizeRecipient(creds.source),
       destination: this.normalizeRecipient(to),
-      'src.name': creds.appName,
-      message: JSON.stringify({ type: 'text', text: body }),
+      message: body,
     });
+    // Sender ID: solo aplica a India según la documentación de Gupshup, en el resto de los
+    // países lo asigna Gupshup — se manda solo si está configurado, en vez de un valor vacío.
+    if (creds.source) params.set('source', creds.source);
 
     let res: Response;
     try {
-      res = await fetch(API_URL, {
+      res = await fetch(`${API_BASE_URL}/${creds.appId}`, {
         method: 'POST',
         headers: {
-          apikey: creds.apiKey,
+          Authorization: creds.apiKey,
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: params.toString(),
