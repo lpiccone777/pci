@@ -491,11 +491,14 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     defaultValue: '',
     placeholder: 'https://miapp.com',
     description:
-      'Protocolo + host públicos (sin path, sin barra final) por los que Twilio llega a esta ' +
-      'API — la misma que está pegada en la consola de Twilio para los webhooks de WhatsApp ' +
-      '(/webhooks/twilio) y SMS (/webhooks/twilio-sms). Se usa para validar `X-Twilio-Signature` ' +
-      'en cada POST entrante. Sin configurar, la verificación queda desactivada y cualquiera que ' +
-      'conozca la URL puede publicar mensajes falsos (deuda conocida).',
+      'SOLO protocolo + host (ej. "https://miapp.com"), SIN el path del webhook y sin barra ' +
+      'final — el path (/webhooks/twilio o /webhooks/twilio-sms) lo agrega la API sola, no lo ' +
+      'incluyas acá aunque sea lo que está pegado en la consola de Twilio: si cargás la URL ' +
+      'completa del webhook, el path queda duplicado y la firma nunca va a matchear, cortando ' +
+      'TODOS los mensajes entrantes por Twilio con un simple "firma inválida" en el log. Se usa ' +
+      'para validar `X-Twilio-Signature` en cada POST entrante. Sin configurar, la verificación ' +
+      'queda desactivada y cualquiera que conozca la URL puede publicar mensajes falsos (deuda ' +
+      'conocida).',
   },
   {
     key: 'TWILIO_WHATSAPP_FROM',
