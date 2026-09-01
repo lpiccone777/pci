@@ -123,8 +123,28 @@ function normalize(s: string): string {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+/**
+ * Forma de un incidente en el mock. `id`/`status_id` alcanzan para lo que prueba
+ * `ticket_create`; el resto lo lee el `ticket_query` rediseñado (2026-08-28), que lista los
+ * tickets ABIERTOS del cliente en vivo y después muestra el detalle de uno:
+ *  - `user_id`: dueño. `buildTicketDetailText` devuelve "no encontrado" si no matchea el
+ *    customer que pregunta, así nadie ve el ticket de otro adivinando un id bajo.
+ *  - `title`/`created_at`: fila de la lista y encabezado del detalle.
+ *  - `priority_id`/`assigned_id`/`comments`: solo el detalle.
+ */
+interface MockIncident {
+  id: number;
+  status_id: number;
+  user_id?: number;
+  title?: string;
+  created_at?: number;
+  priority_id?: number;
+  assigned_id?: number;
+  comments?: Array<Record<string, unknown>>;
+}
+
 interface MockState {
-  incidents: Map<number, { id: number; status_id: number }>;
+  incidents: Map<number, MockIncident>;
   nextIncidentId: number;
   customerByPhone: Map<string, { id: number; username?: string }>;
   failCreateIncident: boolean;
@@ -203,6 +223,15 @@ function invgateRouter(state: MockState): FetchRouter {
       const created = { id, status_id: STATUS_ABIERTO };
       state.incidents.set(id, created);
       return { status: 200, body: created };
+    }
+    if (path.endsWith('/incidents.by.customer') && method === 'GET') {
+      // `listCustomerIncidents` devuelve `Object.values(body.requests)` — la API real
+      // entrega un objeto indexado por id, no un array.
+      const customerId = Number(u.searchParams.get('id'));
+      const mine = [...state.incidents.values()].filter((i) => i.user_id === customerId);
+      const requests: Record<string, MockIncident> = {};
+      for (const inc of mine) requests[String(inc.id)] = inc;
+      return { status: 200, body: { requests } };
     }
     if (path.endsWith('/incident') && method === 'GET') {
       const idParam = u.searchParams.get('id');
@@ -318,6 +347,9 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
             priority: 'Alta',
             category: 'Impresoras',
             ticketType: 'Incidente',
+            // Mensaje final del nodo: opcional y a cargo de quien arma el flujo (ya no hay un
+            // texto fijo forzado). Se configura para poder seguir asertando la respuesta.
+            text: 'Ticket #{{lastTicketId}} creado.',
           },
         },
       ],
@@ -348,61 +380,134 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     expect(params.get('type_id')).toBe(String(TYPE_INCIDENTE));
   });
 
-  it('BE-IG-02: ticket_query de un ticket ya sincronizado trae el status_id real y lo traduce a nombre legible', async () => {
+  /**
+   * `ticket_query` rediseñado (2026-08-28): ya no resuelve UN ticket por
+   * `flowState.lastTicketId` contra la tabla local `Ticket`, sino que lista EN VIVO los
+   * tickets abiertos del cliente contra InvGate y espera que elija uno para mostrar el
+   * detalle. Son dos turnos, no uno.
+   */
+  it('BE-IG-02: ticket_query lista los tickets ABIERTOS del cliente en vivo y traduce el status_id a nombre legible', async () => {
+    const customerId = 7002;
     const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig02') });
     const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
     const user = await createUser(t.prisma, {
       email: uniqueEmail('ig02'),
       phone: uniquePhone(),
+      invgateUserId: String(customerId),
       memberships: [{ tenantId: tenant.id, roleId: role.id }],
     });
 
-    const remoteId = state.nextIncidentId++;
-    state.incidents.set(remoteId, { id: remoteId, status_id: STATUS_RESUELTO });
-
-    const ticket = await t.prisma.ticket.create({
-      data: {
-        userId: user.id,
-        tenantId: tenant.id,
-        subject: 'Ticket ya sincronizado',
-        status: 'open', // estado local viejo, tiene que actualizarse con el real de InvGate
-        invgateId: String(remoteId),
-      },
+    const abierto = state.nextIncidentId++;
+    const enProgreso = state.nextIncidentId++;
+    const cerrado = state.nextIncidentId++;
+    state.incidents.set(abierto, {
+      id: abierto,
+      status_id: STATUS_ABIERTO,
+      user_id: customerId,
+      // Largo a propósito: cada fila de una lista de WhatsApp admite 24 caracteres, así que
+      // `buildOpenTicketsList` corta "#<id> <título>" ahí (ver la aserción más abajo).
+      title: 'La impresora del piso 3 no imprime',
+      created_at: 1_000,
+    });
+    state.incidents.set(enProgreso, {
+      id: enProgreso,
+      status_id: STATUS_EN_PROGRESO,
+      user_id: customerId,
+      title: 'VPN intermitente',
+      created_at: 2_000,
+    });
+    // Cerrado: NO tiene que aparecer en la lista (`isOpenTicketStatus`).
+    state.incidents.set(cerrado, {
+      id: cerrado,
+      status_id: STATUS_CERRADO,
+      user_id: customerId,
+      title: 'Ya resuelto hace meses',
+      created_at: 3_000,
     });
 
-    // Flujo de un solo nodo `ticket_query`. Sin `assign`: la conversación apunta directo a
-    // `currentFlowId`/`currentNodeId`, no pasa por `findActiveFlowForTenant`.
     const flow = await createFlow(t.prisma, {
       name: `IG02 ${uniqueSlug()}`,
       nodes: [{ id: 'tq', type: 'ticket_query', data: {} }],
+      assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
     });
-    await t.prisma.conversation.create({
-      data: {
-        userId: user.id,
-        tenantId: tenant.id,
-        channel: 'whatsapp',
-        externalId: user.phone,
-        status: 'active',
-        sessionStartedAt: new Date(),
-        currentFlowId: flow.id,
-        currentNodeId: 'tq',
-        flowState: { lastTicketId: ticket.id },
-      },
-    });
+    expect(flow.id).toBeTruthy();
 
-    const res = await http(t)
+    // Turno 1: la lista.
+    const lista = await http(t)
       .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
-      .send({ from: user.phone, body: '¿Cómo va mi ticket?', tenantId: tenant.id });
+      .send({ from: user.phone, body: '¿Cómo van mis tickets?', tenantId: tenant.id });
 
-    expect(res.status).toBe(201);
-    // Ya sincronizado: el nodo `ticket_query` muestra el número de InvGate, no el cuid local
-    // (`ticket.invgateId ?? ticket.id` en executeNode — el cuid interno no le sirve a nadie
-    // fuera del sistema), así que el "#" del mensaje es el remoteId de InvGate.
-    expect(res.body.reply).toContain(`Ticket #${remoteId}`);
-    expect(res.body.reply).toContain('Resuelto');
+    expect(lista.status).toBe(201);
+    expect(lista.body.reply).toContain('Elegí un ticket:');
+    // Los abiertos sí, el cerrado no. Más nuevo primero (`created_at` desc).
+    expect(lista.body.reply).toContain('VPN intermitente');
+    expect(lista.body.reply).not.toContain('Ya resuelto hace meses');
+    // Cada fila entra en 24 caracteres: el título largo llega recortado, no completo.
+    expect(lista.body.reply).toContain(`#${abierto} La impresora del`.slice(0, 24));
+    expect(lista.body.reply).not.toContain('La impresora del piso 3 no imprime');
 
-    const updated = await t.prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id } });
-    expect(updated.status).toBe('Resuelto'); // se actualiza también localmente
+    // Turno 2: elige uno por su id de InvGate (lo que manda la fila tocada en WhatsApp).
+    const detalle = await http(t)
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
+      .send({ from: user.phone, body: String(enProgreso), tenantId: tenant.id });
+
+    expect(detalle.status).toBe(201);
+    expect(detalle.body.reply).toContain(`Ticket #${enProgreso}`);
+    expect(detalle.body.reply).toContain('VPN intermitente');
+    // `status_id` real traducido a nombre por el catálogo, que es lo que este caso vigila.
+    expect(detalle.body.reply).toContain('Estado: En progreso');
+    expect(detalle.body.reply).toContain('Volver a la lista');
+  });
+
+  it('BE-IG-02b: ticket_query no muestra el detalle de un ticket de OTRO cliente aunque se tipee su id', async () => {
+    const customerId = 7003;
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ig02b') });
+    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Cliente', permissions: [] });
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail('ig02b'),
+      phone: uniquePhone(),
+      invgateUserId: String(customerId),
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+
+    const propio = state.nextIncidentId++;
+    const ajeno = state.nextIncidentId++;
+    state.incidents.set(propio, {
+      id: propio,
+      status_id: STATUS_ABIERTO,
+      user_id: customerId,
+      title: 'Mi propio ticket',
+      created_at: 1_000,
+    });
+    state.incidents.set(ajeno, {
+      id: ajeno,
+      status_id: STATUS_ABIERTO,
+      user_id: 999_999, // otro cliente
+      title: 'Ticket de otra persona',
+      created_at: 2_000,
+    });
+
+    await createFlow(t.prisma, {
+      name: `IG02b ${uniqueSlug()}`,
+      nodes: [{ id: 'tq', type: 'ticket_query', data: {} }],
+      assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    const lista = await http(t)
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
+      .send({ from: user.phone, body: 'quiero ver mis tickets', tenantId: tenant.id });
+    expect(lista.body.reply).toContain('Mi propio ticket');
+    expect(lista.body.reply).not.toContain('Ticket de otra persona');
+
+    // Tipea a mano el id del ticket ajeno: `buildTicketDetailText` valida el dueño y no lo
+    // muestra — vuelve a la lista en vez de filtrar datos de otro cliente.
+    const intento = await http(t)
+      .post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`)
+      .send({ from: user.phone, body: String(ajeno), tenantId: tenant.id });
+
+    expect(intento.status).toBe(201);
+    expect(intento.body.reply).not.toContain('Ticket de otra persona');
+    expect(intento.body.reply).toContain('No reconocí esa opción.');
   });
 
   it('BE-IG-03: GET /invgate/catalog/{categories,priorities,types} con flows:read devuelve el catálogo real', async () => {
@@ -610,7 +715,13 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
         {
           id: 'tc',
           type: 'ticket_create',
-          data: { subject: 'El sistema no arranca', priority: 'Alta', category: 'Impresoras', ticketType: 'Incidente' },
+          data: {
+            subject: 'El sistema no arranca',
+            priority: 'Alta',
+            category: 'Impresoras',
+            ticketType: 'Incidente',
+            text: 'Ticket #{{lastTicketId}} creado.',
+          },
         },
       ],
       assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
@@ -795,7 +906,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     });
     await createFlow(t.prisma, {
       name: `IG15 ${uniqueSlug()}`,
-      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'InvGate devuelve un body raro', priority: 'Media' } }],
+      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'InvGate devuelve un body raro', priority: 'Media', text: 'Ticket #{{lastTicketId}} creado.' } }],
       assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
     });
 
@@ -896,7 +1007,7 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
 
     const flow = await createFlow(t.prisma, {
       name: `IG16b ${uniqueSlug()}`,
-      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'Foto que no se pudo guardar', priority: 'Media' } }],
+      nodes: [{ id: 'tc', type: 'ticket_create', data: { subject: 'Foto que no se pudo guardar', priority: 'Media', text: 'Ticket #{{lastTicketId}} creado.' } }],
     });
     await t.prisma.conversation.create({
       data: {

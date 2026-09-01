@@ -187,7 +187,13 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
       [
         startNode('s'),
         menuNode('menu', { text: '¿Qué necesitás?', options: [{ value: '1', label: 'Crear ticket', targetNodeId: 'tk' }] }),
-        ticketCreateNode('tk', { subject: 'Consulta desde el bot E2E' }),
+        // `data.text` es el mensaje final del nodo, opcional y a cargo de quien arma el flujo
+        // (ya no hay un texto fijo forzado): se configura uno con {{lastTicketId}} para poder
+        // seguir asertando la respuesta end-to-end.
+        ticketCreateNode('tk', {
+          subject: 'Consulta desde el bot E2E',
+          text: 'Ticket #{{lastTicketId}} creado.',
+        }),
         endNode('e', 'Listo, cualquier cosa escribime.'),
       ],
       [edge('s', 'menu', 'known'), edge('menu', 'tk', '1'), edge('tk', 'e')],
