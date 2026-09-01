@@ -46,7 +46,7 @@ export type SettingGroup =
   | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
   | 'Integración: InvGate'
-  | 'Desarrollo y pruebas'
+  | 'Simulación'
   | 'Otros';
 
 export interface SettingDefinition {
@@ -762,11 +762,11 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'categorías que no aplican a tickets del chatbot). Ej.: 1601 = "Chatbot", bajo ' +
       '"DEPTO. SISTEMAS > Soporte".',
   },
-  // --- Desarrollo y pruebas ---
+  // --- Simulación ---
   {
     key: 'CONVERSATIONS_SIMULATE_ENABLED',
     type: 'boolean',
-    group: 'Desarrollo y pruebas',
+    group: 'Simulación',
     label: 'Habilitar POST /conversations/simulate',
     defaultValue: 'true',
     resolveDefault: defaultSimulateEnabled,
@@ -828,7 +828,7 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
   'Integración: InvGate',
-  'Desarrollo y pruebas',
+  'Simulación',
   'Otros',
 ];
 
