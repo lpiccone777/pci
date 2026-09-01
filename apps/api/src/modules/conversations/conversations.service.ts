@@ -1477,18 +1477,50 @@ export class ConversationsService implements OnModuleInit {
   /**
    * Convierte el HTML de InvGate (editor WYSIWYG — ver `InvgateService.toInvgateHtml`)
    * de vuelta a texto plano para WhatsApp. Best-effort, no un parser HTML real: alcanza
-   * para lo que InvGate genera (`<br>`, `<p>`, entidades básicas).
+   * para lo que InvGate genera (`<br>`, `<p>`, entidades).
    */
   private stripInvgateHtml(html: string): string {
     return html
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/p>/gi, '\n')
       .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
+      .replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);/g, (match, entity: string) =>
+        this.decodeHtmlEntity(match, entity),
+      )
       .trim();
+  }
+
+  /**
+   * Una entidad HTML a su carácter. Se resuelven todas en UNA sola pasada (ver el `replace` de
+   * `stripInvgateHtml`) a propósito: encadenando un `.replace` por entidad, `&amp;nbsp;` termina
+   * convertido en un espacio en vez de en el texto literal "&nbsp;", porque el `&amp;` se decodifica
+   * primero y lo que queda vuelve a matchear.
+   *
+   * Incluye las NUMÉRICAS (`&#160;`, `&#xA0;`), que antes no se tocaban: InvGate manda el espacio
+   * duro en hexa y quedaba visible como "&#xA0;" al final de cada línea del comentario (2026-08-31,
+   * visto en un ticket real). Ante una entidad desconocida devuelve el texto original tal cual, que
+   * es más honesto que comerse el contenido.
+   */
+  private decodeHtmlEntity(match: string, entity: string): string {
+    const NAMED: Record<string, string> = {
+      nbsp: ' ',
+      amp: '&',
+      lt: '<',
+      gt: '>',
+      quot: '"',
+      apos: "'",
+    };
+
+    if (!entity.startsWith('#')) return NAMED[entity.toLowerCase()] ?? match;
+
+    const isHex = entity[1] === 'x' || entity[1] === 'X';
+    const code = parseInt(isHex ? entity.slice(2) : entity.slice(1), isHex ? 16 : 10);
+    // Espacios "duros" (NBSP y narrow NBSP) a espacio común: en WhatsApp no se distinguen de uno
+    // normal, pero sí se escapan del `trim`/de cualquier colapso de espacios posterior.
+    if (code === 0xa0 || code === 0x202f) return ' ';
+    // Fuera de rango o surrogate suelto: `String.fromCodePoint` tiraría RangeError.
+    const invalid = !Number.isFinite(code) || code <= 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
+    return invalid ? match : String.fromCodePoint(code);
   }
 
   /**
