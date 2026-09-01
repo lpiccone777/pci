@@ -1524,13 +1524,21 @@ function NodeProperties({
       {type === 'start' && (
         <>
           <div>
-            <label className="block text-sm font-medium mb-1">Texto de bienvenida (usuarios nuevos)</label>
+            <label className="block text-sm font-medium mb-1">Saludo</label>
             <textarea
               value={data.text || ''}
               onChange={(e) => onUpdate('text', e.target.value)}
+              placeholder="¡Hola {{userFirstName}}! Bienvenido de nuevo."
               className="w-full border rounded p-2 text-sm"
               rows={2}
             />
+            <p className="text-xs text-gray-400 mt-1">
+              Admite <code>{'{{variable}}'}</code> de la charla:{' '}
+              <code>{'{{userFirstName}}'}</code>, <code>{'{{userName}}'}</code>,{' '}
+              <code>{'{{userLastName}}'}</code>, <code>{'{{userEmail}}'}</code>,{' '}
+              <code>{'{{userPhone}}'}</code>, <code>{'{{userRole}}'}</code>. Vacío: se manda el saludo
+              por defecto (<em>¡Hola [nombre]! Bienvenido de nuevo.</em>).
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">Salida: Usuario Conocido</label>

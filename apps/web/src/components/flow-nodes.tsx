@@ -94,7 +94,13 @@ export const StartNode = memo(({ id, data }: any) => (
     {/* Content */}
     <div className="p-2 text-sm text-gray-700">
       <div className="text-xs text-gray-500 mb-1">Identifica usuario por teléfono</div>
-      {data?.text && <p className="text-xs line-clamp-2 text-gray-700">{data.text}</p>}
+      {data?.text ? (
+        <p className="text-xs line-clamp-2 text-gray-700">{data.text}</p>
+      ) : (
+        <p className="text-xs line-clamp-2 text-gray-400 italic">
+          ¡Hola [nombre]! Bienvenido de nuevo.
+        </p>
+      )}
       <div className="mt-1 text-[10px] text-gray-400">
         Guarda: isKnownUser, userName, userPhone
       </div>

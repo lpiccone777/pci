@@ -1912,9 +1912,21 @@ export class ConversationsService implements OnModuleInit {
         flowState.userRole = identity.roleName;
         flowState.userRoleId = identity.roleId;
 
-        const greeting = identity.isKnown
-          ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
-          : data.text || '¡Hola! Bienvenido. ¿En qué puedo ayudarte?';
+        // Saludo configurable desde el editor (`data.text`), con `{{variable}}` de la charla —
+        // incluidas las de `flowState` que se acaban de setear arriba (`{{userFirstName}}`,
+        // `{{userName}}`, `{{userRole}}`, etc.). Sin configurar se mantiene el texto de siempre,
+        // así ningún flujo existente cambia de comportamiento al actualizar.
+        //
+        // El mismo texto sirve para las dos ramas a propósito: hasta 2026-08-27 `data.text` era
+        // SOLO el saludo del usuario desconocido, pero desde "no hablamos con desconocidos" un
+        // número no registrado se rechaza antes de llegar al flujo, así que esa rama no se
+        // ejecuta más y el campo quedaba sin ningún efecto visible.
+        const configuredGreeting = data.text?.trim() ? this.interpolate(data.text, flowState) : null;
+        const greeting =
+          configuredGreeting ??
+          (identity.isKnown
+            ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
+            : '¡Hola! Bienvenido. ¿En qué puedo ayudarte?');
 
         // Dos salidas: conocido / desconocido. El editor visual las dibuja como
         // aristas desde los handles `known` / `unknown`, así que se enruta por ahí;
