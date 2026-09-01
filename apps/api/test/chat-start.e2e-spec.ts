@@ -183,4 +183,64 @@ describe('2.2 Arranque de flujo por tenant y rol (CHAT-START-*)', () => {
     // No es miembro de B: se rechaza, no llega a la rama `unknown` del default.
     expect(enB.body.reply).toBe('Este número no está registrado: el bot no atiende mensajes de desconocidos.');
   });
+
+  it('CHAT-START-06: el saludo del nodo start sale de data.text, interpolado (antes era fijo)', async () => {
+    await useMyDefault();
+    const role = await createRole(t.prisma, { tenantId: tenantA.id, name: 'Saludo Custom' });
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('saludo'),
+      phone,
+      firstName: 'Dina',
+      memberships: [{ tenantId: tenantA.id, roleId: role.id }],
+    });
+    await createFlow(t.prisma, {
+      name: 'F-SALUDO-CUSTOM',
+      nodes: [
+        startNode('cs', { text: 'Buenas {{userFirstName}}, te atiende Soporte.' }),
+        messageNode('cm', 'Siguiente paso'),
+        endNode('ce'),
+      ],
+      edges: [edge('cs', 'cm', 'known'), edge('cm', 'ce')],
+      assign: [{ tenantId: tenantA.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    const res = await simulate(phone, tenantA.id);
+
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toContain('Buenas Dina, te atiende Soporte.');
+    expect(res.body.reply).not.toContain('Bienvenido de nuevo'); // ya no se manda el fijo
+    expect(res.body.reply).toContain('Siguiente paso');
+  });
+
+  it('CHAT-START-07: con noGreeting el nodo start no manda nada y la charla arranca con el nodo siguiente', async () => {
+    await useMyDefault();
+    const role = await createRole(t.prisma, { tenantId: tenantA.id, name: 'Sin Saludo' });
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('sinsaludo'),
+      phone,
+      firstName: 'Eze',
+      memberships: [{ tenantId: tenantA.id, roleId: role.id }],
+    });
+    await createFlow(t.prisma, {
+      name: 'F-SIN-SALUDO',
+      // `text` cargado Y `noGreeting`: el tilde manda, el texto no se usa.
+      nodes: [
+        startNode('ns', { text: 'Esto no se manda', noGreeting: true }),
+        messageNode('nm', 'Arranca directo acá'),
+        endNode('ne'),
+      ],
+      edges: [edge('ns', 'nm', 'known'), edge('nm', 'ne')],
+      assign: [{ tenantId: tenantA.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    const res = await simulate(phone, tenantA.id);
+
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toBe('Arranca directo acá');
+    expect(res.body.reply).not.toContain('Bienvenido de nuevo');
+    expect(res.body.reply).not.toContain('Esto no se manda');
+    expect(res.body.reply).not.toContain('Eze');
+  });
 });

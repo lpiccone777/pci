@@ -25,6 +25,32 @@ export class FlowNodeDataDto {
   defaultTargetNodeId?: string;
 
   /**
+   * Nodo `start`: no mandar ningún saludo — la charla arranca directamente con el nodo
+   * siguiente. Sin esto (o en `false`), se manda `text` interpolado, y si `text` está vacío,
+   * el saludo por defecto ("¡Hola [nombre]! Bienvenido de nuevo."). Un `text` vacío NO
+   * significa "sin saludo" a propósito: ningún flujo tenía ese campo cargado cuando el saludo
+   * se volvió configurable (2026-09-01), así que habrían quedado todos mudos al actualizar.
+   */
+  @IsBoolean()
+  @IsOptional()
+  noGreeting?: boolean;
+
+  /**
+   * Nodo `start`, salidas por rama de identificación. Hoy el ruteo va por los handles
+   * `known`/`unknown` de las aristas del editor y esto queda como fallback para flujos
+   * viejos, pero se declaran igual: el editor los sigue escribiendo, y sin estar en el DTO
+   * `forbidNonWhitelisted` rechaza con 400 al guardar un nodo que los tenga cargados.
+   */
+  @IsString()
+  @IsOptional()
+  knownTargetNodeId?: string;
+
+  /** Ver `knownTargetNodeId`. */
+  @IsString()
+  @IsOptional()
+  unknownTargetNodeId?: string;
+
+  /**
    * Nodo `condition`, formato nuevo: variable de `flowState` a comparar (ej. "userRole"
    * o "{{userRole}}", incluye las que siempre trae el nodo `start`: userRole, userRoleId,
    * isKnownUser, userName, userFirstName, userLastName, userEmail, userPhone, userId).

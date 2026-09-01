@@ -1529,7 +1529,8 @@ function NodeProperties({
               value={data.text || ''}
               onChange={(e) => onUpdate('text', e.target.value)}
               placeholder="¡Hola {{userFirstName}}! Bienvenido de nuevo."
-              className="w-full border rounded p-2 text-sm"
+              disabled={!!data.noGreeting}
+              className="w-full border rounded p-2 text-sm disabled:bg-gray-100 disabled:text-gray-400"
               rows={2}
             />
             <p className="text-xs text-gray-400 mt-1">
@@ -1538,6 +1539,18 @@ function NodeProperties({
               <code>{'{{userLastName}}'}</code>, <code>{'{{userEmail}}'}</code>,{' '}
               <code>{'{{userPhone}}'}</code>, <code>{'{{userRole}}'}</code>. Vacío: se manda el saludo
               por defecto (<em>¡Hola [nombre]! Bienvenido de nuevo.</em>).
+            </p>
+            <label className="flex items-center gap-2 text-sm mt-2">
+              <input
+                type="checkbox"
+                checked={!!data.noGreeting}
+                onChange={(e) => onUpdate('noGreeting', e.target.checked)}
+              />
+              No enviar saludo
+            </label>
+            <p className="text-xs text-gray-400 mt-1">
+              La charla arranca sin ningún mensaje de este nodo: el flujo sigue de largo y el primer
+              texto que ve la persona es el del nodo siguiente.
             </p>
           </div>
           <div>

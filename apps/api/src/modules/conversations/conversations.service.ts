@@ -1921,12 +1921,19 @@ export class ConversationsService implements OnModuleInit {
         // SOLO el saludo del usuario desconocido, pero desde "no hablamos con desconocidos" un
         // número no registrado se rechaza antes de llegar al flujo, así que esa rama no se
         // ejecuta más y el campo quedaba sin ningún efecto visible.
+        // `noGreeting` (tilde "No enviar saludo" en el editor) es lo único que arranca la charla
+        // sin ningún mensaje de este nodo: el flujo sigue de largo por su arista, y el primer
+        // texto que ve la persona es el del nodo siguiente. Un `data.text` vacío NO alcanza para
+        // eso a propósito — ningún flujo tenía ese campo cargado cuando se volvió configurable
+        // (2026-09-01), así que tomar "vacío" como "sin saludo" los habría dejado a todos mudos
+        // de golpe al actualizar.
         const configuredGreeting = data.text?.trim() ? this.interpolate(data.text, flowState) : null;
-        const greeting =
-          configuredGreeting ??
-          (identity.isKnown
-            ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
-            : '¡Hola! Bienvenido. ¿En qué puedo ayudarte?');
+        const greeting = data.noGreeting
+          ? undefined
+          : (configuredGreeting ??
+            (identity.isKnown
+              ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
+              : '¡Hola! Bienvenido. ¿En qué puedo ayudarte?'));
 
         // Dos salidas: conocido / desconocido. El editor visual las dibuja como
         // aristas desde los handles `known` / `unknown`, así que se enruta por ahí;
