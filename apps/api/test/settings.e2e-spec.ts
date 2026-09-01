@@ -296,9 +296,13 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
   });
 
   it('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default', async () => {
-    // DEVICE_FINGERPRINT_TTL_DAYS: `apps/api/.env` trae 90, igual que el `defaultValue` del
-    // catálogo. Como los dos coinciden, el valor solo no alcanza para saber cuál ganó: lo que
-    // prueba que resolvió por env y no por default es `source`.
+    // DEVICE_FINGERPRINT_TTL_DAYS: `defaultValue` del catálogo es '90' y este caso EXIGE que
+    // `apps/api/.env` traiga un valor distinto (30) — si no, el valor devuelto no distingue si
+    // resolvió por env o por default, y lo único que quedaría probando eso sería `source`.
+    //
+    // O sea: que este test falle con `Expected "30", Received "90"` NO es un test desactualizado,
+    // es la señal de que el `.env` local perdió ese valor. El arreglo va en el `.env`
+    // (DEVICE_FINGERPRINT_TTL_DAYS=30), no acá.
     await setSetting(t.prisma, 'DEVICE_FINGERPRINT_TTL_DAYS', '45');
 
     const res = await asAdmin(http(t).delete('/settings/DEVICE_FINGERPRINT_TTL_DAYS'));
@@ -306,7 +310,7 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
     // @Delete() sin @HttpCode → 200 (default de Nest).
     expect(res.status).toBe(200);
     expect(res.body.source).toBe('env');
-    expect(res.body.value).toBe('90');
+    expect(res.body.value).toBe('30');
 
     const row = await t.prisma.setting.findUnique({ where: { key: 'DEVICE_FINGERPRINT_TTL_DAYS' } });
     expect(row).toBeNull();
