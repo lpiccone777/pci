@@ -48,17 +48,21 @@ const MAX_FLOW_STEPS = 25;
  * Ventana para retomar una charla cerrada (nodo `end`, cancelación del usuario o
  * fin del flujo) como la misma Conversation en vez de abrir una nueva. Pasada la
  * ventana, el próximo mensaje del usuario arranca una charla nueva.
+ *
+ * Configurable desde /settings > Otros (`CONVERSATION_RESUME_WINDOW_HOURS`) — se lee
+ * con `appConfig.conversationResumeWindowMs()` en cada mensaje, así un cambio aplica
+ * sin reiniciar el backend.
  */
-const RESUME_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Inactividad máxima de una charla `active` antes de cerrarla sola (pedido
- * 2026-08-10). El próximo mensaje del usuario, si llega dentro de
- * RESUME_WINDOW_MS, retoma la misma Conversation pero con el flujo reseteado
+ * 2026-08-10). El próximo mensaje del usuario, si llega dentro de la ventana de
+ * retomado, retoma la misma Conversation pero con el flujo reseteado
  * (closeConversation ya deja currentNodeId/flowState en null) — "empieza de
  * nuevo" sin perder el historial de Message.
+ *
+ * Configurable desde /settings > Otros (`CONVERSATION_INACTIVITY_MINUTES`).
  */
-const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
@@ -447,13 +451,14 @@ export class ConversationsService implements OnModuleInit {
       // `sessionStartedAt` se resetea acá: es lo que usa `orchestratorLlm` para
       // no mandarle al LLM historial de antes del cierre como si fuera la
       // charla actual (ver ese método).
+      const resumeWindowMs = await this.appConfig.conversationResumeWindowMs();
       const resumable = await this.prisma.conversation.findFirst({
         where: {
           userId: user.id,
           tenantId,
           channel,
           status: 'closed',
-          closedAt: { gte: new Date(Date.now() - RESUME_WINDOW_MS) },
+          closedAt: { gte: new Date(Date.now() - resumeWindowMs) },
         },
         orderBy: { closedAt: 'desc' },
       });
@@ -707,8 +712,9 @@ export class ConversationsService implements OnModuleInit {
         interactive = { ...interactive, body: responses.join('\n\n') || interactive.body };
       }
 
-      // Nodo `end`: cierre explícito y deliberado de la charla, retomable dentro
-      // de RESUME_WINDOW_MS (ver búsqueda de conversación en `handleMessage`).
+      // Nodo `end`: cierre explícito y deliberado de la charla, retomable dentro de la
+      // ventana de `CONVERSATION_RESUME_WINDOW_HOURS` (ver búsqueda de conversación en
+      // `handleMessage`).
       if (result.endConversation) {
         await this.closeConversation(conversation.id);
         return this.toFlowResult(responses, interactive);
@@ -1214,15 +1220,21 @@ export class ConversationsService implements OnModuleInit {
 
   /**
    * Cierra sola toda charla `active` sin mensajes en los últimos
-   * INACTIVITY_TIMEOUT_MS. `messages: { none: { createdAt: { gte: cutoff } } }`
-   * — sin mensaje propio, no hay `Conversation.updatedAt` ni ningún otro campo
-   * de "última actividad" confiable: `persistFlowPosition` solo toca la fila en
-   * pasos que avanzan el flujo, no en cada mensaje entrante (ej. un `menu` que
-   * espera input no la vuelve a tocar).
+   * `CONVERSATION_INACTIVITY_MINUTES` (/settings > Otros).
+   * `messages: { none: { createdAt: { gte: cutoff } } }` — sin mensaje propio, no
+   * hay `Conversation.updatedAt` ni ningún otro campo de "última actividad"
+   * confiable: `persistFlowPosition` solo toca la fila en pasos que avanzan el
+   * flujo, no en cada mensaje entrante (ej. un `menu` que espera input no la
+   * vuelve a tocar).
+   *
+   * El cron corre cada 10 minutos y el valor se lee en cada corrida, así que un
+   * cambio en /settings aplica sin reiniciar — pero el cierre real de una charla
+   * cae entre el valor configurado y 10 minutos más, por la granularidad del cron.
    */
   @Cron(CronExpression.EVERY_10_MINUTES)
   private async closeInactiveConversations() {
-    const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
+    const inactivityMs = await this.appConfig.conversationInactivityMs();
+    const cutoff = new Date(Date.now() - inactivityMs);
     const stale = await this.prisma.conversation.findMany({
       where: { status: 'active', messages: { none: { createdAt: { gte: cutoff } } } },
       select: { id: true },
@@ -1231,10 +1243,13 @@ export class ConversationsService implements OnModuleInit {
     if (stale.length === 0) return;
 
     await Promise.all(stale.map((c) => this.closeConversation(c.id)));
-    this.logger.log(`Cerradas ${stale.length} charla(s) por inactividad (>${INACTIVITY_TIMEOUT_MS / 60_000}min)`);
+    this.logger.log(`Cerradas ${stale.length} charla(s) por inactividad (>${inactivityMs / 60_000}min)`);
   }
 
-  /** Cierra la charla (nodo `end`, cancelación del usuario o fin del flujo). Queda retomable dentro de RESUME_WINDOW_MS. */
+  /**
+   * Cierra la charla (nodo `end`, cancelación del usuario o fin del flujo). Queda retomable
+   * dentro de `CONVERSATION_RESUME_WINDOW_HOURS` (/settings > Otros).
+   */
   private async closeConversation(conversationId: string) {
     await this.prisma.conversation.update({
       where: { id: conversationId },

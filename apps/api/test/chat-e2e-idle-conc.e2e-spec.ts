@@ -46,6 +46,8 @@ import {
   edge,
   FlowNode,
   FlowEdge,
+  setSetting,
+  deleteSetting,
 } from './support';
 
 /** Cola privada de `ConversationsService` para /simulate — literal del código real
@@ -500,6 +502,57 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
       expect(conversations[0].id).toBe(conv.id);
       expect(conversations[1].id).not.toBe(conv.id);
       expect(conversations[1].status).toBe('active');
+    });
+
+    it('CHAT-IDLE-05: CONVERSATION_INACTIVITY_MINUTES manda sobre el default de 60min', async () => {
+      const { phone, user } = await knownUser(tIdle, rIdle, 'idle05');
+      await simulate(phone, tIdle.id, 'hola');
+      const conv = await t.prisma.conversation.findFirstOrThrow({ where: { userId: user.id, tenantId: tIdle.id } });
+
+      // 30 minutos de inactividad: con el default de 60 NO se cerraría.
+      await ageMessages(conv.id, 0.5);
+      await runCron();
+      expect((await t.prisma.conversation.findUniqueOrThrow({ where: { id: conv.id } })).status).toBe('active');
+
+      // Bajando el umbral a 10min, la misma charla ahora sí queda vieja.
+      await setSetting(t.prisma, 'CONVERSATION_INACTIVITY_MINUTES', '10');
+      try {
+        await runCron();
+        const after = await t.prisma.conversation.findUniqueOrThrow({ where: { id: conv.id } });
+        expect(after.status).toBe('closed');
+        expect(after.closedAt).not.toBeNull();
+      } finally {
+        await deleteSetting(t.prisma, 'CONVERSATION_INACTIVITY_MINUTES');
+      }
+    });
+
+    it('CHAT-IDLE-06: CONVERSATION_RESUME_WINDOW_HOURS manda sobre el default de 12h', async () => {
+      const { phone, user } = await knownUser(tIdle, rIdle, 'idle06');
+      await simulate(phone, tIdle.id, 'hola');
+      const conv = await t.prisma.conversation.findFirstOrThrow({ where: { userId: user.id, tenantId: tIdle.id } });
+      await ageMessages(conv.id, 2);
+      await runCron();
+
+      // Cerrada hace 3h: dentro de las 12h por default, así que se retomaría. Con la ventana
+      // achicada a 1h, ya quedó fuera y tiene que arrancar una conversación nueva.
+      await t.prisma.conversation.update({
+        where: { id: conv.id },
+        data: { closedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) },
+      });
+      await setSetting(t.prisma, 'CONVERSATION_RESUME_WINDOW_HOURS', '1');
+      try {
+        const res = await simulate(phone, tIdle.id, 'hola de nuevo');
+        expect(res.status).toBe(201);
+
+        const conversations = await t.prisma.conversation.findMany({
+          where: { userId: user.id, tenantId: tIdle.id },
+          orderBy: { createdAt: 'asc' },
+        });
+        expect(conversations).toHaveLength(2);
+        expect(conversations[1].id).not.toBe(conv.id);
+      } finally {
+        await deleteSetting(t.prisma, 'CONVERSATION_RESUME_WINDOW_HOURS');
+      }
     });
   });
 

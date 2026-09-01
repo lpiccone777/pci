@@ -6,9 +6,15 @@ import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { StoredAttachment } from '../../common/twilio-media.service';
 
 /**
- * Ventana de validez del estado pendiente de selección de empresa: 12hs, igual que
- * RESUME_WINDOW_MS en ConversationsService. Pasada la ventana, el pendiente se descarta y
- * el próximo mensaje resuelve de cero (y vuelve a preguntar si sigue habiendo varias empresas).
+ * Ventana de validez del estado pendiente de selección de empresa. Pasada la ventana, el
+ * pendiente se descarta y el próximo mensaje resuelve de cero (y vuelve a preguntar si sigue
+ * habiendo varias empresas).
+ *
+ * Nace de 12hs para igualar la ventana de retomado de una charla, que hoy es configurable
+ * (`CONVERSATION_RESUME_WINDOW_HOURS`, /settings > Otros) mientras que esta sigue fija: se
+ * dejó así a propósito, es un TTL de otra cosa (un pendiente de ruteo, no una charla) y
+ * desalinearlas no rompe nada — a lo sumo se vuelve a preguntar la empresa, o se responde una
+ * selección de una charla que ya expiró y se resuelve de cero igual.
  */
 const SELECTION_TTL_MS = 12 * 60 * 60 * 1000;
 

@@ -46,7 +46,8 @@ export type SettingGroup =
   | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
   | 'Integración: InvGate'
-  | 'Desarrollo y pruebas';
+  | 'Desarrollo y pruebas'
+  | 'Otros';
 
 export interface SettingDefinition {
   key: string;
@@ -774,6 +775,38 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       '(JwtAuthGuard) pero cualquier usuario autenticado puede simular cualquier tenant/teléfono. ' +
       'Mientras no se fije un valor explícito, en NODE_ENV=production queda desactivado (404).',
   },
+
+  // --- Otros ---
+  // Vida de una charla. Son dos ventanas distintas y encadenadas, no lo mismo: primero la
+  // charla activa se cierra sola por inactividad, y después queda un rato "retomable" antes
+  // de que el próximo mensaje arranque una charla nueva.
+  {
+    key: 'CONVERSATION_INACTIVITY_MINUTES',
+    type: 'number',
+    group: 'Otros',
+    label: 'Cierre por inactividad (minutos)',
+    defaultValue: '60',
+    min: 1,
+    max: 10080,
+    description:
+      'Una charla activa sin mensajes por más de este tiempo se cierra sola. El chequeo corre ' +
+      'cada 10 minutos, así que el cierre real cae entre el valor configurado y 10 minutos más. ' +
+      'Cerrar NO borra nada: si la persona vuelve a escribir dentro de la ventana de retomado, ' +
+      'sigue la misma charla pero con el flujo empezado de nuevo.',
+  },
+  {
+    key: 'CONVERSATION_RESUME_WINDOW_HOURS',
+    type: 'number',
+    group: 'Otros',
+    label: 'Ventana para retomar una charla cerrada (horas)',
+    defaultValue: '12',
+    min: 1,
+    max: 720,
+    description:
+      'Después de cerrarse (por inactividad, por el nodo "Fin" o porque la persona canceló), ' +
+      'la charla sigue siendo retomable por este tiempo: el próximo mensaje continúa la MISMA ' +
+      'conversación, conservando el historial. Pasada la ventana, arranca una conversación nueva.',
+  },
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -796,6 +829,7 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: Email',
   'Integración: InvGate',
   'Desarrollo y pruebas',
+  'Otros',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));
