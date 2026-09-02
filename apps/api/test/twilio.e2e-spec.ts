@@ -533,6 +533,58 @@ describe('1.19 Canal WhatsApp — Twilio, mecánica del conector (BE-TWA-05..09,
     }
   });
 
+  it('BE-TWA-07b: un ContentSid que ya no existe en la cuenta (21655) se descarta del caché, se recrea y el menú igual sale como interactivo', async () => {
+    // Pasa al cambiar de credenciales de Twilio: los ContentSid son POR CUENTA, así que los
+    // cacheados de la cuenta anterior dejan de existir. Sin auto-recuperación, el caché queda
+    // envenenado y TODO menú degrada a texto plano para siempre.
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí una opción',
+      buttons: [
+        { id: 'opt_a', title: 'Opción A' },
+        { id: 'opt_b', title: 'Opción B' },
+      ],
+    };
+
+    let mensajesEnviados = 0;
+    const { requests, restore } = installFetchMock((url, init) => {
+      if (url.includes('content.twilio.com')) return { status: 201, body: { sid: 'HXrecreado' } };
+      if (url.includes('api.twilio.com')) {
+        const sid = new URLSearchParams(init!.body as string).get('ContentSid');
+        mensajesEnviados++;
+        // El sid viejo (cacheado por BE-TWA-06) ya no existe en esta "cuenta".
+        if (sid === 'HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
+          return { status: 400, body: { code: 21655, message: 'Content was not found', status: 400 } };
+        }
+        return { status: 201, body: { sid: 'SM07b' } };
+      }
+      return { status: 404 };
+    });
+
+    try {
+      await service.sendText(uniquePhone(), 'Cuerpo cualquiera', interactive);
+
+      // Dos envíos: el que murió con 21655 y el reintento con el template recreado.
+      expect(mensajesEnviados).toBe(2);
+      const msgCalls = requests.filter((r) => r.url.includes('api.twilio.com'));
+      const sids = msgCalls.map((r) => new URLSearchParams(r.init!.body as string).get('ContentSid'));
+      expect(sids).toEqual(['HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'HXrecreado']);
+
+      // NO degradó a texto: el segundo envío siguió siendo interactivo (con ContentSid).
+      expect(msgCalls.every((r) => new URLSearchParams(r.init!.body as string).get('Body') === null)).toBe(true);
+
+      // La fila muerta se borró y quedó la nueva.
+      const viejo = await t.prisma.twilioContentTemplate.count({
+        where: { contentSid: 'HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      });
+      expect(viejo).toBe(0);
+      const nuevo = await t.prisma.twilioContentTemplate.count({ where: { contentSid: 'HXrecreado' } });
+      expect(nuevo).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
   it('BE-TWA-08: si la Content API falla al crear el template, degrada a texto numerado en vez de perder el mensaje', async () => {
     const interactive: WhatsAppInteractive = {
       type: 'list',
