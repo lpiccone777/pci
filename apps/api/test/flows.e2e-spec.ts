@@ -348,6 +348,57 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
       expect(res.status).toBe(404);
       expect(await t.prisma.flow.findUnique({ where: { id: flowB.id } })).not.toBeNull();
     });
+
+    // Las variantes (Feriado/Guardia) se sumaron después que el resto de las rutas `:id` y
+    // quedaron sin el corte de pertenencia que sí tienen sus hermanas: `flows:create` en la
+    // empresa propia alcanzaba para crear una variante de un flujo ajeno, y la respuesta
+    // devolvía sus `nodes`/`edges` copiados enteros.
+    it('BE-FLW-14b: GET/POST/DELETE /flows/:id/variants de un flujo de otra empresa devuelven 404', async () => {
+      const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14vara');
+      const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14varb') });
+      const flowB = await createFlow(t.prisma, {
+        name: 'Flujo privado de B (variantes)',
+        nodes: [{ id: 'secreto', type: 'message', data: { text: 'CONTENIDO PRIVADO DE B' } }],
+        assign: [{ tenantId: tenantB.id }],
+      });
+
+      const listado = await withAuth(http(t).get(`/flows/${flowB.id}/variants`), tokenA, tenantA.id);
+      expect(listado.status).toBe(404);
+
+      const creacion = await withAuth(http(t).post(`/flows/${flowB.id}/variants`), tokenA, tenantA.id).send({
+        type: 'feriado',
+      });
+      expect(creacion.status).toBe(404);
+      expect(JSON.stringify(creacion.body)).not.toContain('CONTENIDO PRIVADO DE B');
+
+      const borrado = await withAuth(http(t).delete(`/flows/${flowB.id}/variants/feriado`), tokenA, tenantA.id);
+      expect(borrado.status).toBe(404);
+
+      // Nada quedó creado a partir del flujo ajeno.
+      expect(await t.prisma.flowAlternative.count({ where: { baseFlowId: flowB.id } })).toBe(0);
+    });
+
+    it('BE-FLW-14c: crear una variante propia copiando un flujo de otra empresa (sourceFlowId) devuelve 404', async () => {
+      const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw14srca');
+      const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw14srcb') });
+      const flowA = await createFlow(t.prisma, { name: 'Flujo propio de A', assign: [{ tenantId: tenantA.id }] });
+      const flowB = await createFlow(t.prisma, {
+        name: 'Flujo privado de B (origen)',
+        nodes: [{ id: 'secreto', type: 'message', data: { text: 'GRAFO PRIVADO DE B' } }],
+        assign: [{ tenantId: tenantB.id }],
+      });
+
+      // El flujo base es propio, pero el ORIGEN del grafo es ajeno: también tiene que cortar,
+      // si no la variante nace con el grafo copiado de la otra empresa.
+      const res = await withAuth(http(t).post(`/flows/${flowA.id}/variants`), tokenA, tenantA.id).send({
+        type: 'feriado',
+        sourceFlowId: flowB.id,
+      });
+
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(res.body)).not.toContain('GRAFO PRIVADO DE B');
+      expect(await t.prisma.flowAlternative.count({ where: { baseFlowId: flowA.id } })).toBe(0);
+    });
   });
 
   // --- BE-FLW-16 (SEC-03): mismo criterio para assign-tenants (corregido) y default (pendiente) ---

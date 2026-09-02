@@ -131,23 +131,25 @@ export class FlowController {
   /** Variantes (Feriado/Guardia) configuradas para este flow como Principal. */
   @Get(':id/variants')
   @RequirePermission('flows', 'read')
-  async listVariants(@Param('id') id: string) {
-    return this.flowService.listAlternatives(id);
+  async listVariants(@Param('id') id: string, @Req() req: any) {
+    return this.flowService.listAlternatives(id, req.userTenant);
   }
 
   /** Crea la variante de `dto.type` — ver CreateFlowVariantDto para las 3 fuentes posibles. */
   @Post(':id/variants')
   @RequirePermission('flows', 'create')
-  async createVariant(@Param('id') id: string, @Body() dto: CreateFlowVariantDto) {
-    return this.flowService.createVariant(id, dto.type, {
-      blank: dto.blank,
-      sourceFlowId: dto.sourceFlowId,
-    });
+  async createVariant(@Param('id') id: string, @Body() dto: CreateFlowVariantDto, @Req() req: any) {
+    return this.flowService.createVariant(
+      id,
+      dto.type,
+      { blank: dto.blank, sourceFlowId: dto.sourceFlowId },
+      req.userTenant,
+    );
   }
 
   @Delete(':id/variants/:type')
   @RequirePermission('flows', 'delete')
-  async deleteVariant(@Param('id') id: string, @Param('type') type: string) {
-    return this.flowService.deleteVariant(id, type);
+  async deleteVariant(@Param('id') id: string, @Param('type') type: string, @Req() req: any) {
+    return this.flowService.deleteVariant(id, type, req.userTenant);
   }
 }

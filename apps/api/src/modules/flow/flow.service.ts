@@ -676,8 +676,15 @@ export class FlowService {
     return alternative?.variantFlow?.isActive ? alternative.variantFlow : principal;
   }
 
-  /** Variantes (Feriado/Guardia) configuradas para este flow como Principal. */
-  async listAlternatives(baseFlowId: string) {
+  /**
+   * Variantes (Feriado/Guardia) configuradas para este flow como Principal.
+   *
+   * Con corte de pertenencia, igual que el resto de las operaciones sobre un `:id` de flujo
+   * (`findByIdScoped`/`update`/`delete`/`assignTenants`): sin esto, `flows:read` en la propia
+   * empresa alcanzaba para consultar las variantes de un flujo ajeno.
+   */
+  async listAlternatives(baseFlowId: string, userTenant?: CallerUserTenant) {
+    await this.assertFlowAccessible(baseFlowId, userTenant, await this.isSuperAdmin(userTenant));
     return this.prisma.flowAlternative.findMany({
       where: { baseFlowId },
       select: { type: true, variantFlowId: true },
@@ -699,9 +706,18 @@ export class FlowService {
     baseFlowId: string,
     type: string,
     opts?: { blank?: boolean; sourceFlowId?: string },
+    userTenant?: CallerUserTenant,
   ) {
     if (!isValidScheduleEntryType(type)) {
       throw new BadRequestException(`Tipo de variante desconocido: "${type}"`);
+    }
+    // Corte de pertenencia sobre el flujo base Y sobre el de origen: sin esto, `flows:create`
+    // en la empresa propia alcanzaba para crear una variante a partir de un flujo de otra
+    // empresa, y la respuesta devolvía sus `nodes`/`edges` copiados enteros.
+    const isSuperAdmin = await this.isSuperAdmin(userTenant);
+    await this.assertFlowAccessible(baseFlowId, userTenant, isSuperAdmin);
+    if (opts?.sourceFlowId) {
+      await this.assertFlowAccessible(opts.sourceFlowId, userTenant, isSuperAdmin);
     }
     const base = await this.findById(baseFlowId);
 
@@ -757,7 +773,8 @@ export class FlowService {
   }
 
   /** Borra la variante de `type` para `baseFlowId` (y con ella la fila Flow variante, por cascade). */
-  async deleteVariant(baseFlowId: string, type: string) {
+  async deleteVariant(baseFlowId: string, type: string, userTenant?: CallerUserTenant) {
+    await this.assertFlowAccessible(baseFlowId, userTenant, await this.isSuperAdmin(userTenant));
     const alternative = await this.prisma.flowAlternative.findUnique({
       where: { baseFlowId_type: { baseFlowId, type } },
     });

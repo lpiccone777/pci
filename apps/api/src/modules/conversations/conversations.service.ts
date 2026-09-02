@@ -887,6 +887,18 @@ export class ConversationsService implements OnModuleInit {
     if (result.sourceHandle) {
       const byHandle = outgoing.find((e) => e.sourceHandle === result.sourceHandle);
       if (byHandle) return byHandle.target;
+
+      // Sin arista para ESTE handle, NUNCA se cae a una arista de OTRO handle: sería mandar
+      // el resultado por la rama contraria. Pasaba con la forma más común de `condition`
+      // ("si es X → menú especial, si no seguí de largo"), donde se dibuja solo la arista
+      // `true`: un resultado falso no encontraba `false` y se iba por `outgoing[0]`, que es
+      // justo la del `true` — el flujo hacía exactamente lo contrario de lo que declaraba.
+      //
+      // Una arista SIN handle sí sirve de salida por defecto (es inequívoca: no pertenece a
+      // ninguna rama, y quien la dibujó quiso "seguir por acá pase lo que pase"). Si tampoco
+      // hay, no hay próximo nodo y el flujo se cierra acá, que es honesto: la rama que el
+      // flujo necesitaba no está dibujada.
+      return outgoing.find((e) => !e.sourceHandle)?.target ?? null;
     }
 
     return outgoing[0]?.target ?? null;
