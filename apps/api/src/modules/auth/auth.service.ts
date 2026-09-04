@@ -1,7 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AppConfigService } from '../../config/app-config.service';
+import { systemTenantSlug } from '../../common/system-tenant';
+import { effectivePermissions, isProtectedRole } from '../rbac/protected-role';
 import { EmailService } from './email.service';
 import { DeviceService } from './device.service';
 import { RegisterDto } from './dto/register.dto';
@@ -25,11 +28,14 @@ export class AuthService {
     private readonly config: AppConfigService,
     private readonly emailService: EmailService,
     private readonly deviceService: DeviceService,
+    private readonly configService: ConfigService,
   ) {}
 
   async register(dto: RegisterDto) {
-    const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    // Solo entre los activos: el email de una persona dada de baja quedó sufijado y su valor
+    // original está libre para un alta nueva (ver `UsersService.softDeleteUser`).
+    const existing = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
     });
     if (existing) {
       throw new UnauthorizedException('El email ya está registrado');
@@ -52,8 +58,11 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, userAgent: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    // Quien fue dado de baja no entra. El email sufijado ya haría fallar la búsqueda por sí
+    // solo, pero el filtro explícito es la garantía: la baja corta el acceso, no depende de
+    // cómo haya quedado escrito el email.
+    const user = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
     });
     if (!user) {
       throw new UnauthorizedException('Credenciales inválidas');
@@ -105,8 +114,9 @@ export class AuthService {
       throw new UnauthorizedException('Código expirado');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: entry.userId },
+    // Puede haber sido dado de baja entre que pidió el código y lo ingresó.
+    const user = await this.prisma.user.findFirst({
+      where: { id: entry.userId, deletedAt: null },
     });
     if (!user) {
       throw new UnauthorizedException('Usuario no encontrado');
@@ -133,18 +143,26 @@ export class AuthService {
       userId: user.id,
     });
 
+    const defaultSubject = 'Código de verificación - Plataforma Conversacional Inteligente Chatbot';
+    const subject = (await this.config.get('OTP_EMAIL_SUBJECT', defaultSubject)) || defaultSubject;
+
     await this.emailService.send({
       to: user.email,
-      subject: 'Código de verificación - PCI Chatbot',
+      subject,
       text: `Tu código de verificación es: ${code}. Válido por ${ttlSeconds} segundos.`,
     });
   }
 
   async me(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+    // El token sobrevive a la baja hasta que expira, así que la sesión se corta acá: si la
+    // persona fue dada de baja, `/auth/me` falla y el frontend cierra sesión solo.
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
       include: {
         tenants: {
+          // Baja real: una empresa dada de baja no se informa en la sesión, así desaparece
+          // del selector del sidebar. La membresía sigue en la base, pero acá no viaja.
+          where: { tenant: { deletedAt: null } },
           include: {
             tenant: true,
             role: {
@@ -160,7 +178,39 @@ export class AuthService {
     if (!user) throw new UnauthorizedException('Usuario no encontrado');
 
     const { passwordHash, ...result } = user;
-    return result;
+
+    // De acá salen el menú y los botones del frontend, así que el superusuario tiene que
+    // recibir el catálogo completo: si informáramos solo sus filas guardadas, un permiso
+    // agregado después del último seed no le aparecería en pantalla aunque el API se lo
+    // acepte igual.
+    const slug = systemTenantSlug(this.configService);
+
+    // Superusuario del sistema: rol SuperAdmin en el tenant de sistema (misma definición que
+    // `isSystemSuperAdmin` en el backend). El frontend lo usa para las capacidades cross-tenant
+    // que ningún permiso RBAC gobierna: mostrar/seleccionar TODAS las empresas en el selector y
+    // consolidar la vista con `/all` en vez de `/mine`. Ser miembro del tenant de sistema con
+    // otro rol NO alcanza. (Los ítems solo-sistema del menú y los endpoints con permiso siguen
+    // rigiéndose por RBAC, no por este flag.)
+    const isSuperAdmin = result.tenants.some((ut) =>
+      isProtectedRole(ut.role.name, ut.tenant.slug, slug),
+    );
+
+    return {
+      ...result,
+      isSuperAdmin,
+      tenants: result.tenants.map((ut) => ({
+        ...ut,
+        role: {
+          ...ut.role,
+          permissions: effectivePermissions(
+            ut.role.name,
+            ut.tenant.slug,
+            slug,
+            ut.role.permissions,
+          ),
+        },
+      })),
+    };
   }
 
   /**

@@ -37,6 +37,22 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
   private replyConsumerReady: Promise<void> | null = null;
   private readonly pendingRequests = new Map<string, PendingRequest>();
 
+  // --- Patrón RPC con cola de respuesta fija (no anónima) ---
+  // Para consumidores externos que no implementan replyTo/correlationId y en cambio
+  // publican siempre contra una cola de salida propia y conocida de antemano. Ver
+  // `requestViaQueue()`.
+  private readonly fixedReplyConsumers = new Map<string, Promise<void>>();
+  // correlationIds pendientes por cola de respuesta fija, en orden de llegada (FIFO).
+  // Un consumidor real (probado en producción: un RAG que solo publica su propio
+  // payload, sin correlationId) puede no implementar el eco de correlationId — para
+  // esos casos `resolveOldestPendingForQueue` usa esta lista como fallback: "el
+  // primer mensaje que llega es la respuesta al primer request pendiente en esa
+  // cola". Si hay más de un request concurrente contra la misma cola fija sin que
+  // el externo eco ee correlationId, esto puede mezclar respuestas — es una
+  // limitación inherente a no tener con qué correlacionar, no de esta
+  // implementación en particular.
+  private readonly pendingByQueue = new Map<string, string[]>();
+
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit() {
@@ -69,6 +85,9 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
       // su propio timeout — no hay forma de saber si la reconexión llegó a tiempo.
       this.replyQueueName = null;
       this.replyConsumerReady = null;
+      // Mismo motivo: las colas fijas de respuesta se re-consumen recién cuando
+      // `requestViaQueue()` las vuelva a pedir, no hace falta reconstruir el mapa acá.
+      this.fixedReplyConsumers.clear();
 
       // Re-suscribe handlers si hay reconnection
       for (const [queue, queueHandlers] of this.handlers) {
@@ -264,21 +283,21 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
           queueName,
           (msg) => {
             if (!msg) return;
-
             try {
               const content = JSON.parse(msg.content.toString()) as BrokerMessage;
-              const pending = content.correlationId
-                ? this.pendingRequests.get(content.correlationId)
-                : undefined;
-
-              if (pending) {
-                this.pendingRequests.delete(content.correlationId!);
-                pending.resolve(content);
+              // Cola anónima por conexión: acá SÍ exigimos correlationId — no hay
+              // ambigüedad posible que un fallback FIFO tenga sentido resolver
+              // (a diferencia de una cola fija, compartida entre requests).
+              if (!this.resolvePendingReply(content)) {
+                this.logger.warn(
+                  `Mensaje en '${queueName}' sin correlationId pendiente (correlationId=${content.correlationId ?? '(ninguno)'}, pendientes=${this.pendingRequests.size}): ${JSON.stringify(content).slice(0, 500)}`,
+                );
               }
-              // Sin match: nadie espera esta respuesta (timeout ya venció). Se
-              // descarta — se ack-ea igual, no vuelve a la cola.
             } catch (err) {
-              this.logger.error('Respuesta RPC con formato inválido', err);
+              this.logger.error(
+                `Respuesta RPC con formato inválido en '${queueName}': ${msg.content.toString().slice(0, 500)}`,
+                err,
+              );
             } finally {
               this.safeAck(channel, msg);
             }
@@ -290,5 +309,151 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
 
     await this.replyConsumerReady;
     return this.replyQueueName!;
+  }
+
+  /**
+   * Resuelve el `pendingRequests` cuya `correlationId` matchea exactamente, si
+   * alguien lo sigue esperando. Devuelve `false` sin loguear nada — el llamador
+   * decide qué hacer con un mensaje sin match (loguear como huérfano, o intentar
+   * el fallback FIFO de `resolveOldestPendingForQueue`).
+   */
+  private resolvePendingReply(content: BrokerMessage): boolean {
+    const pending = content.correlationId ? this.pendingRequests.get(content.correlationId) : undefined;
+    if (!pending) return false;
+    this.pendingRequests.delete(content.correlationId!);
+    this.removeFromPendingByQueue(content.correlationId!);
+    pending.resolve(content);
+    return true;
+  }
+
+  /**
+   * Fallback exclusivo de `requestViaQueue`/`ensureFixedReplyConsumer`: un mensaje
+   * sin `correlationId` (o con uno que no matchea ningún pendiente) en una cola de
+   * respuesta fija se asigna igual al request más antiguo que sigue esperando esa
+   * misma cola — probado en producción contra un RAG que responde con su propio
+   * payload (`{rag_id, answer, sources, error}`), sin implementar el eco de
+   * correlationId en absoluto. Sin este fallback, ese caso queda huérfano para
+   * siempre y el request expira por timeout aunque el externo sí haya respondido.
+   */
+  private resolveOldestPendingForQueue(responseQueue: string, content: BrokerMessage): boolean {
+    const queueList = this.pendingByQueue.get(responseQueue);
+    const correlationId = queueList?.shift();
+    if (!correlationId) return false;
+
+    const pending = this.pendingRequests.get(correlationId);
+    if (!pending) return false; // ya resuelto/expirado — no debería pasar, pero no explota si pasa
+
+    this.pendingRequests.delete(correlationId);
+    this.logger.warn(
+      `'${responseQueue}': mensaje sin correlationId matcheable — asignado por FIFO al request pendiente más antiguo (correlationId=${correlationId}). Si hay más de un request concurrente contra esta cola sin que el externo eco ee correlationId, las respuestas se pueden mezclar.`,
+    );
+    pending.resolve(content);
+    return true;
+  }
+
+  private removeFromPendingByQueue(correlationId: string): void {
+    for (const list of this.pendingByQueue.values()) {
+      const idx = list.indexOf(correlationId);
+      if (idx !== -1) {
+        list.splice(idx, 1);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Variante de `request()` para consumidores externos que no implementan el patrón
+   * replyTo/correlationId y en cambio siempre publican su respuesta contra una cola
+   * de salida propia y fija (conocida de antemano, no generada por nosotros). Mismo
+   * `pendingRequests` compartido que `request()` — la diferencia es qué cola se
+   * consume para las respuestas (fija y durable, no anónima y exclusiva) y que acá
+   * el match por `correlationId` es opcional: ver `resolveOldestPendingForQueue`
+   * para el fallback FIFO cuando el externo no lo implementa.
+   */
+  async requestViaQueue(
+    sendQueue: string,
+    responseQueue: string,
+    message: Omit<BrokerMessage, 'correlationId' | 'replyTo'>,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<BrokerMessage> {
+    await this.ensureFixedReplyConsumer(responseQueue);
+    const correlationId = randomUUID();
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+
+    const queueList = this.pendingByQueue.get(responseQueue) ?? [];
+    queueList.push(correlationId);
+    this.pendingByQueue.set(responseQueue, queueList);
+
+    const result = new Promise<BrokerMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(correlationId);
+        this.removeFromPendingByQueue(correlationId);
+        reject(
+          new Error(
+            `Sin respuesta en '${responseQueue}' después de ${timeoutMs}ms (correlationId=${correlationId})`,
+          ),
+        );
+      }, timeoutMs);
+
+      this.pendingRequests.set(correlationId, {
+        resolve: (msg) => {
+          clearTimeout(timer);
+          resolve(msg);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+    });
+
+    const sent = await this.publish(sendQueue, { ...message, correlationId });
+    if (!sent) {
+      this.pendingRequests.delete(correlationId);
+      this.removeFromPendingByQueue(correlationId);
+      throw new Error(`No se pudo publicar en '${sendQueue}': RabbitMQ no está conectado`);
+    }
+
+    return result;
+  }
+
+  /** Crea (una sola vez por cola, por conexión) el consumer de una cola de respuesta fija. */
+  private async ensureFixedReplyConsumer(queueName: string): Promise<void> {
+    const existing = this.fixedReplyConsumers.get(queueName);
+    if (existing) return existing;
+
+    const setup = (async () => {
+      if (!this.channel) throw new Error('RabbitMQ channel no disponible');
+      const channel = this.channel;
+
+      await channel.assertQueue(queueName, { durable: true });
+      channel.consume(
+        queueName,
+        (msg) => {
+          if (!msg) return;
+          try {
+            const content = JSON.parse(msg.content.toString()) as BrokerMessage;
+            const matched =
+              this.resolvePendingReply(content) || this.resolveOldestPendingForQueue(queueName, content);
+            if (!matched) {
+              this.logger.warn(
+                `'${queueName}': mensaje sin ningún request pendiente para correlacionar: ${JSON.stringify(content).slice(0, 500)}`,
+              );
+            }
+          } catch (err) {
+            this.logger.error(
+              `Respuesta de cola fija con formato inválido en '${queueName}': ${msg.content.toString().slice(0, 500)}`,
+              err,
+            );
+          } finally {
+            this.safeAck(channel, msg);
+          }
+        },
+        { noAck: false },
+      );
+    })();
+
+    this.fixedReplyConsumers.set(queueName, setup);
+    await setup;
   }
 }

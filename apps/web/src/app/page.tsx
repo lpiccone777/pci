@@ -7,7 +7,8 @@ export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/login');
+    // Barra final: ver el comentario equivalente en `lib/api.ts` (clearSession).
+    router.replace('/login/');
   }, [router]);
 
   return (

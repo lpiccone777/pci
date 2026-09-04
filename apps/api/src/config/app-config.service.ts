@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService as NestConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretsCipher } from './secrets.cipher';
-import { defaultOtpEnabled } from '../modules/settings/settings.catalog';
+import { defaultOtpEnabled, defaultSimulateEnabled } from '../modules/settings/settings.catalog';
 
 @Injectable()
 export class AppConfigService {
@@ -67,5 +67,33 @@ export class AppConfigService {
 
   async deviceFingerprintTtlDays(): Promise<number> {
     return this.getNumber('DEVICE_FINGERPRINT_TTL_DAYS', 90);
+  }
+
+  /**
+   * ¿`POST /conversations/simulate` está habilitado? Mismo mecanismo que `otpEnabled()`: el
+   * default sale de `defaultSimulateEnabled()` (deshabilitado en `NODE_ENV=production`), pero
+   * un valor explícito en BD o env manda. Es una herramienta de desarrollo/test — el endpoint
+   * solo exige estar logueado (`JwtAuthGuard`), no que el caller tenga relación con el tenant o
+   * teléfono que simula, así que en producción conviene poder cerrarlo del todo sin tocar código.
+   */
+  async simulateEnabled(): Promise<boolean> {
+    return this.getBoolean('CONVERSATIONS_SIMULATE_ENABLED', defaultSimulateEnabled() === 'true');
+  }
+
+  // Vida de una charla — ver ConversationsService. Los dos se exponen en milisegundos porque
+  // es lo que consume el motor, pero en /settings se configuran en minutos y horas: escribir
+  // "3600000" a mano en un backoffice es pedir un error de tipeo de un cero de más.
+  /** Inactividad máxima de una charla `active` antes de que el cron la cierre sola. */
+  async conversationInactivityMs(): Promise<number> {
+    const minutes = await this.getNumber('CONVERSATION_INACTIVITY_MINUTES', 60);
+    // Clamp defensivo: el catálogo valida 1-10080, pero una env var cruda no pasa por ahí, y
+    // un 0 dejaría todas las charlas cerrándose apenas se abren.
+    return Math.max(1, Math.trunc(minutes)) * 60_000;
+  }
+
+  /** Ventana para retomar una charla cerrada como la MISMA Conversation. */
+  async conversationResumeWindowMs(): Promise<number> {
+    const hours = await this.getNumber('CONVERSATION_RESUME_WINDOW_HOURS', 12);
+    return Math.max(1, Math.trunc(hours)) * 3_600_000;
   }
 }

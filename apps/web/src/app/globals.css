@@ -24,3 +24,26 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * Nuestro tipo de nodo `input` (y `default`, si algún día se usa) colisiona con los
+ * tipos BUILT-IN de ReactFlow que se llaman igual: aunque el componente custom pisa el
+ * contenido, el WRAPPER del nodo hereda igual la hoja de estilos default de la librería
+ * para `.react-flow__node-input` (caja blanca con borde, ancho fijo 150px, padding) —
+ * que se veía como un recuadro feo asomando detrás de la tarjeta. Neutralizarlo acá es
+ * menos invasivo que renombrar el tipo de nodo (eso tocaría el motor y todos los flujos
+ * ya guardados).
+ */
+.react-flow__node-input,
+.react-flow__node-default,
+.react-flow__node-output {
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  width: auto;
+  text-align: initial;
+  color: inherit;
+  font-size: inherit;
+}

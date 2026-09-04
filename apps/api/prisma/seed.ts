@@ -1,50 +1,59 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import {
+  PERMISSION_ACTIONS,
+  PERMISSION_RESOURCES,
+} from '../src/modules/rbac/permissions.catalog';
+import {
+  DEFAULT_SYSTEM_TENANT_SLUG,
+  SUPERADMIN_ROLE_NAME,
+} from '../src/modules/rbac/protected-role';
 
 const prisma = new PrismaClient();
 
 const DEFAULT_ADMIN_EMAIL = 'admin@pci.local';
 const DEFAULT_ADMIN_PASSWORD = 'changeme123';
 
+/** El mismo slug que resuelve el backend, para no sembrar un tenant que después no encuentre. */
+const SYSTEM_TENANT_SLUG =
+  process.env.SYSTEM_TENANT_SLUG || DEFAULT_SYSTEM_TENANT_SLUG;
+
 async function main() {
   // 1. Tenant por defecto
   const tenant = await prisma.tenant.upsert({
-    where: { slug: 'system' },
+    where: { slug: SYSTEM_TENANT_SLUG },
     update: {},
     create: {
-      name: 'Sistema PCI',
-      slug: 'system',
+      name: 'Sistema Plataforma Conversacional Inteligente',
+      slug: SYSTEM_TENANT_SLUG,
     },
   });
 
   // 2. Rol SuperAdmin
   const role = await prisma.role.upsert({
     where: {
-      name_tenantId: { name: 'SuperAdmin', tenantId: tenant.id },
+      name_tenantId: { name: SUPERADMIN_ROLE_NAME, tenantId: tenant.id },
     },
     update: {},
     create: {
-      name: 'SuperAdmin',
+      name: SUPERADMIN_ROLE_NAME,
       tenantId: tenant.id,
     },
   });
 
-  // 3. Permisos completos (CRUD sobre todos los recursos del sistema)
-  const resources = [
-    'users',
-    'tenants',
-    'roles',
-    'permissions',
-    'devices',
-    'conversations',
-    'tickets',
-    'metrics',
-    'settings',
-    'channels',
-    'llm',
-    'flows',
-  ];
-  const actions = ['create', 'read', 'update', 'delete'];
+  // 3. Permisos completos, salidos del catálogo.
+  //
+  // **El SuperAdmin no depende de estas filas.** El backend le informa el catálogo entero
+  // (`effectivePermissions` en `protected-role.ts`) y lo deja pasar sin mirar la lista
+  // (`RolesGuard`), así que un recurso nuevo en `permissions.catalog.ts` le llega desde el
+  // primer request, sin volver a correr el seed en ningún entorno.
+  //
+  // Se siguen cargando igual, como piso: si algún día aparece un lugar de lectura nuevo que
+  // se olvide de pasar por `effectivePermissions`, con estas filas muestra algo desactualizado
+  // en vez de un rol vacío. La lista sale del catálogo y no de una copia a mano para que ese
+  // piso no se desfase solo.
+  const resources = PERMISSION_RESOURCES.map((r) => r.key);
+  const actions = PERMISSION_ACTIONS.map((a) => a.key);
 
   for (const resource of resources) {
     for (const action of actions) {
@@ -70,7 +79,7 @@ async function main() {
     create: {
       email: DEFAULT_ADMIN_EMAIL,
       firstName: 'Administrador',
-      lastName: 'PCI',
+      lastName: 'Plataforma Conversacional Inteligente',
       passwordHash,
     },
   });

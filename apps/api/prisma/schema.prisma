@@ -8,36 +8,93 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  phone        String?  @unique
-  passwordHash String
-  firstName    String?
-  lastName     String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            String    @id @default(cuid())
+  email         String    @unique
+  phone         String?   @unique
+  // Interno telefónico de la persona. Va acá y no en `UserTenant` porque es un dato de la
+  // persona, no de la empresa: la misma persona tiene el mismo interno valga en la empresa
+  // que valga (mismo criterio que `phone`). Lo usará un voicebot a futuro; hoy solo se carga.
+  // Opcional a propósito (se carga a mano y la mayoría no lo tiene) y único para que dos
+  // personas no compartan interno —un voicebot que enruta por interno tiene que resolver a
+  // una sola persona—. Como el resto de los únicos, se libera con sufijo en la baja lógica.
+  internalPhone String?   @unique
+  passwordHash  String
+  firstName     String?
+  lastName      String?
+  // Identificador de la persona en Invgate. Va acá y no en `UserTenant` porque la
+  // integración usa una única instancia de Invgate para todo el sistema: la persona
+  // tiene el mismo id valga en la empresa que valga. Si algún día cada tenant tiene
+  // su propio Invgate, este campo se muda a la membresía.
+  // Opcional a propósito: hoy se carga a mano y la mayoría de los usuarios no lo tiene.
+  // Único para que un error de tipeo no deje dos usuarios apuntando al mismo id de
+  // Invgate; en Postgres varios NULL conviven sin problema, así que no molesta a los
+  // que están sin cargar.
+  invgateUserId String?   @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  // Baja lógica sin reactivación: una persona dada de baja conserva su fila —y con ella el
+  // historial que la referencia— pero deja de existir para el sistema. No hay "restaurar":
+  // para volver se da de alta una persona nueva, que arranca sin historial.
+  // A diferencia de `Tenant`, la baja SÍ libera los campos únicos (email, teléfono,
+  // invgateUserId): al marcar `deletedAt` se les agrega un sufijo con la fecha y hora de la
+  // baja, así el valor original queda disponible para el alta nueva. La alternativa era un
+  // índice único parcial (`WHERE deletedAt IS NULL`), descartada porque Prisma no lo soporta
+  // en el DSL y porque obligaba a filtrar a mano en cada búsqueda por esos campos: una que
+  // quedara sin filtrar dejaba entrar a un usuario dado de baja.
+  // Ver `UsersService.softDeleteUser`.
+  deletedAt     DateTime?
 
-  tenants       UserTenant[]
-  devices       Device[]
-  conversations Conversation[]
-  tickets       Ticket[]
-  metrics       Metric[]
+  tenants           UserTenant[]
+  devices           Device[]
+  deviceValidations DeviceValidation[]
+  conversations     Conversation[]
+  tickets           Ticket[]           @relation("TicketReporter")
+  assignedTickets   Ticket[]           @relation("TicketAssignee")
+  metrics           Metric[]
 }
 
 model Tenant {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  // Baja lógica: una empresa dada de baja conserva su fila (y sus datos) pero deja de
+  // listarse. No se libera el slug, que es @unique global: una empresa dada de baja lo
+  // sigue ocupando, y sí se puede reactivar.
+  // Ojo al comparar con `User.deletedAt`: la baja de usuario sigue el criterio opuesto en
+  // los dos ejes —libera sus campos únicos y no admite reactivación— porque son dos casos
+  // distintos: una empresa vuelve con sus datos, una persona vuelve como alguien nuevo.
+  deletedAt DateTime?
+
+  users                   UserTenant[]
+  roles                   Role[]
+  areas                   Area[]
+  conversations           Conversation[]
+  tickets                 Ticket[]
+  metrics                 Metric[]
+  settings                Setting[]
+  tenantFlows             TenantFlow[]
+  contextSources          ContextSource[]
+  skills                  Skill[]
+  scheduleCalendarEntries ScheduleCalendarEntry[]
+}
+
+/// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
+/// Es solo para agrupar — auditoría y métricas. El motor de flujos IVR decide por rol,
+/// nunca por área.
+model Area {
   id        String   @id @default(cuid())
   name      String
-  slug      String   @unique
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users         UserTenant[]
-  roles         Role[]
-  conversations Conversation[]
-  tickets       Ticket[]
-  metrics       Metric[]
-  settings      Setting[]
-  tenantFlows   TenantFlow[]
+  userTenants UserTenant[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
 }
 
 model Role {
@@ -48,8 +105,10 @@ model Role {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  permissions RolePermission[]
-  userTenants UserTenant[]
+  permissions             RolePermission[]
+  userTenants             UserTenant[]
+  tenantFlowRoles         TenantFlowRole[]
+  scheduleCalendarEntries ScheduleCalendarEntry[]
 
   @@unique([name, tenantId])
 }
@@ -72,9 +131,19 @@ model UserTenant {
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   roleId    String
   role      Role     @relation(fields: [roleId], references: [id])
+  // El área va acá y no en User: la clave primaria de esta tabla ya es
+  // (userId, tenantId), así que "un usuario pertenece como máximo a un área por
+  // empresa" queda garantizado por la estructura, sin validarlo a mano. La misma
+  // persona puede estar en Soporte en una empresa y en Ventas en otra.
+  // Opcional a propósito: un usuario puede no tener área asignada.
+  // `Restrict` respalda en la base la regla que aplica AreasService.remove: un área
+  // con gente asignada no se borra.
+  areaId    String?
+  area      Area?    @relation(fields: [areaId], references: [id], onDelete: Restrict)
   createdAt DateTime @default(now())
 
   @@id([userId, tenantId])
+  @@index([areaId])
 }
 
 model Device {
@@ -90,20 +159,63 @@ model Device {
   @@index([userId])
 }
 
+// Dispositivo (número de WhatsApp) validado por el nodo `device_validation` del
+// motor de flujos. Fingerprint = hash(teléfono + email), distinto del Device de
+// arriba (que es para el login web y usa teléfono + User-Agent del browser).
+model DeviceValidation {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phone       String
+  email       String
+  fingerprint String   @unique
+  verifiedAt  DateTime @default(now())
+  expiresAt   DateTime
+
+  @@index([userId])
+}
+
+// Selección de empresa pendiente para un usuario multitenant (teléfono que pertenece a
+// varias empresas). El ruteo del tenant entrante ahora sale de la membresía del teléfono:
+// con una sola empresa se atiende directo, con varias el bot pregunta con cuál hablar. La
+// pregunta ocurre ANTES de que exista una `Conversation` (que es por-tenant), así que el
+// estado intermedio vive acá, keyed por teléfono+canal. `originalBody` guarda el mensaje
+// que disparó la pregunta para reprocesarlo al elegir; `options` es la lista ofrecida
+// (`[{ index, tenantId, name }]`) para matchear la respuesta. `expiresAt` = ahora + 12hs
+// (misma ventana de reanudación que RESUME_WINDOW_MS).
+model PendingTenantSelection {
+  id                  String   @id @default(cuid())
+  phone               String
+  channel             String
+  originalBody        String
+  // Adjuntos (fotos) del mensaje que disparó el selector de empresa. Se guardan acá para no
+  // perderlos: cuando el usuario elige empresa, el mensaje original se reprocesa con su texto
+  // Y sus adjuntos. Ausente/null = el mensaje original no traía adjuntos.
+  originalAttachments Json?
+  options             Json
+  expiresAt           DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([phone, channel])
+}
+
 model Conversation {
-  id            String   @id @default(cuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id])
-  tenantId      String
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  channel       String
-  externalId    String?
-  status        String   @default("active")
-  currentFlowId String?
-  currentNodeId String?
-  flowState     Json?    // Variables del flujo: { problemDescription: "...", ticketId: "944" }
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  channel          String
+  externalId       String?
+  status           String    @default("active") // "active" | "closed"
+  closedAt         DateTime? // Cuándo se cerró; habilita reanudarla dentro de la ventana de resume.
+  sessionStartedAt DateTime? // Se resetea al crear o reanudar la charla; acota qué Message cuentan como historial de la sesión actual (una reanudación reusa el mismo id, así que sin esto el historial de antes del cierre se filtraba al LLM).
+  currentFlowId    String?
+  currentNodeId    String?
+  flowState        Json? // Variables del flujo: { problemDescription: "...", ticketId: "944" }
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   messages Message[]
   metrics  Metric[]
@@ -124,34 +236,63 @@ model Message {
 }
 
 model Ticket {
-  id          String   @id @default(cuid())
-  invgateId   String?  @unique
-  userId      String
-  user        User     @relation(fields: [userId], references: [id])
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  subject     String
-  description String?
-  status      String   @default("open")
-  priority    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(cuid())
+  invgateId    String?  @unique
+  userId       String
+  user         User     @relation("TicketReporter", fields: [userId], references: [id])
+  // Colaborador asignado por el nodo `transfer_agent` (round robin sobre
+  // `data.assignees`). Null si el ticket no vino de una transferencia, o si
+  // el método "ticket" no estaba tildado.
+  assignedToId String?
+  assignedTo   User?    @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  subject      String
+  description  String?
+  status       String   @default("open")
+  priority     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([tenantId, status])
   @@index([userId])
+  @@index([assignedToId])
 }
 
 model Setting {
-  id        String    @id @default(cuid())
-  key       String    @unique
+  id        String   @id @default(cuid())
+  key       String   @unique
   value     String
   tenantId  String?
-  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([key])
   @@index([tenantId])
+}
+
+// Cache persistente de Content Templates de Twilio (ver `TwilioWhatsAppService`). Twilio
+// exige un template pre-creado (`ContentSid`) para mandar botones/listas de WhatsApp, y esos
+// templates no admiten variables en los títulos — así que se crea uno por CADA FORMA de menú
+// (mismos botones/filas, el body va aparte como variable) y se reusa. Global, no por tenant:
+// los Content Templates son de la cuenta de Twilio, no de una empresa en particular.
+model TwilioContentTemplate {
+  id           String   @id @default(cuid())
+  // Hash de la forma del menú (tipo + botones/filas, sin el body) — ver
+  // `TwilioWhatsAppService.hashInteractiveShape`. Único: es la clave de búsqueda real.
+  shapeHash    String   @unique
+  contentSid   String
+  // Mismo valor que se le mandó a Twilio como `friendly_name` al crearlo — si Twilio devuelve
+  // "nombre duplicado" alguna vez (no debería, dado que shapeHash ya es único acá), sirve para
+  // diagnosticar sin tener que ir a buscarlo a la consola de Twilio.
+  friendlyName String
+  // Resumen legible de las opciones (ej. "Sí | No | Hablar con un agente") — solo para debug
+  // manual en la BD, no lo usa el código.
+  label        String
+  createdAt    DateTime @default(now())
+
+  @@index([shapeHash])
 }
 
 model Metric {
@@ -165,36 +306,128 @@ model Metric {
   channel        String
   responseTimeMs Int
   resolution     String
-  timestamp    DateTime     @default(now())
-  createdAt    DateTime     @default(now())
+  timestamp      DateTime      @default(now())
+  createdAt      DateTime      @default(now())
 
   @@index([tenantId, timestamp])
   @@index([userId])
 }
 
 model Flow {
-  id          String   @id @default(cuid())
-  name        String
-  description String?
-  nodes       Json     // ReactFlow nodes JSON
-  edges       Json     // ReactFlow edges JSON
-  isActive    Boolean  @default(true)
-  isDefault   Boolean  @default(false)  // Flujo por defecto si no hay match
+  id               String               @id @default(cuid())
+  name             String
+  description      String?
+  nodes            Json // ReactFlow nodes JSON
+  edges            Json // ReactFlow edges JSON
+  isActive         Boolean              @default(true)
+  isDefault        Boolean              @default(false) // Flujo por defecto si no hay match
   // Fuente de datos que respalda las respuestas de este flujo. Lista cerrada
   // (ver FLOW_CONTEXT_OPTIONS en flow-context.ts): 'none' | 'invgate' | 'internal_kb' | 'other'.
-  context     String   @default("none")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tenantFlows TenantFlow[]
-  createdBy   String?  // userId
+  // DEPRECATED: reemplazado de a poco por contextSourceId (ver ContextSource). Se
+  // conserva por compatibilidad con flujos existentes — no se borra en esta etapa.
+  context          String               @default("none")
+  // Fuente de verdad (MCP/RAG/n8n/broker) que este flujo puede consultar durante la
+  // conversación. Nullable: no todos los flujos necesitan una. La ejecución real
+  // (consultarla desde el motor de conversaciones) es trabajo de una etapa
+  // posterior — ver docs/plan-de-trabajo.md, sección "Fuentes de verdad".
+  contextSourceId  String?
+  contextSource    ContextSource?       @relation(fields: [contextSourceId], references: [id], onDelete: SetNull)
+  // Skill (texto de contexto libre) que se concatena al system prompt base
+  // (LLM_SYSTEM_PROMPT de /settings) cuando este flujo ejecuta un nodo `llm_query`
+  // o cae al orquestador. Nullable: no todos los flujos necesitan uno. Ver
+  // ConversationsService.buildBasePrompt.
+  skillId          String?
+  skill            Skill?               @relation(fields: [skillId], references: [id], onDelete: SetNull)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  tenantFlows      TenantFlow[]
+  createdBy        String? // userId
+  roundRobins      FlowNodeRoundRobin[]
+  // Variantes (Feriado/Guardia) de este flow cuando actúa como Principal, y el
+  // registro inverso cuando esta fila ES una variante de otro flow. Ver FlowAlternative.
+  baseAlternatives FlowAlternative[]    @relation("FlowAlternativeBase")
+  variantOf        FlowAlternative?     @relation("FlowAlternativeVariant")
 
   @@index([isActive])
   @@index([isDefault])
   @@index([context])
+  @@index([contextSourceId])
+  @@index([skillId])
+}
+
+/// Texto de contexto libre ("skill") que se agrega al system prompt base de un
+/// flujo. A diferencia de ContextSource (conexión a un servicio externo que se
+/// CONSULTA en tiempo real), un Skill es texto estático que se concatena
+/// directamente al prompt — sin red, sin broker. Por tenant, como ContextSource
+/// y Area: cada empresa arma los suyos. Ver Flow.skillId y
+/// ConversationsService.buildBasePrompt.
+model Skill {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name       String
+  promptText String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  flows Flow[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
+}
+
+/// Fuente de verdad externa que un flujo puede consultar para dar contexto a sus
+/// respuestas: un servidor MCP remoto, un servicio de RAG, un webhook de n8n, o un
+/// proceso propio suscripto a una cola de nuestro RabbitMQ (`broker`).
+/// No instalamos ni hosteamos nada de esto — `config` guarda los parámetros de
+/// conexión a un servicio que ya corre en otro lado.
+///
+/// Por tenant (como Area), no por flujo: la misma fuente se puede reusar entre
+/// varios flujos de la empresa sin duplicar credenciales. `type` decide qué forma
+/// tiene `config` — ver CONTEXT_SOURCE_TYPES en context-source-types.catalog.ts,
+/// que es la única fuente de verdad (nunca mejor dicho) de qué tipos y campos son
+/// válidos, igual que SETTINGS_CATALOG para `Setting`.
+///
+/// Los campos marcados `secret` en el catálogo viajan cifrados dentro de `config`
+/// (mismo mecanismo que SecretsCipher usa para `Setting`: AES-256-GCM, nunca en
+/// texto plano en la fila). Un GET nunca devuelve el valor real de esos campos.
+model ContextSource {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  // 'mcp' | 'rag' | 'n8n' | 'broker' (catálogo abierto en código, ver context-source-types.catalog.ts).
+  // String y no enum de Prisma para poder sumar tipos nuevos sin migración de schema.
+  type      String
+  config    Json     @default("{}")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flows Flow[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
+  @@index([type])
+}
+
+// Estado del round robin de un nodo `transfer_agent`: a quién le tocó la
+// última vez, para repartir ordenadamente entre `data.assignees` sin
+// importar cuántas conversaciones distintas pasen por el nodo.
+model FlowNodeRoundRobin {
+  id        String   @id @default(cuid())
+  flowId    String
+  flow      Flow     @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  nodeId    String
+  lastIndex Int      @default(-1)
+  updatedAt DateTime @updatedAt
+
+  @@unique([flowId, nodeId])
 }
 
 model TenantFlow {
-  id       String  @id @default(cuid())
+  id       String           @id @default(cuid())
   flowId   String
   tenantId String
   // Flujo de inicio PARA ESTE TENANT. Va acá y no en Flow: un mismo flujo puede
@@ -202,12 +435,91 @@ model TenantFlow {
   // no puede ser un booleano a nivel Flow. La invariante "un tenant tiene como
   // máximo un flujo de inicio" se aplica en FlowService.applyTenantAssignment,
   // no acá (Prisma no soporta índices únicos parciales en el schema DSL).
-  isStart  Boolean @default(false)
-  flow     Flow    @relation(fields: [flowId], references: [id], onDelete: Cascade)
-  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  isStart  Boolean          @default(false)
+  flow     Flow             @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles    TenantFlowRole[]
 
   @@unique([flowId, tenantId])
   @@index([tenantId])
   @@index([flowId])
   @@index([isStart])
+}
+
+// Roles habilitados para un flujo dentro de una empresa. Cada fila = un rol que
+// recibe ese flujo en ese tenant. Cuelga de TenantFlow (el par flujo↔empresa) y
+// no de Flow: los roles son por tenant, y un mismo flujo puede tener distintos
+// roles habilitados en cada empresa. Sin filas para un TenantFlow → ese flujo no
+// lo recibe nadie en esa empresa. La invariante "un flujo de inicio por (empresa
+// + rol)" se aplica en FlowService.applyTenantAssignment, no con constraint de BD.
+model TenantFlowRole {
+  id           String     @id @default(cuid())
+  tenantFlowId String
+  tenantFlow   TenantFlow @relation(fields: [tenantFlowId], references: [id], onDelete: Cascade)
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantFlowId, roleId])
+  @@index([roleId])
+}
+
+// Entrada de calendario para feriados/guardias por rol, consumida por
+// ScheduleCalendarService.resolveStatus para decidir el flow alternativo de un flujo
+// al iniciar una conversación (ver FlowAlternative, FlowService.findActiveFlowForTenant).
+// `roleId` null = aplica a todos los roles del tenant. Por tenant (como Area/ContextSource),
+// sin calendario global de feriados nacionales por ahora.
+model ScheduleCalendarEntry {
+  id              String    @id @default(cuid())
+  tenantId        String
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roleId          String?
+  role            Role?     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  // 'feriado' | 'guardia' (catálogo abierto en código, ver schedule-entry-types.catalog.ts).
+  // String y no enum de Prisma, mismo criterio que ContextSource.type.
+  type            String
+  title           String
+  startAt         DateTime
+  endAt           DateTime
+  allDay          Boolean   @default(true)
+  // Repetición: 'daily' | 'weekly' | 'monthly' | 'yearly' | null (no se repite). String, no
+  // enum de Prisma — mismo criterio que `type`. Ver schedule-recurrence.catalog.ts.
+  // `startAt`/`endAt` siguen siendo la PRIMER ocurrencia — cada repetición reusa esa misma
+  // duración, desplazada al ciclo que corresponda (ver schedule-recurrence.util.ts).
+  recurrenceFreq  String?
+  // `null` con recurrenceFreq seteado = "hasta nuevo aviso" (indefinido). Sin sentido si
+  // recurrenceFreq es null — el service lo fuerza a null en ese caso.
+  recurrenceUntil DateTime?
+  // 'manual' (default, alta desde el modal) | 'ar_holidays_import' (importado desde la API
+  // pública de feriados argentinos — ver ScheduleCalendarService.importArgentinaHolidays).
+  // String, no enum de Prisma, mismo criterio que `type`. Permite un borrado masivo por año
+  // sin afectar entradas cargadas a mano (ver removeArgentinaHolidaysImport).
+  source          String    @default("manual")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([tenantId, type])
+  @@index([roleId])
+  @@index([tenantId, source])
+  @@index([startAt, endAt])
+}
+
+// Variante (Feriado/Guardia) de un flow "Principal": otra fila Flow completa e
+// independiente (su propio nodes/edges), vinculada acá. NO es un nodo dentro del grafo,
+// y no tiene relación con el nodo `subflow` del motor de conversaciones (ese es un salto
+// en vivo entre flows durante la charla; esto es una variante elegida antes de arrancar,
+// según rol + calendario). `variantFlowId` es 1:1: una fila Flow variante pertenece a un
+// único (baseFlow, type). Sin tenantId propio, igual que Flow: la tenencia vive en
+// TenantFlow del flow base.
+model FlowAlternative {
+  id            String   @id @default(cuid())
+  baseFlowId    String
+  baseFlow      Flow     @relation("FlowAlternativeBase", fields: [baseFlowId], references: [id], onDelete: Cascade)
+  type          String
+  variantFlowId String   @unique
+  variantFlow   Flow     @relation("FlowAlternativeVariant", fields: [variantFlowId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([baseFlowId, type])
+  @@index([baseFlowId])
 }

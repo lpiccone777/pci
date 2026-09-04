@@ -18,7 +18,8 @@ export default function LoginPage() {
   // Si ya está logueado, redirigir al dashboard
   useEffect(() => {
     if (!isLoading && token) {
-      router.replace('/dashboard');
+      // Barra final: ver el comentario equivalente en `lib/api.ts` (clearSession).
+      router.replace('/dashboard/');
     }
   }, [isLoading, token, router]);
 
@@ -73,8 +74,9 @@ export default function LoginPage() {
         {step === 'credentials' ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+              <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-1">Email</label>
               <input
+                id="login-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -83,8 +85,9 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+              <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
               <input
+                id="login-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -106,8 +109,9 @@ export default function LoginPage() {
               Se envió un código de verificación a tu email. Ingresalo abajo.
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Código OTP</label>
+              <label htmlFor="login-otp" className="block text-sm font-medium text-gray-700 mb-1">Código OTP</label>
               <input
+                id="login-otp"
                 type="text"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}

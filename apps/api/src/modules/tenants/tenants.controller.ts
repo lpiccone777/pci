@@ -1,5 +1,16 @@
-import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { TenantsService } from './tenants.service';
+import { CreateTenantDto, UpdateTenantDto } from './dto/tenant.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
 import { TenantGuard } from '../../common/guards/tenant.guard';
@@ -19,20 +30,49 @@ export class TenantsController {
   }
 
   /**
-   * Todos los tenants del sistema, no solo el activo. Cross-tenant a propósito
-   * (mismo criterio que /settings): asignar un flujo a varios tenants, o listar
-   * todas las empresas dadas de alta, exige ver más allá del tenant propio.
+   * Todas las empresas del sistema, no solo la activa. Cross-tenant a propósito
+   * (mismo criterio que /settings): administrar empresas —listarlas, crearlas,
+   * editarlas o darlas de baja— exige ver más allá de la empresa propia. Por eso
+   * todo el CRUD, no solo la lectura, va con `SystemTenantGuard`.
    */
   @Get('all')
   @UseGuards(SystemTenantGuard)
   @RequirePermission('tenants', 'read')
-  async findAllTenants() {
-    return this.tenantsService.findAll();
+  async findAllTenants(@Query('includeDeleted') includeDeleted?: string) {
+    return this.tenantsService.findAll(includeDeleted === 'true');
   }
 
   @Post()
+  @UseGuards(SystemTenantGuard)
   @RequirePermission('tenants', 'create')
-  async create(@Body() dto: { name: string; slug: string }) {
-    return this.tenantsService.create(dto.name, dto.slug);
+  async create(@Body() dto: CreateTenantDto) {
+    return this.tenantsService.create(dto);
+  }
+
+  @Patch(':id')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('tenants', 'update')
+  async update(@Param('id') id: string, @Body() dto: UpdateTenantDto) {
+    return this.tenantsService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('tenants', 'delete')
+  async remove(@Param('id') id: string) {
+    return this.tenantsService.remove(id);
+  }
+
+  /**
+   * Reactivar (revertir la baja lógica). Va con `tenants:update`, no con una acción propia:
+   * el catálogo RBAC es un producto cartesiano cerrado de 4 acciones y no existe `restore`;
+   * reactivar es, conceptualmente, volver a poner activa la empresa —una modificación de su
+   * estado—, así que reusa el permiso de edición.
+   */
+  @Post(':id/restore')
+  @UseGuards(SystemTenantGuard)
+  @RequirePermission('tenants', 'update')
+  async restore(@Param('id') id: string) {
+    return this.tenantsService.restore(id);
   }
 }

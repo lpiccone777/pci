@@ -67,10 +67,11 @@ Infra externa: PostgreSQL y RabbitMQ en `192.168.0.123`. No hay docker-compose.
 - **Invgate:** crear/leer/actualizar tickets va por un usuario técnico dedicado de API,
   nunca con credenciales del usuario final.
 - **Secrets:** nunca commiteados y **nunca devueltos por la API en texto plano**.
-  Las API keys de LLM se pueden cargar desde `/settings` (decisión explícita del usuario,
-  2026-08-03), pero se guardan **cifradas** con AES-256-GCM y son de **solo escritura**:
-  el `GET` devuelve un enmascarado y el flag `isSet`, jamás el valor. Ver "Secrets" abajo.
-  Las credenciales de Invgate siguen siendo solo env var.
+  Las API keys de LLM y las credenciales de Invgate se pueden cargar desde `/settings`
+  (decisión explícita del usuario — LLM: 2026-08-03; Invgate: 2026-08-14, reemplaza la
+  constraint original de spec §5 de "solo env var"), pero se guardan **cifradas** con
+  AES-256-GCM y son de **solo escritura**: el `GET` devuelve un enmascarado y el flag
+  `isSet`, jamás el valor. Ver "Secrets" abajo.
 
 ## Flujo de inicio por tenant
 
@@ -94,21 +95,29 @@ genuinamente cross-tenant (ver todos los tenants, configuración global) usa est
 un permiso RBAC a secas: un permiso RBAC no alcanza porque un admin de tenant podría
 auto-asignárselo.
 
-## "Conocido" en el motor de flujos
+## No hablamos con desconocidos
 
-`ConversationsService.handleMessage` resuelve `identity` (`isKnown`, `roleId`, `roleName`)
-consultando `UsersService.findMembershipByPhone(phone, tenantId)` — **contra el registro
-real de usuarios (`UserTenant` + `Role`), no contra si existe una fila en `User`**. Cualquier
-número que escribe una vez por WhatsApp termina con una fila en `User` (el placeholder que
-crea `findOrCreateByPhone`), así que "¿existe un `User` con este teléfono?" nunca sirve para
-distinguir conocido de nuevo — siempre da que sí.
+`ConversationsService.handleMessage` resuelve la identidad consultando
+`UsersService.findMembershipByPhone(phone, tenantId)` — **contra el registro real de
+usuarios (`UserTenant` + `Role`), no contra si existe una fila en `User`**. Sin membresía en
+ese tenant, el mensaje se rechaza ahí mismo (pedido 2026-08-27): no se crea ningún `User`, no
+se abre `Conversation`, no se gasta LLM. El intento queda en un log de archivo
+(`UnknownSenderLogService`, un mes de retención, mismo esquema que
+`GupshupFileLoggerService`), no en la BD — cuando exista rate limiting por número ahí sí va a
+hacer falta un conteo persistente, hoy no.
 
-Ese chequeo se resuelve una sola vez, en `handleMessage`, **antes** de tocar
-`findOrCreateByPhone`, y el resultado (`user` + `identity`) se enhebra por parámetro hasta
-`executeNode`'s `case 'start'`. Si algún día hace falta este dato en otro nodo, agregarlo
-como parámetro también — no volver a consultarlo ahí adentro. Repetir la consulta dentro del
-nodo fue exactamente el bug original: para cuando se preguntaba, el usuario ya existía
-porque un paso antes se lo había creado el propio `handleMessage`.
+Antes existía `UsersService.findOrCreateByPhone`, que creaba una fila placeholder en `User`
+(`whatsapp-{tel}@local.pci`) para cualquier número que escribiera, sin importar si estaba
+registrado — quedó eliminada. Sin esa fila fantasma, `executeFlow`/`executeNode` (incluido
+`case 'start'`) solo corren para gente ya registrada: `identity.isKnown` es efectivamente
+siempre `true` en ese punto — la rama `unknown` del nodo `start` queda como capacidad del
+motor de flujos, pero inalcanzable por este camino.
+
+El resultado (`user` + `identity`) se enhebra por parámetro desde `handleMessage` hasta
+`executeNode`'s `case 'start'` — si algún día hace falta este dato en otro nodo, agregarlo
+como parámetro también, no volver a consultarlo ahí adentro (ese fue el bug original: para
+cuando `case 'start'` preguntaba, el usuario ya existía porque `handleMessage` lo acababa de
+crear un paso antes).
 
 ## Broker / RabbitMQ — patrón RPC
 
@@ -131,6 +140,50 @@ request. Si tocás esto, tres cosas que ya rompieron el flujo una vez cada una:
   → cierra el canal con 405 (RESOURCE_LOCKED) y la respuesta nunca llega. Por eso
   `publish()` acepta `{ assert: false }` — usarlo siempre que se publique contra una cola
   que el propio código ya declaró (como la de respuesta RPC).
+
+## Fuentes de verdad (`ContextSource`)
+
+Cada flujo puede vincularse a una fuente de verdad externa (MCP remoto, RAG, o webhook de
+n8n) que el backoffice administra en `/dashboard/context-sources`. El catálogo de tipos y
+campos vive en `context-source-types.catalog.ts` — mismo criterio que `settings.catalog.ts`:
+única fuente de verdad de qué tipos y campos son válidos, y `ContextSourcesService` descarta
+cualquier key de `config` que no esté declarada ahí para el `type` de esa fuente.
+
+- **Por tenant, no por flujo:** `ContextSource` tiene `tenantId` (como `Area`) para poder
+  reusar la misma fuente entre varios flujos de la empresa sin duplicar credenciales.
+  `Flow.contextSourceId` es un FK simple y nullable — **un único valor por flujo**, no una
+  relación N:N. Ver la limitación conocida más abajo.
+- **Secrets dentro de `config` (Json):** los campos marcados `secret: true` en el catálogo se
+  cifran con `SecretsCipher` (mismo mecanismo AES-256-GCM que `Setting`) antes de guardarse
+  dentro del `Json`, y nunca se devuelven en claro por la API — el GET expone un enmascarado
+  más `<campo>IsSet`, igual que los settings marcados `secret`. Un campo `secret` ausente en
+  un `PATCH` significa "no tocar" (conserva el cifrado existente); mandarlo explícito en
+  `null`/`''` lo borra.
+- **Todo I/O externo pasa por el broker**, misma regla que WhatsApp (ver "Desacople de
+  canales" en Constraints, y la sección Broker/RabbitMQ más abajo): `ContextSourcesController`
+  nunca hace `fetch()` directo contra un MCP/RAG/n8n. "Probar conexión"
+  (`POST /context-sources/:id/test-connection`) publica un `BrokerService.request()` a
+  `context-source.test-connection`, y `ContextSourceConnectorService` —suscripto a esa cola
+  desde `onModuleInit`, mismo patrón que `ConversationsService` con `whatsapp.incoming`— hace
+  la llamada real y responde por el canal RPC. Hoy productor y consumidor viven en el mismo
+  proceso; es el punto de extensión para cuando la consulta real se dispare desde el motor de
+  flujos, potencialmente desde un worker separado.
+- **No instalamos nada:** `config` son parámetros de conexión (URL + credenciales) a un
+  servicio que ya corre en otro lado. No hay proceso local de MCP, RAG ni n8n en este repo.
+
+**Limitación conocida:** `Flow` puede estar asignado a varios tenants a la vez (`TenantFlow`,
+N:N), pero `ContextSource` es por tenant y `Flow.contextSourceId` es un único FK global del
+flujo. Un flujo compartido entre dos empresas hoy usa la MISMA fuente de verdad (o ninguna)
+para ambas — no hay forma de que cada tenant vea una fuente distinta. Si hace falta, la
+solución es una tabla puente `FlowContextSource` con `tenantId` (mismo patrón que
+`TenantFlow`), no forzar el FK actual. Ver `docs/plan-de-trabajo.md`, sección "Fuentes de
+verdad — Ejecución real".
+
+**Pendiente (deliberadamente fuera de esta etapa):** la ejecución real — que el motor de
+conversaciones (`ConversationsService.executeNode`) consulte la fuente vinculada durante una
+conversación — no está implementada. Lo que existe hoy es administración (CRUD + probar
+conexión) y la vinculación flujo↔fuente. Ver `docs/plan-de-trabajo.md` para el detalle de qué
+falta por tipo (handshake MCP, contrato de RAG, cola RPC dedicada para la consulta en vivo).
 
 ## Resolución del tenant
 
@@ -182,8 +235,9 @@ key fuera del catálogo se rechaza.
 ### Secrets en la tabla `Setting`
 
 La spec §5 pedía que las API keys vivieran solo en env vars / vault. El usuario pidió
-poder configurar cada proveedor de LLM completo desde el backoffice, así que se hizo una
-concesión acotada, con estas reglas que hay que respetar al tocar este código:
+poder configurar cada proveedor de LLM completo desde el backoffice (y después, 2026-08-14,
+también InvGate — administrar credenciales editando `.env` a mano era engorroso), así que
+se hizo una concesión acotada, con estas reglas que hay que respetar al tocar este código:
 
 - Una clave del catálogo marcada `secret: true` se guarda **cifrada** (AES-256-GCM,
   `SecretsCipher` en `src/config/secrets.cipher.ts`). La clave maestra es

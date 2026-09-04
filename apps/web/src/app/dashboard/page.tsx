@@ -1,18 +1,36 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/hooks/use-auth';
+import { apiFetch } from '@/lib/api';
+
+interface DashboardMetrics {
+  users: number;
+  tenants: number;
+  conversations: number;
+  tickets: number;
+}
 
 export default function DashboardPage() {
-  const { user, hasPermission } = useAuth();
+  const { user } = useAuth();
+  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+
+  useEffect(() => {
+    apiFetch('/metrics/dashboard')
+      .then(setMetrics)
+      .catch(() => setMetrics(null));
+  }, []);
+
+  const value = (n: number | undefined) => (n === undefined ? '—' : String(n));
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6 text-gray-800">Dashboard</h1>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card title="Usuarios" value="—" color="blue" />
-        <Card title="Tenants" value="—" color="green" />
-        <Card title="Conversaciones" value="—" color="purple" />
-        <Card title="Tickets" value="—" color="orange" />
+        <Card title="Usuarios" value={value(metrics?.users)} color="blue" />
+        <Card title="Tenants" value={value(metrics?.tenants)} color="green" />
+        <Card title="Conversaciones" value={value(metrics?.conversations)} color="purple" />
+        <Card title="Tickets" value={value(metrics?.tickets)} color="orange" />
       </div>
 
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">

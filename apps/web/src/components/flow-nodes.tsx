@@ -16,6 +16,10 @@ const nodeColors: Record<string, string> = {
   delay: '#6b7280',
   variable: '#84cc16',
   webhook: '#f97316',
+  end: '#991b1b',
+  device_validation: '#0ea5e9',
+  sms: '#22c55e',
+  notification: '#eab308',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -31,6 +35,10 @@ const nodeLabels: Record<string, string> = {
   delay: 'Delay',
   variable: 'Variable',
   webhook: 'Webhook',
+  end: 'Fin',
+  device_validation: 'Validar Dispositivo',
+  sms: 'SMS',
+  notification: 'Notificación',
 };
 
 function BaseNode({ id, data, type, children }: any) {
@@ -86,7 +94,15 @@ export const StartNode = memo(({ id, data }: any) => (
     {/* Content */}
     <div className="p-2 text-sm text-gray-700">
       <div className="text-xs text-gray-500 mb-1">Identifica usuario por teléfono</div>
-      {data?.text && <p className="text-xs line-clamp-2 text-gray-700">{data.text}</p>}
+      {data?.noGreeting ? (
+        <p className="text-xs text-gray-400 italic">Sin saludo</p>
+      ) : data?.text ? (
+        <p className="text-xs line-clamp-2 text-gray-700">{data.text}</p>
+      ) : (
+        <p className="text-xs line-clamp-2 text-gray-400 italic">
+          ¡Hola [nombre]! Bienvenido de nuevo.
+        </p>
+      )}
       <div className="mt-1 text-[10px] text-gray-400">
         Guarda: isKnownUser, userName, userPhone
       </div>
@@ -168,12 +184,30 @@ export const MenuNode = memo(({ id, data }: any) => {
         {data?.text && <p className="text-xs line-clamp-2">{data.text}</p>}
         {options.length > 0 && (
           <div className="mt-1 space-y-0.5">
+            {/* Cada fila lleva su propio handle de salida, alineado a la derecha
+                de esa fila — reemplaza el reparto por `left%` en Position.Bottom,
+                que con muchas opciones dibujaba una escalera diagonal en vez de
+                una lista prolija. */}
             {options.map((opt: any, i: number) => (
-              <div key={i} className="text-xs text-gray-500 flex items-center gap-1">
+              <div
+                key={opt.value ?? i}
+                className="relative text-xs text-gray-500 flex items-center gap-1 pr-1"
+              >
                 <span className="w-4 h-4 rounded bg-gray-100 flex items-center justify-center text-[10px]">
                   {i + 1}
                 </span>
                 {opt.label}
+                <Handle
+                  type="source"
+                  id={String(opt.value)}
+                  position={Position.Right}
+                  style={{
+                    background: color,
+                    top: '50%',
+                    right: -12,
+                    transform: 'translateY(-50%)',
+                  }}
+                />
               </div>
             ))}
           </div>
@@ -183,37 +217,10 @@ export const MenuNode = memo(({ id, data }: any) => {
       {/* Target handle (top) */}
       <Handle type="target" position={Position.Top} style={{ background: color }} />
 
-      {/* Source handles: one per option, distributed horizontally */}
+      {/* Sin opciones configuradas: una única salida abajo, como cualquier otro nodo. */}
       {options.length === 0 && (
         <Handle type="source" position={Position.Bottom} style={{ background: color }} />
       )}
-      {options.map((opt: any, i: number) => {
-        const total = options.length;
-        const leftPercent = total === 1 ? 50 : ((i / (total - 1)) * 80 + 10);
-        return (
-          <div key={opt.value || i} className="relative" style={{ height: 12 }}>
-            <Handle
-              type="source"
-              id={String(opt.value)}
-              position={Position.Bottom}
-              style={{
-                background: color,
-                left: `${leftPercent}%`,
-              }}
-            />
-            <div
-              className="absolute text-[9px] text-gray-500 font-medium whitespace-nowrap"
-              style={{
-                bottom: 0,
-                left: `${leftPercent}%`,
-                transform: 'translateX(-50%)',
-              }}
-            >
-              {opt.value}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 });
@@ -228,32 +235,103 @@ export const InputNode = memo(({ id, data }: any) => (
   </BaseNode>
 ));
 
-export const ConditionNode = memo(({ id, data }: any) => (
-  <BaseNode id={id} data={data} type="condition">
-    {data?.conditions && (
-      <div className="mt-1 text-xs text-gray-500">
-        {data.conditions.length} condición(es)
+const CONDITION_OPERATOR_LABELS: Record<string, string> = {
+  equals: 'es igual a',
+  not_equals: 'es distinto de',
+  contains: 'contiene',
+  exists: 'tiene valor',
+  not_exists: 'no tiene valor',
+};
+
+export const ConditionNode = memo(({ id, data }: any) => {
+  const color = nodeColors.condition;
+
+  return (
+    <div
+      className="rounded-lg shadow-md border-2 bg-white"
+      style={{ borderColor: color, minWidth: 200, maxWidth: 260 }}
+    >
+      {/* Header */}
+      <div
+        className="text-white text-xs font-semibold px-2 py-1 rounded-t-md flex items-center gap-1"
+        style={{ backgroundColor: color }}
+      >
+        <div className="w-2 h-2 rounded-full bg-white/80" />
+        {nodeLabels.condition}
       </div>
-    )}
-  </BaseNode>
-));
+
+      {/* Content */}
+      <div className="p-2 text-sm text-gray-700">
+        {data?.compareVariable ? (
+          <p className="text-xs font-mono">
+            {data.compareVariable} {CONDITION_OPERATOR_LABELS[data.compareOperator] || 'es igual a'}
+            {!['exists', 'not_exists'].includes(data.compareOperator) && data.compareValue
+              ? ` "${data.compareValue}"`
+              : ''}
+          </p>
+        ) : (
+          <p className="text-gray-400 text-xs italic">Sin variable configurada</p>
+        )}
+      </div>
+
+      {/* Target handle (top) */}
+      <Handle type="target" position={Position.Top} style={{ background: color }} />
+
+      {/* Source handles (bottom) - dos salidas fijas: afirmativo / negativo */}
+      <div className="relative h-3">
+        <Handle
+          type="source"
+          id="true"
+          position={Position.Bottom}
+          style={{ background: '#22c55e', left: '25%' }}
+        />
+        <div
+          className="absolute text-[9px] text-green-600 font-semibold"
+          style={{ bottom: 4, left: '25%', transform: 'translateX(-50%)' }}
+        >
+          afirmativo
+        </div>
+
+        <Handle
+          type="source"
+          id="false"
+          position={Position.Bottom}
+          style={{ background: '#ef4444', left: '75%' }}
+        />
+        <div
+          className="absolute text-[9px] text-red-600 font-semibold"
+          style={{ bottom: 4, left: '75%', transform: 'translateX(-50%)' }}
+        >
+          negativo
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export const TicketCreateNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="ticket_create">
     {data?.subject && (
       <div className="mt-1 text-xs text-gray-500">Asunto: {data.subject}</div>
     )}
+    {data?.category && (
+      <div className="text-xs text-gray-500">Categoría: {data.category}</div>
+    )}
     {data?.priority && (
       <div className="text-xs text-gray-500">Prioridad: {data.priority}</div>
+    )}
+    {data?.ticketType && (
+      <div className="text-xs text-gray-500">Tipo: {data.ticketType}</div>
+    )}
+    {data?.text && (
+      <div className="text-xs text-gray-500">Mensaje: {data.text}</div>
     )}
   </BaseNode>
 ));
 
 export const TicketQueryNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="ticket_query">
-    {data?.ticketIdVariable && (
-      <div className="mt-1 text-xs text-gray-500">Var: {data.ticketIdVariable}</div>
-    )}
+    <div className="mt-1 text-xs text-gray-500">Lista los tickets abiertos del usuario</div>
   </BaseNode>
 ));
 
@@ -261,10 +339,28 @@ export const TransferAgentNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="transfer_agent" />
 ));
 
+export const SmsNode = memo(({ id, data }: any) => {
+  const recipients = data?.recipients || [];
+  return (
+    <BaseNode id={id} data={data} type="sms">
+      {recipients.length > 0 && (
+        <div className="mt-1 text-xs text-gray-500">
+          {recipients.length} destinatario{recipients.length === 1 ? '' : 's'}
+        </div>
+      )}
+    </BaseNode>
+  );
+});
+
 export const LlmQueryNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="llm_query">
     {data?.systemPrompt && (
       <div className="mt-1 text-xs text-gray-500 line-clamp-1">Prompt configurado</div>
+    )}
+    {data?.extractVariables?.length > 0 && (
+      <div className="mt-1 text-xs text-gray-500">
+        {data.extractVariables.length} variable(s) a extraer
+      </div>
     )}
   </BaseNode>
 ));
@@ -287,6 +383,14 @@ export const VariableNode = memo(({ id, data }: any) => (
   </BaseNode>
 ));
 
+export const DeviceValidationNode = memo(({ id, data }: any) => (
+  <BaseNode id={id} data={data} type="device_validation">
+    <div className="mt-1 text-[10px] text-gray-400">
+      Fingerprint teléfono+email. Transparente si ya está validado.
+    </div>
+  </BaseNode>
+));
+
 export const WebhookNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="webhook">
     {data?.url && (
@@ -297,6 +401,54 @@ export const WebhookNode = memo(({ id, data }: any) => (
     )}
   </BaseNode>
 ));
+
+export const NotificationNode = memo(({ id, data }: any) => {
+  const isLink = data?.buttonMode === 'link';
+  return (
+    <BaseNode id={id} data={data} type="notification">
+      <div className="mt-1 inline-block bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded">
+        {isLink ? '🔗 ' : ''}
+        {data?.buttonLabel || 'Continuar'}
+      </div>
+      {isLink && data?.buttonUrl && (
+        <div className="mt-1 text-xs text-gray-500 line-clamp-1">{data.buttonUrl}</div>
+      )}
+      {!isLink && data?.expectsPhoto && (
+        <div className="mt-1 text-xs text-gray-500">📷 una foto también avanza</div>
+      )}
+    </BaseNode>
+  );
+});
+
+export const EndNode = memo(({ id, data }: any) => {
+  const color = nodeColors.end;
+  const text = data?.text || '';
+
+  return (
+    <div
+      className="rounded-lg shadow-md border-2 bg-white"
+      style={{ borderColor: color, minWidth: 180, maxWidth: 240 }}
+    >
+      <div
+        className="text-white text-xs font-semibold px-2 py-1 rounded-t-md flex items-center gap-1"
+        style={{ backgroundColor: color }}
+      >
+        <div className="w-2 h-2 rounded-full bg-white/80" />
+        {nodeLabels.end}
+      </div>
+      <div className="p-2 text-sm text-gray-700">
+        {text ? (
+          <p className="line-clamp-3 text-xs">{text}</p>
+        ) : (
+          <p className="text-gray-400 text-xs italic">Sin mensaje de cierre</p>
+        )}
+        <p className="mt-1 text-[10px] text-gray-400">Cierra la charla (retomable)</p>
+      </div>
+      {/* Sin handle de salida: es un nodo terminal. */}
+      <Handle type="target" position={Position.Top} style={{ background: color }} />
+    </div>
+  );
+});
 
 export const SubflowNode = memo(({ id, data }: any) => (
   <div

@@ -6,8 +6,12 @@
  * cualquier key que no esté acá, para que nadie inyecte configuración arbitraria
  * en la tabla `Setting`.
  *
- * Los secrets (API keys de LLM e Invgate) NO van acá: van por env vars / vault,
- * nunca por BD ni por endpoint (constraint de spec §5).
+ * Los secrets marcados `secret: true` (API keys de LLM, WhatsApp/Twilio e InvGate) SÍ
+ * pueden vivir acá — se guardan cifrados (`SecretsCipher`, AES-256-GCM) y son de solo
+ * escritura, nunca en texto plano ni devueltos por la API. Decisión explícita del
+ * usuario (LLM: 2026-08-03; InvGate: 2026-08-14, reemplaza la constraint original de
+ * spec §5 de "solo env var" — administrar credenciales editando `.env` a mano era
+ * engorroso). `.env` sigue funcionando como fallback de la cascada BD→env→default.
  */
 
 export type SettingType = 'number' | 'string' | 'boolean' | 'enum';
@@ -19,6 +23,7 @@ export const LLM_PROVIDERS = [
   'claude',
   'openrouter',
   'opencodego',
+  'minimax',
 ] as const;
 export type LlmProviderName = (typeof LLM_PROVIDERS)[number];
 
@@ -31,7 +36,18 @@ export type SettingGroup =
   | 'LLM: Gemini'
   | 'LLM: Claude'
   | 'LLM: OpenRouter'
-  | 'LLM: OpenCode Go';
+  | 'LLM: OpenCode Go'
+  | 'LLM: MiniMax'
+  | 'Mensajería: WhatsApp'
+  | 'Mensajería: WhatsApp (Twilio)'
+  | 'Mensajería: WhatsApp (Gupshup)'
+  | 'Mensajería: SMS'
+  | 'Mensajería: SMS (Twilio)'
+  | 'Mensajería: SMS (Gupshup)'
+  | 'Mensajería: Email'
+  | 'Integración: InvGate'
+  | 'Simulación'
+  | 'Otros';
 
 export interface SettingDefinition {
   key: string;
@@ -75,6 +91,17 @@ export interface SettingDefinition {
  */
 export function defaultOtpEnabled(): string {
   return String(process.env.NODE_ENV !== 'development');
+}
+
+/**
+ * Default de `CONVERSATIONS_SIMULATE_ENABLED` cuando no hay valor en BD ni en env: habilitado
+ * fuera de `NODE_ENV=production` (dev y test — Jest fija `NODE_ENV=test` si no hay uno explícito,
+ * así que los e2e siguen viendo el endpoint habilitado sin tocar nada). `/conversations/simulate`
+ * es una herramienta de desarrollo (scripts, e2e): en producción, sin fijar nada a mano, queda
+ * cerrado — mismo criterio (y mismo mecanismo) que `defaultOtpEnabled`.
+ */
+export function defaultSimulateEnabled(): string {
+  return String(process.env.NODE_ENV !== 'production');
 }
 
 export const SETTINGS_CATALOG: SettingDefinition[] = [
@@ -132,7 +159,7 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     label: 'Proveedor activo',
     defaultValue: 'openai',
     description: 'Lo lee LlmProviderFactory en cada request, sin reiniciar el backend.',
-    allowedValues: ['openai', 'gemini', 'claude', 'openrouter', 'opencodego'],
+    allowedValues: ['openai', 'gemini', 'claude', 'openrouter', 'opencodego', 'minimax'],
   },
   {
     key: 'LLM_TEMPERATURE',
@@ -161,7 +188,9 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     label: 'System prompt por defecto',
     defaultValue: '',
     description:
-      'System prompt base. Los nodos de flujo pueden sobrescribirlo por nodo.',
+      'Prompt base para toda charla. Cada flujo puede sumarle un Skill (ver Fuentes de ' +
+      'verdad → Skills) que se concatena a continuación, y el nodo `llm_query` puede a su vez ' +
+      'reemplazarlo o agregarle su propio texto (ver systemPromptMode en el editor de flujos).',
     multiline: true,
   },
 
@@ -324,6 +353,460 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'servidor: peligroso para un bot que atiende usuarios finales. Por eso acá el ' +
       'default es `plan`, que no permite edición. Ver GET /agent en tu servidor.',
   },
+
+  // --- MiniMax ---
+  {
+    key: 'MINIMAX_API_KEY',
+    type: 'string',
+    group: 'LLM: MiniMax',
+    label: 'API key',
+    defaultValue: '',
+    secret: true,
+    provider: 'minimax',
+    description:
+      'Se guarda cifrada. Misma key para el chat (OpenAI-compatible, /v1/chat/completions) y ' +
+      'para T2A (texto a voz) cuando se implemente esa parte — MiniMax usa un único Bearer ' +
+      'token para ambas APIs.',
+  },
+  {
+    key: 'MINIMAX_MODEL',
+    type: 'string',
+    group: 'LLM: MiniMax',
+    label: 'Modelo',
+    defaultValue: 'MiniMax-M2.5',
+    provider: 'minimax',
+    placeholder: 'MiniMax-M2.5',
+    description:
+      'Identificador del modelo de chat de MiniMax (ej. MiniMax-M3, MiniMax-M2.5). No es el ' +
+      'modelo de voz (T2A) — ese es un namespace de modelos distinto (speech-*).',
+  },
+  {
+    key: 'MINIMAX_BASE_URL',
+    type: 'string',
+    group: 'LLM: MiniMax',
+    label: 'Base URL (opcional)',
+    defaultValue: '',
+    provider: 'minimax',
+    placeholder: 'https://api.minimax.io/v1',
+    description: 'Vacío = endpoint global oficial. Cambiar solo para un proxy o la región de China.',
+  },
+
+  // --- Mensajería: WhatsApp ---
+  {
+    key: 'WHATSAPP_PROVIDER',
+    type: 'enum',
+    group: 'Mensajería: WhatsApp',
+    label: 'Proveedor activo',
+    defaultValue: 'meta',
+    description:
+      'Qué conector se suscribe a la cola de envío saliente: "meta" (Cloud API de Meta, ' +
+      'grupo de abajo), "twilio" (grupo "Mensajería: WhatsApp (Twilio)") o "gupshup" (grupo ' +
+      '"Mensajería: WhatsApp (Gupshup)"). Solo uno puede estar activo a la vez — se lee una ' +
+      'sola vez al arrancar el backend, así que un cambio acá requiere reiniciarlo para tomar ' +
+      'efecto (a diferencia de LLM_PROVIDER, que se relee en cada request).',
+    allowedValues: ['meta', 'twilio', 'gupshup'],
+  },
+  {
+    key: 'WHATSAPP_API_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Access Token',
+    defaultValue: '',
+    secret: true,
+    placeholder: 'EAAO...',
+    description:
+      'Token de acceso de la API de WhatsApp Business (Meta for Developers > WhatsApp > ' +
+      'API Setup). Se guarda cifrado.',
+  },
+  {
+    key: 'WHATSAPP_PHONE_NUMBER_ID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Phone Number ID',
+    defaultValue: '',
+    placeholder: '1162819126925337',
+    description: 'ID numérico del número de WhatsApp Business emisor (no el número en sí).',
+  },
+  {
+    key: 'WHATSAPP_API_VERSION',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Versión de la Graph API',
+    defaultValue: 'v26.0',
+    placeholder: 'v26.0',
+    description:
+      'Versión de la Graph API de Meta usada para el endpoint /messages. Actualizar cuando ' +
+      'Meta deprecia versiones viejas.',
+  },
+  {
+    key: 'WHATSAPP_WEBHOOK_VERIFY_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp',
+    label: 'Verify Token del webhook',
+    defaultValue: '',
+    secret: true,
+    description:
+      'Token propio (lo elegís vos, cualquier string) que Meta reenvía al verificar la ' +
+      'suscripción del webhook (GET /webhooks/whatsapp). Tiene que coincidir con el que ' +
+      'configures en Meta for Developers > WhatsApp > Configuration.',
+  },
+  // --- Mensajería: WhatsApp (Twilio) ---
+  {
+    key: 'TWILIO_ACCOUNT_SID',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Account SID',
+    defaultValue: '',
+    placeholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    description: 'SID de la cuenta de Twilio (Console > Account Info). No es secreto, pero es solo escritura por consistencia con el resto de las credenciales.',
+  },
+  {
+    key: 'TWILIO_AUTH_TOKEN',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Auth Token',
+    defaultValue: '',
+    secret: true,
+    placeholder: '32 caracteres',
+    description: 'Auth Token de la cuenta de Twilio (Console > Account Info). Se guarda cifrado.',
+  },
+  {
+    key: 'TWILIO_WEBHOOK_PUBLIC_URL',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'URL pública para verificar la firma de los webhooks',
+    defaultValue: '',
+    placeholder: 'https://miapp.com',
+    description:
+      'SOLO protocolo + host (ej. "https://miapp.com"), SIN el path del webhook y sin barra ' +
+      'final — el path (/webhooks/twilio o /webhooks/twilio-sms) lo agrega la API sola, no lo ' +
+      'incluyas acá aunque sea lo que está pegado en la consola de Twilio: si cargás la URL ' +
+      'completa del webhook, el path queda duplicado y la firma nunca va a matchear, cortando ' +
+      'TODOS los mensajes entrantes por Twilio con un simple "firma inválida" en el log. Se usa ' +
+      'para validar `X-Twilio-Signature` en cada POST entrante. Sin configurar, la verificación ' +
+      'queda desactivada y cualquiera que conozca la URL puede publicar mensajes falsos (deuda ' +
+      'conocida).',
+  },
+  {
+    key: 'TWILIO_WHATSAPP_FROM',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Twilio)',
+    label: 'Número emisor de WhatsApp',
+    defaultValue: '',
+    placeholder: '+14155238886',
+    description:
+      'Número habilitado para WhatsApp en Twilio, en formato E.164 con "+" (el sandbox de ' +
+      'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
+      'automáticamente, no incluirlo acá.',
+  },
+  // --- Mensajería: WhatsApp (Gupshup) ---
+  // API de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey`. Solo WhatsApp:
+  // el SMS de Gupshup va por otro endpoint y con otro header (ver "Mensajería: SMS (Gupshup)").
+  // `GUPSHUP_API_KEY` sí lo comparten los dos — la API key es de la cuenta, no del canal.
+  {
+    key: 'GUPSHUP_API_KEY',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'API Key',
+    defaultValue: '',
+    secret: true,
+    placeholder: '092707e8296649xxxx94c0fxxx818ad',
+    description: 'API key de la app de WhatsApp en Gupshup (pestaña "Cuenta" del panel). Se guarda cifrada.',
+  },
+  {
+    key: 'GUPSHUP_WHATSAPP_SOURCE',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'Número emisor (source)',
+    defaultValue: '',
+    placeholder: '15553788248',
+    description:
+      'Número de WhatsApp Business registrado en Gupshup ("ID del número de teléfono" en la ' +
+      'pestaña "Cuenta"), sin "+" ni separadores.',
+  },
+  {
+    key: 'GUPSHUP_APP_NAME',
+    type: 'string',
+    group: 'Mensajería: WhatsApp (Gupshup)',
+    label: 'Nombre de la app (src.name)',
+    defaultValue: '',
+    placeholder: 'dasyBot',
+    description: 'Nombre de la app registrada en Gupshup contra ese número (breadcrumb del panel, ej. "dasyBot").',
+  },
+  // --- Mensajería: SMS ---
+  {
+    key: 'SMS_PROVIDER',
+    type: 'enum',
+    group: 'Mensajería: SMS',
+    label: 'Proveedor activo',
+    defaultValue: 'twilio',
+    description:
+      'Qué conector se suscribe a la cola de envío saliente de SMS: "twilio" (grupo ' +
+      '"Mensajería: SMS (Twilio)") o "gupshup" (grupo "Mensajería: SMS (Gupshup)"). ' +
+      'Solo uno puede estar activo a la vez — se lee una sola vez al arrancar el backend, igual ' +
+      'que WHATSAPP_PROVIDER.',
+    allowedValues: ['twilio', 'gupshup'],
+  },
+
+  // --- Mensajería: SMS (Gupshup) ---
+  // API de SMS de Gupshup (`api.gupshup.io/sms/v1/message/{appId}`), auth por header
+  // `Authorization`. OJO: es un endpoint DISTINTO al de WhatsApp (`/wa/api/v1/msg`, header
+  // `apikey`) — hasta 2026-08-31 este conector pegaba al de WhatsApp con `channel: 'sms'`, que
+  // Gupshup acepta con 202 pero entrega como mensaje de WhatsApp, no como SMS (confirmado con
+  // tráfico real). Reusa `GUPSHUP_API_KEY` porque la API key es de la cuenta, no del canal.
+  {
+    key: 'GUPSHUP_SMS_APP_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'App ID (UUID)',
+    defaultValue: '',
+    placeholder: 'd7233f89-bf13-27e4-70d1-a981b1427249',
+    description:
+      'ID de la app de Gupshup, en formato UUID — NO el nombre (GUPSHUP_APP_NAME, que usa ' +
+      'WhatsApp): va en la URL del endpoint de SMS. Sale del panel de Gupshup.',
+  },
+  {
+    key: 'GUPSHUP_SMS_SOURCE',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'Sender ID (opcional)',
+    defaultValue: '',
+    placeholder: 'GSDSMS',
+    description:
+      'Identificador del emisor. Según la documentación de Gupshup solo aplica a India — en el ' +
+      'resto de los países lo asigna Gupshup automáticamente, así que normalmente va vacío.',
+  },
+
+  // --- Mensajería: SMS (Twilio) ---
+  // Reusa TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN del grupo de WhatsApp (Twilio) — es la misma
+  // cuenta de Twilio, solo cambia el número emisor. SMS es 100% saliente (avisos, ver el nodo
+  // `sms` del editor) — no hay tenant de entrada que configurar, no hay webhook de entrada.
+  {
+    key: 'TWILIO_SMS_FROM',
+    type: 'string',
+    group: 'Mensajería: SMS (Twilio)',
+    label: 'Número emisor de SMS',
+    defaultValue: '',
+    placeholder: '+15551234567',
+    description:
+      'Número de Twilio habilitado para SMS, en formato E.164 con "+". A diferencia del ' +
+      'número de WhatsApp, va SIN el prefijo "whatsapp:" (Twilio lo distingue por el canal, ' +
+      'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
+      'WhatsApp no sirve para esto.',
+  },
+  // --- Mensajería: Email ---
+  {
+    key: 'EMAIL_SMTP_HOST',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Host SMTP',
+    defaultValue: '',
+    placeholder: 'smtp.sendgrid.net',
+    description: 'Sin configurar, los emails (ej. códigos OTP) quedan solo logueados en consola.',
+  },
+  {
+    key: 'EMAIL_SMTP_PORT',
+    type: 'number',
+    group: 'Mensajería: Email',
+    label: 'Puerto SMTP',
+    defaultValue: '587',
+    min: 1,
+    max: 65535,
+    description: '587 (STARTTLS) o 465 (TLS implícito, requiere "Conexión segura" activada).',
+  },
+  {
+    key: 'EMAIL_SMTP_SECURE',
+    type: 'boolean',
+    group: 'Mensajería: Email',
+    label: 'Conexión segura (TLS implícito)',
+    defaultValue: 'false',
+    description: 'Activar solo si el puerto es 465. Con 587/STARTTLS dejar desactivado.',
+  },
+  {
+    key: 'EMAIL_SMTP_USER',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Usuario SMTP',
+    defaultValue: '',
+    description: 'Suele ser el email de la cuenta o un API user (ej. "apikey" en SendGrid).',
+  },
+  {
+    key: 'EMAIL_SMTP_PASS',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Contraseña / API key SMTP',
+    defaultValue: '',
+    secret: true,
+    description: 'Se guarda cifrada.',
+  },
+  {
+    key: 'EMAIL_FROM',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Remitente',
+    defaultValue: '',
+    placeholder: '"Plataforma Conversacional Inteligente Soporte" <soporte@tuempresa.com>',
+    description: 'Se usa como remitente en los emails salientes (ej. el código OTP).',
+  },
+  {
+    key: 'OTP_EMAIL_SUBJECT',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Asunto del email de verificación (login web)',
+    defaultValue: 'Código de verificación - Plataforma Conversacional Inteligente Chatbot',
+    description:
+      'Asunto del email con el código OTP del login del backoffice (2FA al entrar desde un ' +
+      'dispositivo nuevo). No es el mismo email que "validación de dispositivo" del chat de ' +
+      'WhatsApp — ver DEVICE_VALIDATION_EMAIL_SUBJECT.',
+  },
+  {
+    key: 'DEVICE_VALIDATION_EMAIL_SUBJECT',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Asunto del email de validación de dispositivo (nodo de flujo)',
+    defaultValue: 'Código de validación de dispositivo - Plataforma Conversacional Inteligente',
+    description:
+      'Asunto del email con el código que manda el nodo de flujo de validación de dispositivo, ' +
+      'cuando alguien escribe por WhatsApp desde un dispositivo nuevo. No es el mismo email que ' +
+      'el login del backoffice — ver OTP_EMAIL_SUBJECT.',
+  },
+
+  // --- Integración: InvGate ---
+  // Antes solo por env var (constraint original de spec §5) — movido a /settings a
+  // pedido explícito del usuario (2026-08-14): editar `.env` a mano para administrar
+  // el vínculo con InvGate era engorroso. Mismo patrón cifrado/solo-escritura que el
+  // resto de las credenciales de proveedor.
+  {
+    key: 'INVGATE_API_URL',
+    type: 'string',
+    group: 'Integración: InvGate',
+    label: 'URL base de la instancia',
+    defaultValue: '',
+    placeholder: 'https://tuempresa.sd.cloud.invgate.net',
+    description: 'Sin el sufijo /api/v1 — se agrega solo. Es la URL de tu instancia de InvGate Service Desk.',
+  },
+  {
+    key: 'INVGATE_API_USER',
+    type: 'string',
+    group: 'Integración: InvGate',
+    label: 'Usuario técnico de API',
+    defaultValue: '',
+    placeholder: 'chatbot_test',
+    description:
+      'Usuario técnico dedicado para la API (AGENTS.md: nunca con credenciales del usuario final). ' +
+      'No es secreto, pero es solo escritura por consistencia con el resto de las credenciales.',
+  },
+  {
+    key: 'INVGATE_API_KEY',
+    type: 'string',
+    group: 'Integración: InvGate',
+    label: 'Token de API',
+    defaultValue: '',
+    secret: true,
+    placeholder: 'Token del usuario técnico, no su contraseña de portal',
+    description:
+      'Token de API del usuario técnico (Settings > Integraciones > API en InvGate, o pedírselo al ' +
+      'admin). Ojo: no es la contraseña de login al portal, son cosas distintas — cargar la ' +
+      'contraseña por error da 401. Se guarda cifrado.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_CATEGORY_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Categoría por defecto',
+    defaultValue: '',
+    placeholder: '1653',
+    description:
+      'Id de categoría a usar cuando la charla no recolectó una (flowState.category, sin match, o ' +
+      'sin setear) — obligatoria para InvGate, no hay un default universal. Correr ' +
+      '`node scripts/invgate-check.mjs` para ver las categorías reales de esta instancia.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_PRIORITY_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Prioridad por defecto',
+    defaultValue: '',
+    placeholder: '2',
+    description: 'Id de prioridad por defecto (fallback de flowState.priority). Ej. 2 = Media, según el catálogo de esta instancia.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_TYPE_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Tipo por defecto',
+    defaultValue: '',
+    placeholder: '1',
+    description: 'Id de tipo de incidente por defecto (fallback de flowState.ticketType). Ej. 1 = Incidente, según el catálogo de esta instancia.',
+  },
+  {
+    key: 'INVGATE_DEFAULT_SOURCE_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Fuente por defecto (opcional)',
+    defaultValue: '',
+    placeholder: '8',
+    description: 'Id de fuente del ticket — opcional, InvGate lo acepta sin definir. Ej. 8 = API.',
+  },
+  {
+    key: 'INVGATE_CATEGORY_PARENT_ID',
+    type: 'number',
+    group: 'Integración: InvGate',
+    label: 'Categoría padre para el selector de tickets',
+    defaultValue: '',
+    placeholder: '1601',
+    description:
+      'Id de la categoría cuyas SUBCATEGORÍAS aparecen como opciones al armar un ticket en el ' +
+      'editor de flujos (nodo "Generar ticket"). Acota el selector a una rama puntual del árbol ' +
+      'en vez de mostrar el catálogo entero de la organización (puede tener cientos de ' +
+      'categorías que no aplican a tickets del chatbot). Ej.: 1601 = "Chatbot", bajo ' +
+      '"DEPTO. SISTEMAS > Soporte".',
+  },
+  // --- Simulación ---
+  {
+    key: 'CONVERSATIONS_SIMULATE_ENABLED',
+    type: 'boolean',
+    group: 'Simulación',
+    label: 'Habilitar POST /conversations/simulate',
+    defaultValue: 'true',
+    resolveDefault: defaultSimulateEnabled,
+    description:
+      'Endpoint de desarrollo para probar flujos sin un canal real (scripts, e2e) — exige login ' +
+      '(JwtAuthGuard) pero cualquier usuario autenticado puede simular cualquier tenant/teléfono. ' +
+      'Mientras no se fije un valor explícito, en NODE_ENV=production queda desactivado (404).',
+  },
+
+  // --- Otros ---
+  // Vida de una charla. Son dos ventanas distintas y encadenadas, no lo mismo: primero la
+  // charla activa se cierra sola por inactividad, y después queda un rato "retomable" antes
+  // de que el próximo mensaje arranque una charla nueva.
+  {
+    key: 'CONVERSATION_INACTIVITY_MINUTES',
+    type: 'number',
+    group: 'Otros',
+    label: 'Cierre por inactividad (minutos)',
+    defaultValue: '60',
+    min: 1,
+    max: 10080,
+    description:
+      'Una charla activa sin mensajes por más de este tiempo se cierra sola. El chequeo corre ' +
+      'cada 10 minutos, así que el cierre real cae entre el valor configurado y 10 minutos más. ' +
+      'Cerrar NO borra nada: si la persona vuelve a escribir dentro de la ventana de retomado, ' +
+      'sigue la misma charla pero con el flujo empezado de nuevo.',
+  },
+  {
+    key: 'CONVERSATION_RESUME_WINDOW_HOURS',
+    type: 'number',
+    group: 'Otros',
+    label: 'Ventana para retomar una charla cerrada (horas)',
+    defaultValue: '12',
+    min: 1,
+    max: 720,
+    description:
+      'Después de cerrarse (por inactividad, por el nodo "Fin" o porque la persona canceló), ' +
+      'la charla sigue siendo retomable por este tiempo: el próximo mensaje continúa la MISMA ' +
+      'conversación, conservando el historial. Pasada la ventana, arranca una conversación nueva.',
+  },
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -336,6 +819,17 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'LLM: Claude',
   'LLM: OpenRouter',
   'LLM: OpenCode Go',
+  'LLM: MiniMax',
+  'Mensajería: WhatsApp',
+  'Mensajería: WhatsApp (Twilio)',
+  'Mensajería: WhatsApp (Gupshup)',
+  'Mensajería: SMS',
+  'Mensajería: SMS (Twilio)',
+  'Mensajería: SMS (Gupshup)',
+  'Mensajería: Email',
+  'Integración: InvGate',
+  'Simulación',
+  'Otros',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));

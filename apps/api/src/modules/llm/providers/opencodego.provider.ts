@@ -127,7 +127,7 @@ export class OpenCodeGoProvider implements LlmProvider {
   private async createSession(): Promise<OpenCodeSession> {
     const res = await this.request('/session', {
       method: 'POST',
-      body: JSON.stringify({ title: 'pci-chatbot' }),
+      body: JSON.stringify({ title: 'plataforma-conversacional-inteligente' }),
     });
 
     const session = (await res.json()) as OpenCodeSession;
