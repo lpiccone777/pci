@@ -24,6 +24,7 @@ import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { SmsModule } from './modules/sms/sms.module';
 import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
 import { SkillsModule } from './modules/skills/skills.module';
+import { ScheduleCalendarModule } from './modules/schedule-calendar/schedule-calendar.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { SkillsModule } from './modules/skills/skills.module';
     SmsModule,
     ContextSourcesModule,
     SkillsModule,
+    ScheduleCalendarModule,
   ],
   controllers: [AppController],
   providers: [AppService, TenantGuard],

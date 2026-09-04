@@ -49,6 +49,12 @@ const menuDefinition: MenuItem[] = [
     action: 'read',
   },
   {
+    label: 'Calendario',
+    href: '/dashboard/schedule-calendar',
+    resource: 'schedule-calendar',
+    action: 'read',
+  },
+  {
     label: 'Configuración',
     href: '/settings',
     resource: 'settings',

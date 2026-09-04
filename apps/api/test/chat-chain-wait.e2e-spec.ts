@@ -251,16 +251,17 @@ describe('2.4 Encadenamiento y tope de pasos (CHAT-CHAIN-*) / 2.5 Espera en dos 
       expect(conv.flowState).toBeNull();
     });
 
-    it('CHAT-CHAIN-04: el propio nodo donde está parada la charla se elimina — no hay nada acumulado, cae al orquestador LLM (discrepancia con el plan)', async () => {
-      // El plan dice "resetea el flujo y devuelve lo acumulado" para cualquier caso de
-      // nodo eliminado en caliente. Leyendo el código: el chequeo "nodo no encontrado"
-      // está al PRINCIPIO de cada vuelta del loop, antes de ejecutar nada. Si el nodo que
-      // falta es justo donde estaba parada la conversación (el caso más común de una
-      // edición en caliente: borrar el nodo en el que alguien quedó esperando), `responses`
-      // está vacío `[]` en esa llamada → `toFlowResult([])` devuelve `null` →
-      // `executeFlow` devuelve `null` → `handleMessage` cae al orquestador LLM (fallback
-      // general), NO al texto fijo de interrupción ni a "lo acumulado" (no hay nada
-      // acumulado). El reseteo de la conversación sí ocurre igual en ambos casos.
+    it('CHAT-CHAIN-04: el propio nodo donde está parada la charla se elimina — no hay nada acumulado, turno silencioso (discrepancia con el plan)', async () => {
+      // El plan dice "resetea el flujo y devuelve lo acumulado" para cualquier caso de nodo
+      // eliminado en caliente. Leyendo el código: el chequeo "nodo no encontrado" está al
+      // PRINCIPIO de cada vuelta del loop, antes de ejecutar nada. Si el nodo que falta es
+      // justo donde estaba parada la conversación (el caso más común de una edición en
+      // caliente: borrar el nodo en el que alguien quedó esperando), `responses` está vacío
+      // `[]` en esa llamada → `toFlowResult([])` devuelve `{ text: '' }` (ya NO `null`) →
+      // `executeFlow` devuelve ese objeto truthy → `handleMessage` NO cae al orquestador LLM
+      // (esa rama es solo para "ningún flujo activo"): entra al corte de "turno silencioso"
+      // (`!responseText && !interactive`) y responde vacío, sin gastar LLM. El reseteo de la
+      // conversación sí ocurre igual.
       const { role, phone } = await makeKnownUser('Rol Chain04b', 'Eze');
       const flow = await createFlow(t.prisma, {
         name: 'F-CHAIN-04B',
@@ -276,12 +277,11 @@ describe('2.4 Encadenamiento y tope de pasos (CHAT-CHAIN-*) / 2.5 Espera en dos 
       await t.prisma.flow.update({ where: { id: flow.id }, data: { nodes: editedNodes as any } });
 
       llm.reset();
-      llm.setReply('Fallback del orquestador tras nodo eliminado.');
       const res2 = await simulate(phone, tenant.id, '1');
 
       expect(res2.status).toBe(201);
-      expect(res2.body.reply).toBe('Fallback del orquestador tras nodo eliminado.');
-      expect(llm.calls.length).toBe(1); // el orquestador SÍ se llamó (a diferencia del caso anterior)
+      expect(res2.body.reply).toBe(''); // turno silencioso: nada acumulado, no hay flowResult null
+      expect(llm.calls.length).toBe(0); // el orquestador NO se llama: sí hay flowResult (no es null)
 
       const user = await t.prisma.user.findUniqueOrThrow({ where: { phone } });
       const conv = await findConversation(user.id);

@@ -26,7 +26,11 @@
  * `findActiveFlowForTenant` solo enruta por `TenantFlow(isStart)` cuando `identity.roleId` es
  * verdadero (usuario CONOCIDO, con membership) — un usuario desconocido siempre cae al default
  * global. Por eso cada tenant con flujo propio de este archivo crea un usuario conocido
- * (`knownUser`) para cada `it`, y el tenant "sin flujo" usa teléfonos sueltos (desconocidos).
+ * (`knownUser`) para cada `it` — incluido el tenant "sin flujo": desde "no hablamos con
+ * desconocidos" (2026-08-27), un teléfono sin membresía se rechaza ANTES de llegar a
+ * `orchestratorLlm`, así que también necesita un usuario registrado (sin `TenantFlow` alguno
+ * asignado a su rol, sigue cayendo al fallback LLM igual — lo que cambia es que ya no puede
+ * ser "desconocido").
  *
  * Se evita `Flow.isDefault` (GLOBAL, hazard de aislamiento entre specs) en todo este archivo:
  * cada flujo se asigna vía `TenantFlow(isStart:true, roleIds:[...])`, scopeado a su propio
@@ -106,6 +110,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   // `Flow.isDefault` queda sin tocar en todo el archivo, así que esto alcanza para que
   // `findActiveFlowForTenant` siempre devuelva null y `handleMessage` caiga a `orchestratorLlm`.
   let tenantNoFlow: { id: string };
+  let roleNoFlow: { id: string };
 
   // --- Fuente de verdad + Skill en el fallback LLM de un `menu` (CHAT-LLMF-05/06/10).
   let tenantCtx: { id: string };
@@ -254,6 +259,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
     await unsetAllDefaults();
 
     tenantNoFlow = await createTenant(t.prisma, { slug: uniqueSlug('llmf-sinflujo') });
+    roleNoFlow = await createRole(t.prisma, { tenantId: tenantNoFlow.id, name: 'Rol sin flujo' });
 
     // CHAT-LLMF-05/06/10: menu con fallback LLM, fuente de verdad OK + Skill.
     const ctx = await makeTenantWithFlow(
@@ -372,7 +378,8 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   // ===================== 2.7 LLM dentro y fuera del flujo =====================
 
   it('CHAT-LLMF-01: mensaje sin flujo activo/default responde el orquestador LLM', async () => {
-    const res = await simulate(uniquePhone(), tenantNoFlow.id, '¿Cómo reseteo mi contraseña?');
+    const phone = await knownUser(tenantNoFlow.id, roleNoFlow.id, 'llmf01');
+    const res = await simulate(phone, tenantNoFlow.id, '¿Cómo reseteo mi contraseña?');
 
     expect(res.status).toBe(201);
     expect(res.body.reply).toBe(DEFAULT_FINAL_REPLY);
@@ -380,7 +387,12 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
 
   it('CHAT-LLMF-02: mencionar el propio ticket fuera de flujo agrega su contexto (scopeado por tenant)', async () => {
     const phone = uniquePhone();
-    const owner = await createUser(t.prisma, { email: uniqueEmail('llmf02'), phone, firstName: 'Dueño' });
+    const owner = await createUser(t.prisma, {
+      email: uniqueEmail('llmf02'),
+      phone,
+      firstName: 'Dueño',
+      memberships: [{ tenantId: tenantNoFlow.id, roleId: roleNoFlow.id }],
+    });
     const { ticket, digits } = await createTicketWithDigits({
       userId: owner.id,
       tenantId: tenantNoFlow.id,
@@ -435,7 +447,8 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   it('CHAT-LLMF-04: fallo del proveedor LLM no corta la charla, degrada con el texto de disculpa', async () => {
     llm.setFailure();
 
-    const res = await simulate(uniquePhone(), tenantNoFlow.id, '¿Cómo reseteo mi contraseña otra vez?');
+    const phone = await knownUser(tenantNoFlow.id, roleNoFlow.id, 'llmf04');
+    const res = await simulate(phone, tenantNoFlow.id, '¿Cómo reseteo mi contraseña otra vez?');
 
     expect(res.status).toBe(201);
     expect(res.body.reply).toBe(APOLOGY_TEXT);
@@ -525,7 +538,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
   );
 
   it('CHAT-LLMF-09: al reanudar dentro de las 12h, el historial mandado al LLM se acota a la sesión actual', async () => {
-    const phone = uniquePhone();
+    const phone = await knownUser(tenantNoFlow.id, roleNoFlow.id, 'llmf09');
 
     await simulate(phone, tenantNoFlow.id, 'Primer mensaje de la charla, número uno');
     const conversation = await t.prisma.conversation.findFirstOrThrow({
@@ -622,7 +635,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
 
   it('CHAT-CLOSE-01: mensaje de cierre global confirmado por el LLM cierra la charla desde cualquier estado', async () => {
     llm.setResponder(makeResponder(DEFAULT_FINAL_REPLY, { close: 'CERRAR' }));
-    const phone = uniquePhone();
+    const phone = await knownUser(tenantNoFlow.id, roleNoFlow.id, 'close01');
 
     const res = await simulate(phone, tenantNoFlow.id, 'Quiero cerrar la charla, gracias');
 
@@ -654,7 +667,7 @@ describe('2.7 LLM dentro y fuera del flujo, 2.8 Cierre, 2.9 Interpolación (CHAT
 
   it('CHAT-CLOSE-03: una palabra que parece cierre pero el LLM dice SEGUIR no cierra la charla', async () => {
     // `close` queda en 'SEGUIR' (default de `makeResponder`): el LLM no confirma el cierre.
-    const phone = uniquePhone();
+    const phone = await knownUser(tenantNoFlow.id, roleNoFlow.id, 'close03');
 
     await simulate(phone, tenantNoFlow.id, 'hola');
     const res = await simulate(phone, tenantNoFlow.id, 'Dejalo por ahora, seguimos después');

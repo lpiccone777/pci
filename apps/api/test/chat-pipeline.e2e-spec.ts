@@ -2,27 +2,44 @@
  * 2.1 Pipeline de un mensaje (`handleMessage`) (CHAT-PIPE-*)
  *
  * Vía: `POST /conversations/simulate` con { from, body, tenantId } para los casos que tienen
- * `replyTo` (siempre por simulate); `BrokerService.publish()` directo a `whatsapp.incoming` /
- * `sms.incoming` para los casos que necesitan el canal REAL (sin `replyTo`, no observable por
- * simulate — ver CHAT-PIPE-02/07/08 más abajo).
+ * `replyTo` (siempre por simulate); `BrokerService.publish()` directo a `whatsapp.incoming`
+ * para los casos que necesitan el canal REAL (sin `replyTo`, no observable por simulate — ver
+ * CHAT-PIPE-02/08 más abajo).
  *
  * Frontera mockeada: `LlmService` → `FakeLlmService`. El motor de flujos y el broker NO se
  * mockean: se ejercitan de verdad (RabbitMQ de punta a punta, igual que chat-start.e2e-spec.ts).
+ *
+ * SMS es 100% saliente (pedido de DEVELOPMENT, ver `SmsModule`/`ConversationsService.
+ * onModuleInit`): no hay webhook de entrada ni suscripción a `sms.incoming` para ningún
+ * proveedor — no hay conversación bidireccional por ese canal, así que no hay un CHAT-PIPE-07
+ * "mismo teléfono por whatsapp y por sms" que probar acá.
+ *
+ * "No hablamos con desconocidos" (pedido 2026-08-27, ver `ConversationsService.handleMessage`):
+ * un teléfono sin membresía en el tenant se rechaza ANTES de crear nada — ya no hay `User`
+ * placeholder. Como acá se manda `tenantId` explícito (vía `/simulate`, no ruteo por
+ * membresía), ese rechazo cae en el mismo lugar que antes resolvía "conocido": cada test que
+ * ejercita el pipeline entero (CHAT-PIPE-01/04/05/06/08) necesita un teléfono REGISTRADO
+ * (`knownUser`). CHAT-PIPE-02/03 (tenant dado de baja) no lo necesitan: ese corte ("0. Baja
+ * lógica de la empresa") corre ANTES del chequeo de membresía, así que un teléfono sin
+ * membresía sigue siendo válido para probarlo.
  *
  * Flujo fixture: un flujo `isDefault` propio, con las dos ramas de `start` (`known`/`unknown`)
  * convergiendo al mismo `message` + `end`, así toda conversación de este archivo se cierra en
  * un solo turno (deliberado: simplifica reanudación/cierre en CHAT-PIPE-04/05 y deja la
  * respuesta 100% determinística sin invocar al LLM). Hazard de `Flow.isDefault` GLOBAL: ver
- * flow-builder.ts.
+ * flow-builder.ts. La rama `unknown` queda inalcanzable por este camino (ver chat-known.e2e-
+ * spec.ts, que cubre el rechazo en sí) — se conserva en el flujo solo porque `start` la exige.
  */
 import { LlmService } from '../src/modules/llm/llm.service';
-import { UsersService } from '../src/modules/users/users.service';
 import { BrokerService } from '../src/modules/broker/broker.service';
 import {
   createTestApp,
   TestApp,
   http,
   createTenant,
+  createRole,
+  createUser,
+  uniqueEmail,
   uniqueSlug,
   uniquePhone,
   FakeLlmService,
@@ -67,13 +84,33 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
 
   let tenant: { id: string };
   let tenantBaja: { id: string };
+  let role: { id: string };
 
-  const FLOW_TEXT_START = 'Hola! Soy el bot de pipeline.';
   const FLOW_TEXT_END = 'Fin.';
-  const FULL_REPLY = `${FLOW_TEXT_START}\n\n${FLOW_TEXT_END}`;
 
   function simulate(from: string, tenantId: string, body = 'hola') {
     return http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from, body, tenantId });
+  }
+
+  /** El nodo `start` ignora `data.text` para un usuario conocido: siempre arma este saludo
+   *  interpolando `firstName` (ver ConversationsService.executeNode, case 'start') —
+   *  `data.text` solo se usa como fallback para la rama `unknown`, inalcanzable acá. */
+  function fullReplyFor(firstName: string) {
+    return `¡Hola ${firstName}! Bienvenido de nuevo.\n\n${FLOW_TEXT_END}`;
+  }
+
+  /** Teléfono registrado en `tenant` (con membership): "no hablamos con desconocidos" exige
+   *  esto para que el pipeline llegue a crear Conversation/Message — ver el comentario grande
+   *  de arriba del archivo. */
+  async function knownUser(label: string) {
+    const phone = uniquePhone();
+    const user = await createUser(t.prisma, {
+      email: uniqueEmail(label),
+      phone,
+      firstName: label,
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    return { phone, user };
   }
 
   async function unsetAllDefaults() {
@@ -89,6 +126,7 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
 
     tenant = await createTenant(t.prisma, { slug: uniqueSlug('pipe') });
     tenantBaja = await createTenant(t.prisma, { slug: uniqueSlug('pipe-baja'), deletedAt: new Date() });
+    role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol pipeline' });
 
     await unsetAllDefaults();
     // Flujo de un solo turno: start (known/unknown convergen) -> message -> end. Se cierra solo
@@ -97,7 +135,7 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
     await t.prisma.flow.create({
       data: {
         name: 'F-PIPE',
-        nodes: [startNode('s', { text: FLOW_TEXT_START }), endNode('e', FLOW_TEXT_END)] as never,
+        nodes: [startNode('s'), endNode('e', FLOW_TEXT_END)] as never,
         edges: [edge('s', 'e', 'known'), edge('s', 'e', 'unknown')] as never,
         isDefault: true,
         isActive: true,
@@ -116,22 +154,16 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
     llm.setResponder(defaultLlmResponder);
   });
 
-  it('CHAT-PIPE-01: primer mensaje de un número nuevo crea contacto placeholder, crea conversación y ejecuta el flujo', async () => {
-    const phone = uniquePhone();
+  it('CHAT-PIPE-01: primer mensaje de un usuario registrado crea la conversación y ejecuta el flujo', async () => {
+    const { phone, user } = await knownUser('pipe01');
 
     const res = await simulate(phone, tenant.id);
 
     expect(res.status).toBe(201);
-    expect(res.body.reply).toBe(FULL_REPLY);
-
-    // Placeholder creado por `UsersService.findOrCreateByPhone` (ver users.service.ts): email
-    // sintético `whatsapp-<phone>@local.pci`, nombre por defecto.
-    const user = await t.prisma.user.findFirst({ where: { phone } });
-    expect(user).toBeTruthy();
-    expect(user!.email).toBe(`whatsapp-${phone}@local.pci`);
+    expect(res.body.reply).toBe(fullReplyFor('pipe01'));
 
     const conversation = await t.prisma.conversation.findFirst({
-      where: { userId: user!.id, tenantId: tenant.id, channel: 'whatsapp' },
+      where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
     });
     expect(conversation).toBeTruthy();
   });
@@ -180,12 +212,11 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
   });
 
   it('CHAT-PIPE-04: segundo mensaje dentro de la ventana de reanudación (12h) reabre la conversación cerrada (mismo id)', async () => {
-    const phone = uniquePhone();
+    const { phone, user } = await knownUser('pipe04');
 
     const first = await simulate(phone, tenant.id);
     expect(first.status).toBe(201);
 
-    const user = await t.prisma.user.findFirstOrThrow({ where: { phone } });
     const conv1 = await t.prisma.conversation.findFirstOrThrow({
       where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
     });
@@ -200,7 +231,7 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
 
     const second = await simulate(phone, tenant.id);
     expect(second.status).toBe(201);
-    expect(second.body.reply).toBe(FULL_REPLY); // vuelve a correr el flujo desde el start
+    expect(second.body.reply).toBe(fullReplyFor('pipe04')); // vuelve a correr el flujo desde el start
 
     const conversations = await t.prisma.conversation.findMany({
       where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
@@ -215,12 +246,11 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
   });
 
   it('CHAT-PIPE-05: mensaje tras vencer la ventana de reanudación crea una conversación nueva', async () => {
-    const phone = uniquePhone();
+    const { phone, user } = await knownUser('pipe05');
 
     const first = await simulate(phone, tenant.id);
     expect(first.status).toBe(201);
 
-    const user = await t.prisma.user.findFirstOrThrow({ where: { phone } });
     const conv1 = await t.prisma.conversation.findFirstOrThrow({
       where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
     });
@@ -233,7 +263,7 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
 
     const second = await simulate(phone, tenant.id);
     expect(second.status).toBe(201);
-    expect(second.body.reply).toBe(FULL_REPLY);
+    expect(second.body.reply).toBe(fullReplyFor('pipe05'));
 
     const conversations = await t.prisma.conversation.findMany({
       where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
@@ -245,13 +275,12 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
   });
 
   it('CHAT-PIPE-06: se persiste el mensaje del usuario y luego el del asistente, ambos con senderType correcto', async () => {
-    const phone = uniquePhone();
+    const { phone, user } = await knownUser('pipe06');
     const body = 'hola, este es mi mensaje';
 
     const res = await simulate(phone, tenant.id, body);
     expect(res.status).toBe(201);
 
-    const user = await t.prisma.user.findFirstOrThrow({ where: { phone } });
     const conversation = await t.prisma.conversation.findFirstOrThrow({
       where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
     });
@@ -268,47 +297,13 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
     expect(messages[1].content).toBe(res.body.reply);
   });
 
-  it('CHAT-PIPE-07: el mismo teléfono por whatsapp y por sms resuelve/crea su propia Conversation (una por canal)', async () => {
-    const phone = uniquePhone();
-
-    // Pata whatsapp: por simulate (channel default 'whatsapp', ver CHAT-PIPE-08).
-    const waRes = await simulate(phone, tenant.id, 'hola');
-    expect(waRes.status).toBe(201);
-
-    // Pata sms: no hay endpoint /simulate para sms, así que se publica directo en la cola real
-    // `sms.incoming` (sin replyTo: la respuesta va a `sms.outgoing`, sin consumidor en este
-    // test — no afecta la aserción, que es sobre la Conversation creada en BD).
-    const sent = await broker.publish('sms.incoming', {
-      pattern: 'message.received',
-      data: { from: phone, body: 'hola', channel: 'sms' },
-      tenantId: tenant.id,
-      timestamp: new Date().toISOString(),
-    });
-    expect(sent).toBe(true);
-
-    const user = await t.prisma.user.findFirstOrThrow({ where: { phone } });
-    const smsConv = await waitUntil(() =>
-      t.prisma.conversation.findFirst({ where: { userId: user.id, tenantId: tenant.id, channel: 'sms' } }),
-    );
-    const waConv = await t.prisma.conversation.findFirst({
-      where: { userId: user.id, tenantId: tenant.id, channel: 'whatsapp' },
-    });
-
-    expect(waConv).toBeTruthy();
-    expect(smsConv.id).not.toBe(waConv!.id);
-
-    // Mismo User (misma persona, dos canales), pero dos Conversation independientes.
-    const conversations = await t.prisma.conversation.findMany({ where: { userId: user.id, tenantId: tenant.id } });
-    expect(conversations).toHaveLength(2);
-  });
-
   it('CHAT-PIPE-08: mensaje entrante sin channel explícito resuelve/crea la conversación de whatsapp (default retrocompatible)', async () => {
     // No observable por /simulate: `simulateIncomingMessage` nunca manda `channel` en el data,
     // así que TODO simulate ya ejercita este default implícitamente (ver CHAT-PIPE-01..07). Para
     // un caso explícito y aislado, se publica directo en `whatsapp.incoming` (la cola real) sin
     // el campo `channel`, imitando a un publisher viejo (o el propio webhook de Meta antes de
     // que se agregara el campo).
-    const phone = uniquePhone();
+    const { phone, user } = await knownUser('pipe08');
 
     const sent = await broker.publish('whatsapp.incoming', {
       pattern: 'message.received',
@@ -318,7 +313,6 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
     });
     expect(sent).toBe(true);
 
-    const user = await waitUntil(() => t.prisma.user.findFirst({ where: { phone } }));
     const conversation = await waitUntil(() =>
       t.prisma.conversation.findFirst({ where: { userId: user.id, tenantId: tenant.id } }),
     );

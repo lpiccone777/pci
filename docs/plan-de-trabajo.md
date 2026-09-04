@@ -247,11 +247,16 @@
   - `ticketType` sumado a `FlowNodeDataDto` (backend) — no existía como campo validado
   - Verificado en el browser real contra el backend: las tres listas muestran los valores reales
     de la instancia (categorías de "Chatbot", Baja/Media/Alta/Urgente/Crítica, los 6 tipos)
-- [x] **Consultar estado de tickets existentes** — `ConversationsService.refreshInvgateStatus()`,
-      llamado desde el nodo `ticket_query`: si el `Ticket` tiene `invgateId`, trae el estado real
-      (`status_id` → nombre, resuelto contra el catálogo de estados cacheado) y lo escribe de
-      vuelta en `Ticket.status` local. Sin `invgateId` (o si InvGate no responde), muestra el
-      estado local tal cual — pull-based, no hay webhook de InvGate hacia nosotros todavía
+- [x] **Consultar tickets existentes (rediseñado 2026-08-24)** — el nodo `ticket_query` ya no lee
+      la tabla local `Ticket` (su `status` cacheado podía estar desactualizado, sin webhook de
+      InvGate hacia nosotros). Ahora consulta EN VIVO: `InvgateService.listCustomerIncidents()`
+      (`GET incidents.by.customer` — único endpoint de esta API que lista por cliente, no está en
+      la doc pública de referencia, confirmado contra la instancia real) arma una lista
+      interactiva de los tickets abiertos del usuario (más recientes primero, tope 10 por el
+      límite de WhatsApp de filas por mensaje); al elegir uno, `buildTicketDetailText()` trae el
+      incidente puntual (`GET incident`) con estado/prioridad/fecha/agente asignado, verificando
+      que le pertenezca al mismo cliente antes de mostrarlo (si no, "no encontrado" — evita que
+      alguien vea el ticket de otra persona adivinando un id). Con botón "Volver a la lista"
 - [~] **Actualizar tickets con respuestas del usuario** — `InvgateService.addComment()`/
       `updateIncident()` existen y funcionan, pero **deliberadamente sin gancho automático**
       todavía: el único lugar donde el bot detecta que el usuario habla de un ticket existente
@@ -417,7 +422,10 @@
   - Estado persistido por conversación (`flowState`), con reseteo al terminar el flujo
 - [x] 13 tipos de nodo: `start`, `message`, `menu`, `input`, `condition`, `ticket_create`,
       `ticket_query`, `transfer_agent`, `llm_query`, `delay`, `variable`, `webhook`, `subflow`
-  - ⏳ `transfer_agent` y `webhook` son stubs: responden texto fijo, no ejecutan la acción
+  - ⏳ `transfer_agent` sigue siendo stub: responde texto fijo, no ejecuta la acción
+  - [x] `webhook` implementado (2026-08-26): hace el `fetch` real (URL/método/body JSON
+    interpolados con `flowState`), fire-and-forget — si falla solo loguea y el flujo
+    sigue. Editor con campo Body para armar el payload (ej. embeds de Discord)
 - [x] Editor visual en Next.js con ReactFlow (`/dashboard/flows` y `/dashboard/flows/[id]`)
   - Componentes `flow-nodes.tsx` y `flow-edges.tsx`
 - [x] Soporte de sub-flujos (nodo `subflow` con nodo de entrada configurable)
@@ -545,8 +553,136 @@
     "Volver" ofrecido) → elegir "Volver" → vuelve exactamente al menú raíz con la pila vacía
     de nuevo. El caso de cruzar un `subflow` al volver quedó implementado y tipado, pero sin
     ejercitar en vivo todavía (no había un caso de prueba a mano con esa forma exacta)
-
-### Conector real de WhatsApp y Email ✅ COMPLETADO (pedido 2026-08-05)
+- [x] **Nodo `condition` rediseñado: comparación de variables + 2 salidas fijas** (pedido 2026-08-27)
+  - Antes: lista de `conditions` (keyword/regex/variable-existe) con `targetNodeId` propio
+    cada una, editada como JSON crudo en el panel — no permitía comparar el *valor* de una
+    variable, solo si existía
+  - Formato nuevo: `data.compareVariable` (nombre de variable de `flowState`, ej.
+    `userRole`) + `data.compareOperator` (`equals`/`not_equals`/`contains`/`exists`/
+    `not_exists`) + `data.compareValue`. El motor evalúa una única comparación y devuelve
+    `sourceHandle: 'true' | 'false'` — el nodo en el editor siempre dibuja 2 salidas fijas
+    ("afirmativo"/"negativo"), mismo patrón de `sourceHandle` que ya usaba `start`
+    (`known`/`unknown`)
+  - Compatibilidad: si `data.compareVariable` no está seteado, el motor cae a la lógica
+    vieja de `conditions`/`defaultTargetNodeId` — los flujos guardados antes de este cambio
+    siguen funcionando, aunque ya no tengan UI para editarse (habría que migrarlos al
+    formato nuevo a mano)
+  - El panel del editor ahora tiene: input de variable (con `datalist` de sugerencias —
+    las que siempre trae `start`: `userRole`, `userRoleId`, `isKnownUser`, `userName`,
+    `userFirstName`, `userLastName`, `userEmail`, `userPhone`, `userId` — y también acepta
+    cualquier variable propia del flujo), selector de operador, e input de valor (oculto
+    para `exists`/`not_exists`)
+  - `userRole` ya lo seteaba siempre el nodo `start` desde el fix del 2026-08-04 (ver
+    arriba, "El nodo `start` nunca detectaba un número desconocido") — no hizo falta tocar
+    nada ahí, el pedido de "que el flujo de inicio la traiga siempre" ya estaba resuelto
+- [x] **Nodo `notification`: mandar una imagen también avanza el flujo** (pedido 2026-08-27)
+  - El nodo (texto + un botón, ej. "Agregue sus fotos" / "Sin foto") solo reconocía como
+    "hizo lo pedido" que el usuario tocara el botón (`pressedButton()`, matchea el label o
+    "1"). Si en cambio mandaba las fotos que el texto le pedía, `pressedButton()` daba
+    falso y el mensaje cae al LLM (`orchestratorLlm`) en vez de seguir la única arista de
+    salida del nodo — quedaba atendido por el LLM en lugar de avanzar
+  - Se agrega `sentImage()`: chequea `flowState.pendingAttachments.length > 0`, ya
+    actualizado por `handleMessage` (paso 2.5, adjuntos de whatsapp vía Twilio) ANTES de
+    llegar a `executeNode` — no hace falta pasar los adjuntos del turno actual por ningún
+    parámetro nuevo, ya estaban ahí
+  - `pressedButton() || sentImage()` reemplaza el chequeo original en los dos puntos donde
+    se decide si avanzar o derivar al LLM: la primera respuesta después de mostrar el
+    botón, y mientras ya está en `__llmFallback` (por si el usuario primero preguntó algo y
+    después mandó la foto)
+  - **Ajuste (mismo día, tras probarlo en vivo)**: `sentImage()` era incondicional para
+    TODO nodo `notification` en modo `confirm` — el pedido real era que fuera opcional,
+    no un comportamiento implícito para cualquier notificación con botón. Se agrega el
+    campo `data.expectsPhoto` (checkbox "Espera una foto" en el panel del editor, solo
+    visible en modo `confirm`) — `sentImage()` ahora exige `data.expectsPhoto === true`
+    además de `pendingAttachments`. Sin el tilde, el nodo vuelve al comportamiento
+    original: solo el botón avanza, cualquier otra cosa (imagen incluida) cae al LLM
+  - ⚠️ Si el backend no se reinicia después de este tipo de cambio de código, sigue
+    corriendo la versión vieja — un motivo real por el que el primer intento (sin el
+    tilde) pudo no notarse probándolo en caliente contra un proceso que no había
+    recargado. Ver "Cambio de proveedor de mensajería en caliente" (más abajo) para el
+    contexto de por qué esto no es automático hoy — no tiene relación con el proveedor,
+    pero es el mismo síntoma: cambio de código en el repo que no llega al proceso vivo
+    hasta reiniciarlo
+- [x] **`llm_query` en modo extracción: match de `allowedValues` demasiado estricto** (pedido 2026-08-27)
+  - Síntoma reportado: el nodo detecta que el usuario contestó (no vuelve a preguntar), pero
+    la variable no queda con el valor real — termina en `flowState[key] = 'no definido'`
+    (`LLM_QUERY_UNDEFINED_VALUE`, comportamiento intencional cuando de verdad no se pudo
+    resolver — ver el comentario de `interpolate()`, no se toca: sigue mostrando "no
+    definido" tal cual en el ticket cuando corresponde)
+  - Causa real: `extractLlmQueryValues` exigía que la respuesta del clasificador LLM
+    matcheara EXACTO (case-insensitive) contra alguno de `allowedValues`. Una diferencia
+    cosmética — tilde, punto final, "Alta prioridad" en vez de "Alta" — hacía que una
+    respuesta que el usuario SÍ dio se descartara a `NONE` igual, y con `maxAttempts`
+    default (2, sin tocar — bajarlo de intentos empeora la atención por WhatsApp) se
+    agotaba rápido y caía a "no definido" sin haber sido realmente indefinido
+  - Se agrega `normalizeForMatch()` (sin tildes, minúsculas, puntuación colapsada a
+    espacios): primero intenta igualdad normalizada, si no hay, contención en cualquier
+    sentido (agarra "alta" adentro de "alta prioridad" y viceversa). Sigue comparando
+    únicamente contra el catálogo cerrado de `allowedValues` — no reconoce sinónimos ni
+    inventa valores fuera de esa lista, solo tolera variación cosmética de la misma
+    respuesta
+- [x] **`llm_query` en modo extracción: quedaba trabado para siempre sin arista/destino configurado** (pedido 2026-08-28)
+  - Síntoma real (distinto del de arriba): con las variables YA resueltas (con valor real
+    o "no definido"), si el nodo no tenía ninguna arista dibujada en el canvas NI
+    `foundTargetNodeId`/`missingTargetNodeId` cargado a mano, el flujo no seguía a
+    ningún lado — quedaba parado en ese mismo nodo para siempre. No es un problema de
+    parchear un flujo puntual: es el motor tratando "no hay destino configurado" como
+    "quedate charlando acá indefinidamente", pensado originalmente para `llm_query` en
+    modo charla libre (sin `extractVariables`), pero aplicado también por error al modo
+    extracción — donde SÍ terminó de hacer su trabajo y no tiene sentido seguir "en
+    conversación libre" ahí
+  - Verificado en vivo (`/conversations/simulate`, con y sin arista dibujada): CON arista
+    ya andaba bien (avanza al nodo real); el bug era específicamente el caso SIN arista —
+    confirmado con log real: antes quedaba repitiendo el mismo nodo turno a turno, ahora
+    loguea `"Turno silencioso... el flujo avanzó sin responder"` — es decir, sigue de
+    largo (cierra el flujo si no hay más nada configurado) en vez de trabarse
+  - Fix: en `executeFlow`, el chequeo "`llm_query` sin salida = punto final conversacional"
+    ahora excluye explícitamente el modo extracción (`!node.data?.extractVariables?.length`)
+    — sigue aplicando tal cual para `llm_query` de charla libre (sin `extractVariables`),
+    que es donde tiene sentido quedarse conversando sin fin
+  - No hizo falta cablear nada en ningún flujo — el pedido explícito era que el motor
+    avance solo, sin depender de parchear el contenido del flujo
+- [x] **`llm_query` en modo extracción: el extractor se quedaba sin tokens con MiniMax y re-preguntaba datos ya dados** (pedido 2026-08-28, tercera capa del mismo síntoma)
+  - Con los dos fixes anteriores aplicados, el síntoma persistía: el usuario da sede e
+    interno, el nodo NO avanza y "el LLM queda atendiendo el llamado". La causa de esta
+    capa: `extractLlmQueryValues` usaba `CLASSIFIER_MAX_TOKENS` (300) — un tope calibrado
+    (ver su comentario) para clasificadores que responden UNA palabra. Este llamado no:
+    tiene que razonar sobre la conversación reciente entera Y emitir una línea
+    `clave: valor` por variable. Con MiniMax M2.x (razonamiento obligatorio, no se puede
+    apagar; `max_tokens` capea razonamiento+respuesta juntos), el pensamiento interno
+    consumía el presupuesto y `content` volvía vacío/cortado → el parser convertía todo a
+    NONE en silencio → el nodo re-preguntaba datos que el usuario YA dio, turno tras
+    turno, hasta agotar `maxAttempts` y caer a "no definido"
+  - Fix 1: `LLM_QUERY_EXTRACT_MAX_TOKENS = 2000` (constante propia, no tocar la de los
+    clasificadores de una palabra) — generoso a propósito, un proveedor no-razonador corta
+    solo al terminar las líneas así que el costo real no cambia
+  - Fix 2: parser tolerante — la clave se matchea normalizada (`normalizeForMatch`), así
+    "- sede: X" / "**sede**: X" / "Sede: X" ya no caen a NONE por decoración de la línea;
+    el valor pierde markdown/comillas envolventes antes de guardarse
+  - Fix 3: si alguna clave pendiente queda sin línea parseable, se loguea WARN con la
+    respuesta cruda del modelo — antes ese fallo era 100% invisible en los logs
+  - Verificado en vivo (multi-turno real por `/simulate`): descripción sin datos → el nodo
+    pregunta → respuesta "Estoy en DM - Martinez, interno 1025" → avanza y crea el ticket
+    en el mismo turno
+- [x] **`llm_query` en modo extracción: una sola salida, siempre por la arista — se eliminan los destinos manuales** (pedido 2026-08-28, cuarta y última capa)
+  - Con las tres capas anteriores arregladas, el flujo de test seguía mudo+reiniciando. La
+    causa final (visible recién con los WARN nuevos): el nodo tenía
+    `foundTargetNodeId`/`missingTargetNodeId` **tipeados a mano** en el editor con IDs que
+    no correspondían a ningún nodo real del flujo — y ese destino explícito le GANABA a la
+    arista correcta dibujada en el canvas. Al avanzar hacia un nodo inexistente, el motor
+    reseteaba la conversación en silencio ("flujo editado bajo los pies")
+  - Decisión de producto (pedido explícito): ambos resultados de la extracción (todas
+    resueltas / alguna en "no definido") salen por LA MISMA arista dibujada — ramificar por
+    "no definido" se hace con un nodo `condition` después. `executeLlmQueryExtraction` ya
+    no devuelve `nextNodeId`: ignora esos campos por completo
+  - Editor: se eliminan los dos campos de texto libre del panel (eran la fuente del ID
+    roto). Si un nodo viejo tiene destinos manuales guardados, el panel muestra un botón
+    rojo para limpiarlos de un click. Los campos quedan en el DTO solo para que los flujos
+    viejos pasen la validación al re-guardarse
+  - Defensas nuevas en el motor (quedan para siempre): WARN con nombre de flujo/nodo
+    cuando un destino devuelto no existe (antes: reset 100% silencioso, costó una tarde de
+    debugging), y fallback a la arista dibujada cuando el destino explícito de un nodo
+    está roto
 - [x] **`WhatsAppService` — envío real por la Cloud API de Meta**
   - Hasta ahora nadie consumía la cola `whatsapp.outgoing`: `ChannelsService` y
     `ConversationsService.handleMessage` publicaban ahí y los mensajes se perdían en el
@@ -681,13 +817,19 @@
   - Sin interactivo en absoluto (la API de Twilio no tiene noción de botones/listas para SMS):
     un `interactive` que llegue se degrada siempre a texto numerado, mismo mecanismo que el
     fallback de `TwilioWhatsAppService`
-- [x] **`TwilioSmsWebhookController`** — `POST /webhooks/twilio-sms`, mismo criterio que el de
-      Twilio-WhatsApp (sin handshake de verificación, sin firma verificada todavía). El `From`
-      ya viene en E.164 plano, sin prefijo de canal que sacarle
 - [x] **Nueva sección en `/settings`**: "Mensajería: SMS (Twilio)" (`TWILIO_SMS_FROM`)
 - ⚠️ **Bloqueado**: falta un número de Twilio habilitado para SMS — el sandbox de WhatsApp
   (`+14155238886`) no sirve para esto, hace falta comprar/asignar un número real en la
   consola de Twilio y cargarlo en `TWILIO_SMS_FROM`
+- [x] **SMS entrante sacado por completo (pedido 2026-08-27)**: decisión del cliente — no
+      vamos a manejar SMS bidireccional para ningún proveedor. Se borraron
+      `TwilioSmsWebhookController` (`POST /webhooks/twilio-sms`) y `GupshupSmsWebhookController`
+      (`POST /webhooks/gupshup-sms`), la suscripción a `sms.incoming` en
+      `ConversationsService.onModuleInit`, y los settings `TWILIO_SMS_TENANT_ID`/
+      `GUPSHUP_SMS_TENANT_ID` (solo servían para resolver a qué tenant asignar SMS entrante).
+      El grupo "Mensajería: SMS (Gupshup)" quedó vacío y se sacó del catálogo. El canal SMS
+      queda 100% saliente: solo lo usa el nodo `sms` del editor para avisos, sin
+      `Conversation` ni conversación bidireccional por ese canal
 
 ### Editor de flujos: nuevo nodo "SMS" ✅ COMPLETADO (pedido 2026-08-14)
 - [x] **Nodo `sms`** — manda un SMS por Twilio a una lista de destinatarios configurados a mano
@@ -707,7 +849,7 @@
     para el cuerpo del SMS, que sigue admitiendo `{{variable}}` vía
     `ConversationsService.interpolate`)
 
-### Gupshup como alternativa de WhatsApp y SMS ✅ WHATSAPP FUNCIONAL — SMS bloqueado (pedido 2026-08-14)
+### Gupshup como alternativa de WhatsApp y SMS ✅ WHATSAPP FUNCIONAL — SMS implementado, entrega sin confirmar (pedido 2026-08-14, SMS rehecho 2026-08-27)
 - [x] **`GupshupWhatsAppService`/`GupshupWebhookController`** — tercer conector de WhatsApp
       (`WHATSAPP_PROVIDER=gupshup`), mismo contrato de colas que Meta/Twilio
       (`whatsapp.outgoing`/`whatsapp.incoming`). Spec verificado contra la documentación
@@ -731,21 +873,68 @@
       diferencia de WhatsApp, que ya tenía `WHATSAPP_PROVIDER` desde el conector de Twilio).
       Gatear un segundo proveedor de SMS obligó a introducir ese mismo mecanismo acá por
       primera vez
-- [x] **`GupshupSmsService`/`GupshupSmsWebhookController`** (`SMS_PROVIDER=gupshup`) —
-      **API completamente distinta de la de WhatsApp**: el "Enterprise SMS" de Gupshup
-      (`enterprise.smsgupshup.com/GatewayAPI/rest`) es un producto legacy con su propia cuenta
-      (`userid`/`password`, no el `apikey` de WhatsApp), request por query params (no JSON) y
-      respuesta en texto plano (`"success | numero | msgid"`, no JSON)
-  - ⚠️ **El shape del webhook de SMS ENTRANTE no se pudo verificar** contra documentación
-    pública (Gupshup documenta bien el callback de *reporte de entrega*, no el de respuesta de
-    un usuario) — el controller acepta varios nombres de campo candidatos como mejor esfuerzo y
-    loguea los campos recibidos en cada intento fallido, para poder ajustar el mapeo rápido en
-    cuanto haya tráfico real
-  - ⚠️ **Bloqueado**: el usuario no tiene todavía la cuenta de Enterprise SMS de Gupshup (es
-    una cuenta separada de la app de WhatsApp) — parametrizado (`GUPSHUP_SMS_USERID`,
-    `GUPSHUP_SMS_PASSWORD` en `/settings`) para cuando la consiga,
-    mismo criterio que `TWILIO_SMS_FROM` cuando faltaba el número. Mientras tanto sigue
-    funcionando con el sandbox/Twilio existente (`SMS_PROVIDER` default `'twilio'`)
+- [x] **`GupshupSmsService`** (`SMS_PROVIDER=gupshup`) — **rehecho 2026-08-27**, ver historia abajo
+  - **Primer intento (2026-08-14): "Enterprise SMS" legacy** (`enterprise.smsgupshup.com/
+    GatewayAPI/rest`) — producto y cuenta separados de la app de WhatsApp (`userid`/`password`
+    propios, request por query params, respuesta en texto plano). Quedó bloqueado sin poder
+    probarse ni un solo envío: **la cuenta nunca se pudo dar de alta** — el signup de
+    `enterprise.smsgupshup.com` está roto del lado de Gupshup (confirmado 2026-08-27,
+    contactando soporte no destrabó nada en el momento; la doc pública de
+    `docs.gupshup.io/docs/sms-api-introduction` sigue describiendo esa misma cuenta legacy
+    como la vigente, no hay una API nueva reemplazándola documentada)
+  - **Segundo intento, el que quedó (2026-08-27): endpoint unificado de WhatsApp con
+    `channel: 'sms'`** — mismo `api.gupshup.io/wa/api/v1/msg` que ya usa `GupshupWhatsAppService`,
+    reusando las MISMAS credenciales (`GUPSHUP_API_KEY`/`GUPSHUP_WHATSAPP_SOURCE`/
+    `GUPSHUP_APP_NAME`, grupo "Mensajería: WhatsApp (Gupshup)") en vez de un grupo propio. Se
+    sacaron `GUPSHUP_SMS_USERID`/`GUPSHUP_SMS_PASSWORD` del catálogo de `/settings` — quedaron
+    sin uso
+  - ⚠️⚠️ **Entrega real SIN CONFIRMAR, a pesar de que la API "valida" el envío**: 6 envíos de
+    prueba en vivo (2 apps de Gupshup distintas, 2 API keys distintas, `source`/`src.name`
+    correctamente emparejados) devolvieron siempre `202 {"status":"submitted","messageId":...}`
+    — pero CERO llegaron al celular de destino, y ninguno de los 6 `messageId` dejó rastro (ni
+    éxito ni error) en el dashboard de Gupshup. Se probó también el whitelist de sandbox
+    (mandar "Sandbox" a los números de Gupshup) sin confirmación de alta. Además,
+    `docs.gupshup.io` documenta este endpoint **solo para WhatsApp** — `channel: 'sms'` es una
+    superficie no documentada que la API acepta (no tira 400/404) sin que eso implique que hay
+    algo real escuchando del otro lado
+  - Se integró igual (pedido explícito del cliente: usa Gupshup, no alcanza con Twilio) porque
+    es la única vía de Gupshup que la API llega a validar. Sigue pendiente confirmación de
+    soporte de Gupshup sobre por qué no hay entrega ni rastro en su panel — con esa respuesta,
+    ajustar el código si hace falta
+  - SMS entrante (para cualquier proveedor) se sacó del alcance el mismo día — ver "SMS
+    entrante sacado por completo" más arriba. No aplica ninguna duda sobre shape de webhook
+    de entrada: no hay webhook de entrada
+  - Mientras tanto sigue funcionando Twilio para SMS (`SMS_PROVIDER` default `'twilio'`) — ya
+    probado y con número/cuenta cargados en `/settings`
+
+### Cambio de proveedor de mensajería en caliente ⏳ PENDIENTE — análisis hecho, sin implementar (pedido 2026-08-27)
+- [ ] Hoy `WHATSAPP_PROVIDER`/`SMS_PROVIDER` se leen en vivo contra la BD (`AppConfigService.get()`
+      no cachea), pero cambiar el valor en `/settings` no tiene efecto hasta reiniciar el backend
+  - Causa real: no es el valor del setting, es **quién queda escuchando la cola**. Los 5
+    conectores salientes (`WhatsAppService`/Meta, `TwilioWhatsAppService`,
+    `GupshupWhatsAppService`, `TwilioSmsService`, `GupshupSmsService`) deciden una sola vez, en
+    `onModuleInit()`, si se suscriben a `whatsapp.outgoing`/`sms.outgoing` — el proceso ya
+    arrancó y ya decidió quién escucha, cambiar el setting no reevalúa nada
+  - **No alcanza con "que los 3 escuchen y filtren"**: RabbitMQ reparte cada mensaje de una
+    cola a un solo consumer entre los suscriptos (competing consumers). Si los 3 conectores de
+    WhatsApp se suscribieran siempre a la vez, cada mensaje le tocaría a uno al azar (~33% cada
+    uno), no al que dice el setting
+  - **Solución (arquitectura, no un flag)**: un único dispatcher por canal (WhatsApp y SMS) que
+    se suscribe SIEMPRE a la cola de salida, lee el proveedor activo en el momento de procesar
+    cada mensaje (no al arrancar), y llama directo al `sendText()` del servicio correspondiente
+    — reemplaza "me suscribo si soy yo" por "decido a quién le paso el mensaje, mensaje por
+    mensaje". A los 5 servicios se les saca el `onModuleInit`/`OnModuleInit`: quedan como
+    clases inyectables normales, su lógica de envío no se toca
+  - El lado ENTRANTE (webhooks) ya funciona "en caliente" — los 3 webhooks de WhatsApp están
+    siempre montados, el proveedor solo importa para el saliente. Nada que tocar ahí
+  - Riesgo/complejidad: bajo, wiring localizado, no toca la lógica de negocio de ningún
+    conector. `BrokerService` ya re-suscribe handlers guardados al reconectar, sigue andando
+    igual con un solo handler por cola en vez de hasta 3
+  - Estimación: 1-2 horas de código (2 clases dispatcher nuevas + 5 borrados de `onModuleInit`
+    + wiring de `WhatsAppModule`/`SmsModule`), más el tiempo de verificación en vivo (cambiar
+    el setting con el backend corriendo y confirmar que el próximo mensaje ya sale por el
+    proveedor nuevo sin reiniciar)
+  - Se decidió postergar la implementación — el cliente lo va a pedir cuando llegue el momento
 
 ### Ruteo de tenant entrante por membresía + selector multiempresa ✅ COMPLETADO (pedido 2026-08-26)
 - [x] **La empresa que atiende un mensaje entrante se deduce de a quién pertenece el número,
@@ -761,7 +950,9 @@
     dura la conversación; una charla nueva vuelve a preguntar)
   - Según cantidad de membresías (`UsersService.findMembershipsByPhone`): **1 → directo**,
     **≥2 → pregunta** con un selector (interactivo en WhatsApp, texto numerado en SMS o con más
-    de 10 empresas), **0 → tenant de sistema** con su flujo por defecto
+    de 10 empresas), **0 → se ignora** ("No hablamos con desconocidos", resuelto 2026-08-27 más
+    abajo: sin membresía en ninguna empresa no hay flujo/tenant de fallback, el mensaje se
+    descarta antes de tocar `User`/`Conversation`)
 - [x] **`PendingTenantSelection`** (tabla nueva, migración incluida) guarda el estado del
       selector: teléfono+canal únicos, mensaje/adjuntos originales, opciones y expiración (12hs,
       igual que la ventana de resume). Alta idempotente (`createMany` con `skipDuplicates` sobre
@@ -804,6 +995,17 @@
 - [x] Todos los endpoints del dashboard respetan el tenant activo del JWT
 
 ### Panel Admin (Next.js) ✅ COMPLETADO
+- [x] **Fix: 404 de prefetch en producción (export estático)** (reportado 2026-08-28)
+  - Bug conocido de Next.js 16 con `output: "export"` (vercel/next.js#85374): el build
+    escribe los payloads RSC del prefetch en carpetas anidadas
+    (`__next.dashboard/users/__PAGE__.txt`) pero el router del cliente los pide con el
+    nombre aplanado por puntos (`__next.dashboard.users.__PAGE__.txt`) — cada hover sobre
+    un `<Link>` tiraba un 404 en la consola. Solo ruido + prefetch deshabilitado de hecho;
+    la navegación real nunca se rompió (el router cae a navegación normal)
+  - `apps/web/scripts/fix-rsc-paths.js`, enganchado al `build` de package.json: después de
+    `next build`, COPIA cada archivo bajo un directorio `__next.*` a su alias plano
+    (copia, no renombra — si Next vuelve a pedir la forma anidada, ambas existen). Cuando
+    Next publique el fix oficial, el script deja de encontrar qué copiar y se borra
 - [x] Sistema de autenticación en frontend
   - `AuthContext` + `useAuth` hook con localStorage para JWT
   - Flujo completo: credenciales → OTP → fingerprint → dashboard
@@ -1178,6 +1380,58 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 
 ---
 
+## Flows alternativos por rol: Feriado / Guardia 🔄 EN PROGRESO (pedido 2026-08-25)
+
+Diseño completo en `docs/plan-subflows-feriados-guardias.md`. Cada flow "Principal" puede
+tener hasta 2 variantes — **Feriado** y **Guardia** — cada una otra fila `Flow` completa e
+independiente (su propio `nodes`/`edges`), elegida automáticamente al iniciar una
+conversación según el rol del usuario y un calendario configurable. Sin variantes
+configuradas, comportamiento idéntico al actual (retrocompatible). **No** tiene relación con
+el nodo `subflow` del motor (ese es un salto en vivo entre flows durante la charla; esto es
+una variante elegida antes de arrancar).
+
+- [x] **Schema**: `ScheduleCalendarEntry` (calendario por tenant+rol, `type` string
+      `'feriado'|'guardia'`) y `FlowAlternative` (mapeo `baseFlow` ↔ `variantFlow`, 1:1 por
+      `variantFlowId`). `type` es `String`, no enum de Prisma — mismo criterio que
+      `ContextSource.type` (sumar tipos nuevos sin migración). Migración
+      `20260825144917_add_schedule_calendar_and_flow_alternative`, puramente aditiva.
+- [x] **Backend — módulo `schedule-calendar`**: CRUD scopeado por tenant +
+      `resolveStatus(tenantId, roleId, atDate)` (feriado gana sobre guardia si ambos
+      matchean el mismo instante). Permiso nuevo `schedule-calendar` (16 recursos × 4
+      acciones = 64 permisos totales).
+- [x] **Backend — variantes dentro de `flow` module**: `listAlternatives`/`createVariant`
+      (duplica el grafo del Principal — única vía del MVP)/`deleteVariant`, rutas
+      `GET|POST /flows/:id/variants`, `DELETE /flows/:id/variants/:type`. `findAll` excluye
+      las filas Flow que son variante (no deben aparecer en dropdowns generales — nodo
+      `subflow`, asignación de tenants). `FlowService.findActiveFlowForTenant` acepta ahora
+      un tercer parámetro `atDate` (default `new Date()`): resuelve el Principal igual que
+      antes y, si `resolveStatus` da feriado/guardia y hay una `FlowAlternative` activa para
+      ese `(baseFlow, type)`, devuelve la variante — sin variante configurada, cae al
+      Principal. Único call site (`conversations.service.ts`, adentro del `if (!flowId)` de
+      `executeFlow`, se resuelve una sola vez al iniciar la conversación).
+- [x] **Tests**: `schedule-calendar.service.spec.ts` (empate feriado/guardia, `roleId: null`,
+      scoping por tenant, límites inclusivos, guardia cruzando medianoche) y
+      `flow.service.spec.ts` (las 3 ramas de fallback + variante activa) — 12 tests nuevos,
+      13/13 en verde (`pnpm --filter api exec jest`).
+- [x] **Frontend — editor de flujos**: selector Principal/Guardia/Feriado en la esquina
+      superior derecha (`apps/web/.../flows/edit/page.tsx`), con indicador de variante
+      configurada y flujo de "crear variante" duplicando el Principal. `saveFlow` apunta al
+      `activeFlowId` de la pestaña activa; `assign-tenants` solo corre para el Principal (las
+      variantes heredan su visibilidad, no tienen asignación propia).
+- [x] **Frontend — calendario**: pantalla nueva `/dashboard/schedule-calendar` con
+      `react-big-calendar` + `date-fns` (nuevas dependencias de `apps/web`) — vistas
+      mes/semana/día, color por tipo, alta/edición/borrado contra el backend nuevo. Entrada
+      nueva en el sidebar.
+- [x] `pnpm --filter api run build` y `pnpm --filter web run build` en verde.
+- [ ] **QA manual pendiente**: sembrar una `ScheduleCalendarEntry` vigente "ahora" y arrancar
+      una conversación real (`/conversations/simulate` o `pnpm --filter api chat`) para
+      confirmar que resuelve la variante y no el Principal. No se ejercitó todavía contra
+      datos reales, solo contra los tests unitarios (mocks) y los builds.
+- [ ] Recorrido manual en el navegador del selector de tabs y de la pantalla de calendario
+      (crear/editar/borrar entradas, cambiar de tab, crear variante duplicando).
+
+---
+
 ## Hito 4 - Auditoría y Métricas ⏳ PENDIENTE
 
 ### Registro estructurado
@@ -1286,7 +1540,7 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
    `InvgateService.addComment()` a esa detección (ver "Integración Invgate" en el Hito 2):
    escribir en InvGate a partir de un match de ticket potencialmente equivocado es peor que no
    escribir nada
-4. Implementar el nodo `webhook` (hoy stub)
+4. ~~Implementar el nodo `webhook` (hoy stub)~~ — implementado 2026-08-26
 5. Webhook de WhatsApp sin verificar `X-Hub-Signature-256` (App Secret de Meta) — cualquiera
    que conozca la URL puede publicar mensajes falsos en `whatsapp.incoming`
 6. Sin rate limit de solicitudes de teléfonos desconocidos (no registrados en el tenant):
@@ -1377,6 +1631,22 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
   ser configurable. Nuevo campo `data.temperature` en el nodo (expuesto en el editor) para la
   respuesta libre y para `generateLlmQueryQuestion` (redacción de la pregunta), default 0 en
   esta última si el nodo no lo define
+
+**Resuelto (2026-08-27):**
+- ~~Un número desconocido que le escribía al bot quedaba registrado como fila en `User`~~
+  (crítico) — `handleMessage` llamaba `UsersService.findOrCreateByPhone` para tener a quién
+  asignarle la `Conversation`, y eso creaba un placeholder (`whatsapp-{tel}@local.pci`) para
+  cualquiera, estuviera registrado o no. Decisión: no hablamos con desconocidos. Ahora
+  `handleMessage` rechaza el mensaje apenas `findMembershipByPhone` no encuentra membresía en
+  el tenant — no crea `User`, no abre `Conversation`, no gasta LLM (mismo criterio de
+  silencio/aviso por RPC que la baja de empresa). `findOrCreateByPhone` quedó eliminada.
+  El intento se registra en archivo, no en la BD (`UnknownSenderLogService`, un mes de
+  retención — cuando haya rate limiting por número recién ahí va a hacer falta un conteo
+  persistente). Ver "No hablamos con desconocidos" en AGENTS.md. Integrado con el ruteo por
+  membresía (arriba, "Ruteo de tenant entrante"): `InboundTenantRoutingService.resolve()`
+  corta con `status: 'ignored'` apenas el teléfono no tiene NINGUNA membresía (antes de
+  resolver tenant alguno); el chequeo de `findMembershipByPhone` que sigue en `handleMessage`
+  queda como red de seguridad para `/simulate` (tenant explícito, sin pasar por el ruteo)
 
 ¿Por cuál seguimos?
 

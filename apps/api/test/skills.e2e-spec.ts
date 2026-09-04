@@ -185,7 +185,16 @@ describe('1.23 Skills (BE-SKL-*)', () => {
         skillId: skillDeA.id,
         assign: [{ tenantId: tenantA.id }, { tenantId: tenantB.id }],
       });
-      const userDeB = await createUser(t.prisma, { email: uniqueEmail('skl08-userb'), phone: uniquePhone() });
+      // Necesita membresía real en B: desde "no hablamos con desconocidos" (2026-08-27),
+      // `handleMessage` rechaza cualquier teléfono sin `UserTenant` en el tenant del mensaje
+      // ANTES de llegar al motor de flujos — sin esto, el test "pasaba" porque el LLM nunca
+      // se llegaba a llamar (systemPrompt vacío), no porque el saneo funcionara de verdad.
+      const roleB = await createRole(t.prisma, { tenantId: tenantB.id, name: 'Rol B SKL-08' });
+      const userDeB = await createUser(t.prisma, {
+        email: uniqueEmail('skl08-userb'),
+        phone: uniquePhone(),
+        memberships: [{ tenantId: tenantB.id, roleId: roleB.id }],
+      });
       // Se posiciona la conversación directo en el nodo llm_query (mismo estado que dejaría
       // `executeFlow` tras un `start`): lo que se ejercita es `executeNode`/`buildBasePrompt`
       // con el Skill de un Flow compartido, no el ruteo de inicio.
@@ -270,7 +279,14 @@ describe('1.23 Skills (BE-SKL-*)', () => {
         edges: [],
         skillId: skillInactiva.id,
       });
-      const user = await createUser(t.prisma, { email: uniqueEmail('skl10-user'), phone: uniquePhone() });
+      // Mismo motivo que BE-SKL-08: necesita membresía real, si no el mensaje se rechaza antes
+      // de llegar al LLM y el assert pasa vacío en vez de verificar algo real.
+      const roleT = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol SKL-10' });
+      const user = await createUser(t.prisma, {
+        email: uniqueEmail('skl10-user'),
+        phone: uniquePhone(),
+        memberships: [{ tenantId: tenant.id, roleId: roleT.id }],
+      });
       await t.prisma.conversation.create({
         data: {
           userId: user.id,

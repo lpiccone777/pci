@@ -15,6 +15,7 @@ import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-ten
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
+import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { createHash } from 'crypto';
 
 /**
@@ -47,20 +48,25 @@ const MAX_FLOW_STEPS = 25;
  * Ventana para retomar una charla cerrada (nodo `end`, cancelación del usuario o
  * fin del flujo) como la misma Conversation en vez de abrir una nueva. Pasada la
  * ventana, el próximo mensaje del usuario arranca una charla nueva.
+ *
+ * Configurable desde /settings > Otros (`CONVERSATION_RESUME_WINDOW_HOURS`) — se lee
+ * con `appConfig.conversationResumeWindowMs()` en cada mensaje, así un cambio aplica
+ * sin reiniciar el backend.
  */
-const RESUME_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Inactividad máxima de una charla `active` antes de cerrarla sola (pedido
- * 2026-08-10). El próximo mensaje del usuario, si llega dentro de
- * RESUME_WINDOW_MS, retoma la misma Conversation pero con el flujo reseteado
+ * 2026-08-10). El próximo mensaje del usuario, si llega dentro de la ventana de
+ * retomado, retoma la misma Conversation pero con el flujo reseteado
  * (closeConversation ya deja currentNodeId/flowState en null) — "empieza de
  * nuevo" sin perder el historial de Message.
+ *
+ * Configurable desde /settings > Otros (`CONVERSATION_INACTIVITY_MINUTES`).
  */
-const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Tope del nodo `delay`: encadenando, un delay largo colgaría la request entera. */
 const MAX_DELAY_SECONDS = 10;
+const WEBHOOK_TIMEOUT_MS = 10_000;
 
 /**
  * Nodo `llm_query` en modo extracción: cuántas veces se le pregunta al usuario un
@@ -94,6 +100,20 @@ const DEFAULT_SYSTEM_PROMPT = 'Eres un asistente de soporte técnico amable y co
  */
 const CLASSIFIER_MAX_TOKENS = 300;
 
+/**
+ * `maxTokens` del extractor de variables de `llm_query` (`extractLlmQueryValues`) — MISMO
+ * problema de los clasificadores de arriba, pero acá 300 NO alcanza: esta tarea no responde
+ * una sola palabra, tiene que razonar sobre la conversación reciente entera (hasta
+ * `contextMessages` mensajes) Y emitir una línea `clave: valor` por cada variable. Con un
+ * modelo de razonamiento obligatorio (MiniMax M2.x), el pensamiento interno consume el
+ * presupuesto ANTES de emitir las líneas: `content` vuelve vacío o cortado, el parser
+ * convierte todo a NONE en silencio, y el nodo vuelve a preguntar datos que el usuario YA
+ * dio — visto en producción (2026-08-28) como "recopiló todo pero no avanza, sigue
+ * preguntando". Generoso a propósito: un proveedor no-razonador corta solo al terminar las
+ * líneas, así que el costo real no cambia.
+ */
+const LLM_QUERY_EXTRACT_MAX_TOKENS = 2000;
+
 interface NodeExecutionResult {
   responseText?: string;
   nextNodeId?: string;
@@ -120,6 +140,37 @@ interface MenuStackEntry {
  * índices numéricos o slugs simples, nunca con este prefijo. */
 const BACK_OPTION_VALUE = '__volver';
 
+/** Tope duro de WhatsApp para un mensaje interactivo de lista: no admite más de
+ * 10 filas (ver `buildMenuInteractive` y `TwilioWhatsAppService`). */
+const MAX_TICKET_LIST_ROWS = 10;
+
+/** Nombres de estado de InvGate que cuentan como "cerrado" para el nodo
+ * `ticket_query`. InvGate no expone un flag booleano de cerrado/abierto — el
+ * catálogo de estados es texto libre configurable por cada instancia — así
+ * que se excluye por nombre conocido, case-insensitive. */
+const CLOSED_TICKET_STATUS_NAMES = new Set([
+  'cerrado',
+  'cerrada',
+  'closed',
+  'resuelto',
+  'resuelta',
+  'resolved',
+  'solucionado',
+  'solucionada',
+  'solved',
+  'cancelado',
+  'cancelada',
+  'cancelled',
+  'canceled',
+  'rechazado',
+  'rechazada',
+  'rejected',
+]);
+
+function isOpenTicketStatus(status: string): boolean {
+  return !CLOSED_TICKET_STATUS_NAMES.has(status.trim().toLowerCase());
+}
+
 @Injectable()
 export class ConversationsService implements OnModuleInit {
   private readonly logger = new Logger(ConversationsService.name);
@@ -135,21 +186,17 @@ export class ConversationsService implements OnModuleInit {
     private readonly contextSourcesService: ContextSourcesService,
     private readonly invgateService: InvgateService,
     private readonly twilioMedia: TwilioMediaService,
+    private readonly unknownSenderLog: UnknownSenderLogService,
     private readonly inboundTenantRouting: InboundTenantRoutingService,
   ) {}
 
   async onModuleInit() {
     await this.broker.subscribe('whatsapp.incoming', this.handleMessage.bind(this));
-    // SMS es un canal aparte, no una alternativa de WhatsApp (a diferencia de Twilio vs
-    // Meta, que comparten cola porque son el mismo canal): conversaciones propias, no
-    // compite por whatsapp.incoming. `handleMessage` es el mismo — ver `channel` en el
-    // payload, que decide de qué `Conversation` y a qué cola de salida se habla.
-    await this.broker.subscribe('sms.incoming', this.handleMessage.bind(this));
-    // Mismo handler, misma lógica de negocio: la única diferencia con el canal real
-    // es por qué cola entra el mensaje. Así /simulate ejercita el camino real
-    // completo (RabbitMQ de punta a punta) en vez de llamar al método en proceso.
+    // SMS es 100% saliente (avisos, ver el nodo `sms` del editor) — no hay `sms.incoming`
+    // ni webhook de entrada para ningún proveedor (Twilio/Gupshup), a propósito: no vamos
+    // a soportar conversación bidireccional por ese canal.
     await this.broker.subscribe(SIMULATE_QUEUE, this.handleMessage.bind(this));
-    this.logger.log(`Subscribed to whatsapp.incoming, sms.incoming and ${SIMULATE_QUEUE}`);
+    this.logger.log(`Subscribed to whatsapp.incoming and ${SIMULATE_QUEUE}`);
   }
 
   /**
@@ -191,6 +238,7 @@ export class ConversationsService implements OnModuleInit {
 
   /** Ver el comentario de `simulateIncomingMessage`. */
   private formatInteractiveAsText(interactive: WhatsAppInteractive): string {
+    if (interactive.type === 'cta_url') return `${interactive.buttonText}: ${interactive.url}`;
     const items = interactive.type === 'button' ? interactive.buttons : interactive.rows;
     return items.map((item, i) => `${i + 1}. ${item.title}`).join('\n');
   }
@@ -249,12 +297,16 @@ export class ConversationsService implements OnModuleInit {
         return notice;
       }
       if (routing.status === 'ignored') {
-        // No hay empresa que pueda atender (sin membresía y sin tenant configurado ni de
-        // sistema): silencio hacia el usuario — un saliente de error acá sería un mensaje
-        // pago POR CADA entrante. El motivo ya quedó logueado por el propio routing. Por RPC
-        // (/simulate) sí se responde, para no dejar al llamador colgado hasta el timeout.
+        // No hablamos con desconocidos (pedido 2026-08-27): el teléfono no pertenece a
+        // ninguna empresa — silencio hacia el usuario, sin crear `User` ni `Conversation` ni
+        // gastar LLM (mismo criterio que el rechazo de la línea "1. Identificar al usuario"
+        // más abajo, que cubre el caso de `/simulate` contra un tenant puntual). El intento
+        // queda igual registrado en archivo. Por RPC (/simulate sin tenantId) sí se responde,
+        // para no dejar al llamador colgado hasta el timeout.
+        this.unknownSenderLog.log({ channel, from, bodyPreview: body.slice(0, 200) });
+        this.logger.warn(`Mensaje de ${from} (${channel}) ignorado: no pertenece a ninguna empresa.`);
         if (msg.replyTo) {
-          const notice = 'No hay ninguna empresa configurada para atender este mensaje.';
+          const notice = 'Este número no está registrado: el bot no atiende mensajes de desconocidos.';
           await this.broker.publish(
             msg.replyTo,
             {
@@ -344,17 +396,45 @@ export class ConversationsService implements OnModuleInit {
 
     // 1. Identificar al usuario por teléfono, consultando el registro de usuarios.
     // "Conocido" = está registrado en este tenant, con rol (`UserTenant` + `Role`) —
-    // no simplemente "existe un User con este teléfono". Ese chequeo tiene que
-    // hacerse ANTES de crear el placeholder de WhatsApp: si se hiciera después (como
-    // hacía antes el nodo `start`), el usuario siempre iba a existir porque lo
-    // acabábamos de crear nosotros mismos un instante antes, y el número nunca se
-    // detectaba como desconocido.
+    // no simplemente "existe un User con este teléfono".
+    //
+    // No hablamos con desconocidos (pedido 2026-08-27): un número sin membresía en
+    // este tenant se rechaza acá mismo, antes de tocar la base para nada — no se crea
+    // ningún `User` placeholder, no se abre `Conversation`, no se gasta LLM. Antes se
+    // creaba una fila fantasma en `User` con `findOrCreateByPhone` solo para tener a
+    // quién asignarle la conversación; quedó eliminado (ver `UsersService`) porque
+    // ensuciaba la tabla real de usuarios con contactos que nunca fueron dados de alta.
+    // El intento queda igual registrado — pero en archivo (`UnknownSenderLogService`,
+    // un mes de retención), no en la BD: hoy es solo para poder mirar quién escribió
+    // sin estar registrado; el día que haya rate limiting por número ahí sí va a hacer
+    // falta un conteo persistente, no antes. Mismo criterio de silencio/aviso por RPC
+    // que la baja de empresa, arriba.
     const membership = await this.usersService.findMembershipByPhone(from, tenantId);
-    const user = membership?.user ?? (await this.usersService.findOrCreateByPhone(from));
+    if (!membership) {
+      this.unknownSenderLog.log({ tenantId, channel, from, bodyPreview: body.slice(0, 200) });
+      this.logger.warn(`[${tenantId}] Mensaje de ${from} ignorado: no está registrado en este tenant.`);
+      if (msg.replyTo) {
+        const notice = 'Este número no está registrado: el bot no atiende mensajes de desconocidos.';
+        await this.broker.publish(
+          msg.replyTo,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: notice },
+            tenantId,
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: false },
+        );
+        return notice;
+      }
+      return '';
+    }
+    const user = membership.user;
     const identity = {
-      isKnown: !!membership,
-      roleId: membership?.role.id ?? null,
-      roleName: membership?.role.name ?? null,
+      isKnown: true,
+      roleId: membership.role.id,
+      roleName: membership.role.name,
     };
 
     // 2. Buscar conversación activa, retomar una cerrada reciente, o crear una nueva
@@ -371,13 +451,14 @@ export class ConversationsService implements OnModuleInit {
       // `sessionStartedAt` se resetea acá: es lo que usa `orchestratorLlm` para
       // no mandarle al LLM historial de antes del cierre como si fuera la
       // charla actual (ver ese método).
+      const resumeWindowMs = await this.appConfig.conversationResumeWindowMs();
       const resumable = await this.prisma.conversation.findFirst({
         where: {
           userId: user.id,
           tenantId,
           channel,
           status: 'closed',
-          closedAt: { gte: new Date(Date.now() - RESUME_WINDOW_MS) },
+          closedAt: { gte: new Date(Date.now() - resumeWindowMs) },
         },
         orderBy: { closedAt: 'desc' },
       });
@@ -398,8 +479,8 @@ export class ConversationsService implements OnModuleInit {
           });
     }
 
-    // 2.5 Adjuntos (imágenes de WhatsApp/SMS vía Twilio, ver TwilioWebhookController/
-    // TwilioSmsWebhookController): se acumulan en flowState.pendingAttachments hasta que
+    // 2.5 Adjuntos (imágenes de WhatsApp vía Twilio, ver TwilioWebhookController): se
+    // acumulan en flowState.pendingAttachments hasta que
     // el flujo llegue a un nodo `ticket_create` — pueden ser varios mensajes después de
     // este, así que no alcanza con tenerlos en memoria acá: hay que persistirlos ya mismo
     // (no esperar al persist de fin de turno de executeFlow, que ni corre si todavía no
@@ -469,8 +550,35 @@ export class ConversationsService implements OnModuleInit {
       responseText = flowResult.text;
       interactive = flowResult.interactive;
     } else {
-      // Fallback: orquestador LLM para mensajes fuera de flujo
+      // `null` acá significa que no hay ningún flujo activo para este tenant/rol —
+      // conversación libre, la toma el orquestador LLM. Un flujo que SÍ corrió pero no tuvo
+      // nada que decir (ej. `notification` en modo link avanzando en silencio hacia un `end`
+      // sin texto de cierre) llega con `flowResult.text === ''`, no acá — ver `toFlowResult`.
       responseText = await this.orchestratorLlm(conversation, body, tenantId, null, null);
+    }
+
+    // Turno silencioso a propósito (un flujo avanzó de nodo sin nada que mostrar todavía,
+    // ej. justo el caso de arriba): no hay nada que guardar ni mandar por un canal real — sin
+    // este corte, se guardaba un `Message` vacío y se publicaba un mensaje de WhatsApp en
+    // blanco. Pero por RPC (`/simulate`, con `replyTo`) SÍ hay que publicar algo: `simulate()`
+    // espera una respuesta con `broker.request()`, y sin este publish la request quedaba
+    // colgada hasta SIMULATE_TIMEOUT_MS (5 min) en vez de devolver la respuesta vacía de una.
+    if (!responseText && !interactive) {
+      this.logger.log(`[${tenantId}] Turno silencioso para ${from} (el flujo avanzó sin responder).`);
+      if (msg.replyTo) {
+        await this.broker.publish(
+          msg.replyTo,
+          {
+            pattern: 'message.send',
+            data: { to: from, body: '' },
+            tenantId,
+            timestamp: new Date().toISOString(),
+            correlationId: msg.correlationId,
+          },
+          { assert: false },
+        );
+      }
+      return '';
     }
 
     // 6. Guardar respuesta del asistente
@@ -526,14 +634,20 @@ export class ConversationsService implements OnModuleInit {
     from: string,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
   ): Promise<{ text: string; interactive?: WhatsAppInteractive } | null> {
-    // Buscar flujo activo
+    // Buscar flujo activo. `null` de acá en adelante significa EXCLUSIVAMENTE "no hay flujo
+    // activo para este tenant/rol" — las dos salidas de esta sección son las únicas; una vez
+    // que el flujo arranca, todo retorno de esta función pasa por `toFlowResult`, que ya no
+    // devuelve `null` (ver su comentario).
     let flowId = conversation.currentFlowId;
     let currentNodeId = conversation.currentNodeId;
 
     if (!flowId) {
       // El flujo de inicio se elige por (empresa + rol del usuario): `identity.roleId`
       // ya viene resuelto desde handleMessage contra el registro real de usuarios.
-      const flow = await this.flowService.findActiveFlowForTenant(tenantId, identity.roleId);
+      // `new Date()` habilita la resolución de feriado/guardia (ver
+      // FlowService.findActiveFlowForTenant) — se calcula una sola vez acá, nunca se
+      // re-evalúa a mitad de conversación.
+      const flow = await this.flowService.findActiveFlowForTenant(tenantId, identity.roleId, new Date());
       if (!flow) return null;
       flowId = flow.id;
       currentNodeId = this.findStartNodeId(flow.nodes as any[]);
@@ -555,7 +669,16 @@ export class ConversationsService implements OnModuleInit {
 
       const node = nodes.find((n) => n.id === nodeId);
       if (!node) {
-        // Nodo no encontrado (flujo editado bajo los pies): resetear.
+        // Nodo no encontrado (flujo editado bajo los pies, o un *TargetNodeId tipeado a
+        // mano que no corresponde a ningún nodo real): resetear. WARN explícito — este
+        // reset era completamente silencioso y del lado del usuario se ve como un turno
+        // mudo seguido del flujo arrancando de cero (2026-08-28: un foundTargetNodeId
+        // con un ID inexistente costó una tarde de debugging por este silencio).
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo destino '${nodeId}' no existe en el flujo — se resetea ` +
+            'la conversación. Si ese ID vino de foundTargetNodeId/missingTargetNodeId u otro ' +
+            'campo de destino, corregilo en el editor (o dejalo vacío para usar la arista dibujada).',
+        );
         await this.resetFlow(conversation.id);
         return this.toFlowResult(responses, interactive);
       }
@@ -589,8 +712,9 @@ export class ConversationsService implements OnModuleInit {
         interactive = { ...interactive, body: responses.join('\n\n') || interactive.body };
       }
 
-      // Nodo `end`: cierre explícito y deliberado de la charla, retomable dentro
-      // de RESUME_WINDOW_MS (ver búsqueda de conversación en `handleMessage`).
+      // Nodo `end`: cierre explícito y deliberado de la charla, retomable dentro de la
+      // ventana de `CONVERSATION_RESUME_WINDOW_HOURS` (ver búsqueda de conversación en
+      // `handleMessage`).
       if (result.endConversation) {
         await this.closeConversation(conversation.id);
         return this.toFlowResult(responses, interactive);
@@ -625,7 +749,27 @@ export class ConversationsService implements OnModuleInit {
         return this.toFlowResult(responses, interactive);
       }
 
-      const nextNodeId = this.resolveNextNode(node, edges, result);
+      let nextNodeId = this.resolveNextNode(node, edges, result);
+
+      // Destino explícito roto (ej. un foundTargetNodeId tipeado a mano con un ID que no
+      // corresponde a ningún nodo del flujo): antes esto seguía de largo y caía en el
+      // reset silencioso del arranque del loop ("nodo no encontrado"), IGNORANDO la
+      // arista que sí estaba bien dibujada en el canvas — el ID manual le ganaba a la
+      // conexión real. Ahora, si el destino devuelto no existe, se reintenta la
+      // resolución sin él (cae a sourceHandle/primera arista, ver resolveNextNode) y se
+      // avisa por log. Solo aplica al destino que devuelve el nodo — un ID roto en una
+      // ARISTA (edge.target) sigue yendo al reset de arriba, ahí no hay fallback posible.
+      if (result.nextNodeId && nextNodeId === result.nextNodeId && !nodes.find((n) => n.id === nextNodeId)) {
+        const fallback = this.resolveNextNode(node, edges, { ...result, nextNodeId: undefined });
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo '${node.id}' devolvió el destino '${nextNodeId}', que no ` +
+            `existe en el flujo (¿ID tipeado a mano en el editor?). ` +
+            (fallback
+              ? `Se sigue por la arista dibujada hacia '${fallback}'.`
+              : 'No hay arista dibujada para caer — el flujo se cierra acá.'),
+        );
+        nextNodeId = fallback;
+      }
 
       // Un nodo que apunta a sí mismo no es un bucle a ejecutar: es "quedate acá
       // esperando el próximo mensaje". Sin esto daría MAX_FLOW_STEPS vueltas, y en
@@ -635,12 +779,41 @@ export class ConversationsService implements OnModuleInit {
         return this.toFlowResult(responses, interactive);
       }
 
-      // `llm_query` sin salida es un punto final conversacional, no el fin del flujo:
-      // la conversación queda parada ahí y los mensajes siguientes van derecho al
-      // modelo, sin repetir el saludo ni los nodos previos.
-      if (!nextNodeId && node.type === 'llm_query') {
+      // `llm_query` SIN `extractVariables` (modo charla libre, no extracción) sin salida
+      // es un punto final conversacional a propósito, no el fin del flujo: la
+      // conversación queda parada ahí y los mensajes siguientes van derecho al modelo,
+      // sin repetir el saludo ni los nodos previos.
+      //
+      // En modo EXTRACCIÓN, en cambio, este mismo chequeo era el bug reportado
+      // (2026-08-28): un flujo sin arista dibujada desde el nodo (o sin
+      // `foundTargetNodeId`/`missingTargetNodeId` configurado) quedaba parado ACÁ para
+      // siempre apenas resolvía las variables — aunque ya tuviera sede/interno/lo que
+      // sea con valor real (o "no definido", que es un resultado válido y esperado, no
+      // uno pendiente). "No tengo a dónde ir configurado" no debería equivaler a "quedate
+      // charlando acá indefinidamente": una vez que la extracción terminó (con o sin
+      // éxito), lo correcto es seguir cualquier arista real que exista (ya lo intenta
+      // `resolveNextNode` arriba) o, si de verdad no hay ninguna, cerrar el flujo como
+      // cualquier otro nodo sin salida — no inventar un estado de "conversación libre"
+      // que después termina en el LLM alucinando una respuesta sin que el flujo haya
+      // hecho nada real (ej. "confirmar" un ticket que nunca se creó).
+      if (!nextNodeId && node.type === 'llm_query' && !node.data?.extractVariables?.length) {
         await this.persistFlowPosition(conversation.id, flowId, node.id, flowState);
         return this.toFlowResult(responses, interactive);
+      }
+
+      // `llm_query` en modo extracción que resolvió sus variables pero no tiene A DÓNDE
+      // ir: es un problema de armado del flujo (falta la arista de salida en el editor,
+      // o `foundTargetNodeId`/`missingTargetNodeId`), no del motor — el flujo va a
+      // cerrar unos pasos más abajo como cualquier nodo sin salida. Se loguea fuerte
+      // porque del lado del usuario esto se ve como un "turno silencioso" seguido de un
+      // reinicio del flujo, y sin este WARN es indistinguible de un bug del motor
+      // (2026-08-28: costó una tarde entera de debugging llegar hasta acá).
+      if (!nextNodeId && node.type === 'llm_query' && node.data?.extractVariables?.length) {
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo llm_query '${node.id}' resolvió sus variables pero no ` +
+            'tiene arista de salida ni foundTargetNodeId/missingTargetNodeId — no hay a ' +
+            'dónde avanzar, el flujo se cierra acá. Conectá la salida del nodo en el editor.',
+        );
       }
 
       nodeId = nextNodeId;
@@ -662,12 +835,20 @@ export class ConversationsService implements OnModuleInit {
     return this.toFlowResult(responses, interactive);
   }
 
-  /** Junta las respuestas acumuladas de `executeFlow` en el resultado final, o `null` si no hubo ninguna. */
+  /**
+   * Junta las respuestas acumuladas de `executeFlow` en el resultado final. Siempre devuelve
+   * un objeto —nunca `null`— porque para cuando se llama, el flujo YA corrió: `null` en
+   * `executeFlow` significa exclusivamente "no hay ningún flujo activo para este tenant/rol"
+   * (las dos salidas tempranas, antes de este punto). Confundir "el flujo corrió pero no tuvo
+   * nada que decir" (ej. `notification` en modo link avanzando en silencio hacia un `end` sin
+   * texto de cierre) con "no hay flujo" era el bug: `handleMessage` trataba el primer caso
+   * como charla libre y le pasaba el turno al LLM orquestador sin que nadie lo pidiera.
+   */
   private toFlowResult(
     responses: string[],
     interactive?: WhatsAppInteractive,
-  ): { text: string; interactive?: WhatsAppInteractive } | null {
-    return responses.length ? { text: responses.join('\n\n'), interactive } : null;
+  ): { text: string; interactive?: WhatsAppInteractive } {
+    return { text: responses.join('\n\n'), interactive };
   }
 
   /** Guarda en qué punto del flujo quedó la conversación. */
@@ -706,6 +887,18 @@ export class ConversationsService implements OnModuleInit {
     if (result.sourceHandle) {
       const byHandle = outgoing.find((e) => e.sourceHandle === result.sourceHandle);
       if (byHandle) return byHandle.target;
+
+      // Sin arista para ESTE handle, NUNCA se cae a una arista de OTRO handle: sería mandar
+      // el resultado por la rama contraria. Pasaba con la forma más común de `condition`
+      // ("si es X → menú especial, si no seguí de largo"), donde se dibuja solo la arista
+      // `true`: un resultado falso no encontraba `false` y se iba por `outgoing[0]`, que es
+      // justo la del `true` — el flujo hacía exactamente lo contrario de lo que declaraba.
+      //
+      // Una arista SIN handle sí sirve de salida por defecto (es inequívoca: no pertenece a
+      // ninguna rama, y quien la dibujó quiso "seguir por acá pase lo que pase"). Si tampoco
+      // hay, no hay próximo nodo y el flujo se cierra acá, que es honesto: la rama que el
+      // flujo necesitaba no está dibujada.
+      return outgoing.find((e) => !e.sourceHandle)?.target ?? null;
     }
 
     return outgoing[0]?.target ?? null;
@@ -950,6 +1143,20 @@ export class ConversationsService implements OnModuleInit {
     };
   }
 
+  /** Botón de link para el nodo `notification` en modo `link` — ver ese `case`. */
+  private buildCtaInteractive(
+    headerText: string | undefined,
+    buttonLabel: string,
+    url: string,
+  ): WhatsAppInteractive {
+    return {
+      type: 'cta_url',
+      body: (headerText ?? '').trim() || 'Ver más:',
+      buttonText: buttonLabel.slice(0, 20),
+      url,
+    };
+  }
+
   /**
    * Los campos de config que declaran un nombre de variable (`input.variableName`,
    * `variable.name`, `ticket_query.ticketIdVariable`, `llm_query.extractVariable`)
@@ -976,7 +1183,7 @@ export class ConversationsService implements OnModuleInit {
     });
   }
 
-  /** Mismo reemplazo de `{{variable}}` que `interpolate`, aplicado a un mensaje interactivo (botones/lista). */
+  /** Mismo reemplazo de `{{variable}}` que `interpolate`, aplicado a un mensaje interactivo (botones/lista/CTA). */
   private interpolateInteractive(
     interactive: WhatsAppInteractive,
     flowState: Record<string, any>,
@@ -986,6 +1193,15 @@ export class ConversationsService implements OnModuleInit {
         ...interactive,
         body: this.interpolate(interactive.body, flowState),
         buttons: interactive.buttons.map((b) => ({ ...b, title: this.interpolate(b.title, flowState) })),
+      };
+    }
+    if (interactive.type === 'cta_url') {
+      return {
+        ...interactive,
+        body: this.interpolate(interactive.body, flowState),
+        buttonText: this.interpolate(interactive.buttonText, flowState),
+        // La URL también admite variables (ej. un link con el id de ticket recién creado).
+        url: this.interpolate(interactive.url, flowState),
       };
     }
     return {
@@ -1016,15 +1232,21 @@ export class ConversationsService implements OnModuleInit {
 
   /**
    * Cierra sola toda charla `active` sin mensajes en los últimos
-   * INACTIVITY_TIMEOUT_MS. `messages: { none: { createdAt: { gte: cutoff } } }`
-   * — sin mensaje propio, no hay `Conversation.updatedAt` ni ningún otro campo
-   * de "última actividad" confiable: `persistFlowPosition` solo toca la fila en
-   * pasos que avanzan el flujo, no en cada mensaje entrante (ej. un `menu` que
-   * espera input no la vuelve a tocar).
+   * `CONVERSATION_INACTIVITY_MINUTES` (/settings > Otros).
+   * `messages: { none: { createdAt: { gte: cutoff } } }` — sin mensaje propio, no
+   * hay `Conversation.updatedAt` ni ningún otro campo de "última actividad"
+   * confiable: `persistFlowPosition` solo toca la fila en pasos que avanzan el
+   * flujo, no en cada mensaje entrante (ej. un `menu` que espera input no la
+   * vuelve a tocar).
+   *
+   * El cron corre cada 10 minutos y el valor se lee en cada corrida, así que un
+   * cambio en /settings aplica sin reiniciar — pero el cierre real de una charla
+   * cae entre el valor configurado y 10 minutos más, por la granularidad del cron.
    */
   @Cron(CronExpression.EVERY_10_MINUTES)
   private async closeInactiveConversations() {
-    const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
+    const inactivityMs = await this.appConfig.conversationInactivityMs();
+    const cutoff = new Date(Date.now() - inactivityMs);
     const stale = await this.prisma.conversation.findMany({
       where: { status: 'active', messages: { none: { createdAt: { gte: cutoff } } } },
       select: { id: true },
@@ -1033,10 +1255,13 @@ export class ConversationsService implements OnModuleInit {
     if (stale.length === 0) return;
 
     await Promise.all(stale.map((c) => this.closeConversation(c.id)));
-    this.logger.log(`Cerradas ${stale.length} charla(s) por inactividad (>${INACTIVITY_TIMEOUT_MS / 60_000}min)`);
+    this.logger.log(`Cerradas ${stale.length} charla(s) por inactividad (>${inactivityMs / 60_000}min)`);
   }
 
-  /** Cierra la charla (nodo `end`, cancelación del usuario o fin del flujo). Queda retomable dentro de RESUME_WINDOW_MS. */
+  /**
+   * Cierra la charla (nodo `end`, cancelación del usuario o fin del flujo). Queda retomable
+   * dentro de `CONVERSATION_RESUME_WINDOW_HOURS` (/settings > Otros).
+   */
   private async closeConversation(conversationId: string) {
     await this.prisma.conversation.update({
       where: { id: conversationId },
@@ -1145,9 +1370,13 @@ export class ConversationsService implements OnModuleInit {
     flowState.__deviceValidationCode = code;
     flowState.__deviceValidationExpiresAt = Date.now() + ttlSeconds * 1000;
 
+    const defaultSubject = 'Código de validación de dispositivo - Plataforma Conversacional Inteligente';
+    const subject =
+      (await this.appConfig.get('DEVICE_VALIDATION_EMAIL_SUBJECT', defaultSubject)) || defaultSubject;
+
     await this.emailService.send({
       to: email,
-      subject: 'Código de validación de dispositivo - Plataforma Conversacional Inteligente',
+      subject,
       text: `Tu código de validación es: ${code}. Válido por ${Math.round(ttlSeconds / 60)} minutos.`,
     });
 
@@ -1273,28 +1502,203 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
-   * Nodo `ticket_query`: si el ticket ya se sincronizó con InvGate, trae el estado
-   * real de ahí (InvGate es la fuente de verdad una vez sincronizado — el estado local
-   * solo se actualiza cuando el bot lo consulta, no hay webhook de InvGate todavía) y
-   * de paso actualiza `Ticket.status` local para que quede consistente. Sin
-   * `invgateId` (o si InvGate no responde), devuelve el estado local tal cual.
+   * Convierte el HTML de InvGate (editor WYSIWYG — ver `InvgateService.toInvgateHtml`)
+   * de vuelta a texto plano para WhatsApp. Best-effort, no un parser HTML real: alcanza
+   * para lo que InvGate genera (`<br>`, `<p>`, entidades).
    */
-  private async refreshInvgateStatus(ticket: { id: string; invgateId: string | null; status: string }): Promise<string> {
-    if (!ticket.invgateId || !(await this.invgateService.isConfigured())) return ticket.status;
+  private stripInvgateHtml(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);/g, (match, entity: string) =>
+        this.decodeHtmlEntity(match, entity),
+      )
+      .trim();
+  }
 
-    try {
-      const incident = await this.invgateService.getIncident(ticket.invgateId);
-      if (incident.status_id === undefined) return ticket.status;
+  /**
+   * Una entidad HTML a su carácter. Se resuelven todas en UNA sola pasada (ver el `replace` de
+   * `stripInvgateHtml`) a propósito: encadenando un `.replace` por entidad, `&amp;nbsp;` termina
+   * convertido en un espacio en vez de en el texto literal "&nbsp;", porque el `&amp;` se decodifica
+   * primero y lo que queda vuelve a matchear.
+   *
+   * Incluye las NUMÉRICAS (`&#160;`, `&#xA0;`), que antes no se tocaban: InvGate manda el espacio
+   * duro en hexa y quedaba visible como "&#xA0;" al final de cada línea del comentario (2026-08-31,
+   * visto en un ticket real). Ante una entidad desconocida devuelve el texto original tal cual, que
+   * es más honesto que comerse el contenido.
+   */
+  private decodeHtmlEntity(match: string, entity: string): string {
+    const NAMED: Record<string, string> = {
+      nbsp: ' ',
+      amp: '&',
+      lt: '<',
+      gt: '>',
+      quot: '"',
+      apos: "'",
+    };
 
-      const statusName = await this.invgateService.getStatusName(incident.status_id);
-      if (statusName !== ticket.status) {
-        await this.prisma.ticket.update({ where: { id: ticket.id }, data: { status: statusName } });
-      }
-      return statusName;
-    } catch (err) {
-      this.logger.warn(`No se pudo refrescar el estado del ticket ${ticket.id} desde InvGate: ${(err as Error).message}`);
-      return ticket.status;
-    }
+    if (!entity.startsWith('#')) return NAMED[entity.toLowerCase()] ?? match;
+
+    const isHex = entity[1] === 'x' || entity[1] === 'X';
+    const code = parseInt(isHex ? entity.slice(2) : entity.slice(1), isHex ? 16 : 10);
+    // Espacios "duros" (NBSP y narrow NBSP) a espacio común: en WhatsApp no se distinguen de uno
+    // normal, pero sí se escapan del `trim`/de cualquier colapso de espacios posterior.
+    if (code === 0xa0 || code === 0x202f) return ' ';
+    // Fuera de rango o surrogate suelto: `String.fromCodePoint` tiraría RangeError.
+    const invalid = !Number.isFinite(code) || code <= 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
+    return invalid ? match : String.fromCodePoint(code);
+  }
+
+  /**
+   * Nodo `ticket_query`, paso "elegir ticket": arma la lista interactiva con los
+   * tickets abiertos del usuario, más recientes primero, tope `MAX_TICKET_LIST_ROWS`
+   * por el límite de WhatsApp.
+   *
+   * Consulta InvGate EN VIVO (`incidents.by.customer`) en vez de la tabla local
+   * `Ticket` — la local solo tiene los tickets que el propio bot creó y su estado
+   * cacheado puede estar desactualizado (no hay webhook de InvGate). `incidents.by.customer`
+   * es el único endpoint de esta API que lista por cliente (no aparece en la doc
+   * pública que uso de referencia para el resto del cliente — confirmado contra la
+   * instancia real 2026-08-24; `incident.by.customer`, singular, no existe, 404).
+   *
+   * `customerId` ya viene resuelto (ver `resolveInvgateCustomerId`, llamado por
+   * quien invoca esto) — así se resuelve una sola vez por turno aunque este paso y
+   * el de detalle lo necesiten los dos. `interactive: null` significa que el
+   * cliente no tiene ningún ticket abierto.
+   */
+  private async buildOpenTicketsList(
+    customerId: number,
+  ): Promise<{ interactive: WhatsAppInteractive | null; truncated: boolean }> {
+    const incidents = await this.invgateService.listCustomerIncidents(customerId).catch((err) => {
+      this.logger.warn(`No se pudo listar los tickets de InvGate del cliente ${customerId}: ${err.message}`);
+      return [];
+    });
+
+    // `status_id` → nombre: `getStatusName` cachea el catálogo completo en memoria
+    // (una sola llamada real), así que resolver el de cada incidente acá es un
+    // lookup en un Map, no N llamadas a la API.
+    const withStatus = await Promise.all(
+      incidents.map(async (inc) => ({
+        inc,
+        statusName: inc.status_id !== undefined ? await this.invgateService.getStatusName(inc.status_id) : '',
+      })),
+    );
+    const open = withStatus
+      .filter((x) => isOpenTicketStatus(x.statusName))
+      .sort((a, b) => Number(b.inc.created_at ?? 0) - Number(a.inc.created_at ?? 0));
+    const shown = open.slice(0, MAX_TICKET_LIST_ROWS);
+    if (!shown.length) return { interactive: null, truncated: false };
+
+    const rows = shown.map(({ inc, statusName }) => {
+      const ref = (inc.pretty_id as string | undefined) ?? `#${inc.id}`;
+      return {
+        id: String(inc.id),
+        title: `${ref} ${inc.title ?? ''}`.trim().slice(0, 24),
+        description: statusName.slice(0, 72),
+      };
+    });
+
+    return {
+      interactive: { type: 'list', body: 'Elegí un ticket:', buttonText: 'Ver tickets', rows },
+      truncated: open.length > shown.length,
+    };
+  }
+
+  /**
+   * Nodo `ticket_query`, paso "ver detalle": trae el incidente puntual por id
+   * (`GET incident`, siempre en vivo, con `comments=true`) y arma el texto con
+   * estado, prioridad, fecha, agente asignado y el ÚLTIMO comentario (no la
+   * descripción original del ticket, que es lo que el usuario ya sabe porque la
+   * escribió él mismo — lo útil acá es la última novedad). `customerId` es el
+   * cliente de InvGate del USUARIO que está preguntando — si el incidente
+   * encontrado le pertenece a otro cliente, se considera "no encontrado" (mismo
+   * criterio que el filtro por `tenantId` en el resto de los accesos a `Ticket`:
+   * `body` puede ser cualquier texto tipeado a mano, no solo el id de una fila
+   * que se le mostró, así que sin este chequeo cualquiera podría ver el ticket
+   * de otra persona adivinando un id bajo).
+   */
+  private async buildTicketDetailText(incidentId: string, customerId: number): Promise<string | null> {
+    const incident = await this.invgateService.getIncident(incidentId, { includeComments: true }).catch(() => null);
+    if (!incident || Number(incident.user_id) !== customerId) return null;
+
+    const [statusName, priorityName, assignedName, lastComment] = await Promise.all([
+      incident.status_id !== undefined ? this.invgateService.getStatusName(incident.status_id) : Promise.resolve('sin definir'),
+      incident.priority_id !== undefined
+        ? this.invgateService.getPriorityName(Number(incident.priority_id))
+        : Promise.resolve('sin definir'),
+      this.resolveAssignedAgentName(incident.assigned_id),
+      this.resolveLastCustomerVisibleComment(incident.comments),
+    ]);
+
+    const ref = (incident.pretty_id as string | undefined) ?? `#${incident.id}`;
+    const created = incident.created_at ? new Date(String(incident.created_at)).toLocaleDateString('es-AR') : 'sin dato';
+
+    const lines = [
+      `Ticket ${ref}: ${incident.title ?? ''}`,
+      `Estado: ${statusName}`,
+      `Prioridad: ${priorityName}`,
+      `Creado: ${created}`,
+      `Asignado a: ${assignedName ?? 'sin asignar'}`,
+    ];
+    lines.push(
+      lastComment
+        ? lastComment.authorName
+          ? `Último comentario (${lastComment.authorName}): ${lastComment.text}`
+          : `Último comentario: ${lastComment.text}`
+        : 'Sin comentarios aún.',
+    );
+    return lines.join('\n');
+  }
+
+  /**
+   * Último comentario VISIBLE PARA EL CLIENTE de un incidente (`incident.comments`, viene de
+   * `GET incident?comments=true`) — nunca uno interno (`customer_visible: false`): sería una
+   * nota privada del equipo, no algo para mostrarle al usuario que está consultando su ticket.
+   *
+   * ⚠️ Forma de cada comentario sin confirmar contra tráfico real todavía (misma deuda que el
+   * resto de esta integración, ver el comentario de cabecera de `InvgateService`) — relevada
+   * contra la documentación pública (`message`/`author_id`/`created_at`/`customer_visible`),
+   * no contra una respuesta real capturada. Devuelve `null` ante cualquier forma inesperada
+   * (campo con otro nombre, no es array, etc.) en vez de romper el detalle del ticket por esto.
+   */
+  private async resolveLastCustomerVisibleComment(
+    rawComments: unknown,
+  ): Promise<{ text: string; authorName: string | null } | null> {
+    if (!Array.isArray(rawComments) || !rawComments.length) return null;
+
+    const visible = rawComments.filter((c): c is Record<string, unknown> => {
+      if (!c || typeof c !== 'object') return false;
+      const v = (c as Record<string, unknown>).customer_visible;
+      return v === true || v === 1 || v === '1';
+    });
+    if (!visible.length) return null;
+
+    // Más reciente primero: `created_at` (epoch o ISO-8601, ambos comparan bien como texto
+    // creciente/decreciente salvo casos borde) con `msg_num`/`id` como desempate si faltara.
+    const sorted = [...visible].sort((a, b) => {
+      const byDate = String(b.created_at ?? '').localeCompare(String(a.created_at ?? ''));
+      if (byDate !== 0) return byDate;
+      return Number(b.msg_num ?? b.id ?? 0) - Number(a.msg_num ?? a.id ?? 0);
+    });
+
+    const last = sorted[0];
+    const rawText = last.message ?? last.comment ?? last.text;
+    if (typeof rawText !== 'string' || !rawText.trim()) return null;
+
+    const authorId = last.author_id;
+    const authorName =
+      authorId !== undefined && authorId !== null ? await this.resolveAssignedAgentName(authorId) : null;
+
+    return { text: this.stripInvgateHtml(rawText), authorName };
+  }
+
+  /** Nombre completo del agente de InvGate asignado a un incidente, o `null` sin asignar/sin resolver. */
+  private async resolveAssignedAgentName(assignedId: unknown): Promise<string | null> {
+    if (assignedId === undefined || assignedId === null) return null;
+    const agent = await this.invgateService.getUserById(Number(assignedId)).catch(() => null);
+    if (!agent) return null;
+    return [agent.name, agent.lastname].filter(Boolean).join(' ') || null;
   }
 
   /**
@@ -1471,11 +1875,24 @@ export class ConversationsService implements OnModuleInit {
     if (!active.length) return null;
     const activeIds = assigneeIds.filter((id) => active.some((u) => u.id === id));
 
-    const state = await this.prisma.flowNodeRoundRobin.upsert({
-      where: { flowId_nodeId: { flowId, nodeId } },
-      update: {},
-      create: { flowId, nodeId, lastIndex: -1 },
-    });
+    let state: { lastIndex: number };
+    try {
+      state = await this.prisma.flowNodeRoundRobin.upsert({
+        where: { flowId_nodeId: { flowId, nodeId } },
+        update: {},
+        create: { flowId, nodeId, lastIndex: -1 },
+      });
+    } catch (err) {
+      // Dos conversaciones distintas pueden tocar el mismo nodo round-robin por primera vez
+      // casi al mismo tiempo — el `create` del upsert de la que "pierde la carrera" choca
+      // contra el `@@unique([flowId, nodeId])` (mismo patrón que `persistContentSid` en
+      // `TwilioWhatsAppService`). No es un error real: solo hace falta leer la fila que ya
+      // quedó creada por la otra.
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      state = await this.prisma.flowNodeRoundRobin.findUniqueOrThrow({
+        where: { flowId_nodeId: { flowId, nodeId } },
+      });
+    }
 
     const nextIndex = (state.lastIndex + 1) % activeIds.length;
     await this.prisma.flowNodeRoundRobin.update({
@@ -1522,9 +1939,28 @@ export class ConversationsService implements OnModuleInit {
         flowState.userRole = identity.roleName;
         flowState.userRoleId = identity.roleId;
 
-        const greeting = identity.isKnown
-          ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
-          : data.text || '¡Hola! Bienvenido. ¿En qué puedo ayudarte?';
+        // Saludo configurable desde el editor (`data.text`), con `{{variable}}` de la charla —
+        // incluidas las de `flowState` que se acaban de setear arriba (`{{userFirstName}}`,
+        // `{{userName}}`, `{{userRole}}`, etc.). Sin configurar se mantiene el texto de siempre,
+        // así ningún flujo existente cambia de comportamiento al actualizar.
+        //
+        // El mismo texto sirve para las dos ramas a propósito: hasta 2026-08-27 `data.text` era
+        // SOLO el saludo del usuario desconocido, pero desde "no hablamos con desconocidos" un
+        // número no registrado se rechaza antes de llegar al flujo, así que esa rama no se
+        // ejecuta más y el campo quedaba sin ningún efecto visible.
+        // `noGreeting` (tilde "No enviar saludo" en el editor) es lo único que arranca la charla
+        // sin ningún mensaje de este nodo: el flujo sigue de largo por su arista, y el primer
+        // texto que ve la persona es el del nodo siguiente. Un `data.text` vacío NO alcanza para
+        // eso a propósito — ningún flujo tenía ese campo cargado cuando se volvió configurable
+        // (2026-09-01), así que tomar "vacío" como "sin saludo" los habría dejado a todos mudos
+        // de golpe al actualizar.
+        const configuredGreeting = data.text?.trim() ? this.interpolate(data.text, flowState) : null;
+        const greeting = data.noGreeting
+          ? undefined
+          : (configuredGreeting ??
+            (identity.isKnown
+              ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
+              : '¡Hola! Bienvenido. ¿En qué puedo ayudarte?'));
 
         // Dos salidas: conocido / desconocido. El editor visual las dibuja como
         // aristas desde los handles `known` / `unknown`, así que se enruta por ahí;
@@ -1697,7 +2133,119 @@ export class ConversationsService implements OnModuleInit {
         return { flowState };
       }
 
+      case 'notification': {
+        // Texto + un único botón (ej. "Agregue sus fotos" / "Sin foto"). Dos modos:
+        //  - 'link' (data.buttonMode === 'link'): el botón abre una URL.
+        //  - 'confirm' (default): al tocarlo, sigue el flujo por la única arista de
+        //    salida del nodo. Cualquier otro mensaje —el usuario agrega algo (manda
+        //    las fotos) o pregunta algo— lo toma el LLM, mismo mecanismo de fallback
+        //    que `menu`, pero sin ramificar por opción: acá no hay nada que elegir,
+        //    solo confirmar o desviarse.
+        const buttonLabel = (data.buttonLabel || 'Continuar').trim();
+
+        if (data.buttonMode === 'link') {
+          if (!data.buttonUrl) {
+            // Sin URL configurada no hay botón que mandar: se degrada a mensaje de
+            // texto plano en vez de mandar un botón roto.
+            return { responseText: data.text };
+          }
+          // WhatsApp no avisa cuando se toca un botón de link, así que no hay nada que
+          // matchear — pero SÍ hay que frenar acá con `waitForInput` (como cualquier nodo
+          // con `interactive`): sin esto, `executeFlow` sigue encadenando al próximo nodo
+          // en el mismo turno y ese nodo pisa este `interactive` (solo se manda el último
+          // de la cadena) — el botón nunca llegaba a salir. El próximo mensaje que mande
+          // el usuario, sea cual sea, avanza por la única salida del nodo.
+          if (flowState.__awaiting === node.id) {
+            delete flowState.__awaiting;
+            return { flowState };
+          }
+          flowState.__awaiting = node.id;
+          const interactive = this.buildCtaInteractive(data.text, buttonLabel, data.buttonUrl);
+          return { responseText: (data.text ?? '').trim(), interactive, waitForInput: true, flowState };
+        }
+
+        const pressedButton = () => body.trim() === buttonLabel || body.trim() === '1';
+        // "Espera foto" (data.expectsPhoto, tildable en el editor): si está prendido,
+        // mandar una imagen también avanza el flujo, igual que tocar el botón — no tiene
+        // sentido derivar al LLM a alguien que ya hizo lo que el nodo le pidió (ej.
+        // "Agregue sus fotos"). Sin el tilde, el nodo no espera nada en particular más
+        // que el botón, y una imagen cae al LLM como cualquier otro mensaje que no matchea.
+        // `pendingAttachments` ya lo actualizó `handleMessage` (paso 2.5) antes de llegar
+        // acá, con los adjuntos de este mismo mensaje.
+        const sentImage = () =>
+          !!data.expectsPhoto &&
+          Array.isArray(flowState.pendingAttachments) &&
+          flowState.pendingAttachments.length > 0;
+
+        // Ya se derivó a conversación libre (el mensaje anterior no era el botón ni
+        // encajaba): sigue atendiendo con el LLM hasta que el usuario toque el botón o
+        // mande una imagen.
+        if (flowState.__llmFallback === node.id) {
+          if (pressedButton() || sentImage()) {
+            delete flowState.__llmFallback;
+            return { flowState };
+          }
+          const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
+          return { responseText, waitForInput: true, flowState };
+        }
+
+        // Primera llegada: mostrar el texto con el botón y esperar.
+        if (flowState.__awaiting !== node.id) {
+          flowState.__awaiting = node.id;
+          const interactive = this.buildMenuInteractive(data.text, [
+            { value: buttonLabel, label: buttonLabel },
+          ]);
+          const responseText = interactive
+            ? (data.text ?? '').trim()
+            : `${(data.text ?? '').trim()}\n\n[${buttonLabel}]`;
+          return { responseText, interactive, waitForInput: true, flowState };
+        }
+
+        delete flowState.__awaiting;
+        if (pressedButton() || sentImage()) {
+          return { flowState };
+        }
+
+        // No tocó el botón ni mandó una imagen: puede estar preguntando algo. Se lo
+        // pasa al LLM en vez de insistir con el botón.
+        flowState.__llmFallback = node.id;
+        const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
+        return { responseText: fallbackResponse, waitForInput: true, flowState };
+      }
+
       case 'condition': {
+        // Formato nuevo: una única comparación contra una variable de flowState
+        // (incluida cualquiera de las que siempre trae `start`, como `userRole`),
+        // con 2 salidas fijas por sourceHandle ('true'/'false'). Reemplaza a la
+        // lista vieja de `conditions`, que sigue funcionando para flujos viejos
+        // que no tengan `compareVariable` seteado.
+        if (data.compareVariable) {
+          const rawValue = flowState[this.stripVariableBraces(data.compareVariable)];
+          const compareValue = data.compareValue ?? '';
+          let matches: boolean;
+          switch (data.compareOperator) {
+            case 'not_equals':
+              matches = String(rawValue ?? '') !== compareValue;
+              break;
+            case 'contains':
+              matches = String(rawValue ?? '')
+                .toLowerCase()
+                .includes(compareValue.toLowerCase());
+              break;
+            case 'exists':
+              matches = rawValue !== undefined && rawValue !== null && rawValue !== '';
+              break;
+            case 'not_exists':
+              matches = rawValue === undefined || rawValue === null || rawValue === '';
+              break;
+            case 'equals':
+            default:
+              matches = String(rawValue ?? '') === compareValue;
+              break;
+          }
+          return { sourceHandle: matches ? 'true' : 'false' };
+        }
+
         const conditions = data.conditions || [];
         let matched = false;
         let targetNodeId: string | null = null;
@@ -1771,41 +2319,135 @@ export class ConversationsService implements OnModuleInit {
           },
           await this.loadAttachments(pendingAttachments),
         );
-        // `lastTicketId` (lo que consulta `ticket_query` después) y lo que ve el usuario
-        // acá: preferí SIEMPRE el número de InvGate — el cuid interno no le sirve a nadie
-        // fuera del sistema. Sin sync (InvGate caído, mal configurado, etc.) cae al id
-        // local — sigue siendo un ticket válido, solo que no llegó a InvGate todavía.
+        // `lastTicketId` (lo que consulta `ticket_query` después) y lo que puede mostrar
+        // `data.text` acá: preferí SIEMPRE el número de InvGate — el cuid interno no le
+        // sirve a nadie fuera del sistema. Sin sync (InvGate caído, mal configurado,
+        // etc.) cae al id local — sigue siendo un ticket válido, solo que no llegó a
+        // InvGate todavía.
         flowState.lastTicketId = invgateTicketId ?? ticket.id;
+        // Mensaje final 100% a cargo de quien arma el flujo: sin `data.text` configurado
+        // no hay ningún texto fijo — antes SIEMPRE se mandaba "Ticket #X creado..." sin
+        // forma de sacarlo ni de personalizarlo. `{{lastTicketId}}` (recién seteado
+        // arriba) y cualquier otra variable de la charla quedan disponibles para armarlo.
         return {
-          responseText: `Ticket #${flowState.lastTicketId} creado. Un agente te contactará pronto.`,
+          responseText: data.text ? this.interpolate(data.text, flowState) : undefined,
           flowState,
         };
       }
 
       case 'ticket_query': {
-        // `ticketId` puede ser el cuid interno (tickets viejos, o uno nuevo que no llegó
-        // a sincronizar con InvGate) o el número de InvGate (lo normal ahora, ver
-        // `lastTicketId` en 'ticket_create'/executeTransferAgentNode) — se busca por
-        // cualquiera de los dos campos, sin necesidad de adivinar cuál es.
-        const ticketId = data.ticketIdVariable
-          ? flowState[this.stripVariableBraces(data.ticketIdVariable)]
-          : flowState.lastTicketId;
-        if (ticketId) {
-          // `tenantId` es obligatorio acá: `invgateId` es un correlativo global de
-          // InvGate (sistema externo, no tiene noción de tenant) y `id` es un cuid
-          // — sin este filtro, un tenant puede consultar (y ver subject/status de)
-          // tickets de otro tenant adivinando un número de InvGate bajo.
-          const ticket = await this.prisma.ticket.findFirst({
-            where: { tenantId, OR: [{ id: String(ticketId) }, { invgateId: String(ticketId) }] },
-          });
-          if (ticket) {
-            const status = await this.refreshInvgateStatus(ticket);
-            return {
-              responseText: `Ticket #${ticket.invgateId ?? ticket.id}: ${ticket.subject} - Estado: ${status}`,
-            };
+        // Tres pasos, mismo idioma que `menu`/`input` (`flowState.__awaiting` +
+        // `waitForInput`): (1) primera llegada, lista EN VIVO los tickets abiertos
+        // del usuario contra InvGate (no la tabla local `Ticket` — su estado
+        // cacheado puede estar desactualizado, ver `buildOpenTicketsList`); (2) elige
+        // uno, se muestra el detalle con un botón "Volver a la lista"; (3) si toca
+        // ese botón vuelve a (1), cualquier otra respuesta sigue de largo por la
+        // arista del nodo (igual que `input`).
+        const awaitingThisNode = flowState.__awaiting === node.id;
+        const step = flowState.__ticketQueryStep;
+
+        const resolveCustomerId = async (): Promise<number | null> => {
+          if (!(await this.invgateService.isConfigured())) return null;
+          return this.resolveInvgateCustomerId(user.id, from);
+        };
+
+        const clearTicketQueryState = () => {
+          delete flowState.__awaiting;
+          delete flowState.__ticketQueryStep;
+          delete flowState.__ticketQueryListCache;
+          delete flowState.__ticketQueryListTruncated;
+        };
+
+        /**
+         * "Volver a la lista" reusa la MISMA lista ya armada (`flowState.__ticketQueryListCache`)
+         * en vez de reconsultar InvGate — no solo por ahorrar la consulta: Twilio manda listas
+         * vía un Content Template cacheado por FORMA exacta del menú, incluyendo el id de cada
+         * fila (`TwilioWhatsAppService.hashInteractiveShape`). Si se reconstruye la lista de
+         * nuevo, aunque el resultado sea idéntico, cualquier corrimiento en el orden/estado de
+         * los tickets de InvGate arma un hash distinto y fuerza crear un Content Template
+         * nuevo (lento, y ese es justo el que a veces no llega a renderizar el botón/lista del
+         * lado de WhatsApp). Reenviando el mismo objeto en memoria, es 100% el mismo Content
+         * Template ya usado en el mensaje anterior — el mismo que si funciona (ver el botón
+         * "Volver a la lista", con forma fija, siempre cacheado). Se descarta con
+         * `clearTicketQueryState` apenas se sale del nodo, así una visita futura sí trae los
+         * tickets al día.
+         */
+        const renderTicketList = async (prefix?: string): Promise<NodeExecutionResult> => {
+          let interactive = flowState.__ticketQueryListCache as WhatsAppInteractive | undefined;
+          let truncated = !!flowState.__ticketQueryListTruncated;
+
+          if (!interactive) {
+            const customerId = await resolveCustomerId();
+            if (!customerId) {
+              clearTicketQueryState();
+              return {
+                responseText: 'No pude vincular tu usuario con InvGate para buscar tus tickets. Contactá a un administrador.',
+                flowState,
+              };
+            }
+
+            const built = await this.buildOpenTicketsList(customerId);
+            if (!built.interactive) {
+              clearTicketQueryState();
+              return { responseText: 'No tenés tickets abiertos en este momento.', flowState };
+            }
+            interactive = built.interactive;
+            truncated = built.truncated;
+            flowState.__ticketQueryListCache = interactive;
+            flowState.__ticketQueryListTruncated = truncated;
           }
+
+          flowState.__awaiting = node.id;
+          flowState.__ticketQueryStep = 'select';
+          const notice = truncated
+            ? `Tenés más de ${MAX_TICKET_LIST_ROWS} tickets abiertos, te muestro los ${MAX_TICKET_LIST_ROWS} más recientes.\n\n`
+            : '';
+          return {
+            responseText: (prefix ?? '') + notice + 'Elegí un ticket:',
+            interactive,
+            waitForInput: true,
+            flowState,
+          };
+        };
+
+        if (awaitingThisNode && step === 'detail') {
+          if (body.trim() === BACK_OPTION_VALUE) {
+            return renderTicketList();
+          }
+          clearTicketQueryState();
+          return { flowState };
         }
-        return { responseText: 'No encontré el ticket solicitado.' };
+
+        if (awaitingThisNode) {
+          // Paso "elegir ticket": `body` es el id de InvGate de la fila tocada, o
+          // tipeado a mano — por eso `buildTicketDetailText` verifica que el
+          // incidente encontrado le pertenezca a ESTE `customerId` antes de
+          // mostrarlo (si no, cualquiera podría ver el ticket de otra persona
+          // adivinando un id bajo).
+          const customerId = await resolveCustomerId();
+          if (!customerId) return renderTicketList();
+
+          const selectedRef = body.trim();
+          const detailText = await this.buildTicketDetailText(selectedRef, customerId);
+          if (!detailText) {
+            return renderTicketList('No reconocí esa opción. ');
+          }
+
+          flowState.__ticketQueryStep = 'detail';
+          return {
+            responseText: detailText,
+            interactive: {
+              type: 'button',
+              body: detailText,
+              buttons: [{ id: BACK_OPTION_VALUE, title: 'Volver a la lista' }],
+            },
+            waitForInput: true,
+            flowState,
+          };
+        }
+
+        // Primera llegada.
+        return renderTicketList();
       }
 
       case 'transfer_agent':
@@ -1916,8 +2558,30 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'webhook': {
-        // TODO: Implementar llamada HTTP a webhook externo
-        return { responseText: 'Acción webhook ejecutada (stub).' };
+        // Fire-and-forget: no devuelve responseText, así que no interrumpe la
+        // conversación con el usuario. Si falla, se loguea y el flujo sigue
+        // (un webhook caído -p.ej. una alerta a Discord- no debe trabar el bot).
+        const url = data.url ? this.interpolate(data.url, flowState) : '';
+        if (!url) {
+          this.logger.warn(`Nodo webhook (${node.id}) sin URL configurada.`);
+          return {};
+        }
+        const method = (data.method || 'POST').toUpperCase();
+        const requestBody = method !== 'GET' && data.body ? this.interpolate(data.body, flowState) : undefined;
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: requestBody ? { 'Content-Type': 'application/json' } : undefined,
+            body: requestBody,
+            signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+          });
+          if (!res.ok) {
+            this.logger.warn(`Webhook (${node.id}) respondió ${res.status}: ${(await res.text().catch(() => '')).substring(0, 200)}`);
+          }
+        } catch (err) {
+          this.logger.error(`No se pudo llamar al webhook (${node.id}, ${url}): ${(err as Error).message}`);
+        }
+        return {};
       }
 
       case 'subflow': {
@@ -2007,10 +2671,15 @@ export class ConversationsService implements OnModuleInit {
 
     delete flowState.__awaiting;
     delete flowState.__llmQueryAttempts;
-    const allResolved = variables.every(
-      (v) => flowState[this.stripVariableBraces(v.variable)] !== LLM_QUERY_UNDEFINED_VALUE,
-    );
-    return { nextNodeId: allResolved ? data.foundTargetNodeId : data.missingTargetNodeId, flowState };
+    // Una sola salida, siempre por la arista dibujada en el canvas (pedido 2026-08-28):
+    // tanto "todas resueltas" como "alguna quedó en no definido" siguen el mismo camino —
+    // quien necesite ramificar por "no definido" pone un nodo `condition` después. Los
+    // campos foundTargetNodeId/missingTargetNodeId se IGNORAN a propósito (eran texto
+    // libre en el editor: un ID tipeado a mano con un typo mandaba el flujo a un nodo
+    // inexistente y el motor lo reseteaba en silencio — así se rompió el flujo de test
+    // que motivó todo esto). Siguen en el DTO solo para que los flujos viejos que los
+    // tengan guardados pasen la validación al re-guardarse.
+    return { flowState };
   }
 
   /**
@@ -2049,7 +2718,7 @@ export class ConversationsService implements OnModuleInit {
 
     const raw = await this.llmService.chat(llmMessages, {
       systemPrompt: extractPrompt,
-      maxTokens: CLASSIFIER_MAX_TOKENS,
+      maxTokens: LLM_QUERY_EXTRACT_MAX_TOKENS,
       temperature: 0,
     });
 
@@ -2057,9 +2726,27 @@ export class ConversationsService implements OnModuleInit {
     for (const line of raw.split('\n')) {
       const match = line.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
       if (!match) continue;
-      const item = items.find((i) => i.key.toLowerCase() === match[1].trim().toLowerCase());
+      // Clave normalizada, no igualdad exacta: un modelo de razonamiento suele decorar
+      // la línea aunque el prompt pida el formato pelado — "- sede: X", "**sede**: X",
+      // "Sede: X" — y el match exacto tiraba esas respuestas válidas a NONE.
+      const parsedKey = this.normalizeForMatch(match[1]);
+      const item = items.find((i) => this.normalizeForMatch(i.key) === parsedKey);
       if (!item) continue;
-      outcomes[item.key] = match[2].trim();
+      // Mismo motivo sobre el valor: sacarle markdown/comillas envolventes antes de
+      // guardarlo ("**DM - Martinez**" → "DM - Martinez").
+      outcomes[item.key] = match[2].trim().replace(/^[*_`"']+|[*_`"']+$/g, '').trim();
+    }
+
+    // Nada parseó para alguna clave pendiente: dejar rastro del output crudo — sin esto,
+    // un `content` vacío/cortado (ej. modelo de razonamiento sin presupuesto de tokens) o
+    // un formato inesperado se convierte en NONE en silencio y el nodo re-pregunta datos
+    // que el usuario ya dio, sin ninguna pista en los logs de por qué.
+    const unparsed = items.filter(({ key }) => !outcomes[key]);
+    if (unparsed.length) {
+      this.logger.warn(
+        `extractLlmQueryValues: sin línea parseable para [${unparsed.map((i) => i.key).join(', ')}] — ` +
+          `respuesta cruda del modelo (${raw.length} chars): ${JSON.stringify(raw.slice(0, 500))}`,
+      );
     }
 
     for (const { key } of items) {
@@ -2075,12 +2762,41 @@ export class ConversationsService implements OnModuleInit {
       }
       const spec = pending.find((v) => this.stripVariableBraces(v.variable) === key);
       if (spec?.allowedValues?.length) {
-        const matched = spec.allowedValues.find((v) => v.toLowerCase() === value.toLowerCase());
+        // Match normalizado en vez de exacto: el prompt le pide al modelo devolver el
+        // valor "calcado", pero en la práctica varía (tilde, mayúscula, punto final, o
+        // "Alta prioridad" en vez de "Alta") — con match exacto, una respuesta que el
+        // usuario SÍ dio terminaba descartada a NONE por una diferencia cosmética, no
+        // porque no se haya dicho. Primero intenta igualdad normalizada; si no hay,
+        // contención en cualquier sentido (agarra tanto "alta" dentro de "alta
+        // prioridad" como al revés).
+        const normalized = this.normalizeForMatch(value);
+        const matched =
+          spec.allowedValues.find((v) => this.normalizeForMatch(v) === normalized) ||
+          spec.allowedValues.find((v) => {
+            const nv = this.normalizeForMatch(v);
+            return nv.length > 0 && (normalized.includes(nv) || nv.includes(normalized));
+          });
         outcomes[key] = matched || 'NONE';
       }
     }
 
     return outcomes;
+  }
+
+  /**
+   * Normaliza para comparar valores de `llm_query.allowedValues` contra lo que devuelve
+   * el clasificador: sin tildes, minúsculas, puntuación colapsada a espacios. Pensado
+   * para tolerar variaciones cosméticas de la respuesta del modelo, no para reconocer
+   * sinónimos o texto libre — la comparación sigue siendo contra el catálogo cerrado de
+   * `allowedValues`, nunca contra un valor inventado.
+   */
+  private normalizeForMatch(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
   }
 
   /**

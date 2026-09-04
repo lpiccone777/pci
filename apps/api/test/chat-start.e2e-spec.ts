@@ -124,13 +124,14 @@ describe('2.2 Arranque de flujo por tenant y rol (CHAT-START-*)', () => {
     expect(res.body.reply).toContain('Bienvenido conocido a A');
   });
 
-  it('CHAT-START-02: usuario desconocido cae al flujo isDefault global (rama desconocido)', async () => {
+  it('CHAT-START-02: usuario desconocido (sin membresía en el tenant) se rechaza, no llega a ningún flujo', async () => {
     await useMyDefault();
     const res = await simulate(uniquePhone(), tenantA.id);
 
     expect(res.status).toBe(201);
-    expect(res.body.reply).toContain('Soy el bot general');
-    expect(res.body.reply).toContain('Rama desconocido');
+    // No hablamos con desconocidos: se rechaza antes de resolver flujo alguno — nada del
+    // default global ("Soy el bot general") ni de su rama `unknown`.
+    expect(res.body.reply).toBe('Este número no está registrado: el bot no atiende mensajes de desconocidos.');
   });
 
   it('CHAT-START-03: rol conocido sin flujo de inicio propio cae al default global (rama conocido)', async () => {
@@ -145,16 +146,26 @@ describe('2.2 Arranque de flujo por tenant y rol (CHAT-START-*)', () => {
   it('CHAT-START-04: sin flujo de inicio ni default activo responde el orquestador LLM', async () => {
     await unsetAllDefaults(); // no hay ningún default global
     llm.setReply('Respuesta del orquestador sin flujo.');
-    // Un tenant sin ningún flujo asignado y sin default → executeFlow devuelve null.
+    // Un tenant sin ningún flujo asignado y sin default → executeFlow devuelve null. El
+    // teléfono tiene que ser MIEMBRO de este tenant: no hablamos con desconocidos, así que un
+    // número sin membresía se rechazaría antes de siquiera intentar resolver un flujo.
     const tenantSinFlujo = await createTenant(t.prisma, { slug: uniqueSlug('sinflujo') });
+    const roleSinFlujo = await createRole(t.prisma, { tenantId: tenantSinFlujo.id, name: 'Rol Sin Flujo' });
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('sinflujo'),
+      phone,
+      firstName: 'Sin Flujo',
+      memberships: [{ tenantId: tenantSinFlujo.id, roleId: roleSinFlujo.id }],
+    });
 
-    const res = await simulate(uniquePhone(), tenantSinFlujo.id);
+    const res = await simulate(phone, tenantSinFlujo.id);
 
     expect(res.status).toBe(201);
     expect(res.body.reply).toBe('Respuesta del orquestador sin flujo.');
   });
 
-  it('CHAT-START-05: mismo teléfono, conocido en A (su flujo) y desconocido en B (rama desconocido del default)', async () => {
+  it('CHAT-START-05: mismo teléfono, conocido en A (su flujo) y desconocido en B (se rechaza, no hablamos con desconocidos)', async () => {
     await useMyDefault();
     const phone = uniquePhone();
     // Conocido en A.
@@ -169,6 +180,67 @@ describe('2.2 Arranque de flujo por tenant y rol (CHAT-START-*)', () => {
     expect(enA.body.reply).toContain('Bienvenido de nuevo'); // su flujo de inicio
 
     const enB = await simulate(phone, tenantB.id);
-    expect(enB.body.reply).toContain('Rama desconocido'); // no es miembro de B → default, rama unknown
+    // No es miembro de B: se rechaza, no llega a la rama `unknown` del default.
+    expect(enB.body.reply).toBe('Este número no está registrado: el bot no atiende mensajes de desconocidos.');
+  });
+
+  it('CHAT-START-06: el saludo del nodo start sale de data.text, interpolado (antes era fijo)', async () => {
+    await useMyDefault();
+    const role = await createRole(t.prisma, { tenantId: tenantA.id, name: 'Saludo Custom' });
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('saludo'),
+      phone,
+      firstName: 'Dina',
+      memberships: [{ tenantId: tenantA.id, roleId: role.id }],
+    });
+    await createFlow(t.prisma, {
+      name: 'F-SALUDO-CUSTOM',
+      nodes: [
+        startNode('cs', { text: 'Buenas {{userFirstName}}, te atiende Soporte.' }),
+        messageNode('cm', 'Siguiente paso'),
+        endNode('ce'),
+      ],
+      edges: [edge('cs', 'cm', 'known'), edge('cm', 'ce')],
+      assign: [{ tenantId: tenantA.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    const res = await simulate(phone, tenantA.id);
+
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toContain('Buenas Dina, te atiende Soporte.');
+    expect(res.body.reply).not.toContain('Bienvenido de nuevo'); // ya no se manda el fijo
+    expect(res.body.reply).toContain('Siguiente paso');
+  });
+
+  it('CHAT-START-07: con noGreeting el nodo start no manda nada y la charla arranca con el nodo siguiente', async () => {
+    await useMyDefault();
+    const role = await createRole(t.prisma, { tenantId: tenantA.id, name: 'Sin Saludo' });
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('sinsaludo'),
+      phone,
+      firstName: 'Eze',
+      memberships: [{ tenantId: tenantA.id, roleId: role.id }],
+    });
+    await createFlow(t.prisma, {
+      name: 'F-SIN-SALUDO',
+      // `text` cargado Y `noGreeting`: el tilde manda, el texto no se usa.
+      nodes: [
+        startNode('ns', { text: 'Esto no se manda', noGreeting: true }),
+        messageNode('nm', 'Arranca directo acá'),
+        endNode('ne'),
+      ],
+      edges: [edge('ns', 'nm', 'known'), edge('nm', 'ne')],
+      assign: [{ tenantId: tenantA.id, isStart: true, roleIds: [role.id] }],
+    });
+
+    const res = await simulate(phone, tenantA.id);
+
+    expect(res.status).toBe(201);
+    expect(res.body.reply).toBe('Arranca directo acá');
+    expect(res.body.reply).not.toContain('Bienvenido de nuevo');
+    expect(res.body.reply).not.toContain('Esto no se manda');
+    expect(res.body.reply).not.toContain('Eze');
   });
 });

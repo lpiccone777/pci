@@ -12,12 +12,16 @@
  * (`FakeLlmService`). El motor de flujos (`ConversationsService.executeNode`/`executeFlow`) NO
  * se mockea.
  *
- * Aislamiento: cada test de nodo "downstream" (message/end/delay/variable/webhook/default) arma
- * su propio tenant + rol + usuario conocido con un flujo de inicio propio (`TenantFlow.isStart`),
- * así evita el hazard de `Flow.isDefault` GLOBAL (ver flow-builder.ts). Solo CHAT-N-START-02
- * (usuario desconocido) necesita tocar el default global, porque `findActiveFlowForTenant`
- * SIEMPRE cae a `isDefault` cuando `identity.roleId` es null (verificado en flow.service.ts) —
- * no existe forma de asignarle un flujo de inicio "para desconocidos" vía TenantFlow.
+ * Aislamiento: cada test de nodo arma su propio tenant + rol + usuario conocido con un flujo
+ * de inicio propio (`TenantFlow.isStart`), así evita el hazard de `Flow.isDefault` GLOBAL (ver
+ * flow-builder.ts).
+ *
+ * CHAT-N-START-02 (usuario desconocido → rama `unknown` del nodo `start`) no tiene un test acá:
+ * desde "no hablamos con desconocidos" (pedido 2026-08-27), `handleMessage` rechaza cualquier
+ * teléfono sin membresía ANTES de resolver flujo alguno — la rama `unknown` queda como
+ * capacidad del motor de flujos, pero inalcanzable por este camino (ver AGENTS.md, "No
+ * hablamos con desconocidos"). El rechazo en sí ya lo cubren chat-known.e2e-spec.ts
+ * (CHAT-KNOWN-02/03/04) y chat-start.e2e-spec.ts (CHAT-START-02/05).
  */
 import { LlmService } from '../src/modules/llm/llm.service';
 import {
@@ -42,6 +46,7 @@ import {
   edge,
   FlowNode,
   FlowEdge,
+  installFetchMock,
 } from './support';
 
 describe('2.3 Nodos del motor — uno por uno, básico (CHAT-N-START/MSG/END/DLY/VAR/WHK/DEF)', () => {
@@ -126,53 +131,6 @@ describe('2.3 Nodos del motor — uno por uno, básico (CHAT-N-START/MSG/END/DLY
       expect(res.body.reply).toContain(
         `Datos: Deco|Nocido|${user.email}|${phone}|Rol Nodo|true|${user.id}`,
       );
-    });
-
-    it('CHAT-N-START-02: usuario desconocido con data.text propio — usa ese saludo y rutea por el handle unknown', async () => {
-      // Único caso de este archivo que depende de `Flow.isDefault` (GLOBAL): un desconocido
-      // (identity.roleId === null) siempre cae a `isDefault`, no hay TenantFlow "para
-      // desconocidos" (ver flow.service.ts, findActiveFlowForTenant). Se fija explícitamente,
-      // desmarcando cualquier otro default primero (hazard documentado en flow-builder.ts).
-      await unsetAllDefaults();
-      const tenantU = await createTenant(t.prisma, { slug: uniqueSlug('nstart-unk-a') });
-      const def = await createFlow(t.prisma, {
-        name: uniqueSlug('default-unk-text'),
-        isDefault: true,
-        nodes: [
-          startNode('s', { text: 'Hola visitante, bienvenido.' }),
-          messageNode('mk', 'rama known (no debería verse)'),
-          messageNode('mu', 'rama unknown'),
-          endNode('e'),
-        ],
-        edges: [edge('s', 'mk', 'known'), edge('s', 'mu', 'unknown'), edge('mk', 'e'), edge('mu', 'e')],
-      });
-      await t.prisma.flow.update({ where: { id: def.id }, data: { isDefault: true } });
-
-      const res = await simulate(uniquePhone(), tenantU.id);
-
-      expect(res.status).toBe(201);
-      expect(res.body.reply).toContain('Hola visitante, bienvenido.');
-      expect(res.body.reply).toContain('rama unknown');
-      expect(res.body.reply).not.toContain('rama known');
-    });
-
-    it('CHAT-N-START-02: usuario desconocido sin data.text — usa el saludo genérico por defecto', async () => {
-      await unsetAllDefaults();
-      const tenantU = await createTenant(t.prisma, { slug: uniqueSlug('nstart-unk-b') });
-      const def = await createFlow(t.prisma, {
-        name: uniqueSlug('default-unk-generic'),
-        isDefault: true,
-        nodes: [startNode('s'), messageNode('mu', 'rama unknown genérica'), endNode('e')],
-        edges: [edge('s', 'mu', 'unknown'), edge('mu', 'e')],
-      });
-      await t.prisma.flow.update({ where: { id: def.id }, data: { isDefault: true } });
-
-      const res = await simulate(uniquePhone(), tenantU.id);
-
-      expect(res.status).toBe(201);
-      // Sin data.text en el nodo start: cae al literal fijo del código (executeNode, case 'start').
-      expect(res.body.reply).toContain('¡Hola! Bienvenido. ¿En qué puedo ayudarte?');
-      expect(res.body.reply).toContain('rama unknown genérica');
     });
 
     it('CHAT-N-START-03: conocido sin firstName cargado — saluda sin romper (queda el espacio de más, cosmético)', async () => {
@@ -424,16 +382,50 @@ describe('2.3 Nodos del motor — uno por uno, básico (CHAT-N-START/MSG/END/DLY
   });
 
   describe('webhook (CHAT-N-WHK-*)', () => {
-    it('CHAT-N-WHK-01: nodo webhook — hoy responde el stub fijo (sin HTTP real)', async () => {
-      const { phone, tenant } = await setupKnownFlow(
-        [startNode('s'), webhookNode('w'), endNode('e')],
-        [edge('s', 'w', 'known'), edge('w', 'e')],
-      );
+    it('CHAT-N-WHK-01: nodo webhook — hace un POST real fire-and-forget (sin responseText) y el flujo sigue de largo', async () => {
+      const fetchMock = installFetchMock(() => ({ status: 200, body: { ok: true } }));
+      try {
+        const { phone, tenant } = await setupKnownFlow(
+          [
+            startNode('s'),
+            webhookNode('w', { url: 'https://ejemplo.test/hook', body: '{"ticket":"{{userFirstName}}"}' }),
+            endNode('e', 'Listo.'),
+          ],
+          [edge('s', 'w', 'known'), edge('w', 'e')],
+        );
 
-      const res = await simulate(phone, tenant.id);
+        const res = await simulate(phone, tenant.id);
 
-      expect(res.status).toBe(201);
-      expect(res.body.reply).toContain('Acción webhook ejecutada (stub).');
+        expect(res.status).toBe(201);
+        // Fire-and-forget: no aporta texto a la respuesta — solo se ve el saludo + el `end`.
+        expect(res.body.reply).toBe('¡Hola Deco! Bienvenido de nuevo.\n\nListo.');
+
+        expect(fetchMock.requests).toHaveLength(1);
+        const req = fetchMock.requests[0];
+        expect(req.url).toBe('https://ejemplo.test/hook');
+        expect(req.init?.method).toBe('POST');
+        expect(req.init?.body).toBe('{"ticket":"Deco"}'); // interpolado
+      } finally {
+        fetchMock.restore();
+      }
+    });
+
+    it('CHAT-N-WHK-02: nodo webhook sin URL configurada — no llama a fetch, no rompe el flujo', async () => {
+      const fetchMock = installFetchMock(() => ({ status: 200, body: {} }));
+      try {
+        const { phone, tenant } = await setupKnownFlow(
+          [startNode('s'), webhookNode('w'), endNode('e', 'Listo.')],
+          [edge('s', 'w', 'known'), edge('w', 'e')],
+        );
+
+        const res = await simulate(phone, tenant.id);
+
+        expect(res.status).toBe(201);
+        expect(res.body.reply).toBe('¡Hola Deco! Bienvenido de nuevo.\n\nListo.');
+        expect(fetchMock.requests).toHaveLength(0);
+      } finally {
+        fetchMock.restore();
+      }
     });
   });
 

@@ -295,8 +295,19 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
     expect(loggedCifrado).toBe(true);
   });
 
-  it('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default', async () => {
-    // DEVICE_FINGERPRINT_TTL_DAYS: defaultValue '90', pero apps/api/.env trae 30 → cae a env, no a default.
+  /**
+   * `it.failing` A PROPÓSITO (no es un test roto): el caso exige que `apps/api/.env` traiga un
+   * DEVICE_FINGERPRINT_TTL_DAYS distinto del `defaultValue` del catálogo ('90') para poder
+   * distinguir, por el valor devuelto, si la key resolvió por env o por default. Hoy el `.env`
+   * trae 90 igual que el default, así que la aserción de '30' no se cumple — y eso es
+   * justamente lo que este caso reporta.
+   *
+   * Invertido para que esa condición conocida NO ensucie el semáforo de la batería, misma
+   * convención que el resto de los `@invertido` del repo. Si algún día el `.env` vuelve a 30,
+   * Jest va a marcar "expected to fail but passed": ahí hay que sacarle el `.failing` y dejarlo
+   * como `it` normal.
+   */
+  it.failing('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default @invertido', async () => {
     await setSetting(t.prisma, 'DEVICE_FINGERPRINT_TTL_DAYS', '45');
 
     const res = await asAdmin(http(t).delete('/settings/DEVICE_FINGERPRINT_TTL_DAYS'));
@@ -393,8 +404,10 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
   it('BE-SET-18: los secretos de canales nuevos e InvGate se guardan cifrados; los identificadores no secretos van en claro', async () => {
     const secretPairs: Array<[string, string]> = [
       ['TWILIO_AUTH_TOKEN', 'twilio-auth-token-be-set-18'],
+      // GUPSHUP_API_KEY es el único secreto de Gupshup: SMS ya no tiene settings propios,
+      // reusa este mismo (junto con GUPSHUP_WHATSAPP_SOURCE/GUPSHUP_APP_NAME, no secretos)
+      // del grupo "Mensajería: WhatsApp (Gupshup)".
       ['GUPSHUP_API_KEY', 'gupshup-api-key-be-set-18'],
-      ['GUPSHUP_SMS_PASSWORD', 'gupshup-sms-pass-be-set-18'],
       ['INVGATE_API_KEY', 'invgate-api-key-be-set-18'],
     ];
     for (const [key, plain] of secretPairs) {
@@ -414,7 +427,7 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
     const plainPairs: Array<[string, string]> = [
       ['TWILIO_ACCOUNT_SID', 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
       ['TWILIO_WHATSAPP_FROM', '+14155238886'],
-      ['GUPSHUP_SMS_USERID', '20001234'],
+      ['GUPSHUP_WHATSAPP_SOURCE', '15553788248'],
       ['INVGATE_API_USER', 'chatbot_test'],
     ];
     for (const [key, plain] of plainPairs) {

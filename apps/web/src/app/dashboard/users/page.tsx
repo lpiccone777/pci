@@ -39,6 +39,9 @@ interface UserData {
 
 export type Feedback = { kind: 'ok' | 'error'; text: string };
 
+/** Cantidad de filas por página de la tabla. Fija: no hay pedido de que sea configurable. */
+const PAGE_SIZE = 20;
+
 /** El nombre visible de un usuario: nombre y apellido, o el email si no tiene. */
 function userLabel(u: { firstName: string | null; lastName: string | null; email: string }) {
   return [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
@@ -151,6 +154,12 @@ export default function UsersPage() {
   const [busy, setBusy] = useState(false);
   /** Filtro por empresa; solo se usa en el modo consolidado. */
   const [tenantFilter, setTenantFilter] = useState<string>('');
+  /** Filtros comunes de la tabla. */
+  const [nameFilter, setNameFilter] = useState('');
+  const [lastNameFilter, setLastNameFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  /** Página actual (1-indexed) de la tabla filtrada. */
+  const [page, setPage] = useState(1);
 
   /** null = cerrado · { user: null } = alta · { user } = edición. */
   const [editing, setEditing] = useState<{ user: UserData | null } | null>(null);
@@ -212,6 +221,49 @@ export default function UsersPage() {
         : users,
     [users, isAllTenants, tenantFilter],
   );
+
+  // Roles presentes en el listado, para alimentar el filtro por rol. Igual criterio que
+  // `tenantsInList`: sale de los datos ya traídos, sin pedir `/roles` aparte (que en modo
+  // consolidado, además, varía por empresa).
+  const rolesInList = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const u of visibleUsers) if (u.role) byId.set(u.role.id, u.role.name);
+    return Array.from(byId, ([id, name]) => ({ id, name })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [visibleUsers]);
+
+  const filteredUsers = useMemo(() => {
+    const name = nameFilter.trim().toLowerCase();
+    const lastName = lastNameFilter.trim().toLowerCase();
+    return visibleUsers.filter((u) => {
+      if (name && !(u.firstName || '').toLowerCase().includes(name)) return false;
+      if (lastName && !(u.lastName || '').toLowerCase().includes(lastName)) return false;
+      if (roleFilter && u.role?.id !== roleFilter) return false;
+      return true;
+    });
+  }, [visibleUsers, nameFilter, lastNameFilter, roleFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredUsers.length / PAGE_SIZE));
+  // Si un filtro deja la página actual fuera de rango, se recorta en vez de mostrar vacío.
+  const safePage = Math.min(page, pageCount);
+  const pagedUsers = useMemo(
+    () => filteredUsers.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filteredUsers, safePage],
+  );
+
+  const hasFilters = Boolean(nameFilter || lastNameFilter || roleFilter);
+  function clearFilters() {
+    setNameFilter('');
+    setLastNameFilter('');
+    setRoleFilter('');
+  }
+
+  // Cualquier cambio en los filtros (incluido el de empresa, que ya existía) vuelve a la
+  // página 1: quedarse en una página que ya no existe para el resultado nuevo confunde.
+  useEffect(() => {
+    setPage(1);
+  }, [tenantFilter, nameFilter, lastNameFilter, roleFilter]);
 
   /** El header con la empresa de una fila, para operar sobre ella aunque no sea la activa. */
   function tenantHeaders(u: UserData): Record<string, string> | undefined {
@@ -309,25 +361,60 @@ export default function UsersPage() {
         </p>
       )}
 
-      {/* Filtro por empresa: solo en la vista consolidada. En una empresa concreta el propio
-          selector del sidebar ya cumple esa función, así que ahí sería redundante. */}
-      {isAllTenants && tenantsInList.length > 1 && (
-        <div className="mb-4 flex items-center gap-2">
-          <label className="text-sm text-gray-600">Empresa:</label>
-          <select
-            value={tenantFilter}
-            onChange={(e) => setTenantFilter(e.target.value)}
-            className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        {/* Filtro por empresa: solo en la vista consolidada. En una empresa concreta el propio
+            selector del sidebar ya cumple esa función, así que ahí sería redundante. */}
+        {isAllTenants && tenantsInList.length > 1 && (
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600">Empresa:</label>
+            <select
+              value={tenantFilter}
+              onChange={(e) => setTenantFilter(e.target.value)}
+              className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+            >
+              <option value="">Todas</option>
+              {tenantsInList.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <input
+          value={nameFilter}
+          onChange={(e) => setNameFilter(e.target.value)}
+          placeholder="Filtrar por nombre..."
+          className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+        />
+        <input
+          value={lastNameFilter}
+          onChange={(e) => setLastNameFilter(e.target.value)}
+          placeholder="Filtrar por apellido..."
+          className="border border-gray-200 px-3 py-1.5 rounded text-sm"
+        />
+        <select
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value)}
+          className="border border-gray-200 px-3 py-1.5 rounded text-sm text-gray-600"
+        >
+          <option value="">Todos los roles</option>
+          {rolesInList.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </select>
+        {hasFilters && (
+          <button
+            onClick={clearFilters}
+            className="text-sm text-gray-500 hover:text-gray-700 underline"
           >
-            <option value="">Todas</option>
-            {tenantsInList.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+            Limpiar filtros
+          </button>
+        )}
+      </div>
 
       <div className="bg-white rounded shadow overflow-x-auto">
         <table className="w-full text-sm">
@@ -349,30 +436,44 @@ export default function UsersPage() {
             </tr>
           </thead>
           <tbody>
-            {visibleUsers.length === 0 && (
+            {filteredUsers.length === 0 && (
               <tr>
                 <td
                   colSpan={isAllTenants ? 11 : 10}
                   className="px-4 py-6 text-center text-gray-400"
                 >
-                  <p className="mb-3">
-                    {isAllTenants
-                      ? 'Todavía no hay usuarios en tus empresas.'
-                      : 'Todavía no hay usuarios en esta empresa.'}
-                  </p>
-                  {canCreate && (
-                    <button
-                      onClick={() => openModal(null)}
-                      className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-                    >
-                      Crear el primero
-                    </button>
+                  {visibleUsers.length === 0 ? (
+                    <>
+                      <p className="mb-3">
+                        {isAllTenants
+                          ? 'Todavía no hay usuarios en tus empresas.'
+                          : 'Todavía no hay usuarios en esta empresa.'}
+                      </p>
+                      {canCreate && (
+                        <button
+                          onClick={() => openModal(null)}
+                          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                        >
+                          Crear el primero
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p className="mb-3">Ningún usuario coincide con los filtros.</p>
+                      <button
+                        onClick={clearFilters}
+                        className="text-blue-600 hover:text-blue-800 underline"
+                      >
+                        Limpiar filtros
+                      </button>
+                    </>
                   )}
                 </td>
               </tr>
             )}
 
-            {visibleUsers.map((u) => {
+            {pagedUsers.map((u) => {
               // La clave incluye la empresa: en consolidado una persona aparece una vez por
               // empresa, y con solo el id se repetiría la key.
               const rowKey = u.tenant ? `${u.id}-${u.tenant.id}` : u.id;
@@ -504,6 +605,35 @@ export default function UsersPage() {
           </tbody>
         </table>
       </div>
+
+      {filteredUsers.length > 0 && (
+        <div className="mt-3 flex items-center justify-between text-sm text-gray-600">
+          <span>
+            {filteredUsers.length} {filteredUsers.length === 1 ? 'usuario' : 'usuarios'}
+          </span>
+          {pageCount > 1 && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="px-3 py-1.5 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Anterior
+              </button>
+              <span>
+                Página {safePage} de {pageCount}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                disabled={safePage >= pageCount}
+                className="px-3 py-1.5 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Siguiente
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {editing &&
         (editing.user ? (

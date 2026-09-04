@@ -46,6 +46,8 @@ import {
   edge,
   FlowNode,
   FlowEdge,
+  setSetting,
+  deleteSetting,
 } from './support';
 
 /** Cola privada de `ConversationsService` para /simulate — literal del código real
@@ -185,7 +187,13 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
       [
         startNode('s'),
         menuNode('menu', { text: '¿Qué necesitás?', options: [{ value: '1', label: 'Crear ticket', targetNodeId: 'tk' }] }),
-        ticketCreateNode('tk', { subject: 'Consulta desde el bot E2E' }),
+        // `data.text` es el mensaje final del nodo, opcional y a cargo de quien arma el flujo
+        // (ya no hay un texto fijo forzado): se configura uno con {{lastTicketId}} para poder
+        // seguir asertando la respuesta end-to-end.
+        ticketCreateNode('tk', {
+          subject: 'Consulta desde el bot E2E',
+          text: 'Ticket #{{lastTicketId}} creado.',
+        }),
         endNode('e', 'Listo, cualquier cosa escribime.'),
       ],
       [edge('s', 'menu', 'known'), edge('menu', 'tk', '1'), edge('tk', 'e')],
@@ -501,6 +509,57 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
       expect(conversations[1].id).not.toBe(conv.id);
       expect(conversations[1].status).toBe('active');
     });
+
+    it('CHAT-IDLE-05: CONVERSATION_INACTIVITY_MINUTES manda sobre el default de 60min', async () => {
+      const { phone, user } = await knownUser(tIdle, rIdle, 'idle05');
+      await simulate(phone, tIdle.id, 'hola');
+      const conv = await t.prisma.conversation.findFirstOrThrow({ where: { userId: user.id, tenantId: tIdle.id } });
+
+      // 30 minutos de inactividad: con el default de 60 NO se cerraría.
+      await ageMessages(conv.id, 0.5);
+      await runCron();
+      expect((await t.prisma.conversation.findUniqueOrThrow({ where: { id: conv.id } })).status).toBe('active');
+
+      // Bajando el umbral a 10min, la misma charla ahora sí queda vieja.
+      await setSetting(t.prisma, 'CONVERSATION_INACTIVITY_MINUTES', '10');
+      try {
+        await runCron();
+        const after = await t.prisma.conversation.findUniqueOrThrow({ where: { id: conv.id } });
+        expect(after.status).toBe('closed');
+        expect(after.closedAt).not.toBeNull();
+      } finally {
+        await deleteSetting(t.prisma, 'CONVERSATION_INACTIVITY_MINUTES');
+      }
+    });
+
+    it('CHAT-IDLE-06: CONVERSATION_RESUME_WINDOW_HOURS manda sobre el default de 12h', async () => {
+      const { phone, user } = await knownUser(tIdle, rIdle, 'idle06');
+      await simulate(phone, tIdle.id, 'hola');
+      const conv = await t.prisma.conversation.findFirstOrThrow({ where: { userId: user.id, tenantId: tIdle.id } });
+      await ageMessages(conv.id, 2);
+      await runCron();
+
+      // Cerrada hace 3h: dentro de las 12h por default, así que se retomaría. Con la ventana
+      // achicada a 1h, ya quedó fuera y tiene que arrancar una conversación nueva.
+      await t.prisma.conversation.update({
+        where: { id: conv.id },
+        data: { closedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) },
+      });
+      await setSetting(t.prisma, 'CONVERSATION_RESUME_WINDOW_HOURS', '1');
+      try {
+        const res = await simulate(phone, tIdle.id, 'hola de nuevo');
+        expect(res.status).toBe(201);
+
+        const conversations = await t.prisma.conversation.findMany({
+          where: { userId: user.id, tenantId: tIdle.id },
+          orderBy: { createdAt: 'asc' },
+        });
+        expect(conversations).toHaveLength(2);
+        expect(conversations[1].id).not.toBe(conv.id);
+      } finally {
+        await deleteSetting(t.prisma, 'CONVERSATION_RESUME_WINDOW_HOURS');
+      }
+    });
   });
 
   // ───────────────────────── 2.12 Concurrencia y carga (CHAT-CONC-*) ─────────────────────────
@@ -680,16 +739,18 @@ describe('2.10/2.11/2.12/2.13 — E2E, inactividad, concurrencia y placeholders 
       },
     );
 
-    it('CHAT-PH-03: nodo webhook llamando a un servicio externo — hoy es un stub sin llamada HTTP real', async () => {
+    it('CHAT-PH-03: nodo webhook sin URL configurada — ya no es un stub (hace un POST real fire-and-forget si hay URL), pero sin URL no llama a nada y el flujo sigue de largo', async () => {
+      // El nodo webhook ya no es un placeholder (ver CHAT-N-WHK-01/02 en
+      // chat-nodes-basic.e2e-spec.ts para la cobertura del POST real fire-and-forget). Este
+      // fixture (`webhookNode('w', {})`, sin `data.url`) ejercita el otro camino: sin URL
+      // configurada, el nodo ni siquiera intenta un fetch — se loguea un warning y el flujo
+      // sigue de largo sin aportar texto a la respuesta.
       const { phone } = await knownUser(tWebhook, rWebhook, 'ph03');
       const res = await simulate(phone, tWebhook.id);
 
       expect(res.status).toBe(201);
-      // `case 'webhook'` en executeNode: "TODO: Implementar llamada HTTP a webhook externo" —
-      // mismo stub ya cubierto de punta a punta en BE-PH-05 (placeholders.e2e-spec.ts); acá
-      // queda con su propio ID del bloque 2.13 del plan, según la convención de vínculo
-      // caso↔test (un ID de plan, un `it` con ese ID en el título).
-      expect(res.body.reply).toContain('Acción webhook ejecutada (stub).');
+      // Sin responseText del webhook ni del `end` (sin texto): solo queda el saludo de conocido.
+      expect(res.body.reply).toContain('Bienvenido de nuevo');
     });
 
     it('CHAT-PH-04: al terminar un subflujo, NO vuelve automáticamente al flujo padre (previousFlowId se guarda pero nunca se lee)', async () => {

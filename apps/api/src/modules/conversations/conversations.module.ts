@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConversationsService } from './conversations.service';
 import { InboundTenantRoutingService } from './inbound-tenant-routing.service';
 import { ConversationsController } from './conversations.controller';
+import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { LlmModule } from '../llm/llm.module';
 import { BrokerModule } from '../broker/broker.module';
 import { UsersModule } from '../users/users.module';
@@ -22,7 +23,7 @@ import { MediaModule } from '../../common/media.module';
     InvgateModule,
     MediaModule,
   ],
-  providers: [ConversationsService, InboundTenantRoutingService],
+  providers: [ConversationsService, UnknownSenderLogService, InboundTenantRoutingService],
   controllers: [ConversationsController],
 })
 export class ConversationsModule {}

@@ -37,6 +37,7 @@ import {
   SubflowNode,
   EndNode,
   DeviceValidationNode,
+  NotificationNode,
 } from '@/components/flow-nodes';
 import { DeletableEdge } from '@/components/flow-edges';
 
@@ -91,6 +92,19 @@ interface Assignment {
   roleIds: string[];
 }
 
+/**
+ * Variantes de un flow. "Principal" es el flow de siempre (`id` de la URL); "guardia" y
+ * "feriado" son otra fila Flow completa e independiente, vinculada por FlowAlternative — ver
+ * docs/plan-subflows-feriados-guardias.md. No confundir con el nodo `subflow` (salto en vivo
+ * entre flows durante la charla): esto elige qué grafo se edita/guarda, antes de arrancar.
+ */
+type VariantTab = 'principal' | 'guardia' | 'feriado';
+
+interface FlowVariant {
+  type: string;
+  variantFlowId: string;
+}
+
 const customNodeTypes = {
   start: StartNode,
   message: MessageNode,
@@ -108,6 +122,7 @@ const customNodeTypes = {
   subflow: SubflowNode,
   end: EndNode,
   device_validation: DeviceValidationNode,
+  notification: NotificationNode,
 };
 
 const customEdgeTypes = {
@@ -131,6 +146,7 @@ const nodeTypeList = [
   { type: 'subflow', label: 'Sub-flujo', color: '#06b6d4' },
   { type: 'end', label: 'Fin', color: '#991b1b' },
   { type: 'device_validation', label: 'Validar Dispositivo', color: '#0ea5e9' },
+  { type: 'notification', label: 'Notificación', color: '#eab308' },
 ];
 
 function FlowEditorInner() {
@@ -170,6 +186,27 @@ function FlowEditorInner() {
   const [isStartFlow, setIsStartFlow] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
+  // Qué variante está cargada en el canvas ahora mismo. `activeFlowId` es contra qué Flow
+  // apuntan fetch/save (Principal = `id` de la URL; guardia/feriado = su propio Flow.id).
+  const [activeTab, setActiveTab] = useState<VariantTab>('principal');
+  const [variants, setVariants] = useState<FlowVariant[]>([]);
+  const [activeFlowId, setActiveFlowId] = useState<string | null>(isNew ? null : id);
+  // Modal de "crear variante": se abre al elegir una pestaña (Guardia/Feriado) sin
+  // variante configurada todavía. Tres orígenes posibles para el grafo inicial — ver
+  // createVariant en flow.service.ts (backend).
+  const [variantModalOpen, setVariantModalOpen] = useState(false);
+  const [pendingVariantTab, setPendingVariantTab] = useState<VariantTab | null>(null);
+  const [variantSourceMode, setVariantSourceMode] = useState<'principal' | 'copy' | 'blank'>(
+    'principal',
+  );
+  const [variantSourceFlowId, setVariantSourceFlowId] = useState('');
+  const [creatingVariant, setCreatingVariant] = useState(false);
+  // Botón "Copiar flujo…" (solo en Guardia/Feriado): reemplaza el grafo del canvas actual
+  // por el de otro flujo cualquiera, sin crear una variante nueva ni tocar nombre/
+  // descripción — para resincronizar una variante ya existente contra otro flujo.
+  const [copyModalOpen, setCopyModalOpen] = useState(false);
+  const [copySourceFlowId, setCopySourceFlowId] = useState('');
+  const [copyingFlow, setCopyingFlow] = useState(false);
   const { screenToFlowPosition } = useReactFlow();
 
   // El id de la empresa de sistema. Con él, los endpoints globales (lista de empresas) se
@@ -324,19 +361,31 @@ function FlowEditorInner() {
     }
   }
 
+  /** Puebla nombre/descripción/skill/fuente de verdad + canvas a partir de un Flow ya traído. */
+  function applyFlowGraph(flow: any) {
+    setFlowName(flow.name);
+    setFlowDescription(flow.description || '');
+    setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
+    setSkillId(flow.skillId || flow.skill?.id || '');
+    setNodes(flow.nodes || []);
+    setEdges(
+      (flow.edges || []).map((e: any) => ({
+        ...e,
+        type: e.type || 'default',
+      })),
+    );
+    // Un flujo sin empresas asignadas (borrador) no tiene ninguna empresa de la cual cargar
+    // los dropdowns, así que la fuente/skill ya vinculadas quedarían sin `<option>` y el
+    // selector se vería vacío pese a estar guardadas. Se inyecta la opción que el propio GET
+    // trae embebida, para que el valor persistido siempre se muestre.
+    if (flow.contextSource) setContextSources((prev) => mergeById(prev, [flow.contextSource]));
+    if (flow.skill) setSkills((prev) => mergeById(prev, [flow.skill]));
+  }
+
   async function loadFlow() {
     try {
       const flow = await apiFetch(`/flows/${id}`);
-      setFlowName(flow.name);
-      setFlowDescription(flow.description || '');
-      setContextSourceId(flow.contextSourceId || flow.contextSource?.id || '');
-      setSkillId(flow.skillId || flow.skill?.id || '');
-      // Un flujo sin empresas asignadas (borrador) no tiene ninguna empresa de la cual cargar
-      // los dropdowns, así que la fuente/skill ya vinculadas quedarían sin `<option>` y el
-      // selector se vería vacío pese a estar guardadas. Se inyecta la opción que el propio GET
-      // trae embebida, para que el valor persistido siempre se muestre.
-      if (flow.contextSource) setContextSources((prev) => mergeById(prev, [flow.contextSource]));
-      if (flow.skill) setSkills((prev) => mergeById(prev, [flow.skill]));
+      applyFlowGraph(flow);
       const tenantFlows = flow.tenantFlows || [];
       const loaded: Assignment[] = tenantFlows.map((tf: any) => ({
         tenantId: tf.tenant.id,
@@ -347,6 +396,7 @@ function FlowEditorInner() {
       // Precargar los roles de las empresas ya asignadas: así el contador "X/Y" y
       // los chips del modal quedan completos apenas se abre.
       loadRolesForTenants(loaded.map((a) => a.tenantId));
+
       // Cargar los dropdowns por-empresa con la UNIÓN de la empresa activa y las del flujo: así
       // la fuente/skill/usuarios/subflujos del flujo aparecen aunque estemos parados en otra
       // empresa (FE-FLW-23), sin perder los de la empresa activa que el flujo también podría
@@ -373,6 +423,123 @@ function FlowEditorInner() {
         loadUsers(flowTenantId);
         loadFlowOptions(flowTenantId);
       }
+
+      loadVariants();
+    } catch (err) {
+      console.error('Error loading flow:', err);
+      alert('Error al cargar el flujo');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Variantes (Guardia/Feriado) ya configuradas para este flow como Principal. */
+  async function loadVariants() {
+    try {
+      const data = await apiFetch(`/flows/${id}/variants`);
+      setVariants(data || []);
+    } catch {
+      setVariants([]);
+    }
+  }
+
+  /**
+   * Cambia qué Flow está cargado en el canvas. Sin variante creada todavía para la pestaña
+   * elegida, ofrece crearla duplicando el grafo del Principal (única vía del MVP).
+   */
+  async function selectTab(tab: VariantTab) {
+    if (tab === activeTab) return;
+
+    if (tab === 'principal') {
+      try {
+        const flow = await apiFetch(`/flows/${id}`);
+        applyFlowGraph(flow);
+        setActiveTab('principal');
+        setActiveFlowId(id);
+      } catch (err: any) {
+        alert(`Error al cargar el flujo: ${err?.message ?? 'error desconocido'}`);
+      }
+      return;
+    }
+
+    const existing = variants.find((v) => v.type === tab);
+    if (existing) {
+      try {
+        const flow = await apiFetch(`/flows/${existing.variantFlowId}`);
+        applyFlowGraph(flow);
+        setActiveTab(tab);
+        setActiveFlowId(existing.variantFlowId);
+      } catch (err: any) {
+        alert(`Error al cargar la variante: ${err?.message ?? 'error desconocido'}`);
+      }
+      return;
+    }
+
+    // Sin variante todavía: abrir el modal a elegir el origen del grafo inicial en vez de
+    // solo ofrecer duplicar el Principal (ver createVariant más abajo).
+    setPendingVariantTab(tab);
+    setVariantSourceMode('principal');
+    setVariantSourceFlowId('');
+    setVariantModalOpen(true);
+  }
+
+  function closeVariantModal() {
+    setVariantModalOpen(false);
+    setPendingVariantTab(null);
+  }
+
+  /** Envía la creación de la variante `pendingVariantTab` con el origen elegido en el modal. */
+  async function createVariant() {
+    if (!pendingVariantTab) return;
+    if (variantSourceMode === 'copy' && !variantSourceFlowId) {
+      alert('Elegí de qué flujo copiar el grafo.');
+      return;
+    }
+    setCreatingVariant(true);
+    try {
+      const created = await apiFetch(`/flows/${id}/variants`, {
+        method: 'POST',
+        body: JSON.stringify({
+          type: pendingVariantTab,
+          blank: variantSourceMode === 'blank',
+          sourceFlowId: variantSourceMode === 'copy' ? variantSourceFlowId : undefined,
+        }),
+      });
+      setVariants((prev) => [...prev, { type: pendingVariantTab, variantFlowId: created.id }]);
+      applyFlowGraph(created);
+      setActiveTab(pendingVariantTab);
+      setActiveFlowId(created.id);
+      closeVariantModal();
+    } catch (err: any) {
+      alert(`Error al crear la variante: ${err?.message ?? 'error desconocido'}`);
+    } finally {
+      setCreatingVariant(false);
+    }
+  }
+
+  function openCopyModal() {
+    setCopySourceFlowId('');
+    setCopyModalOpen(true);
+  }
+
+  function closeCopyModal() {
+    setCopyModalOpen(false);
+    setCopySourceFlowId('');
+  }
+
+  /**
+   * Reemplaza nodos/edges del canvas por los de `copySourceFlowId`, sin persistir todavía —
+   * queda como cualquier otro cambio sin guardar, a confirmar con "Guardar". No toca nombre,
+   * descripción, skill ni fuente de verdad de la variante actual: solo el grafo.
+   */
+  async function copyFromFlow() {
+    if (!copySourceFlowId) {
+      alert('Elegí de qué flujo copiar el grafo.');
+      return;
+    }
+    setCopyingFlow(true);
+    try {
+      const flow = await apiFetch(`/flows/${copySourceFlowId}`);
       setNodes(flow.nodes || []);
       setEdges(
         (flow.edges || []).map((e: any) => ({
@@ -380,11 +547,11 @@ function FlowEditorInner() {
           type: e.type || 'default',
         })),
       );
-    } catch (err) {
-      console.error('Error loading flow:', err);
-      alert('Error al cargar el flujo');
+      closeCopyModal();
+    } catch (err: any) {
+      alert(`Error al copiar el flujo: ${err?.message ?? 'error desconocido'}`);
     } finally {
-      setLoading(false);
+      setCopyingFlow(false);
     }
   }
 
@@ -534,7 +701,7 @@ function FlowEditorInner() {
       case 'input':
         return { text: 'Ingrese su respuesta:', variableName: '' };
       case 'condition':
-        return { conditions: [], defaultTargetNodeId: '' };
+        return { compareVariable: '', compareOperator: 'equals', compareValue: '' };
       case 'ticket_create':
         // Vacío a propósito (no 'medium' como antes): category/priority/ticketType van por
         // nombre real de InvGate — un valor en inglés inventado no matchea nada y termina
@@ -542,7 +709,7 @@ function FlowEditorInner() {
         // nodo como si fuera un valor real elegido.
         return { subject: '', description: '', category: '', priority: '', ticketType: '' };
       case 'ticket_query':
-        return { ticketIdVariable: '' };
+        return {};
       case 'transfer_agent':
         return {
           message: '',
@@ -561,6 +728,8 @@ function FlowEditorInner() {
         return { action: 'set', name: '', value: '' };
       case 'webhook':
         return { url: '', method: 'POST' };
+      case 'notification':
+        return { text: '', buttonLabel: 'Continuar', buttonMode: 'confirm', buttonUrl: '' };
       case 'end':
       case 'device_validation':
         return { text: '' };
@@ -583,7 +752,9 @@ function FlowEditorInner() {
     // Aviso al vaciar: dejar el flujo sin empresas no lo borra, pero no lo recibe
     // nadie y queda "sin asignar". Confirmamos antes de persistir para que sea
     // intencional (aplica tanto a quitar la última empresa como a no asignar ninguna).
-    if (assignments.length === 0) {
+    // Solo aplica al Principal: las variantes no tienen asignación propia, heredan la
+    // visibilidad del Principal.
+    if (activeTab === 'principal' && assignments.length === 0) {
       const ok = confirm(
         'Este flujo va a quedar sin empresas asignadas: no lo va a recibir ningún usuario ' +
           'y aparecerá como "sin asignar" en la lista. ¿Guardar igual?',
@@ -627,18 +798,22 @@ function FlowEditorInner() {
             isStart: isStartFlow,
           }),
         });
+        setActiveFlowId(created.id);
         router.replace(`/dashboard/flows/edit/?id=${created.id}`);
       } else {
-        await apiFetch(`/flows/${id}`, {
+        await apiFetch(`/flows/${activeFlowId}`, {
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
-        // La asignación de empresas y roles es un endpoint aparte del resto de los
-        // campos del flujo (igual que ya era antes de agregar los checkboxes).
-        await apiFetch(`/flows/${id}/assign-tenants`, {
-          method: 'POST',
-          body: JSON.stringify({ assignments, isStart: isStartFlow }),
-        });
+        // La asignación de empresas y roles es un endpoint aparte del resto de los campos
+        // del flujo (igual que ya era antes de agregar los checkboxes), y solo aplica al
+        // Principal: las variantes no tienen asignación propia.
+        if (activeTab === 'principal') {
+          await apiFetch(`/flows/${activeFlowId}/assign-tenants`, {
+            method: 'POST',
+            body: JSON.stringify({ assignments, isStart: isStartFlow }),
+          });
+        }
         alert('Flujo guardado');
       }
     } catch (err: any) {
@@ -723,20 +898,66 @@ function FlowEditorInner() {
             </select>
           </div>
         </div>
-        <button
-          onClick={saveFlow}
-          disabled={saving}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-        >
-          {saving ? 'Guardando...' : 'Guardar'}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Principal/Guardia/Feriado: qué grafo está cargado en el canvas. Cada uno es
+              otro Flow completo e independiente (ver FlowAlternative) — no un nodo dentro
+              del grafo. Oculto para un flujo nuevo sin guardar: todavía no existe una fila
+              Flow contra la que crear variantes. */}
+          {!isNew && (
+            <div className="flex bg-gray-100 rounded-lg p-1 text-sm">
+              {(['principal', 'guardia', 'feriado'] as VariantTab[]).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => selectTab(tab)}
+                  className={`px-3 py-1.5 rounded-md font-medium flex items-center gap-1.5 transition-colors ${
+                    activeTab === tab
+                      ? 'bg-white shadow text-gray-900'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab === 'principal' ? 'Principal' : tab === 'guardia' ? 'Guardia' : 'Feriado'}
+                  {tab !== 'principal' && (
+                    <span
+                      title={variants.some((v) => v.type === tab) ? 'Variante configurada' : 'Sin configurar'}
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        variants.some((v) => v.type === tab) ? 'bg-green-500' : 'bg-gray-300'
+                      }`}
+                    />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Solo en Guardia/Feriado: reemplaza el grafo actual por el de cualquier otro
+              flujo, sin crear una variante nueva — para resincronizar una ya existente. */}
+          {!isNew && activeTab !== 'principal' && (
+            <button
+              type="button"
+              onClick={openCopyModal}
+              title="Reemplaza los nodos y conexiones del canvas por los de otro flujo"
+              className="text-sm border border-gray-300 text-gray-700 px-3 py-2 rounded hover:bg-gray-50"
+            >
+              Copiar flujo…
+            </button>
+          )}
+          <button
+            onClick={saveFlow}
+            disabled={saving}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? 'Guardando...' : 'Guardar'}
+          </button>
+        </div>
       </div>
 
       {/* Asignación a empresas y roles: en qué empresas está disponible este flujo,
           qué roles lo reciben en cada una, y si es el flujo de inicio para esos
           pares (empresa + rol). Solo se muestra si se pudo cargar la lista de empresas
-          (el superadmin, parado en cualquier empresa; ver loadTenants). */}
-      {allTenants.length > 0 && (
+          (el superadmin, parado en cualquier empresa; ver loadTenants), y solo para el
+          Principal: las variantes heredan la visibilidad del Principal, no tienen
+          asignación propia. */}
+      {allTenants.length > 0 && activeTab === 'principal' && (
         <div className="bg-gray-50 border-b px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
           <span className="text-gray-500 font-medium">Disponible en:</span>
 
@@ -1038,6 +1259,181 @@ function FlowEditorInner() {
           </div>
         </div>
       )}
+
+      {/* Modal "Crear variante": se abre desde selectTab al elegir Guardia/Feriado sin
+          variante configurada. Tres orígenes posibles para el grafo inicial — duplicar el
+          Principal de este flujo, duplicar otro flujo cualquiera, o arrancar en blanco. */}
+      {variantModalOpen && pendingVariantTab && (
+        <div
+          className="fixed inset-0 bg-slate-900/55 flex items-center justify-center p-6 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeVariantModal();
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-semibold">
+                Crear variante de {pendingVariantTab === 'guardia' ? 'Guardia' : 'Feriado'}
+              </h2>
+              <button
+                onClick={closeVariantModal}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="variant-source"
+                  className="mt-1"
+                  checked={variantSourceMode === 'principal'}
+                  onChange={() => setVariantSourceMode('principal')}
+                />
+                <span>
+                  <span className="block font-medium text-sm">Duplicar el flujo Principal</span>
+                  <span className="block text-xs text-gray-500">
+                    Copia el grafo actual de este mismo flujo como punto de partida.
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="variant-source"
+                  className="mt-1"
+                  checked={variantSourceMode === 'copy'}
+                  onChange={() => setVariantSourceMode('copy')}
+                />
+                <span className="flex-1">
+                  <span className="block font-medium text-sm">Duplicar otro flujo</span>
+                  <span className="block text-xs text-gray-500 mb-1.5">
+                    Copia el grafo de cualquier otro flujo existente.
+                  </span>
+                  <select
+                    value={variantSourceFlowId}
+                    onChange={(e) => {
+                      setVariantSourceFlowId(e.target.value);
+                      if (e.target.value) setVariantSourceMode('copy');
+                    }}
+                    onClick={() => setVariantSourceMode('copy')}
+                    disabled={variantSourceMode !== 'copy'}
+                    className="border rounded px-2 py-1.5 text-sm w-full disabled:bg-gray-50 disabled:text-gray-400"
+                  >
+                    <option value="">Elegir flujo…</option>
+                    {flowOptions
+                      .filter((f) => f.id !== id)
+                      .map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                  </select>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="variant-source"
+                  className="mt-1"
+                  checked={variantSourceMode === 'blank'}
+                  onChange={() => setVariantSourceMode('blank')}
+                />
+                <span>
+                  <span className="block font-medium text-sm">Crear vacía</span>
+                  <span className="block text-xs text-gray-500">
+                    Arranca solo con un nodo de inicio, sin copiar nada.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <div className="px-5 py-3.5 border-t flex justify-end gap-2.5">
+              <button
+                onClick={closeVariantModal}
+                className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={createVariant}
+                disabled={creatingVariant}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                {creatingVariant ? 'Creando...' : 'Crear'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal "Copiar flujo": reemplaza el grafo del canvas actual (Guardia/Feriado) por
+          el de otro flujo cualquiera. No crea una variante nueva ni toca nombre/
+          descripción — solo nodos/edges, y recién se persiste al tocar "Guardar". */}
+      {copyModalOpen && (
+        <div
+          className="fixed inset-0 bg-slate-900/55 flex items-center justify-center p-6 z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeCopyModal();
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Copiar flujo</h2>
+              <button
+                onClick={closeCopyModal}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-2">
+                Esto reemplaza los nodos y conexiones del canvas actual. Los cambios sin
+                guardar se pierden. Después seguí usando "Guardar" para persistir la copia.
+              </p>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Copiar desde</label>
+                <select
+                  value={copySourceFlowId}
+                  onChange={(e) => setCopySourceFlowId(e.target.value)}
+                  className="border rounded px-2 py-1.5 text-sm w-full"
+                >
+                  <option value="">Elegir flujo…</option>
+                  {flowOptions.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t flex justify-end gap-2.5">
+              <button
+                onClick={closeCopyModal}
+                className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={copyFromFlow}
+                disabled={copyingFlow}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                {copyingFlow ? 'Copiando...' : 'Copiar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1128,13 +1524,34 @@ function NodeProperties({
       {type === 'start' && (
         <>
           <div>
-            <label className="block text-sm font-medium mb-1">Texto de bienvenida (usuarios nuevos)</label>
+            <label className="block text-sm font-medium mb-1">Saludo</label>
             <textarea
               value={data.text || ''}
               onChange={(e) => onUpdate('text', e.target.value)}
-              className="w-full border rounded p-2 text-sm"
+              placeholder="¡Hola {{userFirstName}}! Bienvenido de nuevo."
+              disabled={!!data.noGreeting}
+              className="w-full border rounded p-2 text-sm disabled:bg-gray-100 disabled:text-gray-400"
               rows={2}
             />
+            <p className="text-xs text-gray-400 mt-1">
+              Admite <code>{'{{variable}}'}</code> de la charla:{' '}
+              <code>{'{{userFirstName}}'}</code>, <code>{'{{userName}}'}</code>,{' '}
+              <code>{'{{userLastName}}'}</code>, <code>{'{{userEmail}}'}</code>,{' '}
+              <code>{'{{userPhone}}'}</code>, <code>{'{{userRole}}'}</code>. Vacío: se manda el saludo
+              por defecto (<em>¡Hola [nombre]! Bienvenido de nuevo.</em>).
+            </p>
+            <label className="flex items-center gap-2 text-sm mt-2">
+              <input
+                type="checkbox"
+                checked={!!data.noGreeting}
+                onChange={(e) => onUpdate('noGreeting', e.target.checked)}
+              />
+              No enviar saludo
+            </label>
+            <p className="text-xs text-gray-400 mt-1">
+              La charla arranca sin ningún mensaje de este nodo: el flujo sigue de largo y el primer
+              texto que ve la persona es el del nodo siguiente.
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">Salida: Usuario Conocido</label>
@@ -1323,30 +1740,139 @@ function NodeProperties({
         </>
       )}
 
+      {type === 'notification' && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1">Texto</label>
+            <textarea
+              value={data.text || ''}
+              onChange={(e) => onUpdate('text', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              placeholder="Agregue sus fotos"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Tipo de botón</label>
+            <select
+              value={data.buttonMode || 'confirm'}
+              onChange={(e) => onUpdate('buttonMode', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="confirm">Confirmación (espera a que lo toquen)</option>
+              <option value="link">Link (abre una URL)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Label del botón</label>
+            <input
+              type="text"
+              value={data.buttonLabel || ''}
+              onChange={(e) => onUpdate('buttonLabel', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+              placeholder="Sin foto"
+              maxLength={20}
+            />
+            <p className="mt-1 text-xs text-gray-500">Máximo 20 caracteres (límite de WhatsApp para botones).</p>
+          </div>
+          {data.buttonMode === 'link' ? (
+            <div>
+              <label className="block text-sm font-medium mb-1">URL</label>
+              <input
+                type="text"
+                value={data.buttonUrl || ''}
+                onChange={(e) => onUpdate('buttonUrl', e.target.value)}
+                className="w-full border rounded p-2 text-sm"
+                placeholder="https://..."
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Admite variables del flujo con {'{{variable}}'}. WhatsApp no avisa cuando lo
+                tocan, así que no hay nada que confirmar — el próximo mensaje que mande la
+                persona (sea cual sea) avanza por la única salida del nodo.
+              </p>
+            </div>
+          ) : (
+            <>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!data.expectsPhoto}
+                  onChange={(e) => onUpdate('expectsPhoto', e.target.checked)}
+                />
+                Espera una foto
+              </label>
+              <p className="text-xs text-gray-500">
+                Al tocar el botón, continúa el flujo por la única salida del nodo. Si tildaste
+                "Espera una foto", mandar una imagen también avanza (ej. "Agregue sus fotos" /
+                "Sin foto": cualquiera de las dos opciones sigue el flujo). Si la persona escribe
+                otra cosa (o manda una imagen sin tener el tilde prendido), la toma el LLM.
+              </p>
+            </>
+          )}
+        </>
+      )}
+
       {type === 'condition' && (
         <>
           <div>
-            <label className="block text-sm font-medium mb-1">Condiciones (JSON)</label>
-            <textarea
-              value={JSON.stringify(data.conditions || [], null, 2)}
-              onChange={(e) => {
-                try {
-                  onUpdate('conditions', JSON.parse(e.target.value));
-                } catch {}
-              }}
-              className="w-full border rounded p-2 text-sm font-mono"
-              rows={6}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Nodo por defecto</label>
+            <label className="block text-sm font-medium mb-1">Variable a comparar</label>
             <input
               type="text"
-              value={data.defaultTargetNodeId || ''}
-              onChange={(e) => onUpdate('defaultTargetNodeId', e.target.value)}
-              className="w-full border rounded p-2 text-sm"
+              list="condition-system-variables"
+              value={data.compareVariable || ''}
+              onChange={(e) => onUpdate('compareVariable', e.target.value)}
+              placeholder="Ej: userRole"
+              className="w-full border rounded p-2 text-sm font-mono"
             />
+            <datalist id="condition-system-variables">
+              <option value="userRole" />
+              <option value="userRoleId" />
+              <option value="isKnownUser" />
+              <option value="userName" />
+              <option value="userFirstName" />
+              <option value="userLastName" />
+              <option value="userEmail" />
+              <option value="userPhone" />
+              <option value="userId" />
+            </datalist>
+            <p className="text-xs text-gray-400 mt-1">
+              Variables que siempre trae el nodo <b>Inicio</b>: userRole, userRoleId, isKnownUser,
+              userName, userFirstName, userLastName, userEmail, userPhone, userId. También podés
+              usar cualquier variable propia del flujo (creada con <b>Variable</b>, <b>Input</b> o{' '}
+              <b>Consultar LLM</b>).
+            </p>
           </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Comparación</label>
+            <select
+              value={data.compareOperator || 'equals'}
+              onChange={(e) => onUpdate('compareOperator', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="equals">Es igual a</option>
+              <option value="not_equals">Es distinto de</option>
+              <option value="contains">Contiene</option>
+              <option value="exists">Tiene un valor cargado</option>
+              <option value="not_exists">No tiene un valor cargado</option>
+            </select>
+          </div>
+          {!['exists', 'not_exists'].includes(data.compareOperator || 'equals') && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Valor</label>
+              <input
+                type="text"
+                value={data.compareValue || ''}
+                onChange={(e) => onUpdate('compareValue', e.target.value)}
+                placeholder="Ej: SuperAdmin"
+                className="w-full border rounded p-2 text-sm"
+              />
+            </div>
+          )}
+          <p className="text-xs text-gray-400">
+            El nodo siempre tiene 2 salidas fijas: <span className="text-green-600 font-semibold">afirmativo</span>{' '}
+            (se cumple la comparación) y <span className="text-red-600 font-semibold">negativo</span> (no se
+            cumple). Conectá cada una desde los dos puntos abajo del nodo, en el canvas.
+          </p>
         </>
       )}
 
@@ -1406,7 +1932,33 @@ function NodeProperties({
             catalog={invgateTypes}
             placeholder="Nombre exacto del tipo en InvGate, o {{variable}}"
           />
+          <div>
+            <label className="block text-sm font-medium mb-1">Mensaje final</label>
+            <textarea
+              value={data.text || ''}
+              onChange={(e) => onUpdate('text', e.target.value)}
+              placeholder="Ej: Ticket #{{lastTicketId}} creado. Un agente te contactará pronto."
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Admite <code>{'{{variable}}'}</code> de la charla, incluido <code>{'{{lastTicketId}}'}</code> (el
+              número del ticket recién creado). Vacío: no se manda ningún mensaje acá — el flujo sigue de largo
+              por la arista de este nodo sin interrumpir la charla.
+            </p>
+          </div>
         </>
+      )}
+
+      {type === 'ticket_query' && (
+        <p className="text-xs text-gray-400">
+          Sin configuración: consulta en vivo contra InvGate (no un caché local) y lista los
+          tickets abiertos del usuario que está escribiendo (los más recientes primero, hasta 10
+          por el límite de WhatsApp). Al elegir uno muestra su detalle con la opción de volver a
+          la lista. Al terminar, sigue por la arista de este nodo — dibujá a dónde va después (ej.
+          volver al menú). Requiere que InvGate esté configurado en /settings y que el usuario
+          tenga vinculado su id de InvGate (automático por teléfono, o cargado a mano).
+        </p>
       )}
 
       {type === 'llm_query' && (
@@ -1583,30 +2135,24 @@ function NodeProperties({
                   definido" y seguir.
                 </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Nodo destino — todas encontradas
-                </label>
-                <input
-                  type="text"
-                  value={data.foundTargetNodeId || ''}
-                  onChange={(e) => onUpdate('foundTargetNodeId', e.target.value)}
-                  className="w-full border rounded p-2 text-sm font-mono"
-                  placeholder="ID nodo destino"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Nodo destino — alguna quedó "no definido"
-                </label>
-                <input
-                  type="text"
-                  value={data.missingTargetNodeId || ''}
-                  onChange={(e) => onUpdate('missingTargetNodeId', e.target.value)}
-                  className="w-full border rounded p-2 text-sm font-mono"
-                  placeholder="ID nodo destino"
-                />
-              </div>
+              {(data.foundTargetNodeId || data.missingTargetNodeId) && (
+                <button
+                  type="button"
+                  className="text-xs text-red-600 underline"
+                  onClick={() => {
+                    onUpdate('foundTargetNodeId', '');
+                    onUpdate('missingTargetNodeId', '');
+                  }}
+                >
+                  ⚠️ Este nodo tiene destinos manuales guardados de una versión anterior — tocá acá
+                  para limpiarlos y que siga siempre la arista dibujada.
+                </button>
+              )}
+              <p className="text-xs text-gray-400">
+                Al terminar (todas las variables con valor, o alguna en "no definido" tras agotar
+                los intentos), el flujo sigue por la arista dibujada en el canvas — misma salida
+                para ambos casos. Para ramificar por "no definido", usá un nodo Condición después.
+              </p>
             </>
           )}
         </>
@@ -1681,6 +2227,21 @@ function NodeProperties({
               <option value="PUT">PUT</option>
             </select>
           </div>
+          {(data.method || 'POST') !== 'GET' && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Body (JSON)</label>
+              <textarea
+                value={data.body || ''}
+                onChange={(e) => onUpdate('body', e.target.value)}
+                className="w-full border rounded p-2 text-sm font-mono"
+                rows={8}
+                placeholder={'{\n  "content": "Alerta: {{descripcion}}"\n}'}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Se envía con Content-Type: application/json. Podés usar variables del flujo con {'{{variable}}'}.
+              </p>
+            </div>
+          )}
         </>
       )}
 
@@ -1766,7 +2327,7 @@ function NodeProperties({
             <div className="space-y-1">
               {[
                 { value: 'email', label: 'Mail' },
-                { value: 'ticket', label: 'Ticket' },
+                { value: 'ticket', label: 'Ticket (deshabilitado)', disabled: true },
                 { value: 'phone', label: 'Teléfono (próximamente)', disabled: true },
               ].map((m) => (
                 <label

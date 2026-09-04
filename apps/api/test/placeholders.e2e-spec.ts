@@ -5,25 +5,14 @@
  * tercero real para probarse de punta a punta. No se inventa cobertura: donde no hay lógica que
  * ejercitar, el caso queda `it.skip` documentando el motivo.
  *
- * La única excepción real es BE-PH-05 (nodo `webhook`): es un stub concreto (`case 'webhook'` en
- * `ConversationsService.executeNode`) que SÍ se puede ejercitar de punta a punta vía
- * `/conversations/simulate`, sin ningún tercero — así que ahí hay un test real, no un skip.
+ * BE-PH-05 (nodo `webhook`) vivía acá cuando era un stub sin llamada HTTP real — ya no: hace un
+ * POST real fire-and-forget (`case 'webhook'` en `ConversationsService.executeNode`). Su
+ * cobertura se mudó a chat-nodes-basic.e2e-spec.ts (CHAT-N-WHK-01/02), junto con el resto de
+ * los nodos del motor.
  */
 import {
   createTestApp,
   TestApp,
-  http,
-  createTenant,
-  createRole,
-  createUser,
-  createFlow,
-  uniqueEmail,
-  uniquePhone,
-  uniqueSlug,
-  startNode,
-  webhookNode,
-  endNode,
-  edge,
 } from './support';
 
 describe('1.18 Módulos e integraciones pendientes — placeholders (BE-PH-*)', () => {
@@ -57,33 +46,6 @@ describe('1.18 Módulos e integraciones pendientes — placeholders (BE-PH-*)', 
   it.skip('BE-PH-04: envío end-to-end real contra la Cloud API de Meta [BLOQUEADO: requiere WHATSAPP_API_TOKEN + WHATSAPP_PHONE_NUMBER_ID reales y el sandbox de Meta]', () => {
     // La mecánica del conector (armado de payload, colas, etc.) ya está implementada y cubierta
     // en el bloque BE-WAO-*. Sólo falta la validación de punta a punta contra la Cloud API real.
-  });
-
-  it('BE-PH-05: nodo `webhook` — hoy es un stub (sin llamada HTTP real), ejercitado de punta a punta vía /conversations/simulate', async () => {
-    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('ph05') });
-    const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol PH05' });
-    const phone = uniquePhone();
-    await createUser(t.prisma, {
-      email: uniqueEmail('ph05'),
-      phone,
-      memberships: [{ tenantId: tenant.id, roleId: role.id }],
-    });
-    await createFlow(t.prisma, {
-      name: `Flujo webhook stub ${uniqueSlug()}`,
-      nodes: [startNode('s'), webhookNode('w'), endNode('e')],
-      // Dos aristas desde 'start' (conocido/desconocido) al mismo nodo webhook: cubre el ruteo
-      // sin importar si `findMembershipByPhone` lo resuelve como conocido o no.
-      edges: [edge('s', 'w', 'known'), edge('s', 'w', 'unknown'), edge('w', 'e')],
-      assign: [{ tenantId: tenant.id, isStart: true, roleIds: [role.id] }],
-    });
-
-    const res = await http(t).post('/conversations/simulate').set('Authorization', `Bearer ${t.authToken}`).send({ from: phone, body: 'hola', tenantId: tenant.id });
-
-    // `@Post()` sin `@HttpCode` → 201 (default de Nest).
-    expect(res.status).toBe(201);
-    // `case 'webhook'` en executeNode: "TODO: Implementar llamada HTTP a webhook externo" — hoy
-    // sólo devuelve este texto fijo, no hace ningún request real (ver conversations.service.ts).
-    expect(res.body.reply).toContain('Acción webhook ejecutada (stub).');
   });
 
   it.skip('BE-PH-06: envío end-to-end real de SMS por Twilio [BLOQUEADO: falta un número de Twilio habilitado para SMS; el sandbox de WhatsApp no sirve para esto]', () => {

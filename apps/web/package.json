@@ -4,14 +4,16 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/fix-rsc-paths.js",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
     "@xyflow/react": "^12.11.2",
+    "date-fns": "^4.4.0",
     "next": "16.2.12",
     "react": "19.2.4",
+    "react-big-calendar": "^1.20.0",
     "react-dom": "19.2.4",
     "xlsx": "^0.18.5"
   },
@@ -20,6 +22,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
+    "@types/react-big-calendar": "^1.16.3",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",

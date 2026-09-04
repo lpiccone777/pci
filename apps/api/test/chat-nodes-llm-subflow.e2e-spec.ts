@@ -70,6 +70,7 @@ import {
   inputNode,
   llmQueryNode,
   subflowNode,
+  node,
   edge,
 } from './support';
 
@@ -437,11 +438,20 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
   const sysOf = (messages: LlmMessage[], options?: Partial<LlmCompletionOptions>) =>
     options?.systemPrompt ?? messages.find((m) => m.role === 'system')?.content ?? '';
 
-  /** Flujo de extracción de una variable `sede` (universo cerrado Central/Norte) con ramas
-   * found/missing distinguibles por texto. Cada rama es un `message` con una arista a SÍ MISMO:
-   * un nodo que apunta a sí mismo hace que `executeFlow` persista la posición y devuelva el turno
-   * (ver `nextNodeId === node.id`) en vez de agotar los nodos y CERRAR la charla — el cierre por
-   * fin de flujo resetea `flowState` a null (`closeConversation`), y perderíamos la variable
+  /** Flujo de extracción de una variable `sede` (universo cerrado Central/Norte). Desde el
+   * rediseño 2026-08-28 (`executeLlmQueryExtraction`, conversations.service.ts), el nodo
+   * `llm_query` de extracción tiene UNA sola salida — siempre por la arista dibujada, sin
+   * importar si la variable se resolvió o quedó en `LLM_QUERY_UNDEFINED_VALUE` ('no definido').
+   * `foundTargetNodeId`/`missingTargetNodeId` quedan ignorados a propósito. Para ramificar por
+   * el resultado (found/missing) hace falta un nodo `condition` después, exactamente como lo
+   * armaría hoy alguien en el editor: `compareVariable:'sede'`, `compareOperator:'equals'`,
+   * `compareValue:'no definido'` — `sourceHandle:'true'` (matchea, o sea "missing") va a
+   * `missing`; `'false'` (no matchea, o sea se resolvió) va a `found`.
+   *
+   * Cada rama final (`found`/`missing`) es un `message` con una arista a SÍ MISMO: un nodo que
+   * apunta a sí mismo hace que `executeFlow` persista la posición y devuelva el turno (ver
+   * `nextNodeId === node.id`) en vez de agotar los nodos y CERRAR la charla — el cierre por fin
+   * de flujo resetea `flowState` a null (`closeConversation`), y perderíamos la variable
    * resuelta antes de poder asertarla. Con el self-loop la charla queda `active` y `flowState`
    * persiste. */
   function extractionFlow(tenant: { id: string }, role: { id: string }, nodeData: Record<string, unknown>) {
@@ -452,16 +462,20 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
         startNode('s'),
         llmQueryNode('q', {
           extractVariables: [{ variable: 'sede', allowedValues: ['Central', 'Norte'] }],
-          foundTargetNodeId: 'found',
-          missingTargetNodeId: 'missing',
           ...nodeData,
         }),
+        node('c', 'condition', { compareVariable: 'sede', compareOperator: 'equals', compareValue: 'no definido' }),
         messageNode('found', 'Encontré la sede.'),
         messageNode('missing', 'No pude determinar la sede.'),
       ],
-      // La rama q→found/missing va por found/missingTargetNodeId (no por arista). Las aristas
-      // found→found y missing→missing solo evitan que la rama cierre la charla (ver arriba).
-      [edge('s', 'q', 'known'), edge('found', 'found'), edge('missing', 'missing')],
+      [
+        edge('s', 'q', 'known'),
+        edge('q', 'c'), // única salida del llm_query, siempre hacia el condition
+        edge('c', 'missing', 'true'), // sede === 'no definido' → matches → rama missing
+        edge('c', 'found', 'false'),
+        edge('found', 'found'),
+        edge('missing', 'missing'),
+      ],
     );
   }
 
@@ -479,7 +493,10 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     expect(res.status).toBe(201);
     expect(llm.calls).toHaveLength(1); // solo la extracción: no preguntó nada
     expect(llm.calls[0].options?.temperature).toBe(0); // la clasificación SIEMPRE corre a 0
-    expect(llm.calls[0].options?.maxTokens).toBe(300); // CLASSIFIER_MAX_TOKENS
+    // LLM_QUERY_EXTRACT_MAX_TOKENS: constante propia de extractLlmQueryValues, separada de
+    // CLASSIFIER_MAX_TOKENS (300) — la extracción puede devolver varias líneas `variable: valor`
+    // y necesita más presupuesto que un clasificador de una sola palabra.
+    expect(llm.calls[0].options?.maxTokens).toBe(2000);
     expect(res.body.reply).toContain('Encontré la sede.'); // ramificó por foundTargetNodeId
 
     const conv = await conversationFor(tenant.id, phone);

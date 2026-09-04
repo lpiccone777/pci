@@ -130,6 +130,16 @@ export class WhatsAppService implements OnModuleInit {
         },
       };
     }
+    if (interactive.type === 'cta_url') {
+      return {
+        type: 'cta_url',
+        body: { text: interactive.body },
+        action: {
+          name: 'cta_url',
+          parameters: { display_text: interactive.buttonText, url: interactive.url },
+        },
+      };
+    }
     return {
       type: 'list',
       body: { text: interactive.body },

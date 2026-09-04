@@ -3,28 +3,25 @@ import { Cron } from '@nestjs/schedule';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import sharp from 'sharp';
 import { AppConfigService } from '../config/app-config.service';
+import { EXTENSION_BY_CONTENT_TYPE, resizeIfNeeded, resolveStorageDir } from './media-storage.util';
+import type { StoredAttachment } from './media-storage.util';
+
+export type { StoredAttachment };
 
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 
 /**
  * Host real de las URLs de media de Twilio. `downloadAndStore` recibe `mediaUrl` tal cual
  * viene en el payload del webhook (`MediaUrl0`..`MediaUrl9`) — sin verificación de firma
- * todavía (ver `TwilioWebhookController`/`TwilioSmsWebhookController`), así que hoy es un
- * campo que un tercero podría falsificar. Sin este chequeo, un `MediaUrl0` apuntando a un
- * host propio haría que el server le pegue con las credenciales REALES de Twilio
- * (`TWILIO_ACCOUNT_SID`/`AUTH_TOKEN`) en el header `Authorization` — filtración de
- * credenciales, o directamente un SSRF contra infraestructura interna.
+ * de WhatsApp (`TwilioSignatureGuard` sí cubre el webhook de entrada, no esta URL de media
+ * específica), así que hoy sigue siendo un campo que un tercero podría falsificar. Sin este
+ * chequeo, un `MediaUrl0` apuntando a un host propio haría que el server le pegue con las
+ * credenciales REALES de Twilio (`TWILIO_ACCOUNT_SID`/`AUTH_TOKEN`) en el header
+ * `Authorization` — filtración de credenciales, o directamente un SSRF contra
+ * infraestructura interna.
  */
 const TWILIO_MEDIA_HOST = 'api.twilio.com';
-
-/** "HD1080": tope de 1920x1080, nunca se agranda una imagen más chica — ver `resizeIfNeeded`. */
-const MAX_WIDTH = 1920;
-const MAX_HEIGHT = 1080;
-
-/** Content-types que sharp puede redimensionar. GIF queda afuera (multi-frame, riesgo de perder la animación) y PDF no es una imagen. */
-const RESIZABLE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 /**
  * Vida máxima de un adjunto en disco sin usar (ver `cleanupExpired`): si en 10 minutos el
@@ -34,21 +31,6 @@ const RESIZABLE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
  */
 const RETENTION_MS = 10 * 60 * 1000;
 
-/** Media descargada y guardada en disco, referenciable después por `path` (ver `flowState.pendingAttachments`). */
-export interface StoredAttachment {
-  path: string;
-  filename: string;
-  contentType: string;
-}
-
-const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'application/pdf': 'pdf',
-};
-
 /**
  * Descarga imágenes que el usuario manda por WhatsApp/SMS (vía Twilio) y las guarda
  * temporalmente en disco, para adjuntarlas después a un ticket de InvGate cuando el
@@ -56,11 +38,11 @@ const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
  * `flowState.pendingAttachments` en `ConversationsService`). Un cron propio (ver
  * `cleanupExpired`) borra lo que quede sin usar pasados `RETENTION_MS`.
  *
- * Solo Twilio por ahora (WhatsApp Business API directa y Gupshup no están cableados
- * todavía — ver AGENTS.md/plan de trabajo). Las URLs de media de Twilio (a diferencia
- * de las de Meta, que expiran en minutos) no son públicas: hace falta autenticarse con
- * las mismas credenciales (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`) que ya usan
- * `TwilioWhatsAppService`/`TwilioSmsService` para mandar mensajes.
+ * Las URLs de media de Twilio (a diferencia de las de Gupshup/Meta, que son públicas con
+ * expiración) no son públicas: hace falta autenticarse con las mismas credenciales
+ * (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`) que ya usan `TwilioWhatsAppService`/
+ * `TwilioSmsService` para mandar mensajes. Ver `GupshupMediaService` para el equivalente
+ * de Gupshup (no necesita auth para descargar).
  *
  * Instancia única en toda la app (ver `MediaModule`) — importa para que el `@Cron` de
  * limpieza no corra una vez por cada módulo que lo consume.
@@ -88,13 +70,6 @@ export class TwilioMediaService {
     } catch {
       return false;
     }
-  }
-
-  /** Directorio de guardado — configurable, relativo al cwd del proceso si no es absoluto. */
-  private async storageDir(): Promise<string> {
-    const configured =
-      (await this.appConfig.get('MEDIA_STORAGE_DIR', 'uploads/incoming-media')) ?? 'uploads/incoming-media';
-    return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
   }
 
   /**
@@ -141,43 +116,17 @@ export class TwilioMediaService {
     const extension = EXTENSION_BY_CONTENT_TYPE[resolvedType] || 'bin';
     const filename = `${randomUUID()}.${extension}`;
 
-    const dir = await this.storageDir();
+    const dir = await resolveStorageDir(this.appConfig);
     try {
       await mkdir(dir, { recursive: true });
       const original = Buffer.from(await res.arrayBuffer());
-      const buffer = await this.resizeIfNeeded(original, resolvedType);
+      const buffer = await resizeIfNeeded(original, resolvedType, this.logger);
       const fullPath = path.join(dir, filename);
       await writeFile(fullPath, buffer);
       return { path: fullPath, filename, contentType: resolvedType };
     } catch (err) {
       this.logger.warn(`No se pudo guardar el adjunto ${filename} en disco: ${(err as Error).message}`);
       return null;
-    }
-  }
-
-  /**
-   * Achica a un máximo de 1920x1080 ("HD1080") preservando el aspect ratio — pedido
-   * explícito 2026-08-20, para no mandar a InvGate (ni ocupar disco con) fotos de celular
-   * a resolución completa cuando ni siquiera se van a ver más grandes que eso. `fit:
-   * 'inside'` + `withoutEnlargement` hacen que una imagen ya chica no se toque; `rotate()`
-   * sin argumentos auto-orienta según el EXIF de la cámara ANTES de medir/redimensionar
-   * (si no, una foto vertical tomada con el celular de costado sale rotada). Si sharp
-   * falla por lo que sea (formato corrupto, etc.), se guarda el original tal cual — nunca
-   * se pierde el adjunto por un error de redimensionado.
-   */
-  private async resizeIfNeeded(buffer: Buffer, contentType: string): Promise<Buffer> {
-    if (!RESIZABLE_TYPES.has(contentType)) return buffer;
-
-    try {
-      const oriented = sharp(buffer, { failOn: 'none' }).rotate();
-      const metadata = await oriented.metadata();
-      if (!metadata.width || !metadata.height) return buffer;
-      if (metadata.width <= MAX_WIDTH && metadata.height <= MAX_HEIGHT) return buffer;
-
-      return await oriented.resize({ width: MAX_WIDTH, height: MAX_HEIGHT, fit: 'inside', withoutEnlargement: true }).toBuffer();
-    } catch (err) {
-      this.logger.warn(`No se pudo redimensionar la imagen, se guarda el original tal cual: ${(err as Error).message}`);
-      return buffer;
     }
   }
 
@@ -207,7 +156,7 @@ export class TwilioMediaService {
    */
   @Cron('*/2 * * * *')
   async cleanupExpired(): Promise<void> {
-    const dir = await this.storageDir();
+    const dir = await resolveStorageDir(this.appConfig);
     let entries: string[];
     try {
       entries = await readdir(dir);

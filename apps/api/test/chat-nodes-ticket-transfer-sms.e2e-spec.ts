@@ -60,6 +60,7 @@ import {
   FetchRouter,
   startNode,
   endNode,
+  messageNode,
   variableNode,
   inputNode,
   ticketCreateNode,
@@ -90,6 +91,25 @@ interface InvgateMockCatalog {
   initialStatusId?: number;
   /** Si `true`, el `GET incident` puntual (no el de catálogo) siempre falla — InvGate "caído". */
   failGetIncident?: boolean;
+  /** Si `true`, `incidents.by.customer` (el listado de `ticket_query`) siempre falla. */
+  failListIncidents?: boolean;
+}
+
+/**
+ * Incidente del mock. `id`/`status_id` alcanzan para `ticket_create`; el resto lo lee el
+ * `ticket_query` rediseñado (2026-08-28), que lista los tickets ABIERTOS del cliente en vivo
+ * y después muestra el detalle de uno. `user_id` es el dueño: `buildTicketDetailText` da
+ * "no encontrado" si no matchea el cliente que pregunta.
+ */
+interface MockIncident {
+  id: number;
+  status_id: number;
+  user_id?: number;
+  title?: string;
+  created_at?: number;
+  priority_id?: number;
+  assigned_id?: number;
+  comments?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -100,7 +120,7 @@ interface InvgateMockCatalog {
  * `InvgateService` necesita para resolver nombres → ids y crear/consultar el incidente.
  */
 function makeInvgateMock(catalog: InvgateMockCatalog) {
-  const incidents = new Map<number, { id: number; status_id: number }>();
+  const incidents = new Map<number, MockIncident>();
   let nextId = 9000 + Math.floor(Math.random() * 100000);
 
   const router: FetchRouter = (url, init) => {
@@ -127,9 +147,30 @@ function makeInvgateMock(catalog: InvgateMockCatalog) {
     if (method === 'GET' && path === 'incident.attributes.status') return { body: catalog.statuses ?? [] };
     if (method === 'POST' && path === 'incident') {
       const id = nextId++;
-      const incident = { id, status_id: catalog.initialStatusId ?? catalog.statuses?.[0]?.id ?? 1 };
+      // Guarda también dueño y título del alta: `ticket_query` lista por cliente
+      // (`incidents.by.customer`), así que un incidente sin `user_id` no aparecería nunca
+      // en la lista del usuario que lo acaba de crear.
+      const sent = new URLSearchParams((init?.body as string) ?? '');
+      const incident: MockIncident = {
+        id,
+        status_id: catalog.initialStatusId ?? catalog.statuses?.[0]?.id ?? 1,
+        user_id: Number(sent.get('customer_id')) || undefined,
+        title: sent.get('title') ?? undefined,
+        created_at: Date.now(),
+      };
       incidents.set(id, incident);
       return { body: incident };
+    }
+    if (method === 'GET' && path === 'incidents.by.customer') {
+      if (catalog.failListIncidents) throw new Error('InvGate caído al listar (simulado para el test)');
+      // La API real devuelve un objeto indexado por id, no un array — `listCustomerIncidents`
+      // hace `Object.values(body.requests)`.
+      const customerId = Number(u.searchParams.get('id'));
+      const requests: Record<string, MockIncident> = {};
+      for (const inc of incidents.values()) {
+        if (inc.user_id === customerId) requests[String(inc.id)] = inc;
+      }
+      return { body: { requests } };
     }
     if (method === 'GET' && path === 'incident') {
       if (catalog.failGetIncident) throw new Error('InvGate caído (simulado para el test)');
@@ -225,7 +266,18 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       const { phone, user } = await setupKnownFlow(
         tenantTkc.id,
         'TKC-01',
-        [startNode('s'), ticketCreateNode('tc', { subject: 'Falla de VPN', description: 'No puedo conectarme a la VPN corporativa' }), endNode('e')],
+        [
+          startNode('s'),
+          // `data.text` es el mensaje final, 100% opcional y a cargo de quien arma el flujo
+          // (ya no hay un texto fijo forzado) — acá se configura uno con {{lastTicketId}}
+          // para poder seguir asertando la respuesta end-to-end.
+          ticketCreateNode('tc', {
+            subject: 'Falla de VPN',
+            description: 'No puedo conectarme a la VPN corporativa',
+            text: 'Ticket #{{lastTicketId}} creado. Un agente te contactará pronto.',
+          }),
+          endNode('e'),
+        ],
         [edge('s', 'tc', 'known'), edge('tc', 'e')],
       );
 
@@ -240,6 +292,26 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       expect(ticket!.userId).toBe(user.id);
       expect(ticket!.tenantId).toBe(tenantTkc.id);
       expect(res.body.reply).toContain(`Ticket #${ticket!.id} creado. Un agente te contactará pronto.`);
+    });
+
+    it('CHAT-N-TKC-01b: sin data.text configurado, no manda ningún mensaje final (antes era un texto fijo forzado)', async () => {
+      const { phone, user } = await setupKnownFlow(
+        tenantTkc.id,
+        'TKC-01B',
+        [startNode('s'), ticketCreateNode('tc', { subject: 'Sin mensaje final' }), messageNode('m', 'Listo.'), endNode('e')],
+        [edge('s', 'tc', 'known'), edge('tc', 'm'), edge('m', 'e')],
+      );
+
+      const res = await simulate(phone, tenantTkc.id);
+      expect(res.status).toBe(201);
+
+      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
+      expect(ticket).not.toBeNull();
+      // Sin data.text: el nodo no aporta responseText — la respuesta es solo lo que viene
+      // después en el flujo (el saludo de conocido + el mensaje siguiente), sin ningún
+      // "Ticket #… creado" de por medio.
+      expect(res.body.reply).not.toContain('creado');
+      expect(res.body.reply).toContain('Listo.');
     });
 
     it('CHAT-N-TKC-02: sin data.subject, usa los primeros 100 caracteres del mensaje (la description NO se trunca)', async () => {
@@ -344,7 +416,13 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
           'TKC-05-TKQ-04A',
           [
             startNode('s'),
-            ticketCreateNode('tc', { subject: 'Problema de red', category: 'Redes', priority: 'Alta', ticketType: 'Incidente' }),
+            ticketCreateNode('tc', {
+              subject: 'Problema de red',
+              category: 'Redes',
+              priority: 'Alta',
+              ticketType: 'Incidente',
+              text: 'Ticket #{{lastTicketId}} creado. Un agente te contactará pronto.',
+            }),
             ticketQueryNode('tq', {}),
             endNode('e'),
           ],
@@ -376,12 +454,17 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
           const res = await simulate(phone, tenantTkc.id, 'tengo un problema de red');
           expect(res.status).toBe(201);
           expect(res.body.reply).toContain('creado. Un agente te contactará pronto.');
-          expect(res.body.reply).toContain('Estado: Abierto');
+          // El `ticket_query` que sigue lista los tickets ABIERTOS del cliente en vivo: el
+          // recién creado ya aparece ahí (el mock guarda `customer_id`/`title` del alta).
+          expect(res.body.reply).toContain('Elegí un ticket:');
+          expect(res.body.reply).toContain('Problema de red');
 
           const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
           expect(ticket!.invgateId).not.toBeNull();
           expect(mock.incidents.has(Number(ticket!.invgateId))).toBe(true);
-          expect(ticket!.status).toBe('Abierto'); // refreshInvgateStatus actualiza el estado local
+          // Ojo: el `ticket_query` rediseñado ya NO sincroniza el estado local (no existe más
+          // `refreshInvgateStatus`) — lee todo en vivo de InvGate y no toca la tabla `Ticket`.
+          expect(mock.incidents.get(Number(ticket!.invgateId))!.status_id).toBe(1);
         } finally {
           fetchMock.restore();
         }
@@ -393,7 +476,10 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
       const { phone, user } = await setupKnownFlow(
         tenantTkc.id,
         'TKC-06',
-        [startNode('s'), ticketCreateNode('tc', { subject: 'Problema sin cliente en InvGate' }), endNode('e')],
+        [startNode('s'), ticketCreateNode('tc', {
+          subject: 'Problema sin cliente en InvGate',
+          text: 'Ticket #{{lastTicketId}} creado. Un agente te contactará pronto.',
+        }), endNode('e')],
         [edge('s', 'tc', 'known'), edge('tc', 'e')],
       );
 
@@ -436,7 +522,13 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
             inputNode('ip', { text: 'Mandá las imágenes y contame qué pasa', variableName: 'detalle' }),
             // category/priority/type por nombre: sin ellos resolubles, `createTicketForChat`
             // devuelve null antes de crear el incidente (y los adjuntos no viajarían).
-            ticketCreateNode('tc', { subject: 'Falla con adjuntos', category: 'Redes', priority: 'Alta', ticketType: 'Incidente' }),
+            ticketCreateNode('tc', {
+              subject: 'Falla con adjuntos',
+              category: 'Redes',
+              priority: 'Alta',
+              ticketType: 'Incidente',
+              text: 'Ticket #{{lastTicketId}} creado. Un agente te contactará pronto.',
+            }),
             endNode('e'),
           ],
           [edge('s', 'ip', 'known'), edge('ip', 'tc'), edge('tc', 'e')],
@@ -558,201 +650,200 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
   // ticket_query (CHAT-N-TKQ-01..04)
   // ---------------------------------------------------------------------------------------
   describe('ticket_query (CHAT-N-TKQ-*)', () => {
-    it('CHAT-N-TKQ-01: con lastTicketId del propio tenant devuelve asunto y estado', async () => {
-      const { phone, user } = await setupKnownFlow(
-        tenantTkc.id,
-        'TKQ-01',
-        [startNode('s'), ticketCreateNode('tc', { subject: 'Consulta simple' }), ticketQueryNode('tq', {}), endNode('e')],
-        [edge('s', 'tc', 'known'), edge('tc', 'tq'), edge('tq', 'e')],
-      );
+    /**
+     * `ticket_query` rediseñado (2026-08-28): dejó de resolver UN ticket de la tabla local
+     * `Ticket` (por `flowState.lastTicketId` o `data.ticketIdVariable`) y pasó a listar EN
+     * VIVO los tickets ABIERTOS del cliente contra InvGate, esperar que elija uno y recién
+     * ahí mostrar el detalle. Son dos turnos, y sin vínculo con InvGate no hay nada que
+     * mostrar — de ahí que estos casos monten siempre el mock y un `invgateUserId`.
+     */
+    const INVGATE_SETTINGS: Array<[string, string]> = [
+      ['INVGATE_API_URL', 'https://invgate-fake.test'],
+      ['INVGATE_API_USER', 'chatbot_test'],
+      ['INVGATE_API_KEY', 'fake-api-key'],
+    ];
 
-      const res = await simulate(phone, tenantTkc.id, 'necesito ayuda');
-      expect(res.status).toBe(201);
+    const STATUSES = [
+      { id: 1, name: 'Abierto' },
+      { id: 2, name: 'En progreso' },
+      { id: 3, name: 'Cerrado' },
+    ];
+    const PRIORITIES = [
+      { id: 5, name: 'Media' },
+      { id: 6, name: 'Alta' },
+    ];
 
-      const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
-      expect(res.body.reply).toContain(`Ticket #${ticket!.id}: Consulta simple - Estado: open`);
+    async function withInvgate<T>(catalog: Parameters<typeof makeInvgateMock>[0], fn: (mock: ReturnType<typeof makeInvgateMock>) => Promise<T>) {
+      for (const [k, v] of INVGATE_SETTINGS) await setSetting(t.prisma, k, v);
+      const mock = makeInvgateMock({ statuses: STATUSES, priorities: PRIORITIES, ...catalog });
+      const fetchMock = installFetchMock(mock.router);
+      try {
+        return await fn(mock);
+      } finally {
+        fetchMock.restore();
+        for (const [k] of INVGATE_SETTINGS) await deleteSetting(t.prisma, k);
+      }
+    }
+
+    /** Usuario conocido ya vinculado a InvGate (`invgateUserId`), con un flujo de un solo `ticket_query`. */
+    async function setupTicketQueryUser(label: string, customerId: number) {
+      const role = await createRole(t.prisma, { tenantId: tenantTkc.id, name: label });
+      const phone = uniquePhone();
+      const user = await createUser(t.prisma, {
+        email: uniqueEmail(label.toLowerCase()),
+        phone,
+        firstName: label,
+        invgateUserId: String(customerId),
+        memberships: [{ tenantId: tenantTkc.id, roleId: role.id }],
+      });
+      await createFlow(t.prisma, {
+        name: `F-${label}`,
+        nodes: [startNode('s'), ticketQueryNode('tq', {}), endNode('e')],
+        edges: [edge('s', 'tq', 'known'), edge('tq', 'e')],
+        assign: [{ tenantId: tenantTkc.id, isStart: true, roleIds: [role.id] }],
+      });
+      return { phone, user };
+    }
+
+    it('CHAT-N-TKQ-01: lista los tickets ABIERTOS del cliente y, al elegir uno, muestra su detalle', async () => {
+      const customerId = 811;
+      const { phone } = await setupTicketQueryUser('TKQ-01', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1001, {
+          id: 1001,
+          status_id: 1,
+          user_id: customerId,
+          title: 'VPN caída',
+          priority_id: 6,
+          created_at: 1_000,
+        });
+        mock.incidents.set(1002, {
+          id: 1002,
+          status_id: 3, // Cerrado: no entra en la lista
+          user_id: customerId,
+          title: 'Algo ya cerrado',
+          created_at: 2_000,
+        });
+
+        const lista = await simulate(phone, tenantTkc.id, '¿cómo van mis tickets?');
+        expect(lista.status).toBe(201);
+        expect(lista.body.reply).toContain('Elegí un ticket:');
+        expect(lista.body.reply).toContain('VPN caída');
+        expect(lista.body.reply).not.toContain('Algo ya cerrado');
+
+        // El id de la fila tocada es lo que llega como body en el turno siguiente.
+        const detalle = await simulate(phone, tenantTkc.id, '1001');
+        expect(detalle.status).toBe(201);
+        expect(detalle.body.reply).toContain('Ticket #1001');
+        expect(detalle.body.reply).toContain('VPN caída');
+        expect(detalle.body.reply).toContain('Estado: Abierto');
+        expect(detalle.body.reply).toContain('Prioridad: Alta');
+        expect(detalle.body.reply).toContain('Volver a la lista');
+      });
     });
 
-    it('CHAT-N-TKQ-02: sin ticket disponible responde "No encontré el ticket solicitado."', async () => {
+    it('CHAT-N-TKQ-02: sin tickets abiertos avisa y sigue de largo, sin quedarse esperando una opción', async () => {
+      const customerId = 812;
+      const { phone } = await setupTicketQueryUser('TKQ-02', customerId);
+
+      await withInvgate({}, async (mock) => {
+        // Solo cerrados: para este nodo es lo mismo que no tener ninguno.
+        mock.incidents.set(1010, { id: 1010, status_id: 3, user_id: customerId, title: 'Viejo', created_at: 1 });
+
+        const res = await simulate(phone, tenantTkc.id, 'quiero ver mis tickets');
+        expect(res.status).toBe(201);
+        expect(res.body.reply).toContain('No tenés tickets abiertos en este momento.');
+        expect(res.body.reply).not.toContain('Elegí un ticket:');
+      });
+    });
+
+    it('CHAT-N-TKQ-03: un ticket de OTRO cliente no aparece en la lista ni se puede ver tipeando su id', async () => {
+      const customerId = 813;
+      const { phone } = await setupTicketQueryUser('TKQ-03', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1020, {
+          id: 1020,
+          status_id: 1,
+          user_id: customerId,
+          title: 'El mío',
+          created_at: 1_000,
+        });
+        mock.incidents.set(1021, {
+          id: 1021,
+          status_id: 1,
+          user_id: 999_999, // de otra persona
+          title: 'El de otra persona',
+          created_at: 2_000,
+        });
+
+        const lista = await simulate(phone, tenantTkc.id, 'mis tickets');
+        expect(lista.body.reply).toContain('El mío');
+        expect(lista.body.reply).not.toContain('El de otra persona');
+
+        // Adivinar el id ajeno no alcanza: `buildTicketDetailText` valida el dueño.
+        const intento = await simulate(phone, tenantTkc.id, '1021');
+        expect(intento.status).toBe(201);
+        expect(intento.body.reply).not.toContain('El de otra persona');
+        expect(intento.body.reply).toContain('No reconocí esa opción.');
+      });
+    });
+
+    it('CHAT-N-TKQ-04: sin vínculo con InvGate (usuario sin invgateUserId ni match por teléfono) avisa y no rompe la charla', async () => {
+      // Sin `invgateUserId`, y el mock no matchea el teléfono en `users.by`.
       const { phone } = await setupKnownFlow(
         tenantTkc.id,
-        'TKQ-02',
+        'TKQ-04',
         [startNode('s'), ticketQueryNode('tq', {}), endNode('e')],
         [edge('s', 'tq', 'known'), edge('tq', 'e')],
       );
 
-      const res = await simulate(phone, tenantTkc.id, 'quiero ver mi ticket');
-      expect(res.status).toBe(201);
-      expect(res.body.reply).toContain('No encontré el ticket solicitado.');
-    });
-
-    it('CHAT-N-TKQ-03: una variable que apunta a un ticket de OTRO tenant no lo devuelve (SEC-08 cerrado)', async () => {
-      const tenantOther = await createTenant(t.prisma, { slug: uniqueSlug('tkc-other') });
-      const owner = await createUser(t.prisma, { email: uniqueEmail('owner-other'), phone: uniquePhone(), firstName: 'Owner' });
-      const foreignTicket = await t.prisma.ticket.create({
-        data: {
-          userId: owner.id,
-          tenantId: tenantOther.id,
-          subject: 'Ticket confidencial de otra empresa',
-          description: 'No debería verse desde otro tenant',
-          priority: 'medium',
-        },
-      });
-
-      const { phone } = await setupKnownFlow(
-        tenantTkc.id,
-        'TKQ-03',
-        [
-          startNode('s'),
-          variableNode('v', { action: 'set', name: 'ticketRef', value: foreignTicket.id }),
-          ticketQueryNode('tq', { ticketIdVariable: 'ticketRef' }),
-          endNode('e'),
-        ],
-        [edge('s', 'v', 'known'), edge('v', 'tq'), edge('tq', 'e')],
-      );
-
-      const res = await simulate(phone, tenantTkc.id, 'quiero ver el ticket');
-
-      // Comportamiento SEGURO ya implementado: `ticket_query` usa
-      // `ticket.findFirst({ where: { tenantId, OR: [{ id }, { invgateId }] } })`, scopeado por
-      // empresa, así que el ticket de la otra empresa no aparece y responde "no encontrado".
-      // Cierra SEC-08 (antes era `ticket.findUnique({ where: { id } })` sin filtro de tenant).
-      expect(res.body.reply).toContain('No encontré el ticket solicitado.');
-    });
-
-    it('CHAT-N-TKQ-04b: si InvGate no responde al consultar el ticket, cae al estado local sin romper la charla', async () => {
-      const owner = await createUser(t.prisma, { email: uniqueEmail('tkq04b'), phone: uniquePhone(), firstName: 'Owner' });
-      const ticket = await t.prisma.ticket.create({
-        data: {
-          userId: owner.id,
-          tenantId: tenantTkc.id,
-          subject: 'Ticket ya sincronizado con InvGate',
-          description: 'Consulta previa',
-          priority: 'medium',
-          invgateId: '4242',
-          status: 'open',
-        },
-      });
-
-      const { phone } = await setupKnownFlow(
-        tenantTkc.id,
-        'TKQ-04B',
-        [
-          startNode('s'),
-          variableNode('v', { action: 'set', name: 'ticketRef', value: ticket.id }),
-          ticketQueryNode('tq', { ticketIdVariable: 'ticketRef' }),
-          endNode('e'),
-        ],
-        [edge('s', 'v', 'known'), edge('v', 'tq'), edge('tq', 'e')],
-      );
-
-      await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
-      await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
-      await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
-
-      const mock = makeInvgateMock({ failGetIncident: true });
-      const fetchMock = installFetchMock(mock.router);
-
-      try {
-        const res = await simulate(phone, tenantTkc.id, 'quiero el estado de mi ticket');
+      await withInvgate({ customerIdByPhone: {} }, async () => {
+        const res = await simulate(phone, tenantTkc.id, 'quiero ver mis tickets');
         expect(res.status).toBe(201);
-        // El display prefiere `invgateId ?? id` (coherente con CHAT-N-TKQ-05a/05b): el ticket
-        // ya tiene invgateId '4242', así que se muestra #4242, no el cuid local.
-        expect(res.body.reply).toContain(`Ticket #${ticket.invgateId}: Ticket ya sincronizado con InvGate - Estado: open`);
-
-        const refreshed = await t.prisma.ticket.findUnique({ where: { id: ticket.id } });
-        expect(refreshed!.status).toBe('open'); // sin cambios: InvGate no respondió, se mantuvo el local
-      } finally {
-        fetchMock.restore();
-      }
+        expect(res.body.reply).toContain('No pude vincular tu usuario con InvGate');
+      });
     });
 
-    it(
-      'CHAT-N-TKQ-05a: al sincronizar, lastTicketId queda en el número real de InvGate; ticket_query lo resuelve por invgateId y muestra #invgateId (no el cuid)',
-      async () => {
-        const { phone, user } = await setupKnownFlow(
-          tenantTkc.id,
-          'TKQ-05A',
-          [
-            startNode('s'),
-            ticketCreateNode('tc', { subject: 'Sincroniza con InvGate', category: 'Redes', priority: 'Alta', ticketType: 'Incidente' }),
-            ticketQueryNode('tq', {}), // sin ticketIdVariable → usa flowState.lastTicketId (= número de InvGate)
-            endNode('e'),
-          ],
-          [edge('s', 'tc', 'known'), edge('tc', 'tq'), edge('tq', 'e')],
-        );
+    it('CHAT-N-TKQ-04b: si InvGate no responde al listar, avisa que no hay tickets en vez de romper la charla', async () => {
+      const customerId = 814;
+      const { phone } = await setupTicketQueryUser('TKQ-04B', customerId);
 
-        await setSetting(t.prisma, 'INVGATE_API_URL', 'https://invgate-fake.test');
-        await setSetting(t.prisma, 'INVGATE_API_USER', 'chatbot_test');
-        await setSetting(t.prisma, 'INVGATE_API_KEY', 'fake-api-key');
-
-        const mock = makeInvgateMock({
-          categories: [{ id: 501, name: 'Redes' }],
-          priorities: [{ id: 2, name: 'Alta' }],
-          types: [{ id: 7, name: 'Incidente' }],
-          statuses: [{ id: 1, name: 'Abierto' }],
-          creatorIdByUsername: { chatbot_test: 42 },
-          // InvGate guarda el teléfono REAL (sin el 9 de móvil de WhatsApp): el código
-          // consulta `users.by` con `stripArgentinaMobileNine(phone)`, así que el mock —que
-          // representa la BD de InvGate— tiene que indexar por ese mismo número normalizado.
-          customerIdByPhone: { [stripArgentinaMobileNine(phone)]: 777 },
-          initialStatusId: 1,
-        });
-        const fetchMock = installFetchMock(mock.router);
-
-        try {
-          const res = await simulate(phone, tenantTkc.id, 'necesito soporte');
-          expect(res.status).toBe(201);
-
-          const ticket = await t.prisma.ticket.findFirst({ where: { userId: user.id, tenantId: tenantTkc.id } });
-          expect(ticket!.invgateId).not.toBeNull();
-          expect(ticket!.invgateId).not.toBe(ticket!.id); // el número de InvGate no es el cuid local
-
-          // ticket_create mostró el número de InvGate y dejó lastTicketId en ese número; ticket_query
-          // lo tomó, resolvió el ticket por la rama `invgateId` del OR y volvió a mostrar #invgateId.
-          expect(res.body.reply).toContain(`Ticket #${ticket!.invgateId} creado`);
-          expect(res.body.reply).toContain(`Ticket #${ticket!.invgateId}: Sincroniza con InvGate - Estado: Abierto`);
-          expect(res.body.reply).not.toContain(ticket!.id); // el cuid interno nunca se le muestra al usuario
-        } finally {
-          fetchMock.restore();
-        }
-      },
-      20000,
-    );
-
-    it('CHAT-N-TKQ-05b: ticket_query también acepta el cuid local (rama OR {id}) y sigue mostrando #invgateId', async () => {
-      const owner = await createUser(t.prisma, { email: uniqueEmail('tkq05b'), phone: uniquePhone(), firstName: 'Owner' });
-      const ticket = await t.prisma.ticket.create({
-        data: {
-          userId: owner.id,
-          tenantId: tenantTkc.id,
-          subject: 'Buscado por cuid',
-          description: 'Ya sincronizado',
-          priority: 'medium',
-          invgateId: '7777',
-          status: 'open',
-        },
+      // `buildOpenTicketsList` atrapa el error del listado y devuelve lista vacía: la charla
+      // sigue (best-effort), no se propaga una excepción al usuario.
+      await withInvgate({ failListIncidents: true }, async () => {
+        const res = await simulate(phone, tenantTkc.id, 'quiero ver mis tickets');
+        expect(res.status).toBe(201);
+        expect(res.body.reply).toContain('No tenés tickets abiertos en este momento.');
       });
+    });
 
-      const { phone } = await setupKnownFlow(
-        tenantTkc.id,
-        'TKQ-05B',
-        [
-          startNode('s'),
-          variableNode('v', { action: 'set', name: 'ticketRef', value: ticket.id }), // el cuid, NO el invgateId
-          ticketQueryNode('tq', { ticketIdVariable: 'ticketRef' }),
-          endNode('e'),
-        ],
-        [edge('s', 'v', 'known'), edge('v', 'tq'), edge('tq', 'e')],
-      );
+    it('CHAT-N-TKQ-05: "Volver a la lista" reabre la misma lista, y cualquier otra respuesta sale del nodo', async () => {
+      const customerId = 815;
+      const { phone } = await setupTicketQueryUser('TKQ-05', customerId);
 
-      // Sin InvGate configurado: refreshInvgateStatus corta al toque y devuelve el estado local.
-      const res = await simulate(phone, tenantTkc.id, 'quiero ver el ticket');
-      expect(res.status).toBe(201);
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1030, {
+          id: 1030,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Ticket navegable',
+          created_at: 1_000,
+        });
 
-      // Resuelto por el cuid (rama OR {id}), pero el display prefiere `invgateId ?? id`.
-      expect(res.body.reply).toContain('Ticket #7777: Buscado por cuid - Estado: open');
-      expect(res.body.reply).not.toContain(ticket.id); // buscó por el cuid, pero no lo muestra
+        const lista = await simulate(phone, tenantTkc.id, 'mis tickets');
+        expect(lista.body.reply).toContain('Elegí un ticket:');
+
+        const detalle = await simulate(phone, tenantTkc.id, '1030');
+        expect(detalle.body.reply).toContain('Ticket #1030');
+
+        // El botón manda su `id` (BACK_OPTION_VALUE) como body.
+        const vuelta = await simulate(phone, tenantTkc.id, '__volver');
+        expect(vuelta.status).toBe(201);
+        expect(vuelta.body.reply).toContain('Elegí un ticket:');
+        expect(vuelta.body.reply).toContain('Ticket navegable');
+      });
     });
   });
 

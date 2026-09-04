@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { AppConfigService } from '../../config/app-config.service';
 import { BrokerService, BrokerMessage } from '../broker/broker.service';
 import { WhatsAppInteractive } from './whatsapp-interactive.types';
+import { GupshupFileLoggerService } from './gupshup-file-logger.service';
 
 const TIMEOUT_MS = 10_000;
 const API_URL = 'https://api.gupshup.io/wa/api/v1/msg';
@@ -23,9 +24,12 @@ interface GupshupCredentials {
  * interactivo INLINE en el mismo request, igual de simple que Meta: sin caché, sin BD, sin
  * llamada extra a una Content API.
  *
- * Spec verificado contra docs.gupshup.io (2026-08-14): `/reference/msg`, `/reference/quick-replies`
- * y `/reference/post_wa-api-v1-msg-1` (list). El shape del webhook entrante (`GupshupWebhookController`)
- * también sale de esas mismas páginas.
+ * Spec verificado contra docs.gupshup.io: `/reference/msg`, `/reference/quick-replies` y
+ * `/reference/post_wa-api-v1-msg-1` (list) el 2026-08-14; `/reference/cta-url` (botón de link,
+ * nodo `notification` modo link) el 2026-08-27 — la primera versión de ese tipo era una
+ * adivinanza (`quick_reply` con `options[].type: 'url'`, que no existe) y por eso el botón
+ * salía como uno de texto normal en vez de abrir el link. El shape del webhook entrante
+ * (`GupshupWebhookController`) también sale de esas mismas páginas.
  */
 @Injectable()
 export class GupshupWhatsAppService implements OnModuleInit {
@@ -34,6 +38,7 @@ export class GupshupWhatsAppService implements OnModuleInit {
   constructor(
     private readonly appConfig: AppConfigService,
     private readonly broker: BrokerService,
+    private readonly fileLog: GupshupFileLoggerService,
   ) {}
 
   /**
@@ -79,6 +84,7 @@ export class GupshupWhatsAppService implements OnModuleInit {
         `No se pudo enviar WhatsApp (Gupshup) a ${to}: falta GUPSHUP_API_KEY, ` +
           'GUPSHUP_WHATSAPP_SOURCE o GUPSHUP_APP_NAME en /settings.',
       );
+      this.fileLog.log('send.missing_credentials', { to });
       return;
     }
 
@@ -105,14 +111,18 @@ export class GupshupWhatsAppService implements OnModuleInit {
       });
     } catch (err) {
       this.logger.error(`No se pudo contactar la API de Gupshup: ${(err as Error).message}`);
+      this.fileLog.log('send.network_error', { to, error: (err as Error).message });
       throw err;
     }
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       this.logger.error(`Gupshup API respondió ${res.status} al mandarle a ${to}: ${detail.slice(0, 500)}`);
+      this.fileLog.log('send.api_error', { to, status: res.status, detail: detail.slice(0, 500) });
       throw new Error(`Gupshup API error ${res.status}`);
     }
+
+    this.fileLog.log('send.accepted', { to, body });
   }
 
   /**
@@ -137,6 +147,18 @@ export class GupshupWhatsAppService implements OnModuleInit {
           title: b.title.slice(0, 20),
           postbackText: b.id,
         })),
+      };
+    }
+    if (interactive.type === 'cta_url') {
+      // Mensaje propio de Gupshup para esto — NO es una variante de `quick_reply` (esa
+      // solo admite botones de texto/postback, ver arriba): `cta_url` es su propio
+      // `type`, verificado contra docs.gupshup.io/reference/cta-url. `display_text` es
+      // el label del botón; `body`/`url` van sueltos, no dentro de `content`.
+      return {
+        type: 'cta_url',
+        body,
+        display_text: interactive.buttonText.slice(0, 20),
+        url: interactive.url,
       };
     }
     return {

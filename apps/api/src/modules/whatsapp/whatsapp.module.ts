@@ -5,6 +5,7 @@ import { TwilioWhatsAppService } from './twilio-whatsapp.service';
 import { TwilioWebhookController } from './twilio-webhook.controller';
 import { GupshupWhatsAppService } from './gupshup-whatsapp.service';
 import { GupshupWebhookController } from './gupshup-webhook.controller';
+import { GupshupFileLoggerService } from './gupshup-file-logger.service';
 import { BrokerModule } from '../broker/broker.module';
 import { MediaModule } from '../../common/media.module';
 import { TwilioSignatureGuard } from '../../common/guards/twilio-signature.guard';
@@ -19,7 +20,13 @@ import { TwilioSignatureGuard } from '../../common/guards/twilio-signature.guard
 @Module({
   imports: [BrokerModule, MediaModule],
   controllers: [WhatsAppWebhookController, TwilioWebhookController, GupshupWebhookController],
-  providers: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService, TwilioSignatureGuard],
+  providers: [
+    WhatsAppService,
+    TwilioWhatsAppService,
+    GupshupWhatsAppService,
+    GupshupFileLoggerService,
+    TwilioSignatureGuard,
+  ],
   exports: [WhatsAppService, TwilioWhatsAppService, GupshupWhatsAppService],
 })
 export class WhatsAppModule {}

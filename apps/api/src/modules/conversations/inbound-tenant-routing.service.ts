@@ -1,17 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
-import { systemTenantSlug } from '../../common/system-tenant';
-import { AppConfigService } from '../../config/app-config.service';
 import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { StoredAttachment } from '../../common/twilio-media.service';
 
 /**
- * Ventana de validez del estado pendiente de selección de empresa: 12hs, igual que
- * RESUME_WINDOW_MS en ConversationsService. Pasada la ventana, el pendiente se descarta y
- * el próximo mensaje resuelve de cero (y vuelve a preguntar si sigue habiendo varias empresas).
+ * Ventana de validez del estado pendiente de selección de empresa. Pasada la ventana, el
+ * pendiente se descarta y el próximo mensaje resuelve de cero (y vuelve a preguntar si sigue
+ * habiendo varias empresas).
+ *
+ * Nace de 12hs para igualar la ventana de retomado de una charla, que hoy es configurable
+ * (`CONVERSATION_RESUME_WINDOW_HOURS`, /settings > Otros) mientras que esta sigue fija: se
+ * dejó así a propósito, es un TTL de otra cosa (un pendiente de ruteo, no una charla) y
+ * desalinearlas no rompe nada — a lo sumo se vuelve a preguntar la empresa, o se responde una
+ * selección de una charla que ya expiró y se resuelve de cero igual.
  */
 const SELECTION_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -39,10 +42,11 @@ export type InboundRoutingResult =
  * Decide qué empresa (tenant) atiende un mensaje ENTRANTE de canal, a partir de la membresía
  * del teléfono. Orden de decisión:
  *   1. ¿Hay una selección pendiente para este teléfono+canal? → este mensaje es la respuesta.
- *   2. ¿Hay una conversación en curso todavía ruteable? → esa (si un cambio administrativo la
+ *   2. Sin ninguna membresía → no hablamos con desconocidos (pedido 2026-08-27): se ignora acá
+ *      mismo, antes de tocar nada más.
+ *   3. ¿Hay una conversación en curso todavía ruteable? → esa (si un cambio administrativo la
  *      dejó fuera del ruteo, se cierra y se avisa — status 'notice').
- *   3. Según cantidad de membresías: 1 → directo; ≥2 → preguntar; 0 → tenant configurado para
- *      el canal (`*_TENANT_ID` en /settings) y, sin configurar, tenant de sistema.
+ *   4. Según cantidad de membresías: 1 → directo; ≥2 → preguntar.
  */
 @Injectable()
 export class InboundTenantRoutingService {
@@ -51,8 +55,6 @@ export class InboundTenantRoutingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly usersService: UsersService,
-    private readonly config: ConfigService,
-    private readonly appConfig: AppConfigService,
   ) {}
 
   async resolve(
@@ -116,29 +118,17 @@ export class InboundTenantRoutingService {
       }
     }
 
-    // 2. Membresías del teléfono.
+    // 2. Membresías del teléfono. Sin ninguna, no hay a quién rutear: no hablamos con
+    // desconocidos (pedido 2026-08-27) — se ignora acá mismo, sin tocar `User`/`Conversation`
+    // ni gastar LLM. El intento lo registra `ConversationsService.handleMessage` en el log de
+    // archivo (`UnknownSenderLogService`) al recibir este `status: 'ignored'`.
     const memberships = await this.usersService.findMembershipsByPhone(from);
+    if (memberships.length === 0) {
+      return { status: 'ignored' };
+    }
     const membershipTenantIds = memberships.map((m) => m.tenantId);
 
-    // Destino de un teléfono SIN empresa: el tenant configurado para el canal en /settings
-    // (`*_TENANT_ID` — el bot de esa empresa atiende a sus clientes no registrados) y, sin
-    // configurar, el tenant de sistema. Si tampoco existe el de sistema, no hay quién atienda:
-    // se ignora en silencio (solo log), NUNCA un saliente de error pago por cada mensaje.
-    let guestTenantId: string | null = null;
-    if (memberships.length === 0) {
-      guestTenantId =
-        (await this.resolveChannelTenantId(channel)) ?? (await this.resolveSystemTenantId());
-      if (!guestTenantId) {
-        this.logger.error(
-          `Mensaje de ${from} (${channel}) ignorado: el teléfono no pertenece a ninguna empresa y no ` +
-            `hay tenant configurado para el canal (*_TENANT_ID en /settings) ni tenant de sistema ` +
-            `(slug='${systemTenantSlug(this.config)}').`,
-        );
-        return { status: 'ignored' };
-      }
-    }
-
-    // 2b. Conversación ACTIVA → se continúa ahí, sin volver a preguntar ("la elección dura la
+    // 3. Conversación ACTIVA → se continúa ahí, sin volver a preguntar ("la elección dura la
     // conversación"). Solo cuenta una charla activa: una cerrada significa que esa charla
     // terminó (nodo `end`, /reset, cancelación o timeout de inactividad), así que el próximo
     // mensaje es una charla nueva y se vuelve a preguntar. El resume dentro de la ventana lo
@@ -147,25 +137,22 @@ export class InboundTenantRoutingService {
     const user = await this.prisma.user.findUnique({ where: { phone: from }, select: { id: true } });
     if (user) {
       // Tenants a los que HOY se puede rutear (ya excluyen dados de baja: `findMembershipsByPhone`
-      // filtra `tenant.deletedAt: null`, y `guestTenantId` sale de `resolveChannelTenantId`/
-      // `resolveSystemTenantId`, que hacen lo mismo). Se busca PRIMERO acá — a nivel BD, no en
-      // memoria — para no arriesgarse a levantar una conversación vieja y ajena en vez de la
-      // vigente: `findFirst` sin este filtro tomaría la más RECIENTE creada entre TODAS las
-      // empresas del usuario, y si esa resultara no ruteable, cerraría esa (con aviso) aunque
-      // hubiera otra más antigua pero perfectamente válida y activa en una empresa ruteable.
-      const routableTenantIds = memberships.length === 0 ? [guestTenantId!] : membershipTenantIds;
+      // filtra `tenant.deletedAt: null`). Se busca PRIMERO acá — a nivel BD, no en memoria — para
+      // no arriesgarse a levantar una conversación vieja y ajena en vez de la vigente: `findFirst`
+      // sin este filtro tomaría la más RECIENTE creada entre TODAS las empresas del usuario, y si
+      // esa resultara no ruteable, cerraría esa (con aviso) aunque hubiera otra más antigua pero
+      // perfectamente válida y activa en una empresa ruteable.
       const ongoing = await this.prisma.conversation.findFirst({
-        where: { userId: user.id, channel, status: 'active', tenantId: { in: routableTenantIds } },
+        where: { userId: user.id, channel, status: 'active', tenantId: { in: membershipTenantIds } },
         orderBy: { createdAt: 'desc' },
         select: { tenantId: true },
       });
       if (ongoing) return { status: 'resolved', tenantId: ongoing.tenantId };
 
       // Ninguna activa entre las ruteables: ¿quedó una varada en OTRA empresa por un cambio
-      // administrativo a mitad de charla (membresía revocada, empresa dada de baja, o el
-      // `*_TENANT_ID` de invitados reconfigurado)? Se cierra y se AVISA — antes se abandonaba
-      // en silencio y la respuesta a medias se inyectaba como apertura del flujo de la empresa
-      // nueva.
+      // administrativo a mitad de charla (membresía revocada, empresa dada de baja)? Se cierra
+      // y se AVISA — antes se abandonaba en silencio y la respuesta a medias se inyectaba como
+      // apertura del flujo de la empresa nueva.
       const stranded = await this.prisma.conversation.findFirst({
         where: { userId: user.id, channel, status: 'active' },
         orderBy: { createdAt: 'desc' },
@@ -190,12 +177,9 @@ export class InboundTenantRoutingService {
       }
     }
 
-    // 3. Según cantidad de empresas.
+    // 4. Según cantidad de empresas.
     if (memberships.length === 1) {
       return { status: 'resolved', tenantId: memberships[0].tenantId };
-    }
-    if (memberships.length === 0) {
-      return { status: 'resolved', tenantId: guestTenantId! };
     }
 
     // ≥2 empresas → guardar el pendiente y preguntar.
@@ -297,52 +281,5 @@ export class InboundTenantRoutingService {
       buttonText: 'Elegir empresa',
       rows: options.map((o) => ({ id: o.tenantId, title: o.name.slice(0, 24) })),
     };
-  }
-
-  /**
-   * Tenant configurado en /settings para atender a los teléfonos sin empresa de este canal.
-   * La clave depende del proveedor activo del canal (`WHATSAPP_PROVIDER`/`SMS_PROVIDER`) —
-   * son los `*_TENANT_ID` que la resolución por membresía reemplazó como ruteo principal:
-   * ahora solo deciden a qué bot llega un DESCONOCIDO (los registrados van por membresía).
-   * Devuelve null si no está configurado o apunta a una empresa inexistente/dada de baja.
-   */
-  private async resolveChannelTenantId(channel: string): Promise<string | null> {
-    let key: string | undefined;
-    if (channel === 'whatsapp') {
-      const provider = (await this.appConfig.get('WHATSAPP_PROVIDER', 'meta')) ?? 'meta';
-      key = { meta: 'WHATSAPP_TENANT_ID', twilio: 'TWILIO_TENANT_ID', gupshup: 'GUPSHUP_WHATSAPP_TENANT_ID' }[provider];
-    } else if (channel === 'sms') {
-      const provider = (await this.appConfig.get('SMS_PROVIDER', 'twilio')) ?? 'twilio';
-      key = { twilio: 'TWILIO_SMS_TENANT_ID', gupshup: 'GUPSHUP_SMS_TENANT_ID' }[provider];
-    }
-    if (!key) return null;
-
-    const configured = await this.appConfig.get(key);
-    if (!configured) return null;
-
-    const tenant = await this.prisma.tenant.findFirst({
-      where: { id: configured, deletedAt: null },
-      select: { id: true },
-    });
-    if (!tenant) {
-      this.logger.warn(
-        `${key}='${configured}' apunta a una empresa inexistente o dada de baja: se ignora y ` +
-          'los teléfonos sin empresa caen al tenant de sistema.',
-      );
-      return null;
-    }
-    return tenant.id;
-  }
-
-  /**
-   * Tenant de sistema (fallback final para teléfonos que no pertenecen a ninguna empresa).
-   * Null si no existe (no sembrado, o `SYSTEM_TENANT_SLUG` mal configurado): el llamador
-   * ignora el mensaje en silencio — tirar acá convertía cada mensaje de un desconocido en un
-   * saliente de error pago hacia el cliente (ver el catch de `handleMessage`).
-   */
-  private async resolveSystemTenantId(): Promise<string | null> {
-    const slug = systemTenantSlug(this.config);
-    const tenant = await this.prisma.tenant.findUnique({ where: { slug }, select: { id: true } });
-    return tenant?.id ?? null;
   }
 }

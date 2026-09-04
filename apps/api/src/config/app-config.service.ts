@@ -79,4 +79,21 @@ export class AppConfigService {
   async simulateEnabled(): Promise<boolean> {
     return this.getBoolean('CONVERSATIONS_SIMULATE_ENABLED', defaultSimulateEnabled() === 'true');
   }
+
+  // Vida de una charla — ver ConversationsService. Los dos se exponen en milisegundos porque
+  // es lo que consume el motor, pero en /settings se configuran en minutos y horas: escribir
+  // "3600000" a mano en un backoffice es pedir un error de tipeo de un cero de más.
+  /** Inactividad máxima de una charla `active` antes de que el cron la cierre sola. */
+  async conversationInactivityMs(): Promise<number> {
+    const minutes = await this.getNumber('CONVERSATION_INACTIVITY_MINUTES', 60);
+    // Clamp defensivo: el catálogo valida 1-10080, pero una env var cruda no pasa por ahí, y
+    // un 0 dejaría todas las charlas cerrándose apenas se abren.
+    return Math.max(1, Math.trunc(minutes)) * 60_000;
+  }
+
+  /** Ventana para retomar una charla cerrada como la MISMA Conversation. */
+  async conversationResumeWindowMs(): Promise<number> {
+    const hours = await this.getNumber('CONVERSATION_RESUME_WINDOW_HOURS', 12);
+    return Math.max(1, Math.trunc(hours)) * 3_600_000;
+  }
 }

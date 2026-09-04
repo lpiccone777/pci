@@ -25,11 +25,13 @@ test-results/
 .playwright/
 blob-report/
 
-# Graphify — solo versionar reportes y grafo interactivo
-graphify-out/cache/
-graphify-out/.graphify*
-graphify-out/cost.json
-graphify-out/manifest.json
+# Graphify — 100% generado, no se versiona (2026-09-01).
+#
+# Antes se versionaban GRAPH_REPORT.md, graph.html y graph.json. El problema es que
+# `/graphify . --update` corre al cerrar cada tarea y reescribe el grafo entero: graph.json
+# solo metía ~93.000 líneas de diff en un PR de ~6.000 líneas de código real, dejándolo
+# ilegible en GitHub. Son artefactos regenerables con `/graphify`, así que viven local.
+graphify-out/
 
 # Docs internos, no versionar
 docs/*.pptx
@@ -38,3 +40,11 @@ docs/informe-commits-*.md
 # Imágenes de WhatsApp/SMS descargadas temporalmente (ver TwilioMediaService),
 # guardadas hasta adjuntarse a un ticket de InvGate — no es contenido del repo.
 apps/api/uploads/
+
+# Material de referencia/comparación de PRs de compañeros, dejado suelto en
+# la raíz para diffear contra la implementación final — no es código del repo.
+*.juang.ts
+*.dev.ts
+pr10_*
+pr10.diff.tmp
+pr10_web.diff

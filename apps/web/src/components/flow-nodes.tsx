@@ -19,6 +19,7 @@ const nodeColors: Record<string, string> = {
   end: '#991b1b',
   device_validation: '#0ea5e9',
   sms: '#22c55e',
+  notification: '#eab308',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -37,6 +38,7 @@ const nodeLabels: Record<string, string> = {
   end: 'Fin',
   device_validation: 'Validar Dispositivo',
   sms: 'SMS',
+  notification: 'Notificación',
 };
 
 function BaseNode({ id, data, type, children }: any) {
@@ -92,7 +94,15 @@ export const StartNode = memo(({ id, data }: any) => (
     {/* Content */}
     <div className="p-2 text-sm text-gray-700">
       <div className="text-xs text-gray-500 mb-1">Identifica usuario por teléfono</div>
-      {data?.text && <p className="text-xs line-clamp-2 text-gray-700">{data.text}</p>}
+      {data?.noGreeting ? (
+        <p className="text-xs text-gray-400 italic">Sin saludo</p>
+      ) : data?.text ? (
+        <p className="text-xs line-clamp-2 text-gray-700">{data.text}</p>
+      ) : (
+        <p className="text-xs line-clamp-2 text-gray-400 italic">
+          ¡Hola [nombre]! Bienvenido de nuevo.
+        </p>
+      )}
       <div className="mt-1 text-[10px] text-gray-400">
         Guarda: isKnownUser, userName, userPhone
       </div>
@@ -225,15 +235,79 @@ export const InputNode = memo(({ id, data }: any) => (
   </BaseNode>
 ));
 
-export const ConditionNode = memo(({ id, data }: any) => (
-  <BaseNode id={id} data={data} type="condition">
-    {data?.conditions && (
-      <div className="mt-1 text-xs text-gray-500">
-        {data.conditions.length} condición(es)
+const CONDITION_OPERATOR_LABELS: Record<string, string> = {
+  equals: 'es igual a',
+  not_equals: 'es distinto de',
+  contains: 'contiene',
+  exists: 'tiene valor',
+  not_exists: 'no tiene valor',
+};
+
+export const ConditionNode = memo(({ id, data }: any) => {
+  const color = nodeColors.condition;
+
+  return (
+    <div
+      className="rounded-lg shadow-md border-2 bg-white"
+      style={{ borderColor: color, minWidth: 200, maxWidth: 260 }}
+    >
+      {/* Header */}
+      <div
+        className="text-white text-xs font-semibold px-2 py-1 rounded-t-md flex items-center gap-1"
+        style={{ backgroundColor: color }}
+      >
+        <div className="w-2 h-2 rounded-full bg-white/80" />
+        {nodeLabels.condition}
       </div>
-    )}
-  </BaseNode>
-));
+
+      {/* Content */}
+      <div className="p-2 text-sm text-gray-700">
+        {data?.compareVariable ? (
+          <p className="text-xs font-mono">
+            {data.compareVariable} {CONDITION_OPERATOR_LABELS[data.compareOperator] || 'es igual a'}
+            {!['exists', 'not_exists'].includes(data.compareOperator) && data.compareValue
+              ? ` "${data.compareValue}"`
+              : ''}
+          </p>
+        ) : (
+          <p className="text-gray-400 text-xs italic">Sin variable configurada</p>
+        )}
+      </div>
+
+      {/* Target handle (top) */}
+      <Handle type="target" position={Position.Top} style={{ background: color }} />
+
+      {/* Source handles (bottom) - dos salidas fijas: afirmativo / negativo */}
+      <div className="relative h-3">
+        <Handle
+          type="source"
+          id="true"
+          position={Position.Bottom}
+          style={{ background: '#22c55e', left: '25%' }}
+        />
+        <div
+          className="absolute text-[9px] text-green-600 font-semibold"
+          style={{ bottom: 4, left: '25%', transform: 'translateX(-50%)' }}
+        >
+          afirmativo
+        </div>
+
+        <Handle
+          type="source"
+          id="false"
+          position={Position.Bottom}
+          style={{ background: '#ef4444', left: '75%' }}
+        />
+        <div
+          className="absolute text-[9px] text-red-600 font-semibold"
+          style={{ bottom: 4, left: '75%', transform: 'translateX(-50%)' }}
+        >
+          negativo
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export const TicketCreateNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="ticket_create">
@@ -249,14 +323,15 @@ export const TicketCreateNode = memo(({ id, data }: any) => (
     {data?.ticketType && (
       <div className="text-xs text-gray-500">Tipo: {data.ticketType}</div>
     )}
+    {data?.text && (
+      <div className="text-xs text-gray-500">Mensaje: {data.text}</div>
+    )}
   </BaseNode>
 ));
 
 export const TicketQueryNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="ticket_query">
-    {data?.ticketIdVariable && (
-      <div className="mt-1 text-xs text-gray-500">Var: {data.ticketIdVariable}</div>
-    )}
+    <div className="mt-1 text-xs text-gray-500">Lista los tickets abiertos del usuario</div>
   </BaseNode>
 ));
 
@@ -326,6 +401,24 @@ export const WebhookNode = memo(({ id, data }: any) => (
     )}
   </BaseNode>
 ));
+
+export const NotificationNode = memo(({ id, data }: any) => {
+  const isLink = data?.buttonMode === 'link';
+  return (
+    <BaseNode id={id} data={data} type="notification">
+      <div className="mt-1 inline-block bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded">
+        {isLink ? '🔗 ' : ''}
+        {data?.buttonLabel || 'Continuar'}
+      </div>
+      {isLink && data?.buttonUrl && (
+        <div className="mt-1 text-xs text-gray-500 line-clamp-1">{data.buttonUrl}</div>
+      )}
+      {!isLink && data?.expectsPhoto && (
+        <div className="mt-1 text-xs text-gray-500">📷 una foto también avanza</div>
+      )}
+    </BaseNode>
+  );
+});
 
 export const EndNode = memo(({ id, data }: any) => {
   const color = nodeColors.end;

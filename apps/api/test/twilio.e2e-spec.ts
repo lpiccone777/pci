@@ -31,6 +31,10 @@ import {
   http,
   uniquePhone,
   uniqueSlug,
+  uniqueEmail,
+  createTenant,
+  createRole,
+  createUser,
   setSetting,
   deleteSetting,
   installFetchMock,
@@ -187,12 +191,31 @@ describe('1.19 Canal WhatsApp — Twilio, selección de proveedor (BE-TWA-01, BE
 describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-04, BE-TWA-10)', () => {
   let t: TestApp;
   let broker: BrokerService;
+  let tenant: { id: string };
+  let role: { id: string };
+
+  /** Teléfono registrado en `tenant`: "no hablamos con desconocidos" (2026-08-27) rechaza
+   *  cualquier número sin membresía ANTES de crear la Conversation/Message que estos tests
+   *  esperan con `waitFor` — sin esto, el webhook responde 200 igual (solo confirma que
+   *  publicó en `whatsapp.incoming`), pero el pipeline de fondo nunca crea el Message y el
+   *  `waitFor` cuelga hasta el timeout. */
+  async function knownPhone() {
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('twa-webhook'),
+      phone,
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    return phone;
+  }
 
   beforeAll(async () => {
     t = await createTestApp({
       customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok, gracias')),
     });
     broker = t.moduleRef.get(BrokerService);
+    tenant = await createTenant(t.prisma, { slug: uniqueSlug('twa-webhook') });
+    role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol TWA webhook' });
   }, 30000);
 
   afterAll(async () => {
@@ -211,7 +234,7 @@ describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-
   it('BE-TWA-03: POST webhooks/twilio con un mensaje de texto responde 200 y publica {from, body, channel} en whatsapp.incoming', async () => {
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const phone = uniquePhone();
+      const phone = await knownPhone();
       const res = await http(t)
         .post('/webhooks/twilio')
         .type('form')
@@ -254,7 +277,7 @@ describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-
     // (ej. "opt_2") viaja intacto como `body`.
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const phone = uniquePhone();
+      const phone = await knownPhone();
       const res = await http(t)
         .post('/webhooks/twilio')
         .type('form')
@@ -290,6 +313,8 @@ describe('1.19 Canal WhatsApp — Twilio, webhook de entrada (BE-TWA-03, BE-TWA-
 describe('1.19 Canal WhatsApp — Twilio, verificación de firma del webhook (BE-TWA-10, SEC-16)', () => {
   let t: TestApp;
   let broker: BrokerService;
+  let tenant: { id: string };
+  let role: { id: string };
   const publicUrl = 'https://miapp.e2e.test';
 
   /** Mismo algoritmo que `TwilioSignatureGuard.validateSignature`. */
@@ -297,6 +322,19 @@ describe('1.19 Canal WhatsApp — Twilio, verificación de firma del webhook (BE
     let data = fullUrl;
     for (const key of Object.keys(params).sort()) data += key + params[key];
     return createHmac('sha1', TWILIO_AUTH_TOKEN).update(data, 'utf8').digest('base64');
+  }
+
+  /** Registrado en `tenant`: "no hablamos con desconocidos" — ver el comentario equivalente
+   *  en "webhook de entrada" más arriba. Solo hace falta para BE-TWA-10c (única rama que
+   *  llega a procesarse: 10a/10b se rechazan antes por firma inválida). */
+  async function knownPhone() {
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('twa-sig'),
+      phone,
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    return phone;
   }
 
   beforeAll(async () => {
@@ -311,6 +349,8 @@ describe('1.19 Canal WhatsApp — Twilio, verificación de firma del webhook (BE
       customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok, gracias')),
     });
     broker = t.moduleRef.get(BrokerService);
+    tenant = await createTenant(t.prisma, { slug: uniqueSlug('twa-sig') });
+    role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol TWA sig' });
   }, 30000);
 
   afterAll(async () => {
@@ -342,7 +382,7 @@ describe('1.19 Canal WhatsApp — Twilio, verificación de firma del webhook (BE
   it('BE-TWA-10c: con la firma HMAC-SHA1 correcta (URL pública + params ordenados), se acepta y procesa el mensaje', async () => {
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const phone = uniquePhone();
+      const phone = await knownPhone();
       const params = { From: `whatsapp:${phone}`, Body: 'con firma valida' };
       const signature = computeSignature(`${publicUrl}/webhooks/twilio`, params);
 
@@ -488,6 +528,58 @@ describe('1.19 Canal WhatsApp — Twilio, mecánica del conector (BE-TWA-05..09,
         where: { contentSid: 'HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
       });
       expect(count).toBe(1); // no se creó una fila nueva
+    } finally {
+      restore();
+    }
+  });
+
+  it('BE-TWA-07b: un ContentSid que ya no existe en la cuenta (21655) se descarta del caché, se recrea y el menú igual sale como interactivo', async () => {
+    // Pasa al cambiar de credenciales de Twilio: los ContentSid son POR CUENTA, así que los
+    // cacheados de la cuenta anterior dejan de existir. Sin auto-recuperación, el caché queda
+    // envenenado y TODO menú degrada a texto plano para siempre.
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí una opción',
+      buttons: [
+        { id: 'opt_a', title: 'Opción A' },
+        { id: 'opt_b', title: 'Opción B' },
+      ],
+    };
+
+    let mensajesEnviados = 0;
+    const { requests, restore } = installFetchMock((url, init) => {
+      if (url.includes('content.twilio.com')) return { status: 201, body: { sid: 'HXrecreado' } };
+      if (url.includes('api.twilio.com')) {
+        const sid = new URLSearchParams(init!.body as string).get('ContentSid');
+        mensajesEnviados++;
+        // El sid viejo (cacheado por BE-TWA-06) ya no existe en esta "cuenta".
+        if (sid === 'HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
+          return { status: 400, body: { code: 21655, message: 'Content was not found', status: 400 } };
+        }
+        return { status: 201, body: { sid: 'SM07b' } };
+      }
+      return { status: 404 };
+    });
+
+    try {
+      await service.sendText(uniquePhone(), 'Cuerpo cualquiera', interactive);
+
+      // Dos envíos: el que murió con 21655 y el reintento con el template recreado.
+      expect(mensajesEnviados).toBe(2);
+      const msgCalls = requests.filter((r) => r.url.includes('api.twilio.com'));
+      const sids = msgCalls.map((r) => new URLSearchParams(r.init!.body as string).get('ContentSid'));
+      expect(sids).toEqual(['HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'HXrecreado']);
+
+      // NO degradó a texto: el segundo envío siguió siendo interactivo (con ContentSid).
+      expect(msgCalls.every((r) => new URLSearchParams(r.init!.body as string).get('Body') === null)).toBe(true);
+
+      // La fila muerta se borró y quedó la nueva.
+      const viejo = await t.prisma.twilioContentTemplate.count({
+        where: { contentSid: 'HXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      });
+      expect(viejo).toBe(0);
+      const nuevo = await t.prisma.twilioContentTemplate.count({ where: { contentSid: 'HXrecreado' } });
+      expect(nuevo).toBe(1);
     } finally {
       restore();
     }

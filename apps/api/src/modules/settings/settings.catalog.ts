@@ -46,7 +46,8 @@ export type SettingGroup =
   | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
   | 'Integración: InvGate'
-  | 'Desarrollo y pruebas';
+  | 'Simulación'
+  | 'Otros';
 
 export interface SettingDefinition {
   key: string;
@@ -449,20 +450,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'suscripción del webhook (GET /webhooks/whatsapp). Tiene que coincidir con el que ' +
       'configures en Meta for Developers > WhatsApp > Configuration.',
   },
-  {
-    key: 'WHATSAPP_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp',
-    label: 'Tenant de los teléfonos sin empresa',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se rutean los mensajes entrantes de un teléfono que NO pertenece a ' +
-      'ninguna empresa (sin membresía). Los teléfonos registrados se rutean siempre por su ' +
-      'membresía (ver InboundTenantRoutingService); esto solo decide qué bot atiende a un ' +
-      'desconocido: el del tenant configurado acá (su flujo de inicio/default). Sin definir, ' +
-      'cae al tenant de sistema. Limitación: los settings son globales, un solo número por tenant.',
-  },
   // --- Mensajería: WhatsApp (Twilio) ---
   {
     key: 'TWILIO_ACCOUNT_SID',
@@ -512,22 +499,10 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'pruebas usa +14155238886). El prefijo "whatsapp:" que exige la API de Twilio se agrega ' +
       'automáticamente, no incluirlo acá.',
   },
-  {
-    key: 'TWILIO_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp (Twilio)',
-    label: 'Tenant de los teléfonos sin empresa',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se rutean los mensajes entrantes de un teléfono sin ninguna empresa ' +
-      '(sin membresía) cuando el proveedor activo es Twilio. Mismo criterio que ' +
-      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
-  },
   // --- Mensajería: WhatsApp (Gupshup) ---
-  // API moderna de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey` — NO
-  // confundir con la API legacy "Enterprise SMS" (grupo "Mensajería: SMS (Gupshup)", más
-  // abajo), que es un producto y una cuenta totalmente distintos (userid/password propios).
+  // API de Gupshup (api.gupshup.io/wa/api/v1/msg), auth por header `apikey`. Solo WhatsApp:
+  // el SMS de Gupshup va por otro endpoint y con otro header (ver "Mensajería: SMS (Gupshup)").
+  // `GUPSHUP_API_KEY` sí lo comparten los dos — la API key es de la cuenta, no del canal.
   {
     key: 'GUPSHUP_API_KEY',
     type: 'string',
@@ -558,18 +533,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     placeholder: 'dasyBot',
     description: 'Nombre de la app registrada en Gupshup contra ese número (breadcrumb del panel, ej. "dasyBot").',
   },
-  {
-    key: 'GUPSHUP_WHATSAPP_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: WhatsApp (Gupshup)',
-    label: 'Tenant de los teléfonos sin empresa',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se rutean los mensajes entrantes de un teléfono sin ninguna empresa ' +
-      '(sin membresía) cuando el proveedor activo es Gupshup. Mismo criterio que ' +
-      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
-  },
   // --- Mensajería: SMS ---
   {
     key: 'SMS_PROVIDER',
@@ -579,16 +542,45 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     defaultValue: 'twilio',
     description:
       'Qué conector se suscribe a la cola de envío saliente de SMS: "twilio" (grupo ' +
-      '"Mensajería: SMS (Twilio)") o "gupshup" (grupo "Mensajería: SMS (Gupshup)" — API ' +
-      'legacy "Enterprise SMS", cuenta separada de la de WhatsApp). Solo uno puede estar ' +
-      'activo a la vez — se lee una sola vez al arrancar el backend, igual que WHATSAPP_PROVIDER.',
+      '"Mensajería: SMS (Twilio)") o "gupshup" (grupo "Mensajería: SMS (Gupshup)"). ' +
+      'Solo uno puede estar activo a la vez — se lee una sola vez al arrancar el backend, igual ' +
+      'que WHATSAPP_PROVIDER.',
     allowedValues: ['twilio', 'gupshup'],
+  },
+
+  // --- Mensajería: SMS (Gupshup) ---
+  // API de SMS de Gupshup (`api.gupshup.io/sms/v1/message/{appId}`), auth por header
+  // `Authorization`. OJO: es un endpoint DISTINTO al de WhatsApp (`/wa/api/v1/msg`, header
+  // `apikey`) — hasta 2026-08-31 este conector pegaba al de WhatsApp con `channel: 'sms'`, que
+  // Gupshup acepta con 202 pero entrega como mensaje de WhatsApp, no como SMS (confirmado con
+  // tráfico real). Reusa `GUPSHUP_API_KEY` porque la API key es de la cuenta, no del canal.
+  {
+    key: 'GUPSHUP_SMS_APP_ID',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'App ID (UUID)',
+    defaultValue: '',
+    placeholder: 'd7233f89-bf13-27e4-70d1-a981b1427249',
+    description:
+      'ID de la app de Gupshup, en formato UUID — NO el nombre (GUPSHUP_APP_NAME, que usa ' +
+      'WhatsApp): va en la URL del endpoint de SMS. Sale del panel de Gupshup.',
+  },
+  {
+    key: 'GUPSHUP_SMS_SOURCE',
+    type: 'string',
+    group: 'Mensajería: SMS (Gupshup)',
+    label: 'Sender ID (opcional)',
+    defaultValue: '',
+    placeholder: 'GSDSMS',
+    description:
+      'Identificador del emisor. Según la documentación de Gupshup solo aplica a India — en el ' +
+      'resto de los países lo asigna Gupshup automáticamente, así que normalmente va vacío.',
   },
 
   // --- Mensajería: SMS (Twilio) ---
   // Reusa TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN del grupo de WhatsApp (Twilio) — es la misma
-  // cuenta de Twilio, solo cambia el número emisor. SMS no es un reemplazo de WhatsApp
-  // (a diferencia de Twilio vs Meta): es un canal aparte, con sus propias conversaciones.
+  // cuenta de Twilio, solo cambia el número emisor. SMS es 100% saliente (avisos, ver el nodo
+  // `sms` del editor) — no hay tenant de entrada que configurar, no hay webhook de entrada.
   {
     key: 'TWILIO_SMS_FROM',
     type: 'string',
@@ -601,56 +593,6 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'número de WhatsApp, va SIN el prefijo "whatsapp:" (Twilio lo distingue por el canal, ' +
       'no por el número) — tiene que ser un número propio comprado en Twilio, el sandbox de ' +
       'WhatsApp no sirve para esto.',
-  },
-  {
-    key: 'TWILIO_SMS_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: SMS (Twilio)',
-    label: 'Tenant de los teléfonos sin empresa',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se rutean los SMS entrantes de un teléfono sin ninguna empresa (sin ' +
-      'membresía) cuando el proveedor activo de SMS es Twilio. Mismo criterio que ' +
-      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
-  },
-  // --- Mensajería: SMS (Gupshup) ---
-  // API LEGACY "Enterprise SMS" (enterprise.smsgupshup.com) — cuenta y producto totalmente
-  // distintos de la API de WhatsApp de Gupshup (grupo de arriba): auth por userid/password
-  // propios, no el API Key de WhatsApp. Bloqueado hasta tener esa cuenta — parametrizado para
-  // cuando esté disponible, mismo criterio que TWILIO_SMS_FROM cuando faltaba el número.
-  {
-    key: 'GUPSHUP_SMS_USERID',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'User ID (Enterprise SMS)',
-    defaultValue: '',
-    placeholder: '2000xxxxxx',
-    description:
-      'Usuario de la cuenta de Enterprise SMS de Gupshup (enterprise.smsgupshup.com) — NO es ' +
-      'el mismo login que la app de WhatsApp de Gupshup.',
-  },
-  {
-    key: 'GUPSHUP_SMS_PASSWORD',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'Password (Enterprise SMS)',
-    defaultValue: '',
-    secret: true,
-    placeholder: '••••••••',
-    description: 'Contraseña de la cuenta de Enterprise SMS de Gupshup. Se guarda cifrada.',
-  },
-  {
-    key: 'GUPSHUP_SMS_TENANT_ID',
-    type: 'string',
-    group: 'Mensajería: SMS (Gupshup)',
-    label: 'Tenant de los teléfonos sin empresa',
-    defaultValue: '',
-    placeholder: 'cmxxxxxxxxxxxxxxxxxxxxxxxx',
-    description:
-      'A qué tenant se rutean los SMS entrantes de un teléfono sin ninguna empresa (sin ' +
-      'membresía) cuando el proveedor activo de SMS es Gupshup. Mismo criterio que ' +
-      'WHATSAPP_TENANT_ID. Sin definir, cae al tenant de sistema.',
   },
   // --- Mensajería: Email ---
   {
@@ -705,6 +647,28 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
     defaultValue: '',
     placeholder: '"Plataforma Conversacional Inteligente Soporte" <soporte@tuempresa.com>',
     description: 'Se usa como remitente en los emails salientes (ej. el código OTP).',
+  },
+  {
+    key: 'OTP_EMAIL_SUBJECT',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Asunto del email de verificación (login web)',
+    defaultValue: 'Código de verificación - Plataforma Conversacional Inteligente Chatbot',
+    description:
+      'Asunto del email con el código OTP del login del backoffice (2FA al entrar desde un ' +
+      'dispositivo nuevo). No es el mismo email que "validación de dispositivo" del chat de ' +
+      'WhatsApp — ver DEVICE_VALIDATION_EMAIL_SUBJECT.',
+  },
+  {
+    key: 'DEVICE_VALIDATION_EMAIL_SUBJECT',
+    type: 'string',
+    group: 'Mensajería: Email',
+    label: 'Asunto del email de validación de dispositivo (nodo de flujo)',
+    defaultValue: 'Código de validación de dispositivo - Plataforma Conversacional Inteligente',
+    description:
+      'Asunto del email con el código que manda el nodo de flujo de validación de dispositivo, ' +
+      'cuando alguien escribe por WhatsApp desde un dispositivo nuevo. No es el mismo email que ' +
+      'el login del backoffice — ver OTP_EMAIL_SUBJECT.',
   },
 
   // --- Integración: InvGate ---
@@ -798,11 +762,11 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'categorías que no aplican a tickets del chatbot). Ej.: 1601 = "Chatbot", bajo ' +
       '"DEPTO. SISTEMAS > Soporte".',
   },
-  // --- Desarrollo y pruebas ---
+  // --- Simulación ---
   {
     key: 'CONVERSATIONS_SIMULATE_ENABLED',
     type: 'boolean',
-    group: 'Desarrollo y pruebas',
+    group: 'Simulación',
     label: 'Habilitar POST /conversations/simulate',
     defaultValue: 'true',
     resolveDefault: defaultSimulateEnabled,
@@ -810,6 +774,38 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'Endpoint de desarrollo para probar flujos sin un canal real (scripts, e2e) — exige login ' +
       '(JwtAuthGuard) pero cualquier usuario autenticado puede simular cualquier tenant/teléfono. ' +
       'Mientras no se fije un valor explícito, en NODE_ENV=production queda desactivado (404).',
+  },
+
+  // --- Otros ---
+  // Vida de una charla. Son dos ventanas distintas y encadenadas, no lo mismo: primero la
+  // charla activa se cierra sola por inactividad, y después queda un rato "retomable" antes
+  // de que el próximo mensaje arranque una charla nueva.
+  {
+    key: 'CONVERSATION_INACTIVITY_MINUTES',
+    type: 'number',
+    group: 'Otros',
+    label: 'Cierre por inactividad (minutos)',
+    defaultValue: '60',
+    min: 1,
+    max: 10080,
+    description:
+      'Una charla activa sin mensajes por más de este tiempo se cierra sola. El chequeo corre ' +
+      'cada 10 minutos, así que el cierre real cae entre el valor configurado y 10 minutos más. ' +
+      'Cerrar NO borra nada: si la persona vuelve a escribir dentro de la ventana de retomado, ' +
+      'sigue la misma charla pero con el flujo empezado de nuevo.',
+  },
+  {
+    key: 'CONVERSATION_RESUME_WINDOW_HOURS',
+    type: 'number',
+    group: 'Otros',
+    label: 'Ventana para retomar una charla cerrada (horas)',
+    defaultValue: '12',
+    min: 1,
+    max: 720,
+    description:
+      'Después de cerrarse (por inactividad, por el nodo "Fin" o porque la persona canceló), ' +
+      'la charla sigue siendo retomable por este tiempo: el próximo mensaje continúa la MISMA ' +
+      'conversación, conservando el historial. Pasada la ventana, arranca una conversación nueva.',
   },
 ];
 
@@ -832,7 +828,8 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
   'Integración: InvGate',
-  'Desarrollo y pruebas',
+  'Simulación',
+  'Otros',
 ];
 
 const BY_KEY = new Map(SETTINGS_CATALOG.map((d) => [d.key, d]));

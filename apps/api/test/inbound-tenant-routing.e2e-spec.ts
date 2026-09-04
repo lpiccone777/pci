@@ -5,8 +5,10 @@
  * (`*_TENANT_ID` + fallback al más viejo, eliminados), sino de la membresía del teléfono:
  * `InboundTenantRoutingService.resolve()`. Se prueba el servicio directo contra la base real
  * (determinista, sin depender del pipeline asíncrono de RabbitMQ): una empresa → directo;
- * varias → se pregunta y se guarda el pendiente; ninguna → tenant de sistema; y la resolución
- * de la respuesta al selector (válida, inválida) y la continuidad de una charla activa.
+ * varias → se pregunta y se guarda el pendiente; ninguna → se ignora ("no hablamos con
+ * desconocidos", pedido 2026-08-27: sin membresía en ningún lado no hay tenant de fallback);
+ * y la resolución de la respuesta al selector (válida, inválida) y la continuidad de una
+ * charla activa.
  */
 import {
   createTestApp,
@@ -14,12 +16,9 @@ import {
   createTenant,
   createRole,
   createUser,
-  getSystemContext,
   uniqueSlug,
   uniqueEmail,
   uniquePhone,
-  setSetting,
-  deleteSetting,
 } from './support';
 import { InboundTenantRoutingService } from '../src/modules/conversations/inbound-tenant-routing.service';
 
@@ -30,7 +29,6 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
   let tenantB: { id: string };
   let roleA: { id: string };
   let roleB: { id: string };
-  let systemTenantId: string;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -41,7 +39,6 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
     tenantB = await createTenant(t.prisma, { slug: uniqueSlug('itr-b'), name: 'Empresa B' });
     roleA = await createRole(t.prisma, { tenantId: tenantA.id, name: 'ITR-A' });
     roleB = await createRole(t.prisma, { tenantId: tenantB.id, name: 'ITR-B' });
-    systemTenantId = (await getSystemContext(t.prisma)).tenant.id;
   }, 30000);
 
   afterAll(async () => {
@@ -70,12 +67,12 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
     expect(await pendingOf(phone)).toBeNull();
   });
 
-  it('BE-ITR-02: teléfono SIN ninguna empresa → resuelve al tenant de sistema', async () => {
+  it('BE-ITR-02: teléfono SIN ninguna empresa → se ignora (no hablamos con desconocidos)', async () => {
     const phone = uniquePhone(); // sin usuario ni membresía
 
     const res = await routing.resolve(phone, 'whatsapp', 'hola');
 
-    expect(res).toEqual({ status: 'resolved', tenantId: systemTenantId });
+    expect(res).toEqual({ status: 'ignored' });
   });
 
   it('BE-ITR-03: teléfono multitenant → pregunta (ask) y guarda el pendiente con las 2 opciones', async () => {
@@ -147,17 +144,6 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
 
     expect(res).toEqual({ status: 'resolved', tenantId: tenantB.id });
     expect(await pendingOf(phone)).toBeNull();
-  });
-
-  it('BE-ITR-07: teléfono SIN empresa con WHATSAPP_TENANT_ID configurado → resuelve a ese tenant, no al de sistema', async () => {
-    const guestTenant = await createTenant(t.prisma, { slug: uniqueSlug('itr-guest'), name: 'Empresa Invitados' });
-    await setSetting(t.prisma, 'WHATSAPP_TENANT_ID', guestTenant.id);
-    try {
-      const res = await routing.resolve(uniquePhone(), 'whatsapp', 'hola');
-      expect(res).toEqual({ status: 'resolved', tenantId: guestTenant.id });
-    } finally {
-      await deleteSetting(t.prisma, 'WHATSAPP_TENANT_ID');
-    }
   });
 
   it('BE-ITR-08: responde al selector con el NOMBRE de la empresa (título del botón de Twilio) → resuelve igual que con el número', async () => {

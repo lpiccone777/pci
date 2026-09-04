@@ -5,10 +5,12 @@
  *
  * Verificado en `ConversationsService.handleMessage` (apps/api/src/modules/conversations/
  * conversations.service.ts): "conocido" sale de `UsersService.findMembershipByPhone(phone,
- * tenantId)` — busca un `UserTenant` cuyo `user` tenga ese `phone` Y `deletedAt: null`. Esto se
- * resuelve UNA vez, antes de `findOrCreateByPhone` (el placeholder), y el resultado (`identity`)
- * se enhebra por parámetro hasta `executeNode`'s `case 'start'`, que NO vuelve a consultar nada
- * — ver ese comentario en el código, es exactamente el bug histórico que este bloque cubre.
+ * tenantId)` — busca un `UserTenant` cuyo `user` tenga ese `phone` Y `deletedAt: null`. Desde
+ * "no hablamos con desconocidos" (pedido 2026-08-27), sin esa membresía el mensaje se RECHAZA
+ * ahí mismo — no crea `User`, no abre `Conversation`, no llega a `executeNode`. La rama
+ * `unknown` del nodo `start` sigue existiendo en el motor de flujos, pero es inalcanzable por
+ * este camino (ver AGENTS.md, "No hablamos con desconocidos"): CHAT-KNOWN-02/03/04 verifican
+ * el rechazo, no la rama.
  *
  * Frontera mockeada: `LlmService` → `FakeLlmService`. El motor de flujos y el broker se
  * ejercitan de verdad.
@@ -105,7 +107,7 @@ describe('2.6 Conocido vs desconocido (CHAT-KNOWN-*)', () => {
     expect(res.body.reply).not.toContain('Rama desconocido');
   });
 
-  it('CHAT-KNOWN-02: número con fila User pero SIN membresía en el tenant es desconocido (no alcanza con que exista el User)', async () => {
+  it('CHAT-KNOWN-02: número con fila User pero SIN membresía en el tenant se rechaza (no alcanza con que exista el User)', async () => {
     const phone = uniquePhone();
     // Existe el User (con nombre y todo), pero sin ninguna membership: no hay UserTenant que
     // vincule este teléfono con este tenant.
@@ -118,24 +120,19 @@ describe('2.6 Conocido vs desconocido (CHAT-KNOWN-*)', () => {
     const res = await simulate(phone, tenant.id);
 
     expect(res.status).toBe(201);
-    // Nada de "Bienvenido de nuevo": el saludo de conocido depende de identity.isKnown, no de
-    // que exista un User (ver el comentario del código citado arriba del describe).
-    expect(res.body.reply).not.toContain('Bienvenido de nuevo');
-    expect(res.body.reply).toContain('Rama desconocido');
+    // No hablamos con desconocidos: se rechaza acá mismo, no llega a la rama `unknown` del
+    // nodo `start` — "conocido" depende de la membresía, no de que exista un User.
+    expect(res.body.reply).toBe('Este número no está registrado: el bot no atiende mensajes de desconocidos.');
   });
 
-  it('CHAT-KNOWN-03: número de una persona dada de baja es desconocido (la baja rompe la membresía)', async () => {
+  it('CHAT-KNOWN-03: número de una persona dada de baja se rechaza (la baja rompe la membresía)', async () => {
     const phone = uniquePhone();
 
     // `findMembershipByPhone` exige `user.deletedAt: null`, así que una persona dada de baja
     // deja de contar como conocida aunque conserve su UserTenant/Role. El teléfono se guarda
     // SUFIJADO a propósito: es lo que hace la baja lógica real (BE-USR-12, "sufija los campos
-    // únicos y libera esos valores") para que el número quede libre. Sin este sufijo, el
-    // `findOrCreateByPhone` de más abajo (que también filtra `deletedAt: null`, así que tampoco
-    // ve a esta persona) intentaría crear un User nuevo con el MISMO `phone` ya ocupado por la
-    // fila dada de baja y violaría el `@unique` de `User.phone` — no es una elección de test,
-    // es lo que exige la constraint real.
-    const deletedUser = await createUser(t.prisma, {
+    // únicos y libera esos valores") para que el número quede libre.
+    await createUser(t.prisma, {
       email: uniqueEmail('baja'),
       phone: `${phone}-baja`,
       firstName: 'De Baja',
@@ -146,17 +143,15 @@ describe('2.6 Conocido vs desconocido (CHAT-KNOWN-*)', () => {
     const res = await simulate(phone, tenant.id);
 
     expect(res.status).toBe(201);
-    expect(res.body.reply).not.toContain('Bienvenido de nuevo');
-    expect(res.body.reply).toContain('Rama desconocido');
+    expect(res.body.reply).toBe('Este número no está registrado: el bot no atiende mensajes de desconocidos.');
 
-    // Entra como persona nueva, sin heredar nada de la dada de baja (mismo criterio que
-    // BE-USR-15: "permitido, entra como persona nueva sin historial").
+    // No hablamos con desconocidos: tampoco se crea ningún `User` nuevo para este teléfono
+    // (antes `findOrCreateByPhone` sí lo hacía; quedó eliminada).
     const newUser = await t.prisma.user.findFirst({ where: { phone } });
-    expect(newUser).toBeTruthy();
-    expect(newUser!.id).not.toBe(deletedUser.id);
+    expect(newUser).toBeNull();
   });
 
-  it('CHAT-KNOWN-04: "conocido" se resuelve una sola vez, antes de crear el placeholder (no reaparece el bug de "siempre conocido")', async () => {
+  it('CHAT-KNOWN-04: un número sin membresía se rechaza sin crear ningún `User` (no reaparece el placeholder eliminado)', async () => {
     const usersService = t.moduleRef.get(UsersService);
     const spy = jest.spyOn(usersService, 'findMembershipByPhone');
 
@@ -165,15 +160,14 @@ describe('2.6 Conocido vs desconocido (CHAT-KNOWN-*)', () => {
     const res = await simulate(phone, tenant.id);
 
     expect(res.status).toBe(201);
-    // El bug histórico: si `case 'start'` volviera a resolver "conocido" consultando por la
-    // existencia de un User, para ese momento `handleMessage` ya creó el placeholder un paso
-    // antes (`findOrCreateByPhone`) y el número dejaría de detectarse como desconocido. Acá
-    // sigue dando la rama desconocido porque `identity` se resolvió ANTES de crear ese User y
-    // se enhebra por parámetro, sin volver a consultar nada dentro del nodo.
-    expect(res.body.reply).toContain('Rama desconocido');
+    expect(res.body.reply).toBe('Este número no está registrado: el bot no atiende mensajes de desconocidos.');
 
-    // Prueba directa de "se resuelve una sola vez": una sola consulta de membership por
-    // mensaje, no una en handleMessage y otra dentro de executeNode/case 'start'.
+    // No hablamos con desconocidos (pedido 2026-08-27): `findOrCreateByPhone` (el placeholder)
+    // quedó eliminada — el rechazo no crea ningún `User` para este teléfono.
+    const created = await t.prisma.user.findFirst({ where: { phone } });
+    expect(created).toBeNull();
+
+    // Una sola consulta de membership por mensaje.
     expect(spy).toHaveBeenCalledTimes(1);
 
     spy.mockRestore();

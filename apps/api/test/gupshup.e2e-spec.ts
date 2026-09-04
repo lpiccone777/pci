@@ -17,6 +17,11 @@ import {
   TestApp,
   http,
   uniquePhone,
+  uniqueSlug,
+  uniqueEmail,
+  createTenant,
+  createRole,
+  createUser,
   setSetting,
   deleteSetting,
   installFetchMock,
@@ -102,6 +107,22 @@ describe('1.20 Canal WhatsApp — Gupshup, selección de proveedor (BE-GUP-01)',
 describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP-04, BE-GUP-06)', () => {
   let t: TestApp;
   let broker: BrokerService;
+  let tenant: { id: string };
+  let role: { id: string };
+
+  /** Teléfono registrado en `tenant`: "no hablamos con desconocidos" (2026-08-27) rechaza
+   *  cualquier número sin membresía antes de crear la Conversation/Message que estos tests
+   *  esperan con `waitFor` — ver el comentario equivalente en twilio.e2e-spec.ts. Devuelve el
+   *  número SIN "+" (formato en el que lo manda Gupshup), ya con el User dado de alta en +E.164. */
+  async function knownRawNumber() {
+    const phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('gup-webhook'),
+      phone,
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+    return phone.replace('+', '');
+  }
 
   beforeAll(async () => {
     // Nunca se cargan credenciales de ningún proveedor en este describe — ver el comentario
@@ -112,6 +133,8 @@ describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP
       customize: (b) => b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('ok, gracias')),
     });
     broker = t.moduleRef.get(BrokerService);
+    tenant = await createTenant(t.prisma, { slug: uniqueSlug('gup-webhook') });
+    role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Rol GUP webhook' });
   }, 30000);
 
   afterAll(async () => {
@@ -126,7 +149,7 @@ describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP
   it('BE-GUP-02: POST webhooks/gupshup con texto responde 200 y publica {from:+<num>, body, channel:whatsapp}', async () => {
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const rawNumber = uniquePhone().replace('+', ''); // Gupshup manda el sender SIN "+"
+      const rawNumber = await knownRawNumber(); // Gupshup manda el sender SIN "+"
       const res = await http(t)
         .post('/webhooks/gupshup')
         .send({
@@ -141,10 +164,13 @@ describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP
       expect(res.status).toBe(200);
       const call = publishSpy.mock.calls.find((c) => c[0] === 'whatsapp.incoming');
       expect(call).toBeDefined();
+      // El webhook ahora SIEMPRE arma `attachments` (feature de media, ver GupshupWebhookController):
+      // `[]` cuando no hay media, mismo criterio que Twilio.
       expect((call![1] as any).data).toEqual({
         from: `+${rawNumber}`,
         body: 'Hola desde Gupshup',
         channel: 'whatsapp',
+        attachments: [],
       });
 
       await waitFor(async () => {
@@ -161,7 +187,7 @@ describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP
   it('BE-GUP-04: la respuesta a botón (button_reply) o lista (list_reply) publica el id (postbackText) como body, no el título', async () => {
     const publishSpy = jest.spyOn(broker, 'publish');
     try {
-      const rawNumber = uniquePhone().replace('+', '');
+      const rawNumber = await knownRawNumber();
       const res = await http(t)
         .post('/webhooks/gupshup')
         .send({

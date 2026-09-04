@@ -32,7 +32,8 @@ export class ConversationsController {
    * `tenantId` es OPCIONAL: si se manda, se prueba el flujo de esa empresa puntual
    * (corta el ruteo); si se omite, el mensaje pasa por el ruteo por membresía del
    * teléfono igual que un canal real (una empresa → directo; varias → selector de
-   * empresa; ninguna → tenant de sistema). Ver InboundTenantRoutingService.
+   * empresa; ninguna → se ignora, no hablamos con desconocidos). Ver
+   * InboundTenantRoutingService.
    */
   @Post('simulate')
   async simulate(@Body() dto: { from: string; body: string; tenantId?: string }) {

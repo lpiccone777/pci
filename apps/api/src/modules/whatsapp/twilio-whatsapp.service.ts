@@ -7,6 +7,8 @@ import { WhatsAppInteractive } from './whatsapp-interactive.types';
 
 const TIMEOUT_MS = 10_000;
 const CONTENT_TIMEOUT_MS = 15_000;
+/** "Content was not found": el ContentSid no existe en esta cuenta — ver `sendInteractive`. */
+const TWILIO_CONTENT_NOT_FOUND = 21655;
 
 interface TwilioCredentials {
   accountSid: string;
@@ -139,16 +141,102 @@ export class TwilioWhatsAppService implements OnModuleInit {
     to: string,
     creds: TwilioCredentials,
     body: string,
-    interactive: WhatsAppInteractive,
+    rawInteractive: WhatsAppInteractive,
   ): Promise<void> {
+    // Confirmado con un caso real (2026-08-31): un título de ticket con una variable de
+    // flujo sin resolver (`"Urgencia - Sede {{sede}}"` — `sede` nunca se guardó en
+    // `flowState` con ese nombre exacto) llegó tal cual a una fila del `list-picker` y
+    // Twilio la rechazó con 21656 al mandar el mensaje, aunque la creación del Content
+    // Template no fallara. `{{`/`}}` es sintaxis reservada de Twilio para SUS variables
+    // (`{{1}}`, `{{2}}`) en cualquier parte del template — no solo en el body — así que
+    // cualquier texto dinámico (ticket, comentario, lo que sea) que por error de
+    // configuración o de datos de origen traiga una llave sin cerrar/resolver rompe el
+    // envío. Se lo saca acá, en el punto de entrada, en vez de confiar en que el dato de
+    // origen siempre venga limpio: `interactive` sanitizado alimenta tanto el hash de
+    // caché (`resolveContentSid`) como la creación y el envío, así los tres ven el mismo
+    // texto.
+    const interactive = this.sanitizeInteractive(rawInteractive);
     const contentSid = await this.resolveContentSid(creds, interactive);
+    // Mismo motivo que arriba, más saltos de línea/tabs (pasa con cualquier body
+    // multilínea, como el detalle de un ticket) — un texto plano (`sendPlainText`, el
+    // fallback si esto falla) sí soporta salto de línea normal, el saneo es SOLO para
+    // esta variable de Content API.
+    const variables: Record<string, string> = { '1': this.sanitizeContentVariable(body) || ' ' };
+    // La URL del botón de link viaja como variable `{{2}}`: el template se cachea solo
+    // por el título del botón (ver `hashInteractiveShape`), así que un mismo nodo con
+    // URLs distintas por conversación (ej. un link con id de ticket) reusa un único
+    // Content Template en vez de crear uno por URL.
+    if (interactive.type === 'cta_url') variables['2'] = interactive.url;
     const params = new URLSearchParams({
       To: `whatsapp:${this.normalizeRecipient(to)}`,
       From: `whatsapp:${this.normalizeRecipient(creds.from)}`,
       ContentSid: contentSid,
-      ContentVariables: JSON.stringify({ '1': body || ' ' }),
+      ContentVariables: JSON.stringify(variables),
     });
-    await this.callMessagesApi(to, creds, params);
+    try {
+      await this.callMessagesApi(to, creds, params);
+    } catch (err) {
+      // 21655 "Content was not found": el `ContentSid` que teníamos cacheado ya no existe en
+      // esta cuenta de Twilio — pasa al cambiar de credenciales (los sids son por cuenta) o si
+      // alguien borra el template desde la consola. El caché quedaría envenenado para siempre,
+      // degradando a texto plano en cada menú, así que se descarta la entrada muerta y se
+      // recrea el template una sola vez. Un segundo fallo ya sí se propaga y `sendText`
+      // degrada a texto.
+      if ((err as { twilioCode?: number }).twilioCode !== TWILIO_CONTENT_NOT_FOUND) throw err;
+      this.logger.warn(`ContentSid ${contentSid} no existe en la cuenta de Twilio: se descarta del caché y se recrea.`);
+      await this.invalidateContentSid(creds, interactive);
+      const fresh = await this.resolveContentSid(creds, interactive);
+      params.set('ContentSid', fresh);
+      await this.callMessagesApi(to, creds, params);
+    }
+  }
+
+  /** Borra la entrada de caché (memoria + BD) de una forma de menú, para forzar recrear el template. */
+  private async invalidateContentSid(creds: TwilioCredentials, interactive: WhatsAppInteractive): Promise<void> {
+    const hash = this.hashInteractiveShape(creds, interactive);
+    this.contentSidCache.delete(hash);
+    await this.prisma.twilioContentTemplate.deleteMany({ where: { shapeHash: hash } });
+  }
+
+  /** Saca `{{`/`}}` del texto que compone la FORMA del Content Template (ver `sendInteractive`). */
+  private stripCurlyBraces(value: string): string {
+    return value.replace(/[{}]/g, '');
+  }
+
+  private sanitizeInteractive(interactive: WhatsAppInteractive): WhatsAppInteractive {
+    if (interactive.type === 'button') {
+      return {
+        ...interactive,
+        buttons: interactive.buttons.map((b) => ({ ...b, title: this.stripCurlyBraces(b.title) })),
+      };
+    }
+    if (interactive.type === 'cta_url') {
+      return { ...interactive, buttonText: this.stripCurlyBraces(interactive.buttonText) };
+    }
+    return {
+      ...interactive,
+      buttonText: this.stripCurlyBraces(interactive.buttonText),
+      rows: interactive.rows.map((r) => ({
+        ...r,
+        title: this.stripCurlyBraces(r.title),
+        description: r.description ? this.stripCurlyBraces(r.description) : r.description,
+      })),
+    };
+  }
+
+  /**
+   * `ContentVariables` de Twilio: el 21656 real (2026-08-31, ver `sanitizeInteractive`) era
+   * por `{{`/`}}` sin resolver en el texto, no por los saltos de línea — un cuerpo multilínea
+   * (ej. el detalle de un ticket, `ticket_query`) se manda tal cual, con su salto de línea
+   * real, y funciona. Se deja el saneo de tabs (nunca aportan nada visible en WhatsApp) y de
+   * espacios repetidos, y se saca `{{`/`}}` por el mismo motivo que en `sanitizeInteractive`.
+   */
+  private sanitizeContentVariable(value: string): string {
+    return value
+      .replace(/\t+/g, ' ')
+      .replace(/[{}]/g, '')
+      .replace(/ {2,}/g, ' ')
+      .trim();
   }
 
   /**
@@ -158,7 +246,7 @@ export class TwilioWhatsAppService implements OnModuleInit {
    * externa); memoria y BD son solo para no pagarlo dos veces.
    */
   private async resolveContentSid(creds: TwilioCredentials, interactive: WhatsAppInteractive): Promise<string> {
-    const hash = this.hashInteractiveShape(interactive);
+    const hash = this.hashInteractiveShape(creds, interactive);
 
     const cached = this.contentSidCache.get(hash);
     if (cached) return cached;
@@ -204,7 +292,11 @@ export class TwilioWhatsAppService implements OnModuleInit {
   /** Resumen legible de las opciones del menú, solo para la columna `label` de debug en BD. */
   private describeInteractive(interactive: WhatsAppInteractive): string {
     const titles =
-      interactive.type === 'button' ? interactive.buttons.map((b) => b.title) : interactive.rows.map((r) => r.title);
+      interactive.type === 'button'
+        ? interactive.buttons.map((b) => b.title)
+        : interactive.type === 'cta_url'
+          ? [interactive.buttonText]
+          : interactive.rows.map((r) => r.title);
     return titles.join(' | ').slice(0, 200);
   }
 
@@ -213,17 +305,33 @@ export class TwilioWhatsAppService implements OnModuleInit {
    * body cambia por usuario/momento (interpolación de `{{variable}}` ya resuelta antes de
    * llegar acá) pero el conjunto de opciones de un mismo nodo `menu` es siempre el mismo, y
    * es lo único que de verdad necesita su propio Content Template.
+   *
+   * Incluye el `accountSid` porque un `ContentSid` PERTENECE a la cuenta de Twilio que lo
+   * creó: al cambiar de credenciales, los sids cacheados dejan de existir y Twilio responde
+   * 21655 "Content was not found" en cada envío interactivo (visto en producción,
+   * 2026-09-01). Metiéndolo en el hash, una cuenta nueva simplemente no matchea las filas de
+   * la anterior y crea sus propios templates — las viejas quedan huérfanas en la tabla, sin
+   * uso y sin molestar, en vez de envenenar el caché para siempre.
    */
-  private hashInteractiveShape(interactive: WhatsAppInteractive): string {
+  private hashInteractiveShape(creds: TwilioCredentials, interactive: WhatsAppInteractive): string {
     const shape =
       interactive.type === 'button'
         ? { type: 'button', items: interactive.buttons.map((b) => [b.id, b.title]) }
-        : {
-            type: 'list',
-            buttonText: interactive.buttonText,
-            items: interactive.rows.map((r) => [r.id, r.title, r.description ?? '']),
-          };
-    return createHash('sha256').update(JSON.stringify(shape)).digest('hex').slice(0, 20);
+        : interactive.type === 'cta_url'
+          // Sin la URL a propósito, igual que el body de `button`/`list`: viaja como
+          // variable `{{2}}` del template (ver `sendInteractive`), no como parte de la
+          // forma — si no, cada URL distinta (ej. un link con id de ticket) crearía su
+          // propio Content Template en la cuenta de Twilio en vez de reusar uno.
+          ? { type: 'cta_url', buttonText: interactive.buttonText }
+          : {
+              type: 'list',
+              buttonText: interactive.buttonText,
+              items: interactive.rows.map((r) => [r.id, r.title, r.description ?? '']),
+            };
+    return createHash('sha256')
+      .update(JSON.stringify({ accountSid: creds.accountSid, shape }))
+      .digest('hex')
+      .slice(0, 20);
   }
 
   /**
@@ -255,22 +363,39 @@ export class TwilioWhatsAppService implements OnModuleInit {
               })),
             },
           }
-        : {
-            'twilio/list-picker': {
-              body: '{{1}}',
-              button: interactive.buttonText.slice(0, 20),
-              items: interactive.rows.map((r) => ({
-                id: r.id.slice(0, 200),
-                item: r.title.slice(0, 24),
-                ...(r.description ? { description: r.description.slice(0, 72) } : {}),
-              })),
-            },
-          };
+        : interactive.type === 'cta_url'
+          ? {
+              // Schema verificado contra twilio.com/docs/content/twilio-call-to-action
+              // (2026-08-27) — `body` + `actions[].{type:'URL', title, url}`. La URL real
+              // va en `{{2}}` (ver `sendInteractive`), no acá: el título del botón es lo
+              // único fijo de la forma, así el mismo template sirve para cualquier
+              // destino. Ojo: la doc de Twilio dice "variables supported at the end of
+              // the URL string" (pensado para templates aprobados con dominio fijo +
+              // sufijo variable) — acá la URL entera es variable, y como estos templates
+              // nunca se mandan a aprobar (van dentro de la ventana de 24hs, igual que
+              // quick-reply/list-picker), no debería toparse con esa restricción, pero no
+              // se confirmó contra tráfico real de Twilio.
+              'twilio/call-to-action': {
+                body: '{{1}}',
+                actions: [{ type: 'URL', title: interactive.buttonText.slice(0, 20), url: '{{2}}' }],
+              },
+            }
+          : {
+              'twilio/list-picker': {
+                body: '{{1}}',
+                button: interactive.buttonText.slice(0, 20),
+                items: interactive.rows.map((r) => ({
+                  id: r.id.slice(0, 200),
+                  item: r.title.slice(0, 24),
+                  ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+                })),
+              },
+            };
 
     const payload = {
       friendly_name: `pci_menu_${hash}`,
       language: 'es',
-      variables: { '1': ' ' },
+      variables: interactive.type === 'cta_url' ? { '1': ' ', '2': ' ' } : { '1': ' ' },
       types,
     };
 
@@ -324,7 +449,17 @@ export class TwilioWhatsAppService implements OnModuleInit {
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       this.logger.error(`Twilio API respondió ${res.status} al mandarle a ${to}: ${detail.slice(0, 500)}`);
-      throw new Error(`Twilio API error ${res.status}`);
+      // El código de Twilio (`code` del body) viaja en el error: quien llama necesita
+      // distinguir un 21655 ("Content was not found", ContentSid muerto → se puede recuperar
+      // recreándolo) de cualquier otro 400, que no tiene reintento posible.
+      const error = new Error(`Twilio API error ${res.status}`) as Error & { twilioCode?: number };
+      try {
+        const parsed = JSON.parse(detail) as { code?: number };
+        if (typeof parsed.code === 'number') error.twilioCode = parsed.code;
+      } catch {
+        // Body no-JSON (HTML de error de un proxy, etc.): sin código, se trata como 400 común.
+      }
+      throw error;
     }
   }
 
@@ -335,6 +470,10 @@ export class TwilioWhatsAppService implements OnModuleInit {
    * Fallback cuando `sendInteractive` falla — ver `sendText`.
    */
   private appendInteractiveAsText(body: string, interactive: WhatsAppInteractive): string {
+    if (interactive.type === 'cta_url') {
+      // No hay nada que numerar (no es una opción a elegir): el link plano alcanza.
+      return [body, `${interactive.buttonText}: ${interactive.url}`].filter(Boolean).join('\n');
+    }
     const options =
       interactive.type === 'button'
         ? interactive.buttons.map((b) => b.title)

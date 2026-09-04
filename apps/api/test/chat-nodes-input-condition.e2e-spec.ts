@@ -516,5 +516,58 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
       },
       15000,
     );
+
+    it('CHAT-N-CND-10: con solo la rama afirmativa cableada, un resultado FALSO no se va por la arista del true', async () => {
+      // Forma más común del nodo: "si es X → algo especial; si no, seguí de largo", donde en el
+      // editor se dibuja únicamente la arista `true`. Antes, un resultado falso no encontraba
+      // arista `false` y `resolveNextNode` caía a `outgoing[0]` — que es justo la del `true`:
+      // el flujo hacía exactamente lo contrario de lo que declaraba.
+      const { phone } = await setupScenario({
+        label: 'cnd10',
+        nodes: [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'plan', value: 'basico' }),
+          node('c', 'condition', { compareVariable: 'plan', compareOperator: 'equals', compareValue: 'premium' }),
+          messageNode('si', 'RAMA-PREMIUM'),
+          endNode('e'),
+        ],
+        // Solo la arista `true`. La rama falsa queda sin dibujar a propósito.
+        edges: [edge('s', 'v', 'known'), edge('v', 'c'), edge('c', 'si', 'true'), edge('si', 'e')],
+      });
+
+      const res = await simulate(phone, 'hola');
+      expect(res.status).toBe(201);
+      // `plan` es "basico", así que el resultado es falso: no tiene que ver el mensaje premium.
+      expect(res.body.reply ?? '').not.toContain('RAMA-PREMIUM');
+    });
+
+    it('CHAT-N-CND-11: una arista SIN handle sirve de salida por defecto cuando la rama no está cableada', async () => {
+      // Distinto del caso anterior: una arista sin handle no pertenece a ninguna rama, así que
+      // seguirla es inequívoco — quien la dibujó quiso "seguí por acá pase lo que pase".
+      const { phone } = await setupScenario({
+        label: 'cnd11',
+        nodes: [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'plan', value: 'basico' }),
+          node('c', 'condition', { compareVariable: 'plan', compareOperator: 'equals', compareValue: 'premium' }),
+          messageNode('si', 'RAMA-PREMIUM'),
+          messageNode('sigue', 'SIGUE-DE-LARGO'),
+          endNode('e'),
+        ],
+        edges: [
+          edge('s', 'v', 'known'),
+          edge('v', 'c'),
+          edge('c', 'si', 'true'),
+          edge('c', 'sigue'), // sin handle
+          edge('si', 'e'),
+          edge('sigue', 'e'),
+        ],
+      });
+
+      const res = await simulate(phone, 'hola');
+      expect(res.status).toBe(201);
+      expect(res.body.reply).toContain('SIGUE-DE-LARGO');
+      expect(res.body.reply).not.toContain('RAMA-PREMIUM');
+    });
   });
 });

@@ -24,6 +24,54 @@ export class FlowNodeDataDto {
   @IsOptional()
   defaultTargetNodeId?: string;
 
+  /**
+   * Nodo `start`: no mandar ningún saludo — la charla arranca directamente con el nodo
+   * siguiente. Sin esto (o en `false`), se manda `text` interpolado, y si `text` está vacío,
+   * el saludo por defecto ("¡Hola [nombre]! Bienvenido de nuevo."). Un `text` vacío NO
+   * significa "sin saludo" a propósito: ningún flujo tenía ese campo cargado cuando el saludo
+   * se volvió configurable (2026-09-01), así que habrían quedado todos mudos al actualizar.
+   */
+  @IsBoolean()
+  @IsOptional()
+  noGreeting?: boolean;
+
+  /**
+   * Nodo `start`, salidas por rama de identificación. Hoy el ruteo va por los handles
+   * `known`/`unknown` de las aristas del editor y esto queda como fallback para flujos
+   * viejos, pero se declaran igual: el editor los sigue escribiendo, y sin estar en el DTO
+   * `forbidNonWhitelisted` rechaza con 400 al guardar un nodo que los tenga cargados.
+   */
+  @IsString()
+  @IsOptional()
+  knownTargetNodeId?: string;
+
+  /** Ver `knownTargetNodeId`. */
+  @IsString()
+  @IsOptional()
+  unknownTargetNodeId?: string;
+
+  /**
+   * Nodo `condition`, formato nuevo: variable de `flowState` a comparar (ej. "userRole"
+   * o "{{userRole}}", incluye las que siempre trae el nodo `start`: userRole, userRoleId,
+   * isKnownUser, userName, userFirstName, userLastName, userEmail, userPhone, userId).
+   * Si está seteada, el nodo evalúa esta única comparación y tiene 2 salidas fijas por
+   * `sourceHandle`: 'true' (afirmativo) / 'false' (negativo) — reemplaza a `conditions`/
+   * `defaultTargetNodeId`, que quedan como fallback para flujos viejos sin este campo.
+   */
+  @IsString()
+  @IsOptional()
+  compareVariable?: string;
+
+  /** Nodo `condition` formato nuevo: default 'equals' si no se define. */
+  @IsString()
+  @IsOptional()
+  compareOperator?: 'equals' | 'not_equals' | 'contains' | 'exists' | 'not_exists';
+
+  /** Nodo `condition` formato nuevo: valor contra el que se compara (no aplica a exists/not_exists). */
+  @IsString()
+  @IsOptional()
+  compareValue?: string;
+
   /** Nodo `ticket_create`: nombre real de la categoría en InvGate (ver InvgateService.resolveCategoryId). */
   @IsString()
   @IsOptional()
@@ -50,6 +98,35 @@ export class FlowNodeDataDto {
   @IsString()
   @IsOptional()
   message?: string;
+
+  /** Nodo `notification`: label del botón único (ej. "Sin foto"). */
+  @IsString()
+  @IsOptional()
+  buttonLabel?: string;
+
+  /**
+   * Nodo `notification`: qué hace el botón. 'confirm' (default) espera a que lo toquen
+   * para seguir el flujo; 'link' lo abre como URL y sigue de una (WhatsApp no avisa el
+   * tap de un botón de link).
+   */
+  @IsString()
+  @IsOptional()
+  buttonMode?: 'confirm' | 'link';
+
+  /** Nodo `notification` en modo `link`: URL que abre el botón. */
+  @IsString()
+  @IsOptional()
+  buttonUrl?: string;
+
+  /**
+   * Nodo `notification` en modo `confirm`: si está en `true`, mandar una imagen cuenta
+   * como disparador para seguir el flujo, igual que tocar el botón (ej. "Agregue sus
+   * fotos" / "Sin foto" — cualquiera de las dos opciones avanza). Sin esto, solo el
+   * click del botón avanza; una imagen (o cualquier otro mensaje) cae al LLM.
+   */
+  @IsBoolean()
+  @IsOptional()
+  expectsPhoto?: boolean;
 
   @IsString()
   @IsOptional()
@@ -110,12 +187,18 @@ export class FlowNodeDataDto {
   @IsOptional()
   maxAttempts?: number;
 
-  /** Nodo `llm_query` en modo extracción: a dónde ir si se resolvieron todas las variables con un valor real. */
+  /**
+   * LEGACY, IGNORADO por el motor (2026-08-28): `llm_query` en modo extracción sale
+   * siempre por la arista dibujada, para ambos resultados (todas resueltas / alguna en
+   * "no definido") — ramificar se hace con un nodo `condition` después. Se mantiene en el
+   * DTO solo para que los flujos viejos que lo tengan guardado pasen la validación
+   * (`forbidNonWhitelisted`) al re-guardarse; el editor ya no lo muestra.
+   */
   @IsString()
   @IsOptional()
   foundTargetNodeId?: string;
 
-  /** Nodo `llm_query` en modo extracción: a dónde ir si alguna variable quedó en "no definido". */
+  /** LEGACY, IGNORADO por el motor — ver `foundTargetNodeId`. */
   @IsString()
   @IsOptional()
   missingTargetNodeId?: string;
@@ -134,6 +217,10 @@ export class FlowNodeDataDto {
   @IsString()
   @IsOptional()
   bodyTemplate?: string;
+
+  @IsString()
+  @IsOptional()
+  body?: string;
 
   @IsOptional()
   seconds?: number;

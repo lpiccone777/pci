@@ -143,9 +143,12 @@ export class AuthService {
       userId: user.id,
     });
 
+    const defaultSubject = 'Código de verificación - Plataforma Conversacional Inteligente Chatbot';
+    const subject = (await this.config.get('OTP_EMAIL_SUBJECT', defaultSubject)) || defaultSubject;
+
     await this.emailService.send({
       to: user.email,
-      subject: 'Código de verificación - Plataforma Conversacional Inteligente Chatbot',
+      subject,
       text: `Tu código de verificación es: ${code}. Válido por ${ttlSeconds} segundos.`,
     });
   }
