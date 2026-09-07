@@ -44,7 +44,7 @@ la fija para cada bloque.
 
 - **`P2` — deseable.** Comportamiento responsive. Se ejecuta si hay margen 🟢
 
-**Los 45 casos invertidos son `P0` por definición**, sin importar en qué bloque
+**Los 44 casos invertidos son `P0` por definición**, sin importar en qué bloque
 estén: describen el comportamiento seguro o correcto que hoy no existe (incluye los 11 de la
 auditoría de frontend multiempresa del 2026-08-21). Liberar con alguno en `❌` es una
 decisión de riesgo tomada a propósito, no un descuido del tablero.
@@ -115,11 +115,11 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **623 casos** · Backend 333 · Chatbot 152 · Frontend 138 · de los cuales **311 son `P0`**
-(283 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **623 casos** · Backend 333 · Chatbot 152 · Frontend 138 · de los cuales **310 son `P0`**
+(283 por la prioridad del bloque + los 27 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
-FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
+FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24 y FE-FLW-25).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
@@ -176,22 +176,23 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
 | **TOTAL** | | **623** |
 
-> **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
+> **Nota:** 44 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
 > ligados a los **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa BE-TWA-10 /
 > BE-GUP-06 / BE-SMS-09, y `SEC-17` agrupa BE-SKL-08 / BE-SKL-09; **SEC-08 ya quedó cerrado** —
-> CHAT-N-TKQ-03 pasó a `✅`). Los otros **20** son de **robustez, calidad o UX**, sin número de hallazgo:
+> CHAT-N-TKQ-03 pasó a `✅`). Los otros **19** son de **robustez, calidad o UX**, sin número de hallazgo:
 > BE-EML-03 (canal de email caído), CHAT-N-LLM-04 (nodo LLM sin blindar), BE-SMS-07 (Gupshup SMS descarta
 > el menú), BE-SKL-10 (`isActive` de Skill sin efecto en el motor), CHAT-LLMF-11 / CHAT-LLMF-12 (prompt
 > injection y alucinación desde la fuente de verdad), BE-FLW-21 (validación floja de los parámetros de
-> extracción de `llm_query`), BE-TWA-14 (media de Twilio sin tope de bytes), FE-FLW-29 (importar un flujo
-> no sanea los ids embebidos cross-tenant), y los **11 de la auditoría de frontend multiempresa**
+> extracción de `llm_query`), BE-TWA-14 (media de Twilio sin tope de bytes), y los **11 de la auditoría de frontend multiempresa**
 > (2026-08-21): FE-INF-16 (no redirige al salir de una pantalla solo-sistema), FE-USR-15 (falso "cambios
 > sin guardar"), FE-USR-16 (`users:create` sin `roles:read`), FE-TEN-06 / FE-TEN-07 (cache del sidebar
 > stale), FE-CS-11 / FE-CS-12 (Fuentes de verdad ignora el modo consolidado), FE-FLW-22 / FE-FLW-23
 > (editor de flujos: empresa activa vs. la del flujo), FE-FLW-24 (500 del catálogo InvGate) y FE-FLW-25
 > (Flujos oculta el 403). **Casos ya corregidos** (pasaron a `✅` en esta actualización): SEC-08 /
-> CHAT-N-TKQ-03, BE-MT-12 y FE-INF-13 (superusuario), BE-IG-10 (creator_id de InvGate en caliente). El
+> CHAT-N-TKQ-03, BE-MT-12 y FE-INF-13 (superusuario), BE-IG-10 (creator_id de InvGate en caliente),
+> FE-FLW-29 (importar un flujo ya sanea los ids embebidos de otra empresa; el SuperAdmin queda
+> exceptuado a propósito). El
 > escenario de datos sobre el que corre todo el plan está en el **Apéndice C**; las matrices de
 > comprobación transversales, en el **Apéndice B**.
 
@@ -1177,7 +1178,7 @@ manda su `User-Agent` (necesario para el fingerprint); el frontend no lo fija a 
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
-| FE-DASH-01 | Entrar a `/dashboard` con sesión | Muestra las tarjetas de resumen (hoy con valor "—", sin datos aún) |
+| FE-DASH-01 | Entrar a `/dashboard` con sesión | Muestra las cuatro tarjetas de resumen (Usuarios, Tenants, Conversaciones, Tickets) con los conteos de `GET /metrics/dashboard`. El "—" es sólo el estado inicial mientras la respuesta está en camino, y el valor al que cae si la llamada falla |
 | FE-DASH-02 | Panel "Tu rol y permisos" | Lista, por cada empresa del usuario, el nombre del rol y la cantidad de permisos (sale de `/auth/me`, sin llamada propia) |
 
 ## 3.4 Usuarios (`/dashboard/users`)
@@ -1270,7 +1271,7 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-SET-13 | Botón "Cancelar" de un setting con cambios | Revierte el draft al valor efectivo, sin llamar al backend |
 | FE-SET-14 | Pestañas nuevas: Mensajería WhatsApp (Twilio) / (Gupshup), Mensajería SMS (Twilio) / (Gupshup), Integración InvGate | Aparecen los grupos con sus campos; los secretos (🔒 `TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) arrancan vacíos con enmascarado. El layout pasó a grid de 2 columnas (sacó `max-w-4xl`) para acomodar tantos grupos |
 | FE-SET-15 | Selectores de proveedor `WHATSAPP_PROVIDER` / `SMS_PROVIDER` | Dropdown con los valores del enum. ⚠️ Su descripción aclara que el cambio **requiere reiniciar el backend** (a diferencia del texto general de `/settings` que promete "sin reiniciar") — anotar la excepción |
-| FE-SET-16 | Pestañas de `/settings` agrupadas por tema | Jerarquía de 3 niveles (Seguridad, LLM, Mensajería con sub-temas WhatsApp/SMS y proveedores Twilio/Gupshup, Integraciones) navegable por flechas (WAI-ARIA); un grupo del catálogo no mapeado cae en la pestaña "Otros", no desaparece; el punto de estado (activo/incompleto) se propaga a las ramas |
+| FE-SET-16 | Pestañas de `/settings` agrupadas por tema | Jerarquía de 3 niveles (Seguridad, LLM, Mensajería con sub-temas WhatsApp/SMS y proveedores Twilio/Gupshup, Integraciones) navegable por flechas (WAI-ARIA); un grupo del catálogo no mapeado cae en la pestaña "Otros", no desaparece (rama con una sub-pestaña por grupo suelto); el punto de estado (activo/incompleto) se propaga a las ramas. ⚠️ Hoy "Otros" aparece con el catálogo real: los grupos `Simulación` (habilitar el simulador de conversaciones) y `Otros` (minutos de inactividad y ventana para retomar la charla) no están mapeados en la jerarquía del frontend. No rompe nada —para eso está la rama defensiva—, pero esas opciones quedan en el cajón de sastre en vez de su sección |
 | FE-SET-17 | Tipear en varias filas con drafts sin guardar y guardar una | Solo se resetea el draft de la fila guardada (mergea esa fila y refresca el estado de proveedores con `refreshStatus`), **sin pisar** lo tipeado en las demás — antes un `load()` completo borraba todos los drafts |
 
 ## 3.9 Fuentes de verdad (`/dashboard/context-sources`)
@@ -1326,7 +1327,7 @@ puede listar todas las empresas.
 | FE-FLW-26 | Botón "Duplicar" un flujo | `GET /flows/:id` + `POST /flows` con `name+" (copia)"`, nodos/aristas/`contextSourceId`/`skillId`; redirige al editor del nuevo (nace sin empresas asignadas). Gateado por `flows:create` |
 | FE-FLW-27 | Botón "Exportar" | Descarga un `.flow.json` (`name/description/nodes/edges/contextSourceId/skillId`); gateado por `flows:read` |
 | FE-FLW-28 | Botón "Importar" un `.flow.json` | Valida superficialmente (`name` presente, `nodes`/`edges` arrays) y hace `POST /flows`; un JSON sin esos campos → alert de formato inválido, no llama a la API. Gateado por `flows:create` |
-| FE-FLW-29 | Importar en la empresa B un `.flow.json` exportado de A (o editado) con ids embebidos (`contextSourceId`/`skillId`/`userId` de assignees/recipients, `flowId` de un `subflow`) | **Debería** sanear/validar esos ids contra la empresa destino. ⚠️ Hoy `POST /flows` guarda `nodes`/`edges` como blob sin validar los ids internos: el flujo se crea con referencias colgadas o apuntando a recursos de otro tenant (acotado porque nace sin empresas hasta asignarlo): `❌` (robustez/seguridad, sin número de hallazgo) |
+| FE-FLW-29 | Importar en la empresa B un `.flow.json` exportado de A (o editado) con ids embebidos (`contextSourceId`/`skillId`/`userId` de assignees/recipients, `flowId` de un `subflow`) | `POST /flows` sanea esos ids contra la empresa destino: `contextSourceId`/`skillId` ajenos quedan en `null`, los `userId` que no son miembros de una empresa válida se filtran, y el `flowId` de un `subflow` se borra sólo si es claramente ajeno (un subflujo global se respeta). El conjunto válido es la empresa activa más las que asigne el propio payload. **El SuperAdmin queda exceptuado a propósito**: administra el sistema entero y puede vincular recursos de cualquier empresa, así que el caso se ejecuta con un usuario común de la empresa destino — que es donde la protección actúa: `✅` |
 
 ## 3.11 Responsive
 

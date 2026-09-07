@@ -155,8 +155,10 @@ test('FE-FLW-08: seleccionar un nodo abre el panel con sus campos propios', asyn
 
   await page.locator('.react-flow__node-start').click();
   await expect(page.getByRole('heading', { name: 'Propiedades' })).toBeVisible();
-  // Campos propios del nodo start.
-  await expect(page.getByText('Texto de bienvenida (usuarios nuevos)')).toBeVisible();
+  // Campos propios del nodo start. El campo de texto se llama "Saludo": antes era "Texto de
+  // bienvenida (usuarios nuevos)", y se renombró cuando el bot dejó de atender números sin
+  // registrar — ya no hay "usuarios nuevos" a los que saludar, sólo el saludo de la charla.
+  await expect(page.getByText('Saludo', { exact: true })).toBeVisible();
   await expect(page.getByText('Salida: Usuario Conocido')).toBeVisible();
 });
 
@@ -290,7 +292,27 @@ test('FE-FLW-14: guardar sin empresas asignadas pide confirmación', async ({ pa
 test('FE-FLW-15: el payload de guardado limpia las props transitorias de ReactFlow', async ({
   page,
 }) => {
-  page.on('dialog', (d) => d.accept());
+  // Guardar no termina en el PATCH: después va el POST de assign-tenants y recién ahí el
+  // `alert('Flujo guardado')`. Este caso valida el body del PATCH, así que sin esperar ese aviso
+  // el test podía cerrarse con el alert todavía en camino, y el `accept()` del diálogo huérfano
+  // fallaba con "dialog.accept: Test ended" — el caso quedaba intermitente (verde al reintentar).
+  // Se resuelve esperando el fin real del guardado; el `catch` cubre cualquier otro diálogo que
+  // llegue fuera de tiempo, para que un aviso tardío no vuelva a tumbar el caso.
+  let avisarFinDelGuardado: (mensaje: string) => void = () => undefined;
+  const finDelGuardado = new Promise<string>((resolve) => {
+    avisarFinDelGuardado = resolve;
+  });
+  page.on('dialog', (d) => {
+    const mensaje = d.message();
+    // El guardado cierra de dos maneras: 'Flujo guardado' si salió bien, 'Error al guardar: …' si
+    // no. Las dos cortan la espera: si sólo se esperara la primera, un guardado fallido dejaría el
+    // caso colgado hasta el timeout y el motivo real — que la pantalla sí informa — se perdería
+    // detrás de un "test timeout" mudo.
+    const esCierreDelGuardado = mensaje === 'Flujo guardado' || mensaje.startsWith('Error al guardar');
+    void d.accept().catch(() => undefined);
+    if (esCierreDelGuardado) avisarFinDelGuardado(mensaje);
+  });
+
   const tenant = await createTenant(admin);
   const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
   const flow = await createFlow(admin, {
@@ -313,6 +335,10 @@ test('FE-FLW-15: el payload de guardado limpia las props transitorias de ReactFl
     // Sólo las cuatro claves declaradas: sin measured/selected/dragging que agrega ReactFlow.
     expect(Object.keys(node).sort()).toEqual(['data', 'id', 'position', 'type']);
   }
+
+  // Recién con el aviso aceptado el guardado terminó de verdad y el caso puede cerrarse. Si el que
+  // llegó fue el de error, la aserción falla mostrando el motivo en vez de agotar el tiempo.
+  expect(await finDelGuardado).toBe('Flujo guardado');
 });
 
 // Reclasificado a EXCLUIDO por el plan (gesto de canvas frágil: depende de selección previa y foco
@@ -696,11 +722,26 @@ test(
     // de A vía `contextSourceId`; igual vale para `skillId`, el `userId` de assignees/recipients o el
     // `flowId` de un nodo `subflow`). Importándolo con la empresa B activa, `POST /flows` descarta ese
     // id ajeno (lo sanea a null) en vez de guardarlo tal cual apuntando a un recurso de A.
+    //
+    // El que importa es un usuario COMÚN de B, no el SuperAdmin del seed: `FlowService.create`
+    // saltea el saneo a propósito para el SuperAdmin, que administra el sistema entero y puede
+    // vincular recursos de cualquier empresa. Corriendo con el SuperAdmin este caso le pedía al
+    // backend algo que el backend decide no hacer, y encima dejaba sin cubrir el único escenario
+    // donde la protección actúa: el del usuario común.
     const empresaA = await createTenant(admin);
     const fuenteA = await createContextSource(admin, { tenantId: empresaA.id, type: 'n8n' });
     const empresaB = await createTenant(admin);
 
-    await injectSession(page, { token: admin.token, activeTenant: empresaB.id });
+    // `flows:create` es lo que habilita el botón/input de importar en el listado; `flows:read`, la
+    // pantalla misma.
+    const importador = await createUserWithPermissions(admin, ['flows:read', 'flows:create'], {
+      tenantId: empresaB.id,
+    });
+
+    await injectSession(
+      page,
+      await sessionForUser(importador.email, importador.password, empresaB.id),
+    );
     await page.goto('/dashboard/flows');
 
     const [resp] = await Promise.all([
@@ -725,5 +766,7 @@ test(
 
     // El flujo importado en B no debe quedar con la fuente de verdad de A.
     expect(created.contextSourceId).not.toBe(fuenteA.id);
+    // Y el saneo no lo reemplaza por otra cosa: lo deja sin fuente.
+    expect(created.contextSourceId).toBeNull();
   },
 );

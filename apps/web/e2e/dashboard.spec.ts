@@ -4,8 +4,11 @@
  * Casos FE-DASH-01..02. Corren contra el web aislado (`localhost:3100`) que levanta el
  * `global-setup`; la siembra va por la API real (`localhost:3101`) como el SuperAdmin del seed.
  *
- * La pantalla `/dashboard` no hace ningún fetch propio: todo sale del contexto de auth
- * (`/auth/me`). Por eso los datos que se verifican se controlan sembrando el usuario y su rol.
+ * La pantalla `/dashboard` tiene dos mitades con origen distinto: las cuatro tarjetas de resumen
+ * traen sus conteos de `GET /metrics/dashboard` (el guion largo es sólo el estado inicial, y el
+ * valor al que se cae si esa llamada falla), y el panel "Tu rol y permisos" sale del contexto de
+ * auth (`/auth/me`), sin llamada propia. Por eso lo que verifica el panel se controla sembrando
+ * el usuario y su rol, y lo de las tarjetas no se fija en un número exacto.
  */
 import { test, expect } from '@playwright/test';
 import {
@@ -25,7 +28,7 @@ test.beforeEach(async () => {
   admin = await adminContext();
 });
 
-test('FE-DASH-01: el home muestra las cuatro tarjetas de resumen con el placeholder "—"', async ({
+test('FE-DASH-01: el home muestra las cuatro tarjetas de resumen con sus conteos', async ({
   page,
 }) => {
   await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
@@ -40,8 +43,12 @@ test('FE-DASH-01: el home muestra las cuatro tarjetas de resumen con el placehol
   for (const title of ['Usuarios', 'Tenants', 'Conversaciones', 'Tickets']) {
     await expect(cards.getByText(title, { exact: true })).toBeVisible();
   }
-  // Hoy las cuatro tarjetas muestran el guion largo (U+2014) como valor placeholder, sin datos.
-  await expect(cards.getByText('—', { exact: true })).toHaveCount(4);
+  // Las cuatro tarjetas traen los conteos de GET /metrics/dashboard. El guion largo (U+2014) que
+  // este caso esperaba antes es sólo el estado inicial, mientras la respuesta está en camino (y el
+  // valor al que se cae si la llamada falla): la aserción va contra el número ya cargado.
+  // No se fija CUÁNTO da cada tarjeta — depende de lo que hayan sembrado los tests previos —, sino
+  // que las cuatro resuelvan a un conteo.
+  await expect(cards.getByText(/^\d+$/)).toHaveCount(4);
 });
 
 test('FE-DASH-02: el panel "Tu rol y permisos" lista el rol y la cantidad de permisos por empresa', async ({

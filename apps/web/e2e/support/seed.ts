@@ -330,6 +330,22 @@ export async function deleteUserInTenant(
   });
 }
 
+// --- Catálogo de permisos ---
+
+/**
+ * Cantidad de permisos asignables según el catálogo REAL (`GET /roles/catalog`): recursos ×
+ * acciones. Se pide a la API en vez de escribirlo a mano en los specs — el número cambia cada vez
+ * que se suma un recurso al catálogo, y un literal desactualizado hace fallar a la matriz de
+ * permisos por un motivo que no tiene nada que ver con lo que el caso quiere probar.
+ */
+export async function permissionCatalogTotal(admin: AdminCtx): Promise<number> {
+  const catalog = await req('/roles/catalog', {
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+  });
+  return catalog.total as number;
+}
+
 // --- Settings globales ---
 
 /** Fija un setting (`PATCH /settings/:key`, contexto de sistema + `settings:update`). */

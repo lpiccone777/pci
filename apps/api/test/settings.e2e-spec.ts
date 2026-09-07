@@ -296,26 +296,33 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
   });
 
   /**
-   * `it.failing` A PROPÓSITO (no es un test roto): el caso exige que `apps/api/.env` traiga un
-   * DEVICE_FINGERPRINT_TTL_DAYS distinto del `defaultValue` del catálogo ('90') para poder
-   * distinguir, por el valor devuelto, si la key resolvió por env o por default. Hoy el `.env`
-   * trae 90 igual que el default, así que la aserción de '30' no se cumple — y eso es
-   * justamente lo que este caso reporta.
+   * El valor esperado tras el DELETE NO se escribe a mano: sale del entorno del propio proceso,
+   * que es el siguiente escalón de la cascada BD → env → default. Si `apps/api/.env` define
+   * DEVICE_FINGERPRINT_TTL_DAYS, la key tiene que resolver por 'env' con ESE valor; si no lo
+   * define, por 'default' con el del catálogo ('90').
    *
-   * Invertido para que esa condición conocida NO ensucie el semáforo de la batería, misma
-   * convención que el resto de los `@invertido` del repo. Si algún día el `.env` vuelve a 30,
-   * Jest va a marcar "expected to fail but passed": ahí hay que sacarle el `.failing` y dejarlo
-   * como `it` normal.
+   * Antes el caso fijaba '30' (lo que traía un `.env` de entonces) y estaba invertido con
+   * `it.failing` para que su rojo no ensuciara la batería. Eso lo ataba a la máquina de quien lo
+   * corría: cambiar el `.env` lo daba vuelta en cualquiera de los dos sentidos. Derivando el
+   * esperado del entorno, el caso prueba la cascada — que es lo que quiere probar — y pasa igual
+   * con el `.env` cargado o sin él.
    */
-  it.failing('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default @invertido', async () => {
+  it('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default', async () => {
+    const desdeEnv = process.env.DEVICE_FINGERPRINT_TTL_DAYS;
+    const esperado = desdeEnv
+      ? { source: 'env', value: desdeEnv }
+      : { source: 'default', value: '90' };
+
     await setSetting(t.prisma, 'DEVICE_FINGERPRINT_TTL_DAYS', '45');
 
     const res = await asAdmin(http(t).delete('/settings/DEVICE_FINGERPRINT_TTL_DAYS'));
 
     // @Delete() sin @HttpCode → 200 (default de Nest).
     expect(res.status).toBe(200);
-    expect(res.body.source).toBe('env');
-    expect(res.body.value).toBe('30');
+    expect(res.body.source).toBe(esperado.source);
+    expect(res.body.value).toBe(esperado.value);
+    // Sea cual sea el escalón que resolvió, ya no puede ser el valor que estaba en la BD.
+    expect(res.body.value).not.toBe('45');
 
     const row = await t.prisma.setting.findUnique({ where: { key: 'DEVICE_FINGERPRINT_TTL_DAYS' } });
     expect(row).toBeNull();

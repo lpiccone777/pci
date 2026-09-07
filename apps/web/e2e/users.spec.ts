@@ -314,7 +314,13 @@ test('FE-USR-11: en modo consolidado hay columna Empresa, filtro y una fila por 
   const t2 = await createTenant(admin);
   const r1 = await createRole(admin, { tenantId: t1.id, permissions: ['users:read'] });
   const r2 = await createRole(admin, { tenantId: t2.id, permissions: ['users:read'] });
+  // Nombre único: la tabla pagina de a 20 y el modo consolidado lista a TODA la gente de TODAS las
+  // empresas, así que con la base cargada por los tests previos esta persona cae fuera de la
+  // primera página. Filtrando por su nombre el listado queda en sus dos filas y el caso deja de
+  // depender de en qué página haya caído (era la causa de que fallara sólo en la corrida completa).
+  const nombre = `Consolidada${Date.now()}`;
   const persona = await createUser(admin, {
+    firstName: nombre,
     memberships: [
       { tenantId: t1.id, roleId: r1.id },
       { tenantId: t2.id, roleId: r2.id },
@@ -326,6 +332,8 @@ test('FE-USR-11: en modo consolidado hay columna Empresa, filtro y una fila por 
 
   await expect(page.getByRole('columnheader', { name: 'Empresa' })).toBeVisible();
   await expect(page.getByText('Empresa:', { exact: true })).toBeVisible();
+
+  await page.getByPlaceholder('Filtrar por nombre...').fill(nombre);
   // La persona aparece en las dos empresas (una fila por membresía).
   await expect(rowWith(page, persona.email)).toHaveCount(2);
   await expect(rowWith(page, persona.email).filter({ hasText: t1.name })).toHaveCount(1);
