@@ -12,7 +12,9 @@
  * sus cachés en memoria (`creatorIdCache`, `priorityCache`, `typeCache`, `statusNameCache`,
  * `categoryChildrenCache`) persisten entre `it` de este archivo. Por eso:
  *  - El catálogo simulado (prioridades/tipos/estados/categorías) es ESTÁTICO durante todo el
- *    archivo: cachearlo una vez no desactualiza nada.
+ *    archivo: cachearlo una vez no desactualiza nada. La única excepción es BE-IG-18, que
+ *    prueba justamente la invalidación del cache: agrega una categoría a `CATEGORIES`, y en
+ *    su `finally` la saca y vuelve a recargar para devolver el catálogo a su forma original.
  *  - `INVGATE_API_USER` se fija UNA sola vez en `beforeAll` con un username que matchea el
  *    "usuario técnico" simulado, y nunca se lo toca en el resto de la suite — así
  *    `creatorIdCache` queda resuelto correctamente para todos los tests que dependen de él.
@@ -1080,5 +1082,54 @@ describe('1.22 Integración InvGate (BE-IG-*)', () => {
     const ticket = await t.prisma.ticket.findFirstOrThrow({ where: { userId: user.id } });
     expect(ticket.description).toBe(descripcion);
     expect(ticket.description).not.toContain('<br>');
+  });
+
+  // --- BE-IG-18: recargar el catálogo de categorías sin reiniciar la API ---
+  //
+  // Único test del archivo que mueve el catálogo simulado (ver comentario de cabecera: es
+  // estático justamente porque los cachés son singleton). Agrega una categoría, comprueba
+  // que el cache la sigue ocultando, la destapa con el endpoint de recarga, y en el
+  // `finally` la saca y recarga de nuevo para devolver el catálogo a su forma original.
+  const CATEGORY_MONITORES = 103;
+
+  it('BE-IG-18: recargar el catálogo destapa una categoría creada después del arranque, sin reiniciar', async () => {
+    const { admin, tenant: systemTenant } = await getSystemContext(t.prisma);
+    const adminToken = tokenFor(t, admin);
+
+    // Deja el cache caliente con las dos subcategorías originales.
+    const antes = await withAuth(http(t).get('/invgate/catalog/categories'), catalogToken, catalogTenant.id);
+    expect(antes.body.map((c: { name: string }) => c.name).sort()).toEqual(['Impresoras', 'Teclados']);
+
+    CATEGORIES.push({ id: CATEGORY_MONITORES, name: 'Monitores', parent_category_id: CATEGORY_HARDWARE });
+    try {
+      // Sin recargar, el cache en memoria sigue sirviendo la foto vieja — esto es exactamente
+      // lo que en producción obligaba a reiniciar la API para ver una categoría nueva.
+      const cacheado = await withAuth(http(t).get('/invgate/catalog/categories'), catalogToken, catalogTenant.id);
+      expect(cacheado.body).toHaveLength(2);
+
+      const refresh = await withAuth(
+        http(t).post('/settings/invgate/categories/refresh'),
+        adminToken,
+        systemTenant.id,
+      );
+      expect(refresh.status).toBe(201); // @Post() sin @HttpCode devuelve 201 (default de Nest)
+      expect(refresh.body.configured).toBe(true);
+      expect(refresh.body.parentId).toBe(CATALOG_PARENT_ID); // el GUARDADO en BD, no uno que mande el cliente
+      const recargadas = refresh.body.categories.map((c: { name: string }) => c.name).sort();
+      expect(recargadas).toEqual(['Impresoras', 'Monitores', 'Teclados']);
+
+      // Y el editor de flujos la ve en el MISMO proceso, sin reiniciar.
+      const despues = await withAuth(http(t).get('/invgate/catalog/categories'), catalogToken, catalogTenant.id);
+      expect(despues.body.map((c: { name: string }) => c.name).sort()).toEqual(recargadas);
+    } finally {
+      const i = CATEGORIES.findIndex((c) => c.id === CATEGORY_MONITORES);
+      if (i >= 0) CATEGORIES.splice(i, 1);
+      await withAuth(http(t).post('/settings/invgate/categories/refresh'), adminToken, systemTenant.id);
+    }
+  });
+
+  it('BE-IG-18b: recargar el catálogo exige el tenant de sistema, no alcanza con flows:read', async () => {
+    const res = await withAuth(http(t).post('/settings/invgate/categories/refresh'), catalogToken, catalogTenant.id);
+    expect(res.status).toBe(403); // SystemTenantGuard: catalogTenant no es el tenant de sistema
   });
 });

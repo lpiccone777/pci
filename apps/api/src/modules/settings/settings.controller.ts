@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { LlmModelsService } from '../llm/llm-models.service';
+import { InvgateService } from '../invgate/invgate.service';
 import { UpsertSettingDto, UpdateSettingDto } from './dto/setting.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../rbac/guards/roles.guard';
@@ -32,6 +33,7 @@ export class SettingsController {
   constructor(
     private readonly settingsService: SettingsService,
     private readonly llmModels: LlmModelsService,
+    private readonly invgate: InvgateService,
   ) {}
 
   @Get()
@@ -59,6 +61,26 @@ export class SettingsController {
     @Query('refresh') refresh?: string,
   ) {
     return this.llmModels.listModels(provider, refresh === 'true');
+  }
+
+  /**
+   * Vacía el cache de subcategorías de InvGate y vuelve a paginar el catálogo — botón
+   * "Recargar categorías" de la tarjeta `INVGATE_CATEGORY_PARENT_ID`.
+   *
+   * `InvgateService.categoryChildrenCache` no tiene TTL ni invalidación: se llena una vez
+   * por proceso, así que una categoría creada en InvGate DESPUÉS del arranque no aparecía
+   * en el selector del nodo "Generar ticket" hasta reiniciar la API. Vive acá y no en
+   * `/invgate/catalog` (que es de solo lectura, con `flows:read`) porque es una acción de
+   * administración: mismo doble candado que el resto de `/settings` (tenant de sistema +
+   * `settings:update`, el mismo permiso que habilita el "Guardar" de esa tarjeta).
+   *
+   * Es un POST y no un `?refresh=true` sobre el GET del catálogo a propósito: fuerza
+   * repaginar ~700 categorías contra InvGate, no es una lectura idempotente barata.
+   */
+  @Post('invgate/categories/refresh')
+  @RequirePermission('settings', 'update')
+  async refreshInvgateCategories() {
+    return this.invgate.refreshTicketCategories();
   }
 
   @Get(':key')

@@ -229,6 +229,44 @@ export class InvgateService {
     return children;
   }
 
+  /**
+   * Descarta `categoryChildrenCache` ENTERO, no solo la entrada del parent actual.
+   *
+   * La clave del cache es el `parentId`, pero el contenido depende además de contra qué
+   * instancia se paginó: si se rotan `INVGATE_API_URL`/`API_USER`/`API_KEY` en `/settings`,
+   * el mismo `parentId` sigue devolviendo las categorías de la instancia vieja. Es el mismo
+   * envenenamiento por cambio de credenciales que ya se corrigió en el cache de Content
+   * Templates de Twilio — limpiar todo es barato (se repagina a demanda) y no deja rastros.
+   */
+  clearCategoryCache(): void {
+    this.categoryChildrenCache.clear();
+  }
+
+  /**
+   * Vacía el cache y vuelve a paginar el catálogo — es lo que hace el botón "Recargar
+   * categorías" de `/settings > Integración: InvGate`.
+   *
+   * Existe porque `categoryChildrenCache` no tiene TTL ni invalidación: se llena una vez por
+   * proceso, así que una categoría nueva creada en InvGate no aparecía en el selector del
+   * nodo "Generar ticket" hasta reiniciar la API. Devuelve el `parentId` efectivamente usado
+   * además de las categorías: el que manda es el GUARDADO en BD, que puede no ser el que el
+   * usuario tiene tipeado sin guardar en el formulario.
+   */
+  async refreshTicketCategories(): Promise<{
+    configured: boolean;
+    parentId: number | null;
+    categories: InvgateCatalogEntry[];
+  }> {
+    this.clearCategoryCache();
+    const configured = await this.isConfigured();
+    const parentId = await this.parseId('INVGATE_CATEGORY_PARENT_ID');
+    return {
+      configured,
+      parentId: parentId ?? null,
+      categories: configured && parentId !== undefined ? await this.listCategoriesByParent(parentId) : [],
+    };
+  }
+
   /** Lee `INVGATE_CATEGORY_PARENT_ID` y devuelve sus hijas — `[]` si no está configurado. */
   async listTicketCategories(): Promise<InvgateCatalogEntry[]> {
     // InvGate sin configurar → `[]` (no un 500), mismo criterio que el resto del catálogo.

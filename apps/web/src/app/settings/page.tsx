@@ -42,6 +42,21 @@ interface ModelList {
   loading?: boolean;
 }
 
+/** Resultado de POST /settings/invgate/categories/refresh. */
+interface InvgateCategoryRefresh {
+  configured: boolean;
+  /** El GUARDADO en BD, no el que pueda haber tipeado sin guardar en el input. */
+  parentId: number | null;
+  categories: Array<{ id: number; name: string }>;
+}
+
+/**
+ * La tarjeta de la categoría padre es la única con botón de recarga: el backend cachea las
+ * subcategorías en memoria sin TTL, así que una categoría nueva en InvGate no aparecía en el
+ * selector del nodo "Generar ticket" hasta reiniciar la API.
+ */
+const INVGATE_CATEGORY_PARENT_KEY = 'INVGATE_CATEGORY_PARENT_ID';
+
 /** Las claves de modelo son las únicas que se renderizan como dropdown. */
 function isModelKey(s: Setting): boolean {
   return !!s.provider && s.key.endsWith('_MODEL');
@@ -184,6 +199,11 @@ export default function SettingsPage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [models, setModels] = useState<Record<string, ModelList>>({});
   const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
+  const [catRefresh, setCatRefresh] = useState<{
+    loading: boolean;
+    result?: InvgateCategoryRefresh;
+    error?: string;
+  }>({ loading: false });
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const topTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const midTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -233,6 +253,25 @@ export default function SettingsPage() {
         ...m,
         [provider]: { models: [], source: 'fallback', message: err.message, loading: false },
       }));
+    }
+  }
+
+  /**
+   * Tira el cache de categorías del backend y lo vuelve a llenar contra InvGate.
+   *
+   * No manda el `parentId` del input: usa el que está GUARDADO en BD (es el que lee el
+   * editor de flujos). Por eso el backend devuelve cuál usó y acá se muestra — si el
+   * usuario tipeó un id nuevo y no lo guardó, el número del cartel lo delata.
+   */
+  async function refreshInvgateCategories() {
+    setCatRefresh({ loading: true });
+    try {
+      const res: InvgateCategoryRefresh = await apiFetch('/settings/invgate/categories/refresh', {
+        method: 'POST',
+      });
+      setCatRefresh({ loading: false, result: res });
+    } catch (err: any) {
+      setCatRefresh({ loading: false, error: err.message });
     }
   }
 
@@ -845,6 +884,22 @@ export default function SettingsPage() {
                         </button>
                       )}
 
+                      {s.key === INVGATE_CATEGORY_PARENT_KEY && (
+                        <button
+                          type="button"
+                          onClick={refreshInvgateCategories}
+                          disabled={!canUpdate || catRefresh.loading}
+                          title={
+                            'Vuelve a leer las subcategorías desde InvGate. El backend las cachea ' +
+                            'en memoria: sin esto, una categoría nueva no aparece en el nodo ' +
+                            '"Generar ticket" hasta reiniciar la API.'
+                          }
+                          className="text-sm text-blue-600 hover:text-blue-800 px-2 disabled:text-gray-400"
+                        >
+                          {catRefresh.loading ? 'Recargando...' : 'Recargar categorías'}
+                        </button>
+                      )}
+
                       {s.source === 'db' && canDelete && (
                         <button
                           onClick={() => restoreDefault(s.key)}
@@ -874,6 +929,47 @@ export default function SettingsPage() {
                           </span>
                         )}
                       </p>
+                    )}
+
+                    {s.key === INVGATE_CATEGORY_PARENT_KEY && !catRefresh.loading && (
+                      <>
+                        {catRefresh.error && (
+                          <p className="text-xs mt-2 text-red-600">
+                            No se pudo recargar: {catRefresh.error}
+                          </p>
+                        )}
+                        {catRefresh.result && !catRefresh.result.configured && (
+                          <p className="text-xs mt-2 text-amber-600">
+                            InvGate no está configurado (faltan URL, usuario o API key): no hay
+                            catálogo que recargar.
+                          </p>
+                        )}
+                        {catRefresh.result?.configured && catRefresh.result.parentId === null && (
+                          <p className="text-xs mt-2 text-amber-600">
+                            Sin categoría padre guardada: el selector de tickets queda vacío.
+                            Cargá un id acá arriba y guardalo.
+                          </p>
+                        )}
+                        {catRefresh.result?.configured && catRefresh.result.parentId !== null && (
+                          <p className="text-xs mt-2 text-green-600">
+                            {catRefresh.result.categories.length} subcategorías leídas de InvGate
+                            bajo el id {catRefresh.result.parentId}
+                            {String(catRefresh.result.parentId) !== draft && (
+                              <span className="text-amber-600">
+                                {' '}
+                                — ojo: es el valor guardado, no el {draft || '(vacío)'} que tenés en
+                                el campo sin guardar
+                              </span>
+                            )}
+                            {catRefresh.result.categories.length > 0 && (
+                              <span className="text-gray-500">
+                                {': '}
+                                {catRefresh.result.categories.map((c) => c.name).join(', ')}
+                              </span>
+                            )}
+                          </p>
+                        )}
+                      </>
                     )}
 
                     {s.min !== undefined && s.max !== undefined && (
