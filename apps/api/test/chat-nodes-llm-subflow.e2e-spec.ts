@@ -616,7 +616,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
   // Ahora son dos procesos separados: redactar usa la suma de contextos; extraer corre aislado.
   // ===========================================================================================
 
-  it('CHAT-N-LLM-13a: el extractor corre AISLADO — su prompt no lleva settings, ni Skill, ni el prompt del nodo, ni los turnos de la charla; la pregunta sí los lleva', async () => {
+  it('CHAT-N-LLM-13a: el prompt del extractor no lleva settings ni el prompt del nodo (rol) pero sí el Skill (dato), y no recibe los turnos de la charla; la pregunta lleva todo', async () => {
     await setSetting(t.prisma, 'LLM_SYSTEM_PROMPT', 'BASE-DE-PRUEBA');
     try {
       const { tenant, role, phone } = await newKnownUser('llm13a');
@@ -654,11 +654,16 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
       const extractCall = llm.calls.find((c) => sysOf(c.messages, c.options).includes(EXTRACT_MARK))!;
       const questionCall = llm.calls.find((c) => sysOf(c.messages, c.options).includes(QUESTION_MARK))!;
 
-      // El extractor: ninguna de las tres capas de contexto conversacional.
+      // El extractor: nada de rol conversacional — ni el prompt de settings ni el del nodo.
       const extractSys = sysOf(extractCall.messages, extractCall.options);
       expect(extractSys).not.toContain('BASE-DE-PRUEBA');
-      expect(extractSys).not.toContain('SKILL-DE-PRUEBA');
       expect(extractSys).not.toContain('INSTRUCCION-NODO');
+      // El Skill sí entra, pero como material de consulta (catálogo/glosario contra el que
+      // normalizar un valor), no como instrucción de cómo responder.
+      expect(extractSys).toContain('SKILL-DE-PRUEBA');
+      expect(extractSys).toContain('Material de consulta');
+      // Y va ANTES de la directiva: el prompt cierra con la tarea, no con el contexto.
+      expect(extractSys.indexOf('SKILL-DE-PRUEBA')).toBeLessThan(extractSys.indexOf(EXTRACT_MARK));
       // Y tampoco el ida y vuelta de la charla: un solo mensaje `user` con el texto a analizar.
       expect(extractCall.messages).toHaveLength(1);
       expect(extractCall.messages[0].role).toBe('user');
@@ -756,6 +761,36 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     expect((conv.flowState as any).sede).toBe('no definido');
     expect((conv.flowState as any).__llmQueryTurns).toBeUndefined(); // limpió al salir
   }, 30000);
+
+  it('CHAT-N-LLM-13f: el texto que lee el extractor acumula pares pregunta→respuesta — una respuesta corta llega anclada a la pregunta que la motivó', async () => {
+    const { tenant, role, phone } = await newKnownUser('llm13f');
+    llm.setResponder((messages, options) => {
+      const sys = sysOf(messages, options);
+      if (sys.includes(EXTRACT_MARK)) return 'sede: NONE';
+      if (sys.includes(QUESTION_MARK)) return '¿En qué sede te encontrás?';
+      return 'NO-DEBERIA-USARSE';
+    });
+    await extractionFlow(tenant, role, {});
+
+    // Turno 1: nada resuelto → el nodo pregunta.
+    await simulate(phone, tenant.id, 'se me rompió el teclado');
+    const conv1 = await conversationFor(tenant.id, phone);
+    expect((conv1.flowState as any).__llmQueryLastQuestion).toBe('¿En qué sede te encontrás?');
+
+    // Turno 2: el usuario contesta con dos palabras sueltas. Solas no dicen de qué dato son;
+    // el extractor tiene que recibirlas debajo de la pregunta que las motivó.
+    llm.calls.length = 0;
+    await simulate(phone, tenant.id, 'Vicente Lopez');
+
+    const extractCall = llm.calls.find((c) => sysOf(c.messages, c.options).includes(EXTRACT_MARK))!;
+    expect(extractCall.messages[0].content).toContain('Pregunta: ¿En qué sede te encontrás?');
+    expect(extractCall.messages[0].content).toContain('Respuesta: Vicente Lopez');
+
+    const conv2 = await conversationFor(tenant.id, phone);
+    expect((conv2.flowState as any).__llmQueryLog).toEqual([
+      { question: '¿En qué sede te encontrás?', answer: 'Vicente Lopez' },
+    ]);
+  });
 
   it('CHAT-N-LLM-13e: el systemPrompt del nodo se interpola contra flowState (antes viajaba crudo, con los {{...}} literales)', async () => {
     const { tenant, role, phone } = await newKnownUser('llm13e');
