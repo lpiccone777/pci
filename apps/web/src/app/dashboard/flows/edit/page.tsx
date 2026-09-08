@@ -1997,7 +1997,9 @@ function NodeProperties({
               </div>
               <p className="text-[11px] text-gray-400 mt-1">
                 Cómo combina este System Prompt con el prompt base (settings + Skill del
-                flujo): lo reemplaza entero, o se agrega a continuación.
+                flujo): lo reemplaza entero, o se agrega a continuación. Acepta{' '}
+                <code>{'{{variables}}'}</code>. Sólo afecta la respuesta libre y la pregunta que
+                redacta el nodo: la extracción de variables nunca lee este texto.
               </p>
             </div>
           )}
@@ -2033,6 +2035,23 @@ function NodeProperties({
           </div>
 
           <div>
+            <label className="block text-sm font-medium mb-1">Texto a analizar</label>
+            <textarea
+              value={data.extractFrom || ''}
+              onChange={(e) => onUpdate('extractFrom', e.target.value)}
+              className="w-full border rounded p-2 text-sm font-mono"
+              rows={2}
+              placeholder="Falla: {{descripcion}}"
+            />
+            <p className="text-[11px] text-gray-400 mt-1">
+              Sólo para extracción. El texto donde el nodo busca las variables, con{' '}
+              <code>{'{{variables}}'}</code> reemplazadas — normalmente el dato libre que tomó un
+              nodo anterior. El mensaje que el usuario acaba de mandar se agrega siempre, así que
+              vacío significa "analizá sólo el mensaje actual".
+            </p>
+          </div>
+
+          <div>
             <div className="flex justify-between items-center mb-1">
               <label className="block text-sm font-medium">Variables a extraer</label>
               <button
@@ -2047,9 +2066,9 @@ function NodeProperties({
               </button>
             </div>
             <p className="text-[11px] text-gray-400 mb-2">
-              En vez de responderle al usuario, el nodo evalúa estas variables contra la charla. Si
-              falta alguna, se detiene a preguntarla; si el usuario se niega o se agotan los
-              intentos, queda en "no definido".
+              En vez de responderle al usuario, el nodo evalúa estas variables contra el texto a
+              analizar. Si falta alguna, se detiene a preguntarla; si el usuario se niega o se
+              agotan los intentos, queda en "no definido".
             </p>
             <div className="space-y-2">
               {(data.extractVariables || []).map((v: any, idx: number) => (

@@ -603,6 +603,180 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     expect((conv.flowState as any).__llmQueryAttempts).toBe(1);
   });
 
+  // ===========================================================================================
+  // llm_query — aislamiento del extractor (CHAT-N-LLM-13*)
+  //
+  // Rediseño 2026-09-08. Antes las DOS llamadas del modo extracción compartían el mismo system
+  // prompt (settings + Skill + prompt del nodo). Los prompts reales de producción describen un
+  // rol conversacional con preguntas textuales ("#PREGUNTAS A FORMULAR (usalas literales)"), y
+  // el clasificador las obedecía: devolvía la pregunta calcada en vez de `clave: valor`, el
+  // parser no encontraba línea, todo caía a NONE y el nodo re-preguntaba datos ya dados —
+  // 27 de 81 tickets con campos en "no definido" entre el 28/08 y el 05/09.
+  //
+  // Ahora son dos procesos separados: redactar usa la suma de contextos; extraer corre aislado.
+  // ===========================================================================================
+
+  it('CHAT-N-LLM-13a: el extractor corre AISLADO — su prompt no lleva settings, ni Skill, ni el prompt del nodo, ni los turnos de la charla; la pregunta sí los lleva', async () => {
+    await setSetting(t.prisma, 'LLM_SYSTEM_PROMPT', 'BASE-DE-PRUEBA');
+    try {
+      const { tenant, role, phone } = await newKnownUser('llm13a');
+      const skill = await createSkill(t.prisma, {
+        tenantId: tenant.id,
+        name: 'Skill-13a',
+        promptText: 'SKILL-DE-PRUEBA',
+      });
+      llm.setResponder((messages, options) => {
+        const sys = sysOf(messages, options);
+        if (sys.includes(EXTRACT_MARK)) return 'sede: NONE';
+        if (sys.includes(QUESTION_MARK)) return '¿En qué sede estás?';
+        return 'NO-DEBERIA-USARSE';
+      });
+      await startFlow(
+        tenant,
+        role,
+        [
+          startNode('s'),
+          llmQueryNode('q', {
+            extractVariables: [{ variable: 'sede', allowedValues: ['Central', 'Norte'] }],
+            systemPrompt: 'INSTRUCCION-NODO: usá estas preguntas literales.',
+            systemPromptMode: 'append',
+          }),
+          messageNode('fin', 'Listo.'),
+        ],
+        [edge('s', 'q', 'known'), edge('q', 'fin'), edge('fin', 'fin')],
+        { skillId: skill.id },
+      );
+
+      const res = await simulate(phone, tenant.id, 'tengo un problema con la impresora');
+      expect(res.status).toBe(201);
+      expect(llm.calls).toHaveLength(2); // extracción + pregunta
+
+      const extractCall = llm.calls.find((c) => sysOf(c.messages, c.options).includes(EXTRACT_MARK))!;
+      const questionCall = llm.calls.find((c) => sysOf(c.messages, c.options).includes(QUESTION_MARK))!;
+
+      // El extractor: ninguna de las tres capas de contexto conversacional.
+      const extractSys = sysOf(extractCall.messages, extractCall.options);
+      expect(extractSys).not.toContain('BASE-DE-PRUEBA');
+      expect(extractSys).not.toContain('SKILL-DE-PRUEBA');
+      expect(extractSys).not.toContain('INSTRUCCION-NODO');
+      // Y tampoco el ida y vuelta de la charla: un solo mensaje `user` con el texto a analizar.
+      expect(extractCall.messages).toHaveLength(1);
+      expect(extractCall.messages[0].role).toBe('user');
+      expect(extractCall.messages[0].content).toContain('tengo un problema con la impresora');
+
+      // La redacción de la pregunta, en cambio, conserva la suma completa: es donde el flujo
+      // define cómo hablarle al usuario.
+      const questionSys = sysOf(questionCall.messages, questionCall.options);
+      expect(questionSys).toContain('BASE-DE-PRUEBA');
+      expect(questionSys).toContain('SKILL-DE-PRUEBA');
+      expect(questionSys).toContain('INSTRUCCION-NODO');
+    } finally {
+      await deleteSetting(t.prisma, 'LLM_SYSTEM_PROMPT');
+    }
+  });
+
+  it('CHAT-N-LLM-13b: el texto a analizar es extractFrom interpolado + el mensaje actual (la respuesta a la re-pregunta no vive en ninguna variable)', async () => {
+    const { tenant, role, phone } = await newKnownUser('llm13b');
+    llm.setResponder((messages, options) => {
+      const sys = sysOf(messages, options);
+      if (sys.includes(EXTRACT_MARK)) return 'sede: NONE';
+      if (sys.includes(QUESTION_MARK)) return '¿En qué sede estás?';
+      return 'NO-DEBERIA-USARSE';
+    });
+    await startFlow(
+      tenant,
+      role,
+      [
+        startNode('s'),
+        node('v', 'variable', { action: 'set', name: 'descripcion', value: 'no anda el mouse' }),
+        llmQueryNode('q', {
+          extractVariables: [{ variable: 'sede', allowedValues: ['Central', 'Norte'] }],
+          extractFrom: 'Falla reportada: {{descripcion}}',
+        }),
+        messageNode('fin', 'Listo.'),
+      ],
+      [edge('s', 'v', 'known'), edge('v', 'q'), edge('q', 'fin'), edge('fin', 'fin')],
+    );
+
+    await simulate(phone, tenant.id, 'buenas, necesito ayuda');
+
+    const extractCall = llm.calls.find((c) => sysOf(c.messages, c.options).includes(EXTRACT_MARK))!;
+    // La variable capturada antes en el flujo, ya interpolada (sin `{{...}}` crudos)...
+    expect(extractCall.messages[0].content).toContain('Falla reportada: no anda el mouse');
+    expect(extractCall.messages[0].content).not.toContain('{{descripcion}}');
+    // ...y el mensaje actual, que es lo único que existe cuando el usuario contesta la
+    // re-pregunta del propio nodo.
+    expect(extractCall.messages[0].content).toContain('buenas, necesito ayuda');
+  });
+
+  it('CHAT-N-LLM-13c: una respuesta sin formato del modelo (UNPARSEABLE) NO consume maxAttempts — el intento es del usuario, no del extractor', async () => {
+    const { tenant, role, phone } = await newKnownUser('llm13c');
+    // El extractor nunca devuelve una línea `clave: valor` parseable: es el modelo el que
+    // falla, no el usuario el que se calla. Antes esto contaba como intento y a los 2 turnos
+    // la variable quedaba en "no definido" sin haberse evaluado nunca lo que el usuario decía.
+    llm.setResponder((messages, options) => {
+      const sys = sysOf(messages, options);
+      if (sys.includes(EXTRACT_MARK)) return 'Tengo registrado que tu sede es Central. ¿Sigue siendo correcto?';
+      if (sys.includes(QUESTION_MARK)) return '¿En qué sede estás?';
+      return 'NO-DEBERIA-USARSE';
+    });
+    await extractionFlow(tenant, role, {}); // maxAttempts default = 2
+
+    for (const body of ['hola', 'sigo esperando', 'sigo acá']) {
+      const res = await simulate(phone, tenant.id, body);
+      expect(res.body.reply).toContain('¿En qué sede estás?'); // al 3er turno seguiría preguntando
+      expect(res.body.reply).not.toContain('No pude determinar la sede.');
+    }
+
+    const conv = await conversationFor(tenant.id, phone);
+    expect((conv.flowState as any).__llmQueryAttempts).toBe(0); // ningún intento cobrado
+    expect((conv.flowState as any).__llmQueryTurns).toBe(3); // pero los turnos sí se cuentan
+    expect((conv.flowState as any).sede).toBeUndefined(); // y el dato NO se dio por perdido
+  });
+
+  it('CHAT-N-LLM-13d: el tope duro de turnos corta igual si el extractor nunca devuelve formato — no hay bucle infinito', async () => {
+    const { tenant, role, phone } = await newKnownUser('llm13d');
+    llm.setResponder((messages, options) => {
+      const sys = sysOf(messages, options);
+      if (sys.includes(EXTRACT_MARK)) return 'respuesta sin formato';
+      if (sys.includes(QUESTION_MARK)) return '¿En qué sede estás?';
+      return 'NO-DEBERIA-USARSE';
+    });
+    await extractionFlow(tenant, role, {});
+
+    // LLM_QUERY_MAX_TURNS_HARD_CAP = 6: los 6 primeros turnos preguntan, el 7mo se rinde.
+    for (let i = 0; i < 6; i++) {
+      const res = await simulate(phone, tenant.id, `turno ${i}`);
+      expect(res.body.reply).toContain('¿En qué sede estás?');
+    }
+    const last = await simulate(phone, tenant.id, 'turno final');
+    expect(last.body.reply).toContain('No pude determinar la sede.');
+
+    const conv = await conversationFor(tenant.id, phone);
+    expect((conv.flowState as any).sede).toBe('no definido');
+    expect((conv.flowState as any).__llmQueryTurns).toBeUndefined(); // limpió al salir
+  }, 30000);
+
+  it('CHAT-N-LLM-13e: el systemPrompt del nodo se interpola contra flowState (antes viajaba crudo, con los {{...}} literales)', async () => {
+    const { tenant, role, phone } = await newKnownUser('llm13e');
+    llm.setReply('respuesta del modelo');
+    await startFlow(
+      tenant,
+      role,
+      [
+        startNode('s'),
+        node('v', 'variable', { action: 'set', name: 'descripcion', value: 'la pantalla parpadea' }),
+        llmQueryNode('q', { systemPrompt: 'Analizá esta falla: {{descripcion}}' }),
+      ],
+      [edge('s', 'v', 'known'), edge('v', 'q')],
+    );
+
+    const res = await simulate(phone, tenant.id, 'hola');
+
+    expect(res.status).toBe(201);
+    expect(llm.calls[0].options?.systemPrompt).toBe('Analizá esta falla: la pantalla parpadea');
+  });
+
   it('CHAT-N-LLM-12a: conversacional con data.temperature seteado lo pasa al chat (options.temperature)', async () => {
     const { tenant, role, phone } = await newKnownUser('llm12a');
     llm.setReply('respuesta del modelo');

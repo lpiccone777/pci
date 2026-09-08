@@ -145,10 +145,25 @@ export class FlowNodeDataDto {
    * de /settings + el Skill del flujo, si tiene uno): 'replace' lo reemplaza entero
    * (default, mismo comportamiento que antes de sumar Skills), 'append' lo agrega a
    * continuación. Ver ConversationsService.buildBasePrompt.
+   *
+   * Aplica a la respuesta libre del nodo y a la pregunta que redacta cuando falta una
+   * variable. NO aplica al extractor (`extractLlmQueryValues`), que desde 2026-09-08 nunca
+   * recibe el `systemPrompt` del nodo, sea cual sea este modo.
    */
   @IsString()
   @IsOptional()
   systemPromptMode?: 'replace' | 'append';
+
+  /**
+   * Nodo `llm_query` en modo extracción: texto que lee el extractor para sacar las
+   * variables, con `{{variables}}` interpoladas contra `flowState` (ej.
+   * `Falla: {{descripcion}}`). El mensaje que el usuario acaba de mandar se agrega siempre,
+   * así que vacío = "analizá sólo el mensaje actual". Ver
+   * ConversationsService.buildExtractionInput.
+   */
+  @IsString()
+  @IsOptional()
+  extractFrom?: string;
 
   @IsOptional()
   contextMessages?: number;

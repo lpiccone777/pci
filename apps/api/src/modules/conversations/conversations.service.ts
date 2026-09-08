@@ -75,6 +75,26 @@ const WEBHOOK_TIMEOUT_MS = 10_000;
  */
 const DEFAULT_LLM_QUERY_MAX_ATTEMPTS = 2;
 
+/**
+ * Resultado de `extractLlmQueryValues` cuando el modelo NO devolvió una línea parseable para
+ * una variable. Es distinto de `NONE` ("el usuario no lo dijo") a propósito: antes los dos
+ * casos se colapsaban en NONE y un fallo del extractor consumía un intento del usuario, así
+ * que dos respuestas mal formateadas del modelo alcanzaban para dar por "no definido" un dato
+ * que el usuario nunca llegó a que le preguntaran bien (visto en producción 2026-09-05: la
+ * usuaria contestó la sede en el tercer turno y el valor se descartó sin evaluarse).
+ * Ver `executeLlmQueryExtraction`: un UNPARSEABLE no gasta `maxAttempts`.
+ */
+const LLM_QUERY_UNPARSEABLE = 'UNPARSEABLE';
+
+/**
+ * Tope duro de turnos del nodo `llm_query` en modo extracción, contando TODOS los turnos —
+ * también los que no consumen intento por venir UNPARSEABLE. Sin esto, un modelo que nunca
+ * devuelve el formato pedido deja al usuario en un bucle infinito de re-preguntas, porque
+ * `maxAttempts` no avanzaría nunca. Al llegar acá las variables pendientes caen a
+ * `LLM_QUERY_UNDEFINED_VALUE` igual que si se hubieran agotado los intentos.
+ */
+const LLM_QUERY_MAX_TURNS_HARD_CAP = 6;
+
 /** Valor que `llm_query` en modo extracción guarda cuando el usuario se niega (o agota los intentos) a dar un dato. */
 const LLM_QUERY_UNDEFINED_VALUE = 'no definido';
 
@@ -2501,11 +2521,17 @@ export class ConversationsService implements OnModuleInit {
         // systemPrompt propio del nodo (si lo trae) lo REEMPLAZA por default —
         // mismo comportamiento que antes de sumar Skills — o se le AGREGA a
         // continuación si el nodo eligió 'append' (ver systemPromptMode).
+        //
+        // El prompt del nodo se INTERPOLA contra `flowState` (2026-09-08): el editor deja
+        // escribir `{{descripcion}}` en ese campo igual que en cualquier otro texto, pero
+        // hasta ahora era el único que viajaba crudo al modelo — quien lo escribía creía
+        // estar pasándole el dato y le estaba pasando la cadena literal "{{descripcion}}".
         const basePrompt = await this.buildBasePrompt(skillPromptText);
+        const nodePrompt = data.systemPrompt ? this.interpolate(data.systemPrompt, flowState) : '';
         const systemPrompt =
-          data.systemPrompt && data.systemPromptMode === 'append'
-            ? [basePrompt, data.systemPrompt].filter(Boolean).join('\n\n')
-            : data.systemPrompt || basePrompt;
+          nodePrompt && data.systemPromptMode === 'append'
+            ? [basePrompt, nodePrompt].filter(Boolean).join('\n\n')
+            : nodePrompt || basePrompt;
 
         // Modo extracción: en vez de mandarle al usuario lo que diga el modelo, lo usamos
         // para resolver una o más variables (ej. "sede") y ramificar — así el nodo puede
@@ -2519,12 +2545,32 @@ export class ConversationsService implements OnModuleInit {
         // `BaseNode` en el editor, que solo tiene un handle de salida genérico sin id,
         // así que no hay forma de dibujar dos salidas nombradas en el canvas.
         if (data.extractVariables?.length) {
+          // DOS prompts, no uno (2026-09-08). Antes las dos llamadas del modo extracción
+          // —clasificar (`extractLlmQueryValues`) y redactar la pregunta
+          // (`generateLlmQueryQuestion`)— compartían este `systemPrompt`, y con él el prompt
+          // del nodo. Ese prompt describe un rol conversacional (los de producción traen un
+          // bloque "#PREGUNTAS A FORMULAR (usalas literales, no las reformules)"), así que el
+          // clasificador lo obedecía al pie y devolvía "Tengo registrado que tu interno es
+          // X. ¿Sigue siendo correcto?" en vez de `clave: valor`: el parser no encontraba
+          // línea, todo caía a NONE y el nodo volvía a preguntar datos ya dados. El rol iba
+          // primero y con énfasis; la instrucción de formato al final. Un modelo de
+          // razonamiento resuelve ese conflicto a favor del rol, siempre.
+          //
+          // Ahora son dos procesos separados:
+          // - Redactar (respuesta y re-pregunta): la suma de siempre — settings + Skill +
+          //   prompt del nodo, o sea `systemPrompt`.
+          // - Extraer: AISLADO. Sin prompt de settings, sin Skill, sin prompt del nodo y sin
+          //   los turnos de la charla. Una sola directiva —buscar estas variables en este
+          //   texto— y nada más que pueda competirle. Lo único que el nodo le aporta son las
+          //   variables declaradas (con sus `allowedValues`, que es donde tiene que vivir un
+          //   catálogo cerrado) y el texto a analizar.
           return this.executeLlmQueryExtraction(
             node,
             data,
             data.extractVariables,
             llmMessages,
             systemPrompt,
+            this.buildExtractionInput(data, flowState, body),
             flowState,
             data.temperature,
           );
@@ -2622,13 +2668,22 @@ export class ConversationsService implements OnModuleInit {
    * pregunta que el nodo mismo hizo. Las variables ya resueltas (con valor real o con
    * `LLM_QUERY_UNDEFINED_VALUE`) quedan en `flowState` entre turnos, así que una vuelta
    * parcial (algunas encontradas, otras no) no las vuelve a preguntar.
+   *
+   * Las dos llamadas al LLM tienen objetivos opuestos y por eso ya no comparten contexto:
+   * - Extraer (`extractLlmQueryValues`): aislado. Sin `questionPrompt`, sin Skill, sin el
+   *   prompt de settings y sin los turnos de la charla — sólo la directiva de buscar las
+   *   variables pedidas dentro de `analysisText`.
+   * - Redactar (`generateLlmQueryQuestion`): `questionPrompt` completo (settings + Skill +
+   *   prompt del nodo), que es donde viven las preguntas literales de cada flujo.
+   * Mezclarlos era el origen del bug de producción del 2026-09-05 — ver el `case 'llm_query'`.
    */
   private async executeLlmQueryExtraction(
     node: any,
     data: any,
     variables: Array<{ variable: string; label?: string; allowedValues?: string[] }>,
     llmMessages: LlmMessage[],
-    systemPrompt: string,
+    questionPrompt: string,
+    analysisText: string,
     flowState: Record<string, any>,
     temperature?: number,
   ): Promise<NodeExecutionResult> {
@@ -2639,6 +2694,8 @@ export class ConversationsService implements OnModuleInit {
     // Cuántas veces ya se le preguntó al usuario por los datos que faltan, ANTES de esta
     // pasada — 0 en la primera ejecución (todavía no se preguntó nada).
     const attemptsSoFar = flowState.__awaiting === node.id ? flowState.__llmQueryAttempts || 0 : 0;
+    // Turnos totales del nodo, gasten intento o no — sólo alimenta el tope duro.
+    const turnsSoFar = flowState.__awaiting === node.id ? flowState.__llmQueryTurns || 0 : 0;
 
     const pending = variables.filter((v) => {
       const value = flowState[this.stripVariableBraces(v.variable)];
@@ -2646,15 +2703,24 @@ export class ConversationsService implements OnModuleInit {
     });
 
     if (pending.length) {
-      const outcomes = await this.extractLlmQueryValues(llmMessages, systemPrompt, pending);
+      const outcomes = await this.extractLlmQueryValues(analysisText, pending);
       const stillMissing: typeof pending = [];
+
+      // ¿El modelo hizo la tarea en esta pasada? Con al menos una línea parseable sí: el
+      // turno cuenta como intento (le preguntamos y el usuario no lo dijo). Si NINGUNA
+      // parseó, el que falló fue el extractor, no el usuario — no se le puede cobrar el
+      // intento a alguien que no tuvo oportunidad de contestar. Ver LLM_QUERY_UNPARSEABLE.
+      const anyParsed = pending.some(
+        (v) => outcomes[this.stripVariableBraces(v.variable)] !== LLM_QUERY_UNPARSEABLE,
+      );
+      const exhausted = anyParsed ? attemptsSoFar >= maxAttempts : turnsSoFar >= LLM_QUERY_MAX_TURNS_HARD_CAP;
 
       for (const v of pending) {
         const key = this.stripVariableBraces(v.variable);
         const outcome = outcomes[key];
-        if (outcome && outcome !== 'NONE' && outcome !== 'REFUSED') {
+        if (outcome && outcome !== 'NONE' && outcome !== 'REFUSED' && outcome !== LLM_QUERY_UNPARSEABLE) {
           flowState[key] = outcome;
-        } else if (outcome === 'REFUSED' || attemptsSoFar >= maxAttempts) {
+        } else if (outcome === 'REFUSED' || exhausted) {
           flowState[key] = LLM_QUERY_UNDEFINED_VALUE;
         } else {
           stillMissing.push(v);
@@ -2663,14 +2729,16 @@ export class ConversationsService implements OnModuleInit {
 
       if (stillMissing.length) {
         flowState.__awaiting = node.id;
-        flowState.__llmQueryAttempts = attemptsSoFar + 1;
-        const question = await this.generateLlmQueryQuestion(systemPrompt, llmMessages, stillMissing, temperature);
+        flowState.__llmQueryAttempts = anyParsed ? attemptsSoFar + 1 : attemptsSoFar;
+        flowState.__llmQueryTurns = turnsSoFar + 1;
+        const question = await this.generateLlmQueryQuestion(questionPrompt, llmMessages, stillMissing, temperature);
         return { responseText: question, waitForInput: true, flowState };
       }
     }
 
     delete flowState.__awaiting;
     delete flowState.__llmQueryAttempts;
+    delete flowState.__llmQueryTurns;
     // Una sola salida, siempre por la arista dibujada en el canvas (pedido 2026-08-28):
     // tanto "todas resueltas" como "alguna quedó en no definido" siguen el mismo camino —
     // quien necesite ramificar por "no definido" pone un nodo `condition` después. Los
@@ -2683,12 +2751,50 @@ export class ConversationsService implements OnModuleInit {
   }
 
   /**
+   * Texto que el extractor de `llm_query` tiene que leer para sacar las variables.
+   *
+   * Se compone de dos partes, en este orden:
+   * - `data.extractFrom` ("Texto a analizar" en el editor), interpolado contra `flowState`.
+   *   Es donde se apunta al dato ya capturado antes en el flujo — típicamente el texto libre
+   *   que tomó un nodo `input`, ej. `Falla: {{descripcion}}`. Sin esto el extractor sólo
+   *   miraría el mensaje actual y volvería a preguntar cosas que el usuario ya contó.
+   * - El mensaje que el usuario acaba de mandar, SIEMPRE. Es lo que hace que la respuesta a
+   *   la re-pregunta del propio nodo ("¿en qué sede estás?" → "Vicente Lopez") se evalúe:
+   *   esa respuesta no está guardada en ninguna variable todavía, sólo llega como `body`.
+   *
+   * Si los dos textos coinciden (el `extractFrom` apunta a la variable que acaba de setear
+   * el mensaje actual) se manda uno solo, para no darle al modelo el mismo texto dos veces.
+   */
+  private buildExtractionInput(data: any, flowState: Record<string, any>, body: string): string {
+    const configured = data.extractFrom ? this.interpolate(String(data.extractFrom), flowState).trim() : '';
+    const current = (body || '').trim();
+    return [configured, current]
+      .filter((t) => !!t)
+      .filter((t, i, arr) => arr.indexOf(t) === i)
+      .join('\n\n');
+  }
+
+  /**
    * Un llamado al LLM por turno para TODAS las variables pendientes de `llm_query` (en vez
-   * de uno por variable): le pasa la charla reciente y le pide una línea `variable: valor`
-   * por cada una, con NONE si todavía no se mencionó o REFUSED si el usuario se negó
-   * explícitamente a darla (así el nodo puede caer a "no definido" sin esperar a agotar
-   * `maxAttempts`). Ante una línea faltante o sin parsear, se trata como NONE — el peor caso
-   * es una pregunta de más, no un valor inventado.
+   * de uno por variable): le pasa el texto a analizar y le pide una línea `variable: valor`
+   * por cada una, con NONE si no está ahí o REFUSED si el usuario se negó explícitamente a
+   * darla (así el nodo puede caer a "no definido" sin esperar a agotar `maxAttempts`).
+   *
+   * Llamada AISLADA (2026-09-08): su system prompt es sólo la directiva de extracción. No
+   * lleva el prompt de /settings, ni el Skill del flujo, ni el `systemPrompt` del nodo, ni
+   * los turnos de la charla — nada que pueda competirle a "devolvé `clave: valor`". Cada una
+   * de esas piezas describe un rol conversacional, y con un rol delante el modelo redacta en
+   * vez de clasificar: los prompts de producción traen un bloque "#PREGUNTAS A FORMULAR
+   * (usalas literales)" y el extractor devolvía justamente esas preguntas, calcadas.
+   *
+   * Todo lo que necesita del flujo entra por dos vías acotadas: `analysisText` (el texto a
+   * leer, ver `buildExtractionInput`) y los `allowedValues` de cada variable (el catálogo
+   * cerrado contra el que se valida). Un catálogo que hoy viva sólo en el Skill NO le llega:
+   * tiene que estar cargado en `allowedValues`.
+   *
+   * Una línea faltante o sin parsear devuelve `LLM_QUERY_UNPARSEABLE`, no NONE: son cosas
+   * distintas ("el modelo falló" vs "el usuario no lo dijo") y el que llama las trata
+   * distinto a la hora de gastar intentos.
    *
    * Siempre corre en `temperature: 0`, sin importar el `temperature` configurado en el nodo
    * (igual que `confirmEndChatIntent` e `interpretMenuChoice`): es una clasificación
@@ -2696,8 +2802,7 @@ export class ConversationsService implements OnModuleInit {
    * que el nodo confundiera "no lo dijo" con inventar contexto extra.
    */
   private async extractLlmQueryValues(
-    llmMessages: LlmMessage[],
-    systemPrompt: string,
+    analysisText: string,
     pending: Array<{ variable: string; label?: string; allowedValues?: string[] }>,
   ): Promise<Record<string, string>> {
     const items = pending.map((v) => {
@@ -2710,13 +2815,15 @@ export class ConversationsService implements OnModuleInit {
     });
 
     const extractPrompt =
-      `${systemPrompt}\n\nTu única tarea ahora: para cada uno de estos datos, determinar si en ` +
-      `la conversación el usuario ya lo indicó:\n${items.map((i) => i.line).join('\n')}\n\n` +
+      'Tu única tarea ahora: leer el texto del usuario que viene a continuación y determinar, para ' +
+      `cada uno de estos datos, si el usuario lo indicó ahí:\n${items.map((i) => i.line).join('\n')}\n\n` +
+      'En esta llamada NO sos un asistente conversacional: no saludes, no le preguntes nada al ' +
+      'usuario, no redactes mensajes para él ni confirmes datos. Solo clasificás.\n\n' +
       'Respondé UNA línea por dato, en este formato exacto ("clave: valor"):\n' +
       items.map((i) => `${i.key}: <valor, o NONE si no lo dijo, o REFUSED si se negó a darlo>`).join('\n') +
       '\n\nNada de explicaciones ni texto adicional, solo esas líneas.';
 
-    const raw = await this.llmService.chat(llmMessages, {
+    const raw = await this.llmService.chat([{ role: 'user', content: `Texto del usuario:\n${analysisText}` }], {
       systemPrompt: extractPrompt,
       maxTokens: LLM_QUERY_EXTRACT_MAX_TOKENS,
       temperature: 0,
@@ -2752,7 +2859,10 @@ export class ConversationsService implements OnModuleInit {
     for (const { key } of items) {
       const value = outcomes[key];
       if (!value) {
-        outcomes[key] = 'NONE';
+        // NO es NONE: el modelo no contestó lo que se le pidió. Que el usuario pague ese
+        // fallo con uno de sus intentos es lo que dejaba datos en "no definido" sin haberlos
+        // preguntado bien nunca — ver LLM_QUERY_UNPARSEABLE y `executeLlmQueryExtraction`.
+        outcomes[key] = LLM_QUERY_UNPARSEABLE;
         continue;
       }
       const upper = value.toUpperCase();
