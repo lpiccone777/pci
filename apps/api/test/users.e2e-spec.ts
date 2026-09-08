@@ -1563,4 +1563,128 @@ describe('1.5 Usuarios (BE-USR-*)', () => {
     expect(persisted).not.toBeNull();
     expect(await bcrypt.compare(createdRow.tempPassword, persisted!.passwordHash)).toBe(true);
   });
+
+  describe('BE-USR-36: el rol protegido SuperAdmin solo lo asigna el superusuario del sistema', () => {
+    // El escenario del hallazgo: alguien con users:create/update DENTRO del tenant de sistema
+    // pero SIN ser SuperAdmin. Ese rol pertenece de verdad a ese tenant, así que la validación
+    // de pertenencia sola lo dejaba pasar y era una escalada de privilegios directa.
+    let systemTenantId: string;
+    let superAdminRoleId: string;
+    let rolComunId: string;
+    let tokenGestor: string;
+    const MENSAJE = 'Solo el superusuario del sistema puede asignar ese rol';
+
+    beforeAll(async () => {
+      const { tenant } = await getSystemContext(t.prisma);
+      systemTenantId = tenant.id;
+      const superAdminRole = await t.prisma.role.findFirstOrThrow({
+        where: { tenantId: systemTenantId, name: 'SuperAdmin' },
+      });
+      superAdminRoleId = superAdminRole.id;
+
+      const rolGestor = await createRole(t.prisma, {
+        tenantId: systemTenantId,
+        name: `Gestor de sistema ${uid()}`,
+        permissions: ['users:create', 'users:update', 'users:read'],
+      });
+      rolComunId = rolGestor.id;
+      const gestor = await createUser(t.prisma, {
+        email: uniqueEmail('usr36-gestor'),
+        memberships: [{ tenantId: systemTenantId, roleId: rolGestor.id }],
+      });
+      tokenGestor = tokenFor(t, gestor);
+    });
+
+    it('BE-USR-36: POST /users con el roleId protegido devuelve 403', async () => {
+      const res = await withAuth(http(t).post('/users'), tokenGestor, systemTenantId).send({
+        email: uniqueEmail('usr36-a'),
+        firstName: 'Escalada',
+        lastName: 'Intento',
+        password: 'Password123!',
+        roleId: superAdminRoleId,
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe(MENSAJE);
+    });
+
+    it('BE-USR-36: POST /users/multi con el roleId protegido devuelve 403', async () => {
+      const res = await withAuth(http(t).post('/users/multi'), tokenGestor, systemTenantId).send({
+        email: uniqueEmail('usr36-b'),
+        firstName: 'Escalada',
+        lastName: 'Intento',
+        password: 'Password123!',
+        memberships: [{ tenantId: systemTenantId, roleId: superAdminRoleId }],
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe(MENSAJE);
+    });
+
+    it('BE-USR-36: PATCH /users/:id con el roleId protegido devuelve 403', async () => {
+      const victima = await createUser(t.prisma, {
+        email: uniqueEmail('usr36-c'),
+        memberships: [{ tenantId: systemTenantId, roleId: rolComunId }],
+      });
+
+      const res = await withAuth(
+        http(t).patch(`/users/${victima.id}`),
+        tokenGestor,
+        systemTenantId,
+      ).send({ roleId: superAdminRoleId });
+
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe(MENSAJE);
+      const sigue = await t.prisma.userTenant.findFirstOrThrow({
+        where: { userId: victima.id, tenantId: systemTenantId },
+      });
+      expect(sigue.roleId).toBe(rolComunId);
+    });
+
+    it('BE-USR-36: PATCH /users/:id/full con el roleId protegido devuelve 403', async () => {
+      const victima = await createUser(t.prisma, {
+        email: uniqueEmail('usr36-d'),
+        memberships: [{ tenantId: systemTenantId, roleId: rolComunId }],
+      });
+
+      const res = await withAuth(
+        http(t).patch(`/users/${victima.id}/full`),
+        tokenGestor,
+        systemTenantId,
+      ).send({ memberships: [{ tenantId: systemTenantId, roleId: superAdminRoleId }] });
+
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe(MENSAJE);
+    });
+
+    it('BE-USR-36: bulk-import con el roleId protegido como defaultRoleId devuelve 403', async () => {
+      const res = await withAuth(
+        http(t).post('/users/bulk-import'),
+        tokenGestor,
+        systemTenantId,
+      ).send({ defaultRoleId: superAdminRoleId, rows: [validRow('usr36-e')] });
+
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe(MENSAJE);
+    });
+
+    it('BE-USR-36: el superusuario del sistema sí puede asignar el rol protegido', async () => {
+      const email = uniqueEmail('usr36-ok');
+
+      const res = await withAuth(http(t).post('/users'), t.authToken, systemTenantId).send({
+        email,
+        firstName: 'Nuevo',
+        lastName: 'Superusuario',
+        password: 'Password123!',
+        roleId: superAdminRoleId,
+      });
+
+      expect(res.status).toBe(201);
+      const creado = await t.prisma.user.findFirstOrThrow({ where: { email } });
+      const membresia = await t.prisma.userTenant.findFirstOrThrow({
+        where: { userId: creado.id, tenantId: systemTenantId },
+      });
+      expect(membresia.roleId).toBe(superAdminRoleId);
+    });
+  });
 });

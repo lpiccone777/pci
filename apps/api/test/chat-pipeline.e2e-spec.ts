@@ -11,8 +11,11 @@
  *
  * SMS es 100% saliente (pedido de DEVELOPMENT, ver `SmsModule`/`ConversationsService.
  * onModuleInit`): no hay webhook de entrada ni suscripción a `sms.incoming` para ningún
- * proveedor — no hay conversación bidireccional por ese canal, así que no hay un CHAT-PIPE-07
- * "mismo teléfono por whatsapp y por sms" que probar acá.
+ * proveedor. Igual `handleMessage` sigue siendo channel-aware, así que CHAT-PIPE-07 ejercita
+ * el canal `sms` publicando en `whatsapp.incoming` con `channel:'sms'` (el DTO de
+ * `/conversations/simulate` no lleva ese campo) y SIN `replyTo`: con `replyTo` la respuesta
+ * vuelve por la cola RPC y no se vería el ruteo a `${channel}.outgoing`, que es lo que el caso
+ * verifica.
  *
  * "No hablamos con desconocidos" (pedido 2026-08-27, ver `ConversationsService.handleMessage`):
  * un teléfono sin membresía en el tenant se rechaza ANTES de crear nada — ya no hay `User`
@@ -32,6 +35,7 @@
  */
 import { LlmService } from '../src/modules/llm/llm.service';
 import { BrokerService } from '../src/modules/broker/broker.service';
+import { InboundTenantRoutingService } from '../src/modules/conversations/inbound-tenant-routing.service';
 import {
   createTestApp,
   TestApp,
@@ -318,5 +322,142 @@ describe('2.1 Pipeline de un mensaje (CHAT-PIPE-*)', () => {
     );
 
     expect(conversation.channel).toBe('whatsapp');
+  });
+
+  it('CHAT-PIPE-07: el mismo teléfono por whatsapp y por sms abre una conversación por canal, y cada respuesta va a su cola', async () => {
+    const { phone, user } = await knownUser('pipe07');
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      // `handleMessage` es channel-aware; el resto del motor no sabe de canales. Se publica SIN
+      // `replyTo` (como un canal real): con `replyTo` —el camino de `/simulate`— la respuesta
+      // vuelve por la cola RPC y no se ve el ruteo a `${channel}.outgoing`.
+      for (const channel of ['whatsapp', 'sms']) {
+        await broker.publish('whatsapp.incoming', {
+          pattern: 'message.received',
+          data: { from: phone, body: `hola por ${channel}`, channel },
+          tenantId: tenant.id,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      await waitUntil(async () => {
+        const convs = await t.prisma.conversation.findMany({
+          where: { userId: user.id, tenantId: tenant.id },
+        });
+        return convs.length === 2 ? convs : null;
+      });
+
+      const conversaciones = await t.prisma.conversation.findMany({
+        where: { userId: user.id, tenantId: tenant.id },
+      });
+      expect(conversaciones.map((c) => c.channel).sort()).toEqual(['sms', 'whatsapp']);
+      expect(new Set(conversaciones.map((c) => c.id)).size).toBe(2);
+
+      // La respuesta de cada canal se rutea a `${channel}.outgoing`.
+      await waitUntil(async () =>
+        publishSpy.mock.calls.some((c) => c[0] === 'sms.outgoing') ? true : null,
+      );
+    } finally {
+      publishSpy.mockRestore();
+    }
+  });
+
+  it('CHAT-PIPE-09: un número no registrado en la empresa se rechaza antes de tocar la base y sin gastar LLM', async () => {
+    const desconocido = uniquePhone();
+    const llamadasPrevias = llm.calls.length;
+
+    const res = await http(t)
+      .post('/conversations/simulate')
+      .set('Authorization', `Bearer ${t.authToken}`)
+      .send({ from: desconocido, body: 'hola, soy nuevo', tenantId: tenant.id });
+
+    // Por RPC se responde un aviso para no dejar colgado al llamador (por canal real es
+    // silencio total).
+    expect(res.status).toBe(201);
+    expect(typeof res.body.reply).toBe('string');
+
+    // Nada en la base: ni persona, ni conversación, ni mensaje. Y ni una llamada al modelo.
+    expect(await t.prisma.user.findFirst({ where: { phone: desconocido } })).toBeNull();
+    expect(
+      await t.prisma.conversation.count({ where: { externalId: desconocido } }),
+    ).toBe(0);
+    expect(llm.calls.length).toBe(llamadasPrevias);
+  });
+
+  it('CHAT-PIPE-10: un turno sin nada que mostrar no guarda Message vacío, pero sí responde por RPC', async () => {
+    const { phone, user } = await knownUser('pipe10');
+    // Flujo propio: el botón de link frena el turno; el siguiente mensaje cae a un `end` sin
+    // texto, así que el flujo avanza sin nada que decir. `isDefault` es GLOBAL: se restaura el
+    // flujo del archivo al terminar (ver flow-builder.ts).
+    const original = await t.prisma.flow.findFirstOrThrow({ where: { name: 'F-PIPE' } });
+    await unsetAllDefaults();
+    await t.prisma.flow.create({
+      data: {
+        name: uniqueSlug('flow-pipe10'),
+        isDefault: true,
+        nodes: [
+          startNode('s'),
+          {
+            id: 'n',
+            type: 'notification',
+            position: { x: 0, y: 0 },
+            data: {
+              text: 'Mirá el instructivo.',
+              buttonMode: 'link',
+              buttonLabel: 'Abrir',
+              buttonUrl: 'https://ayuda.test/guia',
+            },
+          },
+          { id: 'e', type: 'end', position: { x: 0, y: 0 }, data: {} },
+        ] as never,
+        edges: [edge('s', 'n', 'known'), edge('s', 'n', 'unknown'), edge('n', 'e')] as never,
+      },
+    });
+
+    try {
+      const primero = await simulate(phone, tenant.id, 'hola');
+      expect(primero.body.reply).toContain('Abrir: https://ayuda.test/guia');
+
+      const mensajesAntes = await t.prisma.message.count({
+        where: { conversation: { userId: user.id }, senderType: 'assistant' },
+      });
+
+      const segundo = await simulate(phone, tenant.id, 'ya lo vi');
+
+      // Turno silencioso: por RPC igual se publica una respuesta (si no, `simulate` quedaría
+      // colgado hasta el timeout), pero vacía.
+      expect(segundo.status).toBe(201);
+      expect((segundo.body.reply ?? '').trim()).toBe('');
+      // Y no se guardó un Message del asistente en blanco.
+      const mensajesDespues = await t.prisma.message.count({
+        where: { conversation: { userId: user.id }, senderType: 'assistant' },
+      });
+      expect(mensajesDespues).toBe(mensajesAntes);
+    } finally {
+      await unsetAllDefaults();
+      await t.prisma.flow.update({ where: { id: original.id }, data: { isDefault: true } });
+    }
+  });
+
+  it('CHAT-PIPE-11: si la resolución de empresa lanza, se le avisa a la persona en vez de descartar el mensaje', async () => {
+    const { phone } = await knownUser('pipe11');
+    const routing = t.moduleRef.get(InboundTenantRoutingService);
+    // Choque transitorio al registrar el pendiente del selector: la frontera que falla es la
+    // resolución de empresa; el `catch` de `handleMessage` es lo que está bajo prueba.
+    const spy = jest
+      .spyOn(routing, 'resolve')
+      .mockRejectedValue(new Error('choque transitorio (simulado)'));
+    try {
+      // Sin `tenantId`: así el mensaje pasa por el ruteo por membresía.
+      const res = await http(t)
+        .post('/conversations/simulate')
+        .set('Authorization', `Bearer ${t.authToken}`)
+        .send({ from: phone, body: 'hola' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.reply).toContain('probá de nuevo');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

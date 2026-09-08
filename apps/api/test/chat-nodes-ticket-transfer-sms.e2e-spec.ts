@@ -845,6 +845,239 @@ describe('2.3 Nodos del motor — ticket_create/ticket_query, transfer_agent, sm
         expect(vuelta.body.reply).toContain('Ticket navegable');
       });
     });
+
+    it('CHAT-N-TKQ-06: el detalle trae referencia, título, estado, prioridad, fecha, agente y el último comentario', async () => {
+      const customerId = 816;
+      const { phone } = await setupTicketQueryUser('TKQ-06', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1040, {
+          id: 1040,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Impresora sin tóner',
+          priority_id: 6,
+          created_at: Date.parse('2026-03-15T10:00:00.000Z'),
+          comments: [
+            {
+              id: 1,
+              message: 'Ya lo estamos viendo.',
+              customer_visible: true,
+              created_at: '2026-03-16T10:00:00Z',
+            },
+          ],
+        });
+
+        await simulate(phone, tenantTkc.id, 'mis tickets');
+        const detalle = await simulate(phone, tenantTkc.id, '1040');
+
+        expect(detalle.body.reply).toContain('Ticket #1040: Impresora sin tóner');
+        expect(detalle.body.reply).toContain('Estado: Abierto');
+        expect(detalle.body.reply).toContain('Prioridad: Alta');
+        expect(detalle.body.reply).toContain('Creado: ');
+        // Sin `assigned_id` resoluble, se dice explícitamente que no tiene agente.
+        expect(detalle.body.reply).toContain('Asignado a: sin asignar');
+        // Se muestra la última novedad, no la descripción original que escribió la persona.
+        expect(detalle.body.reply).toContain('Último comentario');
+        expect(detalle.body.reply).toContain('Ya lo estamos viendo.');
+        expect(detalle.body.reply).toContain('Volver a la lista');
+      });
+    });
+
+    it('CHAT-N-TKQ-07: solo se muestra el último comentario VISIBLE; los internos nunca llegan', async () => {
+      const customerId = 817;
+      const { phone } = await setupTicketQueryUser('TKQ-07', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1050, {
+          id: 1050,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Con notas internas',
+          created_at: 1_000,
+          comments: [
+            { id: 1, message: 'Visible viejo', customer_visible: true, created_at: '2026-03-10T10:00:00Z' },
+            { id: 2, message: 'Visible nuevo', customer_visible: true, created_at: '2026-03-12T10:00:00Z' },
+            { id: 3, message: 'NOTA INTERNA: el cliente insiste', customer_visible: false, created_at: '2026-03-13T10:00:00Z' },
+          ],
+        });
+
+        await simulate(phone, tenantTkc.id, 'mis tickets');
+        const detalle = await simulate(phone, tenantTkc.id, '1050');
+
+        expect(detalle.body.reply).toContain('Visible nuevo');
+        expect(detalle.body.reply).not.toContain('Visible viejo');
+        expect(detalle.body.reply).not.toContain('NOTA INTERNA');
+      });
+    });
+
+    it('CHAT-N-TKQ-07: sin comentarios visibles dice "Sin comentarios aún." y una forma inesperada no rompe el detalle', async () => {
+      const customerId = 818;
+      const { phone } = await setupTicketQueryUser('TKQ-07b', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1060, {
+          id: 1060,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Solo internos',
+          created_at: 1_000,
+          comments: [{ id: 1, message: 'nota privada', customer_visible: false }],
+        });
+        mock.incidents.set(1061, {
+          id: 1061,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Comentarios con forma rara',
+          created_at: 2_000,
+          // Forma inesperada (no es un arreglo de objetos con `message`): no debe romper.
+          comments: 'esto no es lo que se esperaba' as never,
+        });
+
+        await simulate(phone, tenantTkc.id, 'mis tickets');
+        const soloInternos = await simulate(phone, tenantTkc.id, '1060');
+        expect(soloInternos.body.reply).toContain('Sin comentarios aún.');
+        expect(soloInternos.body.reply).not.toContain('nota privada');
+
+        await simulate(phone, tenantTkc.id, '__volver');
+        const formaRara = await simulate(phone, tenantTkc.id, '1061');
+        expect(formaRara.body.reply).toContain('Ticket #1061');
+        expect(formaRara.body.reply).toContain('Sin comentarios aún.');
+      });
+    });
+
+    it('CHAT-N-TKQ-08: "Volver" reusa la lista cacheada; al salir del nodo, la próxima visita trae los tickets al día', async () => {
+      const customerId = 819;
+      const { phone } = await setupTicketQueryUser('TKQ-08', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1070, {
+          id: 1070,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Ticket original',
+          created_at: 1_000,
+        });
+
+        await simulate(phone, tenantTkc.id, 'mis tickets');
+        await simulate(phone, tenantTkc.id, '1070');
+
+        // Aparece un ticket nuevo en InvGate MIENTRAS la persona está en el detalle.
+        mock.incidents.set(1071, {
+          id: 1071,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Ticket recién creado',
+          created_at: 2_000,
+        });
+
+        const vuelta = await simulate(phone, tenantTkc.id, '__volver');
+        // "Volver" reusa la MISMA lista ya armada: por Twilio la lista viaja como Content
+        // Template cacheado por su forma exacta, así que reconstruirla podría forzar uno nuevo.
+        // Se asserta por el id (`#1070`/`#1071`) porque el título de cada fila viaja recortado
+        // al límite de WhatsApp.
+        expect(vuelta.body.reply).toContain('#1070');
+        expect(vuelta.body.reply).not.toContain('#1071');
+
+        // Para SALIR del nodo hay que estar en el detalle: desde la lista, cualquier texto se
+        // interpreta como el id de un ticket (y si no matchea, se re-muestra la lista).
+        await simulate(phone, tenantTkc.id, '1070');
+        await simulate(phone, tenantTkc.id, 'gracias, era eso');
+
+        // Al salir se descarta el caché, así que una visita posterior trae los tickets al día.
+        const nuevaVisita = await simulate(phone, tenantTkc.id, 'mis tickets de nuevo');
+        expect(nuevaVisita.body.reply).toContain('#1071');
+      });
+    });
+
+    it('CHAT-N-TKQ-09: tipear el id de un incidente ajeno se trata como "no encontrado" y vuelve a la lista', async () => {
+      const customerId = 820;
+      const ajeno = 999;
+      const { phone } = await setupTicketQueryUser('TKQ-09', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1080, {
+          id: 1080,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Mío',
+          created_at: 1_000,
+        });
+        mock.incidents.set(1081, {
+          id: 1081,
+          status_id: 1,
+          user_id: ajeno,
+          title: 'SECRETO DE OTRA PERSONA',
+          created_at: 2_000,
+        });
+
+        await simulate(phone, tenantTkc.id, 'mis tickets');
+        const intento = await simulate(phone, tenantTkc.id, '1081');
+
+        // El detalle compara el cliente del incidente contra el de quien pregunta antes de
+        // mostrar nada: sin eso, cualquiera vería tickets ajenos adivinando un id bajo.
+        expect(intento.body.reply).toContain('No reconocí esa opción.');
+        expect(intento.body.reply).toContain('Elegí un ticket:');
+        expect(intento.body.reply).not.toContain('SECRETO DE OTRA PERSONA');
+      });
+    });
+
+    it('CHAT-N-TKQ-10: con InvGate sin configurar avisa, limpia el estado del nodo y sigue de largo', async () => {
+      const customerId = 821;
+      const { phone } = await setupTicketQueryUser('TKQ-10', customerId);
+
+      // Sin `withInvgate`: ninguna credencial cargada, `isConfigured()` da false.
+      const res = await simulate(phone, tenantTkc.id, 'quiero ver mis tickets');
+
+      expect(res.status).toBe(201);
+      expect(res.body.reply).toContain(
+        'No pude vincular tu usuario con InvGate para buscar tus tickets. Contactá a un administrador.',
+      );
+      // No se queda esperando una opción: el nodo salió y el flujo siguió.
+      expect(res.body.reply).not.toContain('Elegí un ticket:');
+    });
+
+    it('CHAT-N-TKQ-11: el HTML y las entidades del último comentario se convierten a texto en una sola pasada', async () => {
+      const customerId = 822;
+      const { phone } = await setupTicketQueryUser('TKQ-11', customerId);
+
+      await withInvgate({}, async (mock) => {
+        mock.incidents.set(1090, {
+          id: 1090,
+          status_id: 1,
+          user_id: customerId,
+          title: 'Con HTML',
+          created_at: 1_000,
+          comments: [
+            {
+              id: 1,
+              customer_visible: true,
+              created_at: '2026-03-16T10:00:00Z',
+              message:
+                '<p>Primera línea<br/>Segunda&#xA0;línea</p><b>Tercera</b>&#160;con&nbsp;espacios &amp;nbsp; &desconocida;',
+            },
+          ],
+        });
+
+        await simulate(phone, tenantTkc.id, 'mis tickets');
+        const detalle = await simulate(phone, tenantTkc.id, '1090');
+        const reply = detalle.body.reply as string;
+
+        // `<br>`/`</p>` a saltos de línea y etiquetas fuera.
+        expect(reply).toContain('Primera línea\nSegunda');
+        expect(reply).toContain('Tercera');
+        expect(reply).not.toContain('<b>');
+        expect(reply).not.toContain('<p>');
+        // Entidades numéricas (hex y decimal) y con nombre resueltas a su carácter.
+        expect(reply).not.toContain('&#xA0;');
+        expect(reply).not.toContain('&#160;');
+        expect(reply).not.toContain('&nbsp;con');
+        // Una sola pasada: `&amp;nbsp;` queda como el texto literal "&nbsp;", no como espacio.
+        expect(reply).toContain('&nbsp;');
+        // Una entidad desconocida se deja tal cual, que es más honesto que comerse el contenido.
+        expect(reply).toContain('&desconocida;');
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------------------

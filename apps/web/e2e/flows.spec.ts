@@ -35,6 +35,8 @@ import {
   createContextSource,
   createSkill,
   createFlow,
+  createFlowVariant,
+  updateFlowGraph,
   setFlowDefault,
   findUserIdByEmail,
   type AdminCtx,
@@ -155,8 +157,10 @@ test('FE-FLW-08: seleccionar un nodo abre el panel con sus campos propios', asyn
 
   await page.locator('.react-flow__node-start').click();
   await expect(page.getByRole('heading', { name: 'Propiedades' })).toBeVisible();
-  // Campos propios del nodo start.
-  await expect(page.getByText('Texto de bienvenida (usuarios nuevos)')).toBeVisible();
+  // Campos propios del nodo start. El campo de texto se llama "Saludo": antes era "Texto de
+  // bienvenida (usuarios nuevos)", y se renombró cuando el bot dejó de atender números sin
+  // registrar — ya no hay "usuarios nuevos" a los que saludar, sólo el saludo de la charla.
+  await expect(page.getByText('Saludo', { exact: true })).toBeVisible();
   await expect(page.getByText('Salida: Usuario Conocido')).toBeVisible();
 });
 
@@ -290,7 +294,27 @@ test('FE-FLW-14: guardar sin empresas asignadas pide confirmación', async ({ pa
 test('FE-FLW-15: el payload de guardado limpia las props transitorias de ReactFlow', async ({
   page,
 }) => {
-  page.on('dialog', (d) => d.accept());
+  // Guardar no termina en el PATCH: después va el POST de assign-tenants y recién ahí el
+  // `alert('Flujo guardado')`. Este caso valida el body del PATCH, así que sin esperar ese aviso
+  // el test podía cerrarse con el alert todavía en camino, y el `accept()` del diálogo huérfano
+  // fallaba con "dialog.accept: Test ended" — el caso quedaba intermitente (verde al reintentar).
+  // Se resuelve esperando el fin real del guardado; el `catch` cubre cualquier otro diálogo que
+  // llegue fuera de tiempo, para que un aviso tardío no vuelva a tumbar el caso.
+  let avisarFinDelGuardado: (mensaje: string) => void = () => undefined;
+  const finDelGuardado = new Promise<string>((resolve) => {
+    avisarFinDelGuardado = resolve;
+  });
+  page.on('dialog', (d) => {
+    const mensaje = d.message();
+    // El guardado cierra de dos maneras: 'Flujo guardado' si salió bien, 'Error al guardar: …' si
+    // no. Las dos cortan la espera: si sólo se esperara la primera, un guardado fallido dejaría el
+    // caso colgado hasta el timeout y el motivo real — que la pantalla sí informa — se perdería
+    // detrás de un "test timeout" mudo.
+    const esCierreDelGuardado = mensaje === 'Flujo guardado' || mensaje.startsWith('Error al guardar');
+    void d.accept().catch(() => undefined);
+    if (esCierreDelGuardado) avisarFinDelGuardado(mensaje);
+  });
+
   const tenant = await createTenant(admin);
   const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
   const flow = await createFlow(admin, {
@@ -313,6 +337,10 @@ test('FE-FLW-15: el payload de guardado limpia las props transitorias de ReactFl
     // Sólo las cuatro claves declaradas: sin measured/selected/dragging que agrega ReactFlow.
     expect(Object.keys(node).sort()).toEqual(['data', 'id', 'position', 'type']);
   }
+
+  // Recién con el aviso aceptado el guardado terminó de verdad y el caso puede cerrarse. Si el que
+  // llegó fue el de error, la aserción falla mostrando el motivo en vez de agotar el tiempo.
+  expect(await finDelGuardado).toBe('Flujo guardado');
 });
 
 // Reclasificado a EXCLUIDO por el plan (gesto de canvas frágil: depende de selección previa y foco
@@ -696,11 +724,26 @@ test(
     // de A vía `contextSourceId`; igual vale para `skillId`, el `userId` de assignees/recipients o el
     // `flowId` de un nodo `subflow`). Importándolo con la empresa B activa, `POST /flows` descarta ese
     // id ajeno (lo sanea a null) en vez de guardarlo tal cual apuntando a un recurso de A.
+    //
+    // El que importa es un usuario COMÚN de B, no el SuperAdmin del seed: `FlowService.create`
+    // saltea el saneo a propósito para el SuperAdmin, que administra el sistema entero y puede
+    // vincular recursos de cualquier empresa. Corriendo con el SuperAdmin este caso le pedía al
+    // backend algo que el backend decide no hacer, y encima dejaba sin cubrir el único escenario
+    // donde la protección actúa: el del usuario común.
     const empresaA = await createTenant(admin);
     const fuenteA = await createContextSource(admin, { tenantId: empresaA.id, type: 'n8n' });
     const empresaB = await createTenant(admin);
 
-    await injectSession(page, { token: admin.token, activeTenant: empresaB.id });
+    // `flows:create` es lo que habilita el botón/input de importar en el listado; `flows:read`, la
+    // pantalla misma.
+    const importador = await createUserWithPermissions(admin, ['flows:read', 'flows:create'], {
+      tenantId: empresaB.id,
+    });
+
+    await injectSession(
+      page,
+      await sessionForUser(importador.email, importador.password, empresaB.id),
+    );
     await page.goto('/dashboard/flows');
 
     const [resp] = await Promise.all([
@@ -725,5 +768,233 @@ test(
 
     // El flujo importado en B no debe quedar con la fuente de verdad de A.
     expect(created.contextSourceId).not.toBe(fuenteA.id);
+    // Y el saneo no lo reemplaza por otra cosa: lo deja sin fuente.
+    expect(created.contextSourceId).toBeNull();
   },
 );
+
+// ===================== VARIANTES (Principal / Guardia / Feriado) =====================
+
+test('FE-FLW-30: las pestañas cargan el grafo de la variante y guardan contra ESE flujo', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const principal = await createFlow(admin, {
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+    nodes: [
+      { id: 'start_1', type: 'start', data: { text: 'Soy el Principal' }, position: { x: 250, y: 40 } },
+      { id: 'msg_p', type: 'message', data: { text: 'NODO-DEL-PRINCIPAL' }, position: { x: 250, y: 160 } },
+    ],
+  });
+  // Variante de feriado ya configurada, con un grafo propio distinto al del Principal.
+  const variante = await createFlowVariant(admin, principal.id, 'feriado');
+  await updateFlowGraph(admin, variante.id, [
+    { id: 'start_v', type: 'start', data: { text: 'Soy la variante' }, position: { x: 250, y: 40 } },
+    { id: 'msg_v', type: 'message', data: { text: 'NODO-DE-LA-VARIANTE' }, position: { x: 250, y: 160 } },
+  ]);
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await openEditor(page, principal.id);
+
+  // Principal: su propio grafo.
+  await expect(
+    page.locator('.react-flow__node-message').filter({ hasText: 'NODO-DEL-PRINCIPAL' }),
+  ).toBeVisible();
+
+  // Al pasar a Feriado, el canvas carga el grafo de la variante, no el del Principal.
+  await page.getByRole('button', { name: 'Feriado' }).click();
+  await expect(
+    page.locator('.react-flow__node-message').filter({ hasText: 'NODO-DE-LA-VARIANTE' }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.react-flow__node-message').filter({ hasText: 'NODO-DEL-PRINCIPAL' }),
+  ).toHaveCount(0);
+
+  // Guardar desde la pestaña de variante persiste contra la variante, no contra el Principal.
+  const [resp] = await Promise.all([
+    page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().includes('/flows/')),
+    page.getByRole('button', { name: 'Guardar' }).click(),
+  ]);
+  expect(resp.url()).toContain(variante.id);
+  expect(resp.url()).not.toContain(principal.id);
+});
+
+test('FE-FLW-31: elegir una pestaña sin variante abre el modal con los tres orígenes y la crea', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const principal = await createFlow(admin, {
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+    nodes: [
+      { id: 'start_1', type: 'start', data: { text: 'Principal' }, position: { x: 250, y: 40 } },
+      { id: 'msg_p', type: 'message', data: { text: 'NODO-DEL-PRINCIPAL' }, position: { x: 250, y: 160 } },
+    ],
+  });
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await openEditor(page, principal.id);
+
+  await page.getByRole('button', { name: 'Guardia' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Crear variante de Guardia' })).toBeVisible();
+  await expect(page.getByText('Duplicar el flujo Principal')).toBeVisible();
+  await expect(page.getByText('Duplicar otro flujo')).toBeVisible();
+  await expect(page.getByText('Crear vacía')).toBeVisible();
+
+  const [resp] = await Promise.all([
+    page.waitForResponse((r) => r.request().method() === 'POST' && /\/variants$/.test(r.url())),
+    page.getByRole('button', { name: 'Crear', exact: true }).click(),
+  ]);
+  const creada = await resp.json();
+
+  // El canvas pasa a la variante recién creada, que por defecto duplica el Principal.
+  await expect(page.getByRole('heading', { name: 'Crear variante de Guardia' })).toHaveCount(0);
+  await expect(
+    page.locator('.react-flow__node-message').filter({ hasText: 'NODO-DEL-PRINCIPAL' }),
+  ).toBeVisible();
+  expect(creada.name).toContain('(guardia)');
+});
+
+test('FE-FLW-32: el botón de copiar flujo solo aparece en las pestañas de variante y reemplaza el grafo', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const principal = await createFlow(admin, {
+    name: `Principal ${Date.now()}`,
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+    nodes: [
+      { id: 'start_1', type: 'start', data: { text: 'Principal' }, position: { x: 250, y: 40 } },
+      { id: 'msg_p', type: 'message', data: { text: 'NODO-DEL-PRINCIPAL' }, position: { x: 250, y: 160 } },
+    ],
+  });
+  const otro = await createFlow(admin, {
+    name: `Fuente a copiar ${Date.now()}`,
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+    nodes: [
+      { id: 'start_o', type: 'start', data: { text: 'Otro' }, position: { x: 250, y: 40 } },
+      { id: 'msg_o', type: 'message', data: { text: 'NODO-COPIADO' }, position: { x: 250, y: 160 } },
+    ],
+  });
+  await createFlowVariant(admin, principal.id, 'feriado');
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await openEditor(page, principal.id);
+
+  // En Principal no se ofrece.
+  await expect(page.getByRole('button', { name: /Copiar flujo/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Feriado' }).click();
+  const copiar = page.getByRole('button', { name: /Copiar flujo/ });
+  await expect(copiar).toBeVisible();
+
+  await copiar.click();
+  await page.locator('select').last().selectOption({ label: otro.name });
+  await page.getByRole('button', { name: 'Copiar', exact: true }).click();
+
+  // Reemplaza el grafo del canvas, sin crear otra variante ni tocar el nombre del flujo.
+  await expect(
+    page.locator('.react-flow__node-message').filter({ hasText: 'NODO-COPIADO' }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.react-flow__node-message').filter({ hasText: 'NODO-DEL-PRINCIPAL' }),
+  ).toHaveCount(0);
+});
+
+test('FE-FLW-33: los paneles de Notificación, Condición, Webhook e Inicio muestran sus campos propios', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const flow = await createFlow(admin, {
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+    nodes: [
+      { id: 'start_1', type: 'start', data: { text: 'Hola' }, position: { x: 60, y: 40 } },
+      {
+        id: 'notif_1',
+        type: 'notification',
+        data: { text: 'Agregue sus fotos', buttonLabel: 'Sin foto', buttonMode: 'confirm' },
+        position: { x: 260, y: 40 },
+      },
+      {
+        id: 'cond_1',
+        type: 'condition',
+        data: { compareVariable: 'userRole', compareOperator: 'equals', compareValue: 'SuperAdmin' },
+        position: { x: 460, y: 40 },
+      },
+      {
+        id: 'hook_1',
+        type: 'webhook',
+        data: { url: 'https://ejemplo.test/hook', method: 'POST', body: '{"a":1}' },
+        position: { x: 660, y: 40 },
+      },
+    ],
+  });
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+  await openEditor(page, flow.id);
+
+  // Notificación: texto, etiqueta del botón, modo y el tilde de la foto (solo en confirmar).
+  await page.locator('.react-flow__node-notification').click();
+  await expect(page.getByPlaceholder('Agregue sus fotos')).toBeVisible();
+  await expect(page.getByPlaceholder('Sin foto')).toBeVisible();
+  await expect(page.getByText('Espera una foto', { exact: true })).toBeVisible();
+  const modoBoton = page.locator('select').filter({ hasText: 'Confirmación' }).first();
+  await modoBoton.selectOption('link');
+  // En modo link aparece la URL y desaparece el tilde de la foto.
+  await expect(page.getByPlaceholder('https://...')).toBeVisible();
+  await expect(page.getByText('Espera una foto', { exact: true })).toHaveCount(0);
+
+  // Condición: variable, operador y valor; el valor se oculta con "tiene un valor cargado".
+  await page.locator('.react-flow__node-condition').click();
+  await expect(page.getByText('Comparación', { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder('Ej: SuperAdmin')).toBeVisible();
+  const operador = page.locator('select').filter({ hasText: 'Es igual a' }).first();
+  await operador.selectOption('exists');
+  await expect(page.getByPlaceholder('Ej: SuperAdmin')).toHaveCount(0);
+
+  // Webhook: método, URL y cuerpo JSON, que desaparece con GET.
+  await page.locator('.react-flow__node-webhook').click();
+  await expect(page.getByText('Body (JSON)', { exact: true })).toBeVisible();
+  const metodo = page.locator('select').filter({ hasText: 'POST' }).first();
+  await metodo.selectOption('GET');
+  await expect(page.getByText('Body (JSON)', { exact: true })).toHaveCount(0);
+
+  // Inicio: el saludo admite variables y el tilde deshabilita el campo de texto.
+  await page.locator('.react-flow__node-start').click();
+  const saludo = page.locator('textarea[placeholder*="Bienvenido de nuevo"]');
+  await expect(saludo).toBeEnabled();
+  await page.getByText('No enviar saludo', { exact: true }).click();
+  await expect(saludo).toBeDisabled();
+});
+
+test('FE-FLW-34: los flujos variante no aparecen en el listado ni en los desplegables del editor', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, { tenantId: tenant.id, permissions: ['flows:read'] });
+  const principal = await createFlow(admin, {
+    name: `Principal con variante ${Date.now()}`,
+    assignments: [{ tenantId: tenant.id, roleIds: [role.id] }],
+    nodes: [
+      { id: 'start_1', type: 'start', data: { text: 'Principal' }, position: { x: 60, y: 40 } },
+      { id: 'sub_1', type: 'subflow', data: {}, position: { x: 260, y: 40 } },
+    ],
+  });
+  const variante = await createFlowVariant(admin, principal.id, 'guardia');
+
+  await injectSession(page, { token: admin.token, activeTenant: tenant.id });
+
+  // No está en el listado.
+  await page.goto('/dashboard/flows');
+  await expect(flowCard(page, principal.name)).toBeVisible();
+  await expect(page.getByText(variante.name, { exact: true })).toHaveCount(0);
+
+  // Ni en el desplegable de sub-flujo del editor: solo se llega a ella por sus pestañas.
+  await openEditor(page, principal.id);
+  await page.locator('.react-flow__node-subflow').click();
+  const opciones = await page.locator('select').last().locator('option').allTextContents();
+  expect(opciones.join('|')).not.toContain(variante.name);
+});

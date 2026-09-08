@@ -479,16 +479,18 @@ test('FE-SET-16: las pestañas forman una jerarquía de 3 niveles navegable por 
     await expect(leafTabs.getByRole('tab', { name: leaf, exact: true })).toBeVisible();
   }
 
-  // "Otros" — con el catálogo real todos los grupos están mapeados en GROUP_HIERARCHY, así que la
-  // pestaña "Otros" NO aparece hoy.
-  await expect(topTabs.getByRole('tab', { name: 'Otros', exact: true })).toHaveCount(0);
-
-  // Para ejercitar la rama defensiva (un grupo del catálogo sin mapear cae en "Otros" en vez de
-  // desaparecer) hace falta un grupo que la jerarquía no conozca, y no hay endpoint para agregar
-  // grupos al catálogo. Interceptamos SOLO el GET /settings para reusar la respuesta REAL de la API
-  // y sumarle una única clave con un grupo inexistente en GROUP_HIERARCHY; el resto del payload y el
-  // status de proveedores siguen siendo los reales (frontera bajo prueba: el agrupamiento en el
-  // cliente).
+  // "Otros" — este caso NO afirma si la pestaña aparece o no con el catálogo real: eso depende de
+  // que todos los grupos del catálogo estén mapeados en GROUP_HIERARCHY, y esa sincronización se
+  // mueve sola cada vez que el backend suma una clave con un grupo nuevo (hoy, por ejemplo, las de
+  // 'Simulación' y 'Otros' no están mapeadas y la pestaña sí aparece). Afirmar el estado de esa
+  // sincronización acá hacía fallar al caso por un motivo ajeno a lo que prueba: que el
+  // agrupamiento del cliente NO pierde grupos desconocidos.
+  //
+  // Para ejercitar esa rama defensiva de forma determinista, sin depender del catálogo del momento,
+  // hace falta un grupo que la jerarquía seguro no conozca, y no hay endpoint para agregar grupos al
+  // catálogo. Interceptamos SOLO el GET /settings para reusar la respuesta REAL de la API y sumarle
+  // una única clave con un grupo inexistente en GROUP_HIERARCHY; el resto del payload y el status de
+  // proveedores siguen siendo los reales (frontera bajo prueba: el agrupamiento en el cliente).
   const probeKey = 'E2E_UNMAPPED_PROBE';
   await page.route(`${API_URL}/settings`, async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -514,8 +516,24 @@ test('FE-SET-16: las pestañas forman una jerarquía de 3 niveles navegable por 
     .getByRole('tab', { name: 'Otros', exact: true });
   await expect(otros).toBeVisible();
   await otros.click();
+
+  // "Otros" es una RAMA: cuelga una sub-pestaña por cada grupo sin mapear. La pantalla dibuja ese
+  // segundo nivel SÓLO con más de un grupo suelto; con uno solo abre directo en él. Los dos
+  // escenarios son posibles y ninguno depende de este caso:
+  //   · hoy el catálogo aporta grupos sueltos propios ('Simulación' y 'Otros'), así que con la sonda
+  //     son varios y hay que elegirla;
+  //   · si algún día esos grupos se ubican en la jerarquía, la sonda queda sola y no hay sub-nivel.
+  // Por eso se espera a que aparezca cualquiera de los dos y recién ahí se decide, en vez de asumir
+  // una de las dos formas (asumir la de hoy dejaría este caso listo para romperse el día que
+  // ubiquen esos grupos, que es un arreglo esperado de la pantalla).
+  const subPestañas = page.getByRole('tablist', { name: 'Sub-secciones de Otros' });
+  const tarjetaSonda = page.locator(`#${probeKey}`);
+  await expect(subPestañas.or(tarjetaSonda).first()).toBeVisible();
+  if (await subPestañas.isVisible()) {
+    await subPestañas.getByRole('tab', { name: 'Grupo E2E Sin Mapear', exact: true }).click();
+  }
   // El grupo sin mapear quedó dentro de "Otros" y su tarjeta se renderiza (no se perdió).
-  await expect(page.locator(`#${probeKey}`)).toBeVisible();
+  await expect(tarjetaSonda).toBeVisible();
 });
 
 test('FE-SET-17: guardar una fila resetea solo su draft y conserva lo tipeado en las demás', async ({

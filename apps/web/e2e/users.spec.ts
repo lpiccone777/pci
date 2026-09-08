@@ -314,7 +314,13 @@ test('FE-USR-11: en modo consolidado hay columna Empresa, filtro y una fila por 
   const t2 = await createTenant(admin);
   const r1 = await createRole(admin, { tenantId: t1.id, permissions: ['users:read'] });
   const r2 = await createRole(admin, { tenantId: t2.id, permissions: ['users:read'] });
+  // Nombre único: la tabla pagina de a 20 y el modo consolidado lista a TODA la gente de TODAS las
+  // empresas, así que con la base cargada por los tests previos esta persona cae fuera de la
+  // primera página. Filtrando por su nombre el listado queda en sus dos filas y el caso deja de
+  // depender de en qué página haya caído (era la causa de que fallara sólo en la corrida completa).
+  const nombre = `Consolidada${Date.now()}`;
   const persona = await createUser(admin, {
+    firstName: nombre,
     memberships: [
       { tenantId: t1.id, roleId: r1.id },
       { tenantId: t2.id, roleId: r2.id },
@@ -326,6 +332,8 @@ test('FE-USR-11: en modo consolidado hay columna Empresa, filtro y una fila por 
 
   await expect(page.getByRole('columnheader', { name: 'Empresa' })).toBeVisible();
   await expect(page.getByText('Empresa:', { exact: true })).toBeVisible();
+
+  await page.getByPlaceholder('Filtrar por nombre...').fill(nombre);
   // La persona aparece en las dos empresas (una fila por membresía).
   await expect(rowWith(page, persona.email)).toHaveCount(2);
   await expect(rowWith(page, persona.email).filter({ hasText: t1.name })).toHaveCount(1);
@@ -644,4 +652,116 @@ test('FE-USR-20: headers vacíos/repetidos → "Columna N", mapeo por índice y 
   // Sin los 3 requeridos (falta Apellido/Email) + sin rol → aviso y botón de importar deshabilitado.
   await expect(dialog.getByText('para poder importar', { exact: false })).toBeVisible();
   await expect(dialog.getByRole('button', { name: /Importar 1 usuario/ })).toBeDisabled();
+});
+
+test('FE-USR-21: los filtros de nombre, apellido y rol filtran en vivo, se combinan y se limpian', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const rolSoporte = await createRole(admin, {
+    tenantId: tenant.id,
+    name: `Soporte ${Date.now()}`,
+    permissions: ['users:read'],
+  });
+  const rolVentas = await createRole(admin, { tenantId: tenant.id, name: `Ventas ${Date.now()}` });
+  // Un tercer rol de la empresa SIN gente: no debe aparecer en el desplegable del filtro, que se
+  // arma con los roles presentes en el listado, no con el catálogo entero.
+  const rolSinGente = await createRole(admin, { tenantId: tenant.id, name: `Sin gente ${Date.now()}` });
+
+  const password = uniquePassword();
+  const lector = await createUser(admin, {
+    password,
+    firstName: 'Ana',
+    lastName: 'Álvarez',
+    memberships: [{ tenantId: tenant.id, roleId: rolSoporte.id }],
+  });
+  await createUser(admin, {
+    firstName: 'Ana',
+    lastName: 'Benítez',
+    memberships: [{ tenantId: tenant.id, roleId: rolVentas.id }],
+  });
+  await createUser(admin, {
+    firstName: 'Bruno',
+    lastName: 'Álvarez',
+    memberships: [{ tenantId: tenant.id, roleId: rolSoporte.id }],
+  });
+
+  await injectSession(page, await sessionForUser(lector.email, password, tenant.id));
+  await page.goto('/dashboard/users');
+  await expect(page.getByPlaceholder('Filtrar por nombre...')).toBeVisible();
+
+  // El desplegable de rol se arma con los roles PRESENTES en el listado.
+  const selectorRol = page.locator('select').filter({ hasText: 'Todos los roles' });
+  const rolesOfrecidos = await selectorRol.locator('option').allTextContents();
+  expect(rolesOfrecidos).toContain(rolSoporte.name);
+  expect(rolesOfrecidos).not.toContain(rolSinGente.name);
+
+  // Sin filtros: las tres personas.
+  await expect(page.getByRole('row').filter({ hasText: 'Ana' })).toHaveCount(2);
+
+  // Nombre, sin distinguir mayúsculas.
+  await page.getByPlaceholder('Filtrar por nombre...').fill('ana');
+  await expect(page.getByRole('row').filter({ hasText: 'Bruno' })).toHaveCount(0);
+
+  // Combinado con apellido: queda una sola.
+  await page.getByPlaceholder('Filtrar por apellido...').fill('álv');
+  await expect(page.getByRole('row').filter({ hasText: 'Álvarez' })).toHaveCount(1);
+  await expect(page.getByRole('row').filter({ hasText: 'Benítez' })).toHaveCount(0);
+
+  // El botón de limpiar aparece solo con algún filtro puesto, y los borra todos.
+  const limpiar = page.getByRole('button', { name: 'Limpiar filtros' });
+  await expect(limpiar).toBeVisible();
+  await limpiar.click();
+  await expect(page.getByPlaceholder('Filtrar por nombre...')).toHaveValue('');
+  await expect(page.getByRole('row').filter({ hasText: 'Bruno' })).toHaveCount(1);
+  await expect(limpiar).toHaveCount(0);
+
+  // Filtro por rol.
+  await selectorRol.selectOption({ label: rolVentas.name });
+  await expect(page.getByRole('row').filter({ hasText: 'Benítez' })).toHaveCount(1);
+  await expect(page.getByRole('row').filter({ hasText: 'Bruno' })).toHaveCount(0);
+});
+
+test('FE-USR-22: la tabla pagina de a 20 y cambiar un filtro vuelve a la página 1', async ({
+  page,
+}) => {
+  test.slow(); // siembra de 25 personas por API
+  const tenant = await createTenant(admin);
+  const role = await createRole(admin, {
+    tenantId: tenant.id,
+    name: `Lector ${Date.now()}`,
+    permissions: ['users:read'],
+  });
+  const password = uniquePassword();
+  const lector = await createUser(admin, {
+    password,
+    firstName: 'Zoe',
+    lastName: 'Zabala',
+    memberships: [{ tenantId: tenant.id, roleId: role.id }],
+  });
+  // 24 más (25 en total con el lector) → dos páginas de 20.
+  for (let i = 0; i < 24; i++) {
+    await createUser(admin, {
+      firstName: `Persona${String(i).padStart(2, '0')}`,
+      lastName: 'Paginada',
+      memberships: [{ tenantId: tenant.id, roleId: role.id }],
+    });
+  }
+
+  await injectSession(page, await sessionForUser(lector.email, password, tenant.id));
+  await page.goto('/dashboard/users');
+  await expect(page.getByText('25 usuarios')).toBeVisible();
+
+  // Primera página: 20 filas de datos (más la del encabezado).
+  await expect(page.getByRole('row')).toHaveCount(21);
+  await expect(page.getByText('Página 1 de 2')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Siguiente' }).click();
+  await expect(page.getByText('Página 2 de 2')).toBeVisible();
+  await expect(page.getByRole('row')).toHaveCount(6); // 5 filas + encabezado
+
+  // Cambiar un filtro estando en la página 2 vuelve a la 1, en vez de dejar una tabla vacía.
+  await page.getByPlaceholder('Filtrar por apellido...').fill('paginada');
+  await expect(page.getByText('24 usuarios')).toBeVisible();
+  await expect(page.getByText('Página 1 de 2')).toBeVisible();
 });

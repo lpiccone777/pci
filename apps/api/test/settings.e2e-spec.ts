@@ -59,6 +59,9 @@ const TOUCHED_KEYS = [
   'TWILIO_WHATSAPP_FROM',
   'WHATSAPP_PROVIDER',
   'SMS_PROVIDER',
+  'CONVERSATION_INACTIVITY_MINUTES',
+  'CONVERSATION_RESUME_WINDOW_HOURS',
+  'CONVERSATIONS_SIMULATE_ENABLED',
 ];
 
 /** Construye un `SecretsCipher` real, pero alimentado con un `ConfigService` fake — para
@@ -296,26 +299,33 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
   });
 
   /**
-   * `it.failing` A PROPÓSITO (no es un test roto): el caso exige que `apps/api/.env` traiga un
-   * DEVICE_FINGERPRINT_TTL_DAYS distinto del `defaultValue` del catálogo ('90') para poder
-   * distinguir, por el valor devuelto, si la key resolvió por env o por default. Hoy el `.env`
-   * trae 90 igual que el default, así que la aserción de '30' no se cumple — y eso es
-   * justamente lo que este caso reporta.
+   * El valor esperado tras el DELETE NO se escribe a mano: sale del entorno del propio proceso,
+   * que es el siguiente escalón de la cascada BD → env → default. Si `apps/api/.env` define
+   * DEVICE_FINGERPRINT_TTL_DAYS, la key tiene que resolver por 'env' con ESE valor; si no lo
+   * define, por 'default' con el del catálogo ('90').
    *
-   * Invertido para que esa condición conocida NO ensucie el semáforo de la batería, misma
-   * convención que el resto de los `@invertido` del repo. Si algún día el `.env` vuelve a 30,
-   * Jest va a marcar "expected to fail but passed": ahí hay que sacarle el `.failing` y dejarlo
-   * como `it` normal.
+   * Antes el caso fijaba '30' (lo que traía un `.env` de entonces) y estaba invertido con
+   * `it.failing` para que su rojo no ensuciara la batería. Eso lo ataba a la máquina de quien lo
+   * corría: cambiar el `.env` lo daba vuelta en cualquiera de los dos sentidos. Derivando el
+   * esperado del entorno, el caso prueba la cascada — que es lo que quiere probar — y pasa igual
+   * con el `.env` cargado o sin él.
    */
-  it.failing('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default @invertido', async () => {
+  it('BE-SET-13: DELETE /settings/:key de una key con valor en BD vuelve a resolver por env/default', async () => {
+    const desdeEnv = process.env.DEVICE_FINGERPRINT_TTL_DAYS;
+    const esperado = desdeEnv
+      ? { source: 'env', value: desdeEnv }
+      : { source: 'default', value: '90' };
+
     await setSetting(t.prisma, 'DEVICE_FINGERPRINT_TTL_DAYS', '45');
 
     const res = await asAdmin(http(t).delete('/settings/DEVICE_FINGERPRINT_TTL_DAYS'));
 
     // @Delete() sin @HttpCode → 200 (default de Nest).
     expect(res.status).toBe(200);
-    expect(res.body.source).toBe('env');
-    expect(res.body.value).toBe('30');
+    expect(res.body.source).toBe(esperado.source);
+    expect(res.body.value).toBe(esperado.value);
+    // Sea cual sea el escalón que resolvió, ya no puede ser el valor que estaba en la BD.
+    expect(res.body.value).not.toBe('45');
 
     const row = await t.prisma.setting.findUnique({ where: { key: 'DEVICE_FINGERPRINT_TTL_DAYS' } });
     expect(row).toBeNull();
@@ -503,5 +513,105 @@ describe('1.7 Configuración y secretos (BE-SET-*)', () => {
     const getUser = await asAdmin(http(t).get('/settings/INVGATE_API_USER'));
     expect(getUser.body.value).toBe(plainUser);
     expect(getUser.body.isSet).toBeUndefined();
+  });
+
+  it('BE-SET-21: los grupos Simulación y Otros aparecen en GET /settings con su tipo y rango', async () => {
+    const res = await asAdmin(http(t).get('/settings'));
+    const byKey = (key: string) => (res.body as any[]).find((s) => s.key === key);
+
+    const simulate = byKey('CONVERSATIONS_SIMULATE_ENABLED');
+    expect(simulate.group).toBe('Simulación');
+    expect(simulate.type).toBe('boolean');
+
+    const inactividad = byKey('CONVERSATION_INACTIVITY_MINUTES');
+    expect(inactividad.group).toBe('Otros');
+    expect(inactividad.type).toBe('number');
+    expect(inactividad.min).toBe(1);
+    expect(inactividad.max).toBe(10080);
+
+    const retomado = byKey('CONVERSATION_RESUME_WINDOW_HOURS');
+    expect(retomado.group).toBe('Otros');
+    expect(retomado.min).toBe(1);
+    expect(retomado.max).toBe(720);
+  });
+
+  it('BE-SET-21: los dos tiempos de charla respetan min/max (fuera de rango → 400)', async () => {
+    const inactividadBaja = await asAdmin(
+      http(t).patch('/settings/CONVERSATION_INACTIVITY_MINUTES'),
+    ).send({ value: '0' });
+    const inactividadAlta = await asAdmin(
+      http(t).patch('/settings/CONVERSATION_INACTIVITY_MINUTES'),
+    ).send({ value: '10081' });
+    const retomadoAlto = await asAdmin(
+      http(t).patch('/settings/CONVERSATION_RESUME_WINDOW_HOURS'),
+    ).send({ value: '721' });
+    const valido = await asAdmin(http(t).patch('/settings/CONVERSATION_INACTIVITY_MINUTES')).send({
+      value: '120',
+    });
+
+    expect(inactividadBaja.status).toBe(400);
+    expect(inactividadAlta.status).toBe(400);
+    expect(retomadoAlto.status).toBe(400);
+    expect(valido.status).toBe(200);
+    expect(valido.body.value).toBe('120');
+  });
+
+  it('BE-SET-21: los dos asuntos de email son de mails distintos y se apuntan entre sí', async () => {
+    const res = await asAdmin(http(t).get('/settings'));
+    const byKey = (key: string) => (res.body as any[]).find((s) => s.key === key);
+
+    const login = byKey('OTP_EMAIL_SUBJECT');
+    const dispositivo = byKey('DEVICE_VALIDATION_EMAIL_SUBJECT');
+
+    expect(login.group).toBe('Mensajería: Email');
+    expect(dispositivo.group).toBe('Mensajería: Email');
+    expect(login.value).not.toBe(dispositivo.value);
+    // Cada descripción advierte que no es el otro email, para no confundirlos al configurarlos.
+    expect(login.description).toContain('DEVICE_VALIDATION_EMAIL_SUBJECT');
+    expect(dispositivo.description).toContain('OTP_EMAIL_SUBJECT');
+  });
+
+  describe('BE-SET-22: default de CONVERSATIONS_SIMULATE_ENABLED según el entorno', () => {
+    const NODE_ENV_ORIGINAL = process.env.NODE_ENV;
+
+    afterEach(async () => {
+      process.env.NODE_ENV = NODE_ENV_ORIGINAL;
+      await deleteSetting(t.prisma, 'CONVERSATIONS_SIMULATE_ENABLED');
+    });
+
+    const simulate = () =>
+      http(t)
+        .post('/conversations/simulate')
+        .set('Authorization', `Bearer ${t.authToken}`)
+        .send({ from: uniquePhone(), body: 'hola', tenantId: systemTenantId });
+
+    it('BE-SET-22: sin valor fijado, fuera de producción el endpoint responde', async () => {
+      // Jest fija NODE_ENV=test, que es el entorno real de esta corrida.
+      expect(process.env.NODE_ENV).not.toBe('production');
+
+      const res = await simulate();
+
+      expect(res.status).not.toBe(404);
+    });
+
+    it('BE-SET-22: sin valor fijado, en producción el endpoint responde 404 (no 403)', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await simulate();
+
+      expect(res.status).toBe(404);
+    });
+
+    it('BE-SET-22: fijar la clave a mano manda en cualquier sentido', async () => {
+      process.env.NODE_ENV = 'production';
+      await setSetting(t.prisma, 'CONVERSATIONS_SIMULATE_ENABLED', 'true');
+      const habilitadoEnProd = await simulate();
+      expect(habilitadoEnProd.status).not.toBe(404);
+
+      process.env.NODE_ENV = NODE_ENV_ORIGINAL;
+      await setSetting(t.prisma, 'CONVERSATIONS_SIMULATE_ENABLED', 'false');
+      const deshabilitadoFueraDeProd = await simulate();
+      expect(deshabilitadoFueraDeProd.status).toBe(404);
+    });
   });
 });

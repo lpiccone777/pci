@@ -242,6 +242,187 @@ describe('1.20 Canal WhatsApp — Gupshup, webhook de entrada (BE-GUP-02, BE-GUP
       return !!msg;
     });
   });
+
+  it('BE-GUP-08: un mensaje de tipo image descarga el adjunto y lo publica; el caption viaja como body', async () => {
+    // Cuerpo de texto con content-type de imagen: `resizeIfNeeded` no lo puede procesar y, por
+    // diseño, guarda el original tal cual — lo que se prueba acá es la descarga y el contrato
+    // del adjunto, no el redimensionado (que ya cubre el bloque de media de Twilio).
+    const fetchMock = installFetchMock((url) =>
+      url.includes('media.gupshup.test')
+        ? { status: 200, body: 'contenido-de-imagen', headers: { 'content-type': 'image/png' } }
+        : { status: 404 },
+    );
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const rawNumber = await knownRawNumber();
+
+      const res = await http(t)
+        .post('/webhooks/gupshup')
+        .send({
+          type: 'message',
+          payload: {
+            type: 'image',
+            payload: {
+              url: 'https://media.gupshup.test/imagen.png',
+              contentType: 'image/png',
+              caption: 'mirá esto',
+            },
+            sender: { phone: rawNumber },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(fetchMock.requests[0].url).toBe('https://media.gupshup.test/imagen.png');
+      const call = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === `+${rawNumber}`,
+      );
+      expect(call).toBeDefined();
+      const data = (call![1] as any).data;
+      expect(data.body).toBe('mirá esto');
+      expect(data.attachments).toHaveLength(1);
+      // Mismo contrato que Twilio: path + filename + contentType, para que el motor no sepa
+      // de qué proveedor vino.
+      expect(Object.keys(data.attachments[0]).sort()).toEqual(['contentType', 'filename', 'path']);
+
+      await waitFor(async () => {
+        const msg = await t.prisma.message.findFirst({
+          where: { conversation: { externalId: `+${rawNumber}` }, senderType: 'assistant' },
+        });
+        return !!msg;
+      });
+    } finally {
+      publishSpy.mockRestore();
+      fetchMock.restore();
+    }
+  });
+
+  it('BE-GUP-08: una imagen SIN caption sigue de largo con body vacío, y una URL vencida no corta la charla', async () => {
+    const fetchMock = installFetchMock((url) =>
+      url.includes('vencida')
+        ? { status: 403, body: 'expired' }
+        : { status: 200, body: 'contenido-de-imagen', headers: { 'content-type': 'image/png' } },
+    );
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const sinCaption = await knownRawNumber();
+      await http(t)
+        .post('/webhooks/gupshup')
+        .send({
+          type: 'message',
+          payload: {
+            type: 'image',
+            payload: { url: 'https://media.gupshup.test/sola.png', contentType: 'image/png' },
+            sender: { phone: sinCaption },
+          },
+        });
+
+      const solaImagen = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === `+${sinCaption}`,
+      );
+      // `''` (imagen sin texto) NO es lo mismo que `null` (tipo no soportado, se descarta).
+      expect(solaImagen).toBeDefined();
+      expect((solaImagen![1] as any).data.body).toBe('');
+      expect((solaImagen![1] as any).data.attachments).toHaveLength(1);
+
+      const conUrlVencida = await knownRawNumber();
+      const res = await http(t)
+        .post('/webhooks/gupshup')
+        .send({
+          type: 'message',
+          payload: {
+            type: 'image',
+            payload: { url: 'https://media.gupshup.test/vencida.png', caption: 'con texto' },
+            sender: { phone: conUrlVencida },
+          },
+        });
+
+      // El adjunto se pierde best-effort y la charla sigue.
+      expect(res.status).toBe(200);
+      const conCaption = publishSpy.mock.calls.find(
+        (c) => c[0] === 'whatsapp.incoming' && (c[1] as any).data?.from === `+${conUrlVencida}`,
+      );
+      expect((conCaption![1] as any).data.body).toBe('con texto');
+      expect((conCaption![1] as any).data.attachments).toEqual([]);
+
+      for (const numero of [sinCaption, conUrlVencida]) {
+        await waitFor(async () => {
+          const msg = await t.prisma.message.findFirst({
+            where: { conversation: { externalId: `+${numero}` }, senderType: 'assistant' },
+          });
+          return !!msg;
+        });
+      }
+    } finally {
+      publishSpy.mockRestore();
+      fetchMock.restore();
+    }
+  });
+
+  it('BE-GUP-09: de los eventos de entrega solo "failed" deja rastro; el resto se descarta con 200', async () => {
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      const fallido = await http(t)
+        .post('/webhooks/gupshup')
+        .send({
+          type: 'message-event',
+          payload: {
+            type: 'failed',
+            destination: '5491133334444',
+            payload: { code: 131037, reason: 'display name sin aprobar' },
+          },
+        });
+      expect(fallido.status).toBe(200);
+
+      for (const tipo of ['enqueued', 'sent', 'delivered', 'read']) {
+        const res = await http(t)
+          .post('/webhooks/gupshup')
+          .send({ type: 'message-event', payload: { type: tipo, destination: '5491133334444' } });
+        expect(res.status).toBe(200);
+      }
+      for (const tipo of ['template-event', 'account-event', 'billing-event']) {
+        const res = await http(t).post('/webhooks/gupshup').send({ type: tipo, payload: {} });
+        expect(res.status).toBe(200);
+      }
+
+      // Ningún evento de estos entra al pipeline de mensajes.
+      expect(publishSpy.mock.calls.filter((c) => c[0] === 'whatsapp.incoming')).toHaveLength(0);
+    } finally {
+      publishSpy.mockRestore();
+    }
+  });
+
+  it.failing(
+    'BE-GUP-10: la URL de media debería validarse contra destinos internos y acotarse en tamaño (SEC-16) @invertido',
+    async () => {
+      const fetchMock = installFetchMock(() => ({
+        status: 200,
+        body: 'contenido interno',
+        headers: { 'content-type': 'image/png' },
+      }));
+      try {
+        const rawNumber = await knownRawNumber();
+
+        await http(t)
+          .post('/webhooks/gupshup')
+          .send({
+            type: 'message',
+            payload: {
+              type: 'image',
+              payload: { url: 'http://169.254.169.254/latest/meta-data/', contentType: 'image/png' },
+              sender: { phone: rawNumber },
+            },
+          });
+
+        // SEGURO: lista blanca de host/esquema antes de descargar, como hace su hermano
+        // `TwilioMediaService` (que exige `https://api.twilio.com`). Hoy `GupshupMediaService`
+        // hace `fetch` a la URL tal cual, y el webhook no valida firma (BE-GUP-06), así que la
+        // URL la controla quien mande el POST.
+        expect(fetchMock.requests.filter((r) => r.url.includes('169.254.169.254'))).toHaveLength(0);
+      } finally {
+        fetchMock.restore();
+      }
+    },
+  );
 });
 
 describe('1.20 Canal WhatsApp — Gupshup, mecánica del conector (BE-GUP-03, BE-GUP-05, BE-GUP-07)', () => {

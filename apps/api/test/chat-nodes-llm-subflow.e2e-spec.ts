@@ -45,6 +45,7 @@
  * `ContextSourcesService` ni `ContextSourceConnectorService` (ambos corren de verdad, con el
  * `BrokerService` real) — solo se hace de cuenta de ser el RAG/servicio externo del otro lado.
  */
+import { Logger } from '@nestjs/common';
 import { LlmService } from '../src/modules/llm/llm.service';
 import { LlmMessage, LlmCompletionOptions } from '../src/modules/llm/llm-provider.interface';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
@@ -479,7 +480,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     );
   }
 
-  it('CHAT-N-LLM-08: extractVariables con el dato ya dicho → un solo llamado (temp 0), valida allowedValues case-insensitive, guarda el valor canónico y ramifica por foundTargetNodeId sin preguntar', async () => {
+  it('CHAT-N-LLM-08: extractVariables con el dato ya dicho → un solo llamado (temp 0), valida allowedValues case-insensitive, guarda el valor canónico y sigue por la arista sin preguntar', async () => {
     const { tenant, role, phone } = await newKnownUser('llm08');
     // El clasificador devuelve la sede en minúscula: se valida case-insensitive contra
     // allowedValues y se guarda el valor CANÓNICO del catálogo ('Central'), no el texto crudo.
@@ -497,7 +498,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     // CLASSIFIER_MAX_TOKENS (300) — la extracción puede devolver varias líneas `variable: valor`
     // y necesita más presupuesto que un clasificador de una sola palabra.
     expect(llm.calls[0].options?.maxTokens).toBe(2000);
-    expect(res.body.reply).toContain('Encontré la sede.'); // ramificó por foundTargetNodeId
+    expect(res.body.reply).toContain('Encontré la sede.'); // salió por la arista → condition → rama "found"
 
     const conv = await conversationFor(tenant.id, phone);
     expect((conv.flowState as any).sede).toBe('Central'); // canónico, no 'central'
@@ -524,7 +525,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     expect((conv1.flowState as any).__llmQueryAttempts).toBe(1);
     expect((conv1.flowState as any).sede).toBeUndefined(); // sin resolver
 
-    // Turno 2: ahora sí lo dice → resuelve y avanza a foundTargetNodeId (sin repetir el saludo).
+    // Turno 2: ahora sí lo dice → resuelve y avanza por la arista → condition → "found" (sin repetir el saludo).
     llm.setResponder((messages, options) =>
       sysOf(messages, options).includes(EXTRACT_MARK) ? 'sede: Norte' : 'NO-DEBERIA-USARSE',
     );
@@ -537,7 +538,7 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     expect((conv2.flowState as any).__llmQueryAttempts).toBeUndefined();
   });
 
-  it('CHAT-N-LLM-10a: el usuario se niega (REFUSED) → la variable queda en "no definido" y ramifica por missingTargetNodeId, sin preguntar', async () => {
+  it('CHAT-N-LLM-10a: el usuario se niega (REFUSED) → la variable queda en "no definido" y sigue por la arista, sin preguntar', async () => {
     const { tenant, role, phone } = await newKnownUser('llm10a');
     llm.setResponder((messages, options) =>
       sysOf(messages, options).includes(EXTRACT_MARK) ? 'sede: REFUSED' : 'NO-DEBERIA-USARSE',
@@ -548,13 +549,13 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
 
     expect(res.status).toBe(201);
     expect(llm.calls).toHaveLength(1); // REFUSED corta de una: no vuelve a preguntar
-    expect(res.body.reply).toContain('No pude determinar la sede.'); // ramificó por missingTargetNodeId
+    expect(res.body.reply).toContain('No pude determinar la sede.'); // salió por la arista → condition → rama "missing"
 
     const conv = await conversationFor(tenant.id, phone);
     expect((conv.flowState as any).sede).toBe('no definido');
   });
 
-  it('CHAT-N-LLM-10b: si nunca lo dice, agota maxAttempts (default 2) y cae a "no definido" → missingTargetNodeId, sin loop infinito de preguntas', async () => {
+  it('CHAT-N-LLM-10b: si nunca lo dice, agota maxAttempts (default 2) y cae a "no definido" → sigue por la arista, sin loop infinito de preguntas', async () => {
     const { tenant, role, phone } = await newKnownUser('llm10b');
     llm.setResponder((messages, options) => {
       const sys = sysOf(messages, options);
@@ -738,4 +739,73 @@ describe('2.3 Nodos del motor — llm_query y subflow (CHAT-N-LLM-*, CHAT-N-SUB-
     },
     15000,
   );
+
+  describe('CHAT-N-LLM-13: salida única del nodo de extracción', () => {
+    it('CHAT-N-LLM-13: found/missingTargetNodeId se ignoran — siempre sale por la arista dibujada', async () => {
+      const { tenant, role, phone } = await newKnownUser('llm13a');
+      llm.setResponder((messages, options) =>
+        sysOf(messages, options).includes(EXTRACT_MARK) ? 'sede: Central' : 'NO-DEBERIA-USARSE',
+      );
+      // Los dos destinos apuntan a nodos REALES del flujo, para que la única forma de que el
+      // test pase sea que el motor los ignore de verdad (no que fallen por inexistentes).
+      await extractionFlow(tenant, role, {
+        foundTargetNodeId: 'missing',
+        missingTargetNodeId: 'found',
+      });
+
+      const res = await simulate(phone, tenant.id, 'estoy en la sede Central');
+
+      // Sale por la arista → condition → rama "found". Si el motor respetara
+      // `foundTargetNodeId`, habría ido derecho a `missing`.
+      expect(res.body.reply).toContain('Encontré la sede.');
+      expect(res.body.reply).not.toContain('No pude determinar la sede.');
+    });
+
+    it('CHAT-N-LLM-13: con la variable en "no definido" también sale por la misma arista', async () => {
+      const { tenant, role, phone } = await newKnownUser('llm13b');
+      llm.setResponder((messages, options) =>
+        sysOf(messages, options).includes(EXTRACT_MARK) ? 'sede: REFUSED' : 'NO-DEBERIA-USARSE',
+      );
+      await extractionFlow(tenant, role, {
+        foundTargetNodeId: 'found',
+        missingTargetNodeId: 'found',
+      });
+
+      const res = await simulate(phone, tenant.id, 'no te lo voy a decir');
+
+      // Misma salida: quien necesite ramificar pone un `condition` después, que es lo que hace
+      // este flujo — y por eso termina en la rama "missing".
+      expect(res.body.reply).toContain('No pude determinar la sede.');
+    });
+
+    it('CHAT-N-LLM-13: un nodo de extracción sin arista de salida deja un WARN explícito', async () => {
+      const { tenant, role, phone } = await newKnownUser('llm13c');
+      llm.setResponder((messages, options) =>
+        sysOf(messages, options).includes(EXTRACT_MARK) ? 'sede: Central' : 'NO-DEBERIA-USARSE',
+      );
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      try {
+        await startFlow(
+          tenant,
+          role,
+          [
+            startNode('s'),
+            llmQueryNode('q', {
+              extractVariables: [{ variable: 'sede', allowedValues: ['Central', 'Norte'] }],
+            }),
+          ],
+          [edge('s', 'q', 'known')], // el nodo de extracción queda sin salida
+        );
+
+        await simulate(phone, tenant.id, 'estoy en la sede Central');
+
+        const avisos = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(avisos).toContain('no ');
+        expect(avisos).toContain('arista de salida');
+        expect(avisos).toContain('Conectá la salida del nodo en el editor.');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
 });

@@ -316,12 +316,13 @@ test('FE-CS-10: alta de una Skill en la pestaña Skills persiste y se gatea por 
 // --- Modo consolidado "Todas las empresas": la pantalla no debe dejar crear a ciegas ---
 
 test(
-  'FE-CS-11: en "Todas las empresas" la pestaña Conexiones NO debería dejar crear a ciegas',
+  'FE-CS-11: en "Todas las empresas" la pestaña Conexiones consolida en solo lectura, con columna Empresa',
   async ({ page }) => {
-    // En modo consolidado la pantalla no debe dejar crear a ciegas en una empresa de respaldo:
-    // como Áreas/Roles, esconde el alta y pide elegir una empresa puntual en el selector.
+    // Consolida como Usuarios/Áreas/Roles: trae las fuentes de todas las empresas y suma la
+    // columna Empresa. Es solo lectura: esconde el alta y pide elegir una empresa puntual en el
+    // selector, en vez de dar de alta a ciegas en una empresa de respaldo.
     const tenant = await createTenant(admin);
-    await createContextSource(admin, { tenantId: tenant.id, type: 'n8n' });
+    const fuente = await createContextSource(admin, { tenantId: tenant.id, type: 'n8n' });
 
     await injectSession(page, { token: admin.token, activeTenant: ALL_TENANTS });
     await page.goto('/dashboard/context-sources');
@@ -330,23 +331,38 @@ test(
     await expect(page.getByRole('button', { name: 'Conexiones' })).toBeVisible();
     await page.waitForLoadState('networkidle');
 
-    // El formulario de alta no debe estar disponible en modo consolidado.
+    // Consolida: la fuente de esa empresa aparece, con su empresa en la fila.
+    const fila = page.getByRole('row').filter({ hasText: fuente.name });
+    await expect(fila).toBeVisible();
+    await expect(fila.getByText(tenant.name)).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Empresa' })).toBeVisible();
+
+    // Y es de solo lectura: sin formulario de alta, con el aviso que pide elegir una empresa.
     await expect(page.getByRole('heading', { name: 'Nueva fuente de verdad' })).toHaveCount(0);
+    await expect(page.getByText('elegí una empresa puntual en el selector')).toBeVisible();
   },
 );
 
 test(
-  'FE-CS-12: en "Todas las empresas" la pestaña Skills NO debería dejar crear a ciegas',
+  'FE-CS-12: en "Todas las empresas" la pestaña Skills recibe el mismo tratamiento consolidado',
   async ({ page }) => {
-    // Mismo criterio que FE-CS-11, en la pestaña Skills.
+    // Mismo criterio que FE-CS-11: el arreglo abarca las DOS pestañas, y este caso está separado
+    // justamente para verificar que ninguna se dejó atrás.
     const tenant = await createTenant(admin);
-    await createSkill(admin, { tenantId: tenant.id });
+    const skill = await createSkill(admin, { tenantId: tenant.id });
 
     await injectSession(page, { token: admin.token, activeTenant: ALL_TENANTS });
     await page.goto('/dashboard/context-sources');
     await page.getByRole('button', { name: 'Skills' }).click();
+    await page.waitForLoadState('networkidle');
 
-    // El alta de skill no debe estar disponible en modo consolidado.
+    // Consolida las skills de todas las empresas, con la suya en cada fila.
+    const fila = page.getByRole('row').filter({ hasText: skill.name });
+    await expect(fila).toBeVisible();
+    await expect(fila.getByText(tenant.name)).toBeVisible();
+
+    // Y sigue siendo de solo lectura.
     await expect(page.getByRole('heading', { name: 'Nuevo skill' })).toHaveCount(0);
+    await expect(page.getByText('elegí una empresa puntual en el selector')).toBeVisible();
   },
 );

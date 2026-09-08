@@ -2,9 +2,10 @@
  * Bloque 3.5 del plan de pruebas — Roles y matriz de permisos (`/dashboard/roles`).
  *
  * Casos FE-ROL-01..10. Corren contra el web aislado (`localhost:3100`); la siembra va por la API
- * real (`localhost:3101`). El catálogo de permisos son 15 recursos × 4 acciones = 60 (labels de
- * acción: Ver/Crear/Modificar/Eliminar; recurso "Usuarios" = users, etc.), definidos en
- * `apps/api/src/modules/rbac/permissions.catalog.ts`.
+ * real (`localhost:3101`). El catálogo de permisos son recursos × acciones (labels de acción:
+ * Ver/Crear/Modificar/Eliminar; recurso "Usuarios" = users, etc.), definidos en
+ * `apps/api/src/modules/rbac/permissions.catalog.ts`. El total NO se escribe acá: se pide a
+ * `GET /roles/catalog` en el `beforeEach`, porque cambia cada vez que se suma un recurso.
  *
  * La matriz usa `aria-label="<AcciónLabel> <RecursoLabel>"` por celda (ej. "Crear Usuarios").
  */
@@ -15,17 +16,20 @@ import {
   createTenant,
   createRole,
   createUser,
+  permissionCatalogTotal,
   type AdminCtx,
 } from './support/seed';
 import { injectSession } from './support/session';
 
 const ALL_TENANTS = '__all__';
-const CATALOG_TOTAL = 60;
 
 let admin: AdminCtx;
+/** Total de permisos del catálogo real; se resuelve contra la API antes de cada caso. */
+let CATALOG_TOTAL: number;
 
 test.beforeEach(async () => {
   admin = await adminContext();
+  CATALOG_TOTAL = await permissionCatalogTotal(admin);
 });
 
 async function sessionForUser(email: string, password: string, activeTenant: string) {

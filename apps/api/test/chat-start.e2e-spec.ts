@@ -243,4 +243,93 @@ describe('2.2 Arranque de flujo por tenant y rol (CHAT-START-*)', () => {
     expect(res.body.reply).not.toContain('Esto no se manda');
     expect(res.body.reply).not.toContain('Eze');
   });
+
+  describe('CHAT-START-08: arranque con feriado o guardia vigente', () => {
+    let tenantCal: { id: string };
+    let roleCal: { id: string };
+    let principalId: string;
+    let varianteId: string;
+
+    beforeAll(async () => {
+      tenantCal = await createTenant(t.prisma, { slug: uniqueSlug('start08') });
+      roleCal = await createRole(t.prisma, { tenantId: tenantCal.id, name: 'Rol calendario' });
+      const principal = await createFlow(t.prisma, {
+        name: 'F-PRINCIPAL-CAL',
+        nodes: [startNode('ps'), messageNode('pm', 'Atiende el flujo PRINCIPAL'), endNode('pe')],
+        edges: [edge('ps', 'pm', 'known'), edge('pm', 'pe')],
+        assign: [{ tenantId: tenantCal.id, isStart: true, roleIds: [roleCal.id] }],
+      });
+      principalId = principal.id;
+      // La variante nace sin empresas asignadas: solo se llega a ella por `FlowAlternative`.
+      const variante = await createFlow(t.prisma, {
+        name: 'F-PRINCIPAL-CAL (feriado)',
+        nodes: [startNode('vs'), messageNode('vm', 'Atiende el flujo de FERIADO'), endNode('ve')],
+        edges: [edge('vs', 'vm', 'known'), edge('vm', 've')],
+      });
+      varianteId = variante.id;
+      await t.prisma.flowAlternative.create({
+        data: { baseFlowId: principalId, type: 'feriado', variantFlowId: varianteId },
+      });
+    });
+
+    afterEach(async () => {
+      await t.prisma.scheduleCalendarEntry.deleteMany({ where: { tenantId: tenantCal.id } });
+      await t.prisma.flow.update({ where: { id: varianteId }, data: { isActive: true } });
+    });
+
+    /** Feriado que cubre el instante actual, para todos los roles de la empresa. */
+    async function feriadoVigente() {
+      const ahora = Date.now();
+      await t.prisma.scheduleCalendarEntry.create({
+        data: {
+          tenantId: tenantCal.id,
+          type: 'feriado',
+          title: 'Feriado de hoy',
+          roleId: null,
+          allDay: true,
+          startAt: new Date(ahora - 3_600_000),
+          endAt: new Date(ahora + 3_600_000),
+        },
+      });
+    }
+
+    async function personaDeLaEmpresa() {
+      const phone = uniquePhone();
+      await createUser(t.prisma, {
+        email: uniqueEmail('start08'),
+        phone,
+        firstName: 'Cala',
+        memberships: [{ tenantId: tenantCal.id, roleId: roleCal.id }],
+      });
+      return phone;
+    }
+
+    it('CHAT-START-08: con feriado vigente y variante configurada, arranca la variante', async () => {
+      await feriadoVigente();
+      const phone = await personaDeLaEmpresa();
+
+      const res = await simulate(phone, tenantCal.id);
+
+      expect(res.body.reply).toContain('Atiende el flujo de FERIADO');
+      expect(res.body.reply).not.toContain('Atiende el flujo PRINCIPAL');
+    });
+
+    it('CHAT-START-08: sin feriado vigente arranca el Principal', async () => {
+      const phone = await personaDeLaEmpresa();
+
+      const res = await simulate(phone, tenantCal.id);
+
+      expect(res.body.reply).toContain('Atiende el flujo PRINCIPAL');
+    });
+
+    it('CHAT-START-08: con la variante inactiva, el feriado no cambia nada', async () => {
+      await feriadoVigente();
+      await t.prisma.flow.update({ where: { id: varianteId }, data: { isActive: false } });
+      const phone = await personaDeLaEmpresa();
+
+      const res = await simulate(phone, tenantCal.id);
+
+      expect(res.body.reply).toContain('Atiende el flujo PRINCIPAL');
+    });
+  });
 });

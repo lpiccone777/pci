@@ -36,6 +36,7 @@ import {
   createUser,
   createContextSource,
   createFlow,
+  getSystemContext,
   uniqueEmail,
   uniquePhone,
   uniqueSlug,
@@ -441,4 +442,103 @@ describe('1.9 Fuentes de verdad — context sources (BE-CS-*)', () => {
       // Intencionalmente vacío: ver motivo en el título.
     },
   );
+
+  describe('BE-CS-20: listados consolidados /context-sources/all y /mine', () => {
+    it('BE-CS-20: /all trae las fuentes de todas las empresas con la suya en cada fila, y exige tenant de sistema', async () => {
+      const nombreA = `Fuente A ${uniqueSlug('cs20')}`;
+      const nombreB = `Fuente B ${uniqueSlug('cs20')}`;
+      await createContextSource(t.prisma, {
+        tenantId: tenantA.id,
+        name: nombreA,
+        type: 'rag',
+        config: { endpointUrl: 'https://rag.test/query', apiKey: 'secreto-de-a' },
+      });
+      await createContextSource(t.prisma, { tenantId: tenantB.id, name: nombreB, type: 'rag' });
+
+      // Desde una empresa que NO es la de sistema, el candado corta.
+      const desdeTenantComun = await withAuth(
+        http(t).get('/context-sources/all'),
+        tokenA,
+        tenantA.id,
+      );
+      expect(desdeTenantComun.status).toBe(403);
+
+      // Desde el tenant de sistema, con el superusuario del seed.
+      const { tenant: systemTenant, admin } = await getSystemContext(t.prisma);
+      const adminToken = tokenFor(t, admin);
+      const res = await withAuth(http(t).get('/context-sources/all'), adminToken, systemTenant.id);
+
+      expect(res.status).toBe(200);
+      const filaA = (res.body as any[]).find((s) => s.name === nombreA);
+      const filaB = (res.body as any[]).find((s) => s.name === nombreB);
+      expect(filaA.tenant.id).toBe(tenantA.id);
+      expect(filaB.tenant.id).toBe(tenantB.id);
+      // Sigue enmascarando los campos secretos de config.
+      expect(JSON.stringify(res.body)).not.toContain('secreto-de-a');
+      expect(filaA.config.apiKeyIsSet).toBe(true);
+    });
+
+    it('BE-CS-20: /all excluye las fuentes de empresas dadas de baja', async () => {
+      const tenantBaja = await createTenant(t.prisma, { slug: uniqueSlug('cs20-baja') });
+      const nombre = `Fuente de empresa de baja ${uniqueSlug('cs20')}`;
+      await createContextSource(t.prisma, { tenantId: tenantBaja.id, name: nombre, type: 'rag' });
+      await t.prisma.tenant.update({ where: { id: tenantBaja.id }, data: { deletedAt: new Date() } });
+
+      const { tenant: systemTenant, admin } = await getSystemContext(t.prisma);
+      const res = await withAuth(
+        http(t).get('/context-sources/all'),
+        tokenFor(t, admin),
+        systemTenant.id,
+      );
+
+      expect((res.body as any[]).map((s) => s.name)).not.toContain(nombre);
+    });
+
+    it('BE-CS-20: /mine trae las de las empresas donde el usuario tiene context-sources:read', async () => {
+      // Una persona en dos empresas: con permiso en una, sin permiso en la otra.
+      const conPermiso = await createTenant(t.prisma, { slug: uniqueSlug('cs20-con') });
+      const sinPermiso = await createTenant(t.prisma, { slug: uniqueSlug('cs20-sin') });
+      const rolCon = await createRole(t.prisma, {
+        tenantId: conPermiso.id,
+        name: 'Lee fuentes',
+        permissions: ['context-sources:read'],
+      });
+      const rolSin = await createRole(t.prisma, { tenantId: sinPermiso.id, name: 'No lee fuentes' });
+      const persona = await createUser(t.prisma, {
+        email: uniqueEmail('cs20-mine'),
+        memberships: [
+          { tenantId: conPermiso.id, roleId: rolCon.id },
+          { tenantId: sinPermiso.id, roleId: rolSin.id },
+        ],
+      });
+      const visible = `Visible ${uniqueSlug('cs20')}`;
+      const invisible = `Invisible ${uniqueSlug('cs20')}`;
+      await createContextSource(t.prisma, {
+        tenantId: conPermiso.id,
+        name: visible,
+        type: 'rag',
+        config: { endpointUrl: 'https://rag.test/query', apiKey: 'secreto-mine' },
+      });
+      await createContextSource(t.prisma, { tenantId: sinPermiso.id, name: invisible, type: 'rag' });
+
+      const res = await withAuth(
+        http(t).get('/context-sources/mine'),
+        tokenFor(t, persona),
+        conPermiso.id,
+      );
+
+      expect(res.status).toBe(200);
+      const nombres = (res.body as any[]).map((s) => s.name);
+      expect(nombres).toContain(visible);
+      expect(nombres).not.toContain(invisible);
+      expect(JSON.stringify(res.body)).not.toContain('secreto-mine');
+    });
+
+    it('BE-CS-20: /mine devuelve [] —no 403— para quien no tiene el permiso en ninguna empresa', async () => {
+      const res = await withAuth(http(t).get('/context-sources/mine'), tokenSinPermiso, tenantC.id);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
+    });
+  });
 });

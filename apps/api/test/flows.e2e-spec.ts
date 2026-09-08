@@ -401,8 +401,10 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
     });
   });
 
-  // --- BE-FLW-16 (SEC-03): mismo criterio para assign-tenants (corregido) y default (pendiente) ---
-  describe('BE-FLW-16 (SEC-03): assign-tenants/default sobre un flujo de otra empresa', () => {
+  // --- BE-FLW-16 (SEC-03, cerrado): assign-tenants sobre un flujo de otra empresa. El caso
+  // hermano de `POST /flows/:id/default`, que sigue abierto, se separó en BE-FLW-22 (más abajo,
+  // como `it.failing`) — antes vivía acá con el ID de BE-FLW-16. ---
+  describe('BE-FLW-16 (SEC-03): assign-tenants sobre un flujo de otra empresa', () => {
     it('BE-FLW-16: POST /flows/:id/assign-tenants con el id de un flujo de otra empresa devuelve 404', async () => {
       const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw16assigna');
       const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw16assignb') });
@@ -418,21 +420,6 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
       expect(tenantFlows.map((tf) => tf.tenantId)).toEqual([tenantB.id]);
     });
 
-    it.failing(
-      'BE-FLW-16: POST /flows/:id/default con el id de un flujo de otra empresa debe devolver 403/404 (SEC-03) @invertido',
-      async () => {
-        const { token: tokenA, tenant: tenantA } = await buildTenantWithFlowsAccess(t, 'flw16defaulta');
-        const tenantB = await createTenant(t.prisma, { slug: uniqueSlug('flw16defaultb') });
-        const flowB = await createFlow(t.prisma, { name: 'Flujo de B (default)', assign: [{ tenantId: tenantB.id }] });
-
-        const res = await withAuth(http(t).post(`/flows/${flowB.id}/default`), tokenA, tenantA.id);
-
-        // SEGURO: marcar default por id un flujo ajeno debería cortar. Hoy opera sin filtrar
-        // por tenant → 201 y el flujo de B pasa a ser el default global, decidido por alguien
-        // de A que ni siquiera lo tiene asignado.
-        expect([403, 404]).toContain(res.status);
-      },
-    );
   });
 
   it('BE-FLW-15: context fuera de la lista cerrada devuelve 400; uno válido se persiste', async () => {
@@ -615,5 +602,195 @@ describe('1.8 Flujos (BE-FLW-*)', () => {
         expect(res.status).toBe(400);
       },
     );
+  });
+
+  it.failing(
+    'BE-FLW-22: POST /flows/:id/default sobre un flujo ajeno debería cortar (resto vivo de SEC-03) @invertido',
+    async () => {
+      const propia = await buildTenantWithFlowsAccess(t, 'flw22a');
+      const ajena = await buildTenantWithFlowsAccess(t, 'flw22b');
+      const flujoAjeno = await createFlow(t.prisma, {
+        name: 'Flujo de la otra empresa',
+        assign: [{ tenantId: ajena.tenant.id }],
+      });
+
+      const res = await withAuth(
+        http(t).post(`/flows/${flujoAjeno.id}/default`),
+        propia.token,
+        propia.tenant.id,
+      );
+
+      // SEGURO: `isDefault` es un fallback GLOBAL del sistema entero, así que la ruta tendría
+      // que exigir el candado de tenant de sistema (o al menos pertenencia, como sus hermanas
+      // `findById`/`update`/`delete`/`assign-tenants`). Hoy `setDefault(id)` no recibe
+      // `req.userTenant` ni chequea nada: con `flows:update` en la empresa propia se promueve
+      // un flujo ajeno a default de todo el sistema.
+      expect([403, 404]).toContain(res.status);
+      const despues = await t.prisma.flow.findUniqueOrThrow({ where: { id: flujoAjeno.id } });
+      expect(despues.isDefault).toBe(false);
+    },
+  );
+
+  describe('BE-FLW-23: asignar el flujo a una empresa ajena o dada de baja', () => {
+    it('BE-FLW-23: POST /flows con una empresa destino ajena devuelve 403 y no crea el flujo', async () => {
+      const propia = await buildTenantWithFlowsAccess(t, 'flw23a');
+      const ajena = await buildTenantWithFlowsAccess(t, 'flw23b');
+      const antes = await t.prisma.flow.count();
+
+      const res = await withAuth(http(t).post('/flows'), propia.token, propia.tenant.id).send({
+        name: 'Flujo con destino ajeno',
+        nodes: [],
+        edges: [],
+        assignments: [{ tenantId: ajena.tenant.id, roleIds: [] }],
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.message).toContain('No podés asignar el flujo a una empresa a la que no pertenecés');
+      expect(res.body.message).toContain(ajena.tenant.id);
+      // Se valida ANTES de crear: no queda un flujo huérfano.
+      expect(await t.prisma.flow.count()).toBe(antes);
+    });
+
+    it('BE-FLW-23: POST /flows/:id/assign-tenants con una empresa ajena devuelve 403', async () => {
+      const propia = await buildTenantWithFlowsAccess(t, 'flw23c');
+      const ajena = await buildTenantWithFlowsAccess(t, 'flw23d');
+      const flujo = await createFlow(t.prisma, {
+        name: 'Flujo propio',
+        assign: [{ tenantId: propia.tenant.id }],
+      });
+
+      const res = await withAuth(
+        http(t).post(`/flows/${flujo.id}/assign-tenants`),
+        propia.token,
+        propia.tenant.id,
+      ).send({ assignments: [{ tenantId: ajena.tenant.id, roleIds: [] }] });
+
+      expect(res.status).toBe(403);
+      expect(await t.prisma.tenantFlow.count({ where: { flowId: flujo.id, tenantId: ajena.tenant.id } })).toBe(0);
+    });
+
+    it('BE-FLW-23: una empresa dada de baja tampoco es destino válido, aunque la membresía siga viva', async () => {
+      const propia = await buildTenantWithFlowsAccess(t, 'flw23e');
+      const deBaja = await createTenant(t.prisma, { slug: uniqueSlug('flw23-baja') });
+      const rolBaja = await createRole(t.prisma, { tenantId: deBaja.id, name: 'Gestor', permissions: FLOW_CRUD_PERMS });
+      await t.prisma.userTenant.create({
+        data: { userId: propia.user.id, tenantId: deBaja.id, roleId: rolBaja.id },
+      });
+      await t.prisma.tenant.update({ where: { id: deBaja.id }, data: { deletedAt: new Date() } });
+
+      const res = await withAuth(http(t).post('/flows'), propia.token, propia.tenant.id).send({
+        name: 'Flujo a empresa muerta',
+        nodes: [],
+        edges: [],
+        assignments: [{ tenantId: deBaja.id, roleIds: [] }],
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('BE-FLW-23: el SuperAdmin del sistema sí asigna a cualquier empresa', async () => {
+      const ajena = await buildTenantWithFlowsAccess(t, 'flw23f');
+      const { tenant: systemTenant, admin } = await getSystemContext(t.prisma);
+      const adminToken = tokenFor(t, admin);
+
+      const res = await withAuth(http(t).post('/flows'), adminToken, systemTenant.id).send({
+        name: 'Flujo asignado por el superusuario',
+        nodes: [],
+        edges: [],
+        assignments: [{ tenantId: ajena.tenant.id, roleIds: [] }],
+      });
+
+      expect(res.status).toBe(201);
+      expect(
+        await t.prisma.tenantFlow.count({ where: { flowId: res.body.id, tenantId: ajena.tenant.id } }),
+      ).toBe(1);
+    });
+  });
+
+  describe('BE-FLW-24: acceso a un borrador sin empresas y a un flujo compartido', () => {
+    it('BE-FLW-24: el borrador sin empresas solo lo abre su creador; para los demás, 404', async () => {
+      const creador = await buildTenantWithFlowsAccess(t, 'flw24a');
+      const otro = await buildTenantWithFlowsAccess(t, 'flw24b');
+      const borrador = await createFlow(t.prisma, {
+        name: 'Borrador sin empresas',
+        createdBy: creador.user.id,
+      });
+
+      const propio = await withAuth(
+        http(t).get(`/flows/${borrador.id}`),
+        creador.token,
+        creador.tenant.id,
+      );
+      const ajeno = await withAuth(http(t).get(`/flows/${borrador.id}`), otro.token, otro.tenant.id);
+
+      expect(propio.status).toBe(200);
+      expect(propio.body.name).toBe('Borrador sin empresas');
+      expect(ajeno.status).toBe(404);
+      // Y tampoco aparece en ningún listado, así que nadie más puede descubrir su id.
+      const listado = await withAuth(http(t).get('/flows'), otro.token, otro.tenant.id);
+      expect(listado.body.map((f: any) => f.id)).not.toContain(borrador.id);
+    });
+
+    it('BE-FLW-24: un flujo compartido se abre desde cualquiera de las empresas del usuario, no solo la activa', async () => {
+      // Una persona en dos empresas; el flujo está asignado solo a la SEGUNDA, pero el header
+      // manda la PRIMERA (la empresa de respaldo que usa la vista "Todas mis empresas").
+      const primera = await buildTenantWithFlowsAccess(t, 'flw24c');
+      const segunda = await createTenant(t.prisma, { slug: uniqueSlug('flw24d') });
+      const rolSegunda = await createRole(t.prisma, {
+        tenantId: segunda.id,
+        name: 'Gestor de flujos',
+        permissions: FLOW_CRUD_PERMS,
+      });
+      await t.prisma.userTenant.create({
+        data: { userId: primera.user.id, tenantId: segunda.id, roleId: rolSegunda.id },
+      });
+      const flujo = await createFlow(t.prisma, {
+        name: 'Flujo de la segunda empresa',
+        assign: [{ tenantId: segunda.id }],
+      });
+
+      const res = await withAuth(
+        http(t).get(`/flows/${flujo.id}`),
+        primera.token,
+        primera.tenant.id,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('Flujo de la segunda empresa');
+    });
+  });
+
+  it('BE-FLW-25: editar un flujo compartido no permite colar referencias de una empresa donde el editor no es miembro', async () => {
+    // El flujo está compartido entre A (donde edita quien llama) y B (donde NO es miembro).
+    const empresaA = await buildTenantWithFlowsAccess(t, 'flw25a');
+    const empresaB = await buildTenantWithFlowsAccess(t, 'flw25b');
+    const skillDeB = await createSkill(t.prisma, {
+      tenantId: empresaB.tenant.id,
+      name: 'Skill de B',
+      promptText: 'Contexto privado de la empresa B',
+    });
+    const flujoCompartido = await createFlow(t.prisma, {
+      name: 'Flujo compartido A+B',
+      assign: [{ tenantId: empresaA.tenant.id }, { tenantId: empresaB.tenant.id }],
+    });
+
+    const res = await withAuth(
+      http(t).patch(`/flows/${flujoCompartido.id}`),
+      empresaA.token,
+      empresaA.tenant.id,
+    ).send({
+      name: 'Flujo compartido A+B',
+      nodes: [
+        { id: 'n1', type: 'transfer_agent', data: { assignees: [empresaB.user.id] }, position: { x: 0, y: 0 } },
+      ],
+      edges: [],
+      skillId: skillDeB.id,
+    });
+
+    expect(res.status).toBe(200);
+    // Las empresas que el flujo ya tiene asignadas solo cuentan para el saneo si quien edita
+    // pertenece a ellas: la skill y el usuario de B se descartan igual.
+    expect(res.body.skillId).toBeNull();
+    expect(res.body.nodes[0].data.assignees).toEqual([]);
   });
 });

@@ -284,4 +284,78 @@ describe('1.15 Datos, seed y migraciones (BE-DAT-*)', () => {
     const trasSegunda = await t.prisma.tenantFlowRole.findMany({ where: { tenantFlowId: tfSinRoles.id } });
     expect(trasSegunda.map((r) => r.roleId).sort()).toEqual([rolA.id, rolB.id].sort());
   });
+
+  describe('BE-DAT-05: borrados físicos de flujo y área', () => {
+    it('BE-DAT-05: borrar un flujo se lleva sus asignaciones de empresa y de rol, sin dejar huérfanas', async () => {
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('dat05') });
+      const rol = await createRole(t.prisma, {
+        tenantId: tenant.id,
+        name: 'Gestor de flujos',
+        permissions: ['flows:read', 'flows:delete'],
+      });
+      const persona = await createUser(t.prisma, {
+        email: uniqueEmail('dat05'),
+        memberships: [{ tenantId: tenant.id, roleId: rol.id }],
+      });
+      const flujo = await createFlow(t.prisma, {
+        name: 'Flujo a borrar',
+        assign: [{ tenantId: tenant.id, isStart: true, roleIds: [rol.id] }],
+      });
+      const tenantFlow = await t.prisma.tenantFlow.findFirstOrThrow({ where: { flowId: flujo.id } });
+      expect(await t.prisma.tenantFlowRole.count({ where: { tenantFlowId: tenantFlow.id } })).toBe(1);
+
+      const res = await withAuth(
+        http(t).delete(`/flows/${flujo.id}`),
+        tokenFor(t, persona),
+        tenant.id,
+      );
+
+      expect(res.status).toBe(200);
+      // Borrado FÍSICO: la fila del flujo desaparece (a diferencia de personas y empresas,
+      // que son baja lógica).
+      expect(await t.prisma.flow.findUnique({ where: { id: flujo.id } })).toBeNull();
+      // Y el cascade se llevó las dependientes, sin dejar filas apuntando a lo borrado.
+      expect(await t.prisma.tenantFlow.count({ where: { flowId: flujo.id } })).toBe(0);
+      expect(await t.prisma.tenantFlowRole.count({ where: { tenantFlowId: tenantFlow.id } })).toBe(0);
+      // El rol y la empresa siguen intactos: el cascade va del flujo hacia sus asignaciones.
+      expect(await t.prisma.role.findUnique({ where: { id: rol.id } })).not.toBeNull();
+      expect(await t.prisma.tenant.findUnique({ where: { id: tenant.id } })).not.toBeNull();
+    });
+
+    it('BE-DAT-05: un área con usuarios asignados no se borra; sin usuarios, el borrado es físico', async () => {
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('dat05b') });
+      const rol = await createRole(t.prisma, {
+        tenantId: tenant.id,
+        name: 'Gestor de áreas',
+        permissions: ['areas:read', 'areas:delete'],
+      });
+      const areaConGente = await createArea(t.prisma, { tenantId: tenant.id, name: 'Con gente' });
+      const areaVacia = await createArea(t.prisma, { tenantId: tenant.id, name: 'Vacía' });
+      const persona = await createUser(t.prisma, {
+        email: uniqueEmail('dat05b'),
+        memberships: [{ tenantId: tenant.id, roleId: rol.id, areaId: areaConGente.id }],
+      });
+      const token = tokenFor(t, persona);
+
+      // Con usuarios asignados se rechaza, justamente para no dejar membresías huérfanas.
+      const conGente = await withAuth(
+        http(t).delete(`/areas/${areaConGente.id}`),
+        token,
+        tenant.id,
+      );
+      expect(conGente.status).toBe(409);
+      expect(await t.prisma.area.findUnique({ where: { id: areaConGente.id } })).not.toBeNull();
+
+      // Sin usuarios, se borra físicamente.
+      const vacia = await withAuth(http(t).delete(`/areas/${areaVacia.id}`), token, tenant.id);
+      expect(vacia.status).toBe(200);
+      expect(await t.prisma.area.findUnique({ where: { id: areaVacia.id } })).toBeNull();
+      // Y ninguna membresía quedó apuntando a un área inexistente.
+      const membresias = await t.prisma.userTenant.findMany({ where: { tenantId: tenant.id } });
+      for (const m of membresias) {
+        if (!m.areaId) continue;
+        expect(await t.prisma.area.findUnique({ where: { id: m.areaId } })).not.toBeNull();
+      }
+    });
+  });
 });
