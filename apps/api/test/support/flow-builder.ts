@@ -86,6 +86,14 @@ export const delayNode = (id: string, seconds: number): FlowNode => node(id, 'de
 /** variable: data.action='set' + data.name + data.value (o el body). */
 export const variableNode = (id: string, data: Record<string, unknown> = {}): FlowNode => node(id, 'variable', data);
 
+/**
+ * notification: texto + UN botón. `data.text`, `data.buttonLabel` ('Continuar' por defecto),
+ * `data.buttonMode` ('confirm' por defecto | 'link'), `data.buttonUrl` (solo en 'link') y
+ * `data.expectsPhoto` (en 'confirm': una imagen avanza igual que el botón).
+ */
+export const notificationNode = (id: string, data: Record<string, unknown> = {}): FlowNode =>
+  node(id, 'notification', data);
+
 /** subflow: data.flowId + data.entryNodeId. */
 export const subflowNode = (id: string, data: Record<string, unknown> = {}): FlowNode => node(id, 'subflow', data);
 
@@ -100,7 +108,11 @@ export const smsNode = (id: string, data: Record<string, unknown> = {}): FlowNod
 export const deviceValidationNode = (id: string, data: Record<string, unknown> = {}): FlowNode =>
   node(id, 'device_validation', data);
 
-/** webhook: stub → "Acción webhook ejecutada (stub)." */
+/**
+ * webhook: `data.url` (interpolada), `data.method` ('POST' por defecto) y `data.body` (JSON
+ * interpolado, salvo con GET). Hace la llamada HTTP REAL con timeout propio y no devuelve
+ * texto: pase lo que pase, el flujo sigue de largo (fire-and-forget). Ya no es un stub.
+ */
 export const webhookNode = (id: string, data: Record<string, unknown> = {}): FlowNode => node(id, 'webhook', data);
 
 /** Arista source→target; `sourceHandle` para el ruteo por handle (start 'known'/'unknown', menu = valor de opción). */

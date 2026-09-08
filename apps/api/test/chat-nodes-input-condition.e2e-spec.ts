@@ -517,13 +517,64 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
       15000,
     );
 
-    it('CHAT-N-CND-10: con solo la rama afirmativa cableada, un resultado FALSO no se va por la arista del true', async () => {
+
+    it('CHAT-N-CND-10: los cinco operadores del formato nuevo rutean por el handle true/false', async () => {
+      /** Arma un flujo con el operador dado y devuelve por qué rama salió. */
+      async function ramaCon(
+        label: string,
+        nodeData: Record<string, unknown>,
+        valorInicial?: string,
+      ): Promise<'AFIRMATIVA' | 'NEGATIVA'> {
+        const nodes: unknown[] = [startNode('s')];
+        const edges: unknown[] = [];
+        if (valorInicial !== undefined) {
+          nodes.push(variableNode('v', { action: 'set', name: 'plan', value: valorInicial }));
+          edges.push(edge('s', 'v', 'known'), edge('v', 'c'));
+        } else {
+          edges.push(edge('s', 'c', 'known'));
+        }
+        nodes.push(
+          node('c', 'condition', { compareVariable: 'plan', ...nodeData }),
+          messageNode('si', 'RAMA-AFIRMATIVA'),
+          messageNode('no', 'RAMA-NEGATIVA'),
+          endNode('e'),
+        );
+        edges.push(
+          edge('c', 'si', 'true'),
+          edge('c', 'no', 'false'),
+          edge('si', 'e'),
+          edge('no', 'e'),
+        );
+
+        const { phone } = await setupScenario({ label, nodes, edges });
+        const res = await simulate(phone, 'hola');
+        expect(res.status).toBe(201);
+        return (res.body.reply as string).includes('RAMA-AFIRMATIVA') ? 'AFIRMATIVA' : 'NEGATIVA';
+      }
+
+      // equals / not_equals
+      expect(await ramaCon('cnd10-eq', { compareOperator: 'equals', compareValue: 'premium' }, 'premium')).toBe('AFIRMATIVA');
+      expect(await ramaCon('cnd10-eq2', { compareOperator: 'equals', compareValue: 'premium' }, 'basico')).toBe('NEGATIVA');
+      expect(await ramaCon('cnd10-ne', { compareOperator: 'not_equals', compareValue: 'premium' }, 'basico')).toBe('AFIRMATIVA');
+
+      // contains, sin distinguir mayúsculas
+      expect(await ramaCon('cnd10-ct', { compareOperator: 'contains', compareValue: 'premium' }, 'Plan PREMIUM Plus')).toBe('AFIRMATIVA');
+      expect(await ramaCon('cnd10-ct2', { compareOperator: 'contains', compareValue: 'premium' }, 'basico')).toBe('NEGATIVA');
+
+      // exists / not_exists: miran presencia real e ignoran compareValue.
+      expect(await ramaCon('cnd10-ex', { compareOperator: 'exists', compareValue: 'ignorado' }, 'basico')).toBe('AFIRMATIVA');
+      expect(await ramaCon('cnd10-ex2', { compareOperator: 'exists', compareValue: 'ignorado' }, '')).toBe('NEGATIVA');
+      expect(await ramaCon('cnd10-nx', { compareOperator: 'not_exists', compareValue: 'ignorado' })).toBe('AFIRMATIVA');
+      expect(await ramaCon('cnd10-nx2', { compareOperator: 'not_exists', compareValue: 'ignorado' }, 'basico')).toBe('NEGATIVA');
+    }, 60000);
+
+    it('CHAT-N-CND-11: con solo la rama afirmativa cableada, un resultado FALSO no se va por la arista del true', async () => {
       // Forma más común del nodo: "si es X → algo especial; si no, seguí de largo", donde en el
       // editor se dibuja únicamente la arista `true`. Antes, un resultado falso no encontraba
       // arista `false` y `resolveNextNode` caía a `outgoing[0]` — que es justo la del `true`:
       // el flujo hacía exactamente lo contrario de lo que declaraba.
       const { phone } = await setupScenario({
-        label: 'cnd10',
+        label: 'cnd11a',
         nodes: [
           startNode('s'),
           variableNode('v', { action: 'set', name: 'plan', value: 'basico' }),
@@ -541,11 +592,11 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
       expect(res.body.reply ?? '').not.toContain('RAMA-PREMIUM');
     });
 
-    it('CHAT-N-CND-11: una arista SIN handle sirve de salida por defecto cuando la rama no está cableada', async () => {
+    it('CHAT-N-CND-12: una arista SIN handle sirve de salida por defecto cuando la rama no está cableada', async () => {
       // Distinto del caso anterior: una arista sin handle no pertenece a ninguna rama, así que
       // seguirla es inequívoco — quien la dibujó quiso "seguí por acá pase lo que pase".
       const { phone } = await setupScenario({
-        label: 'cnd11',
+        label: 'cnd12a',
         nodes: [
           startNode('s'),
           variableNode('v', { action: 'set', name: 'plan', value: 'basico' }),
@@ -568,6 +619,107 @@ describe('2.3 Nodos del motor — input y condition (CHAT-N-INP-*, CHAT-N-CND-*)
       expect(res.status).toBe(201);
       expect(res.body.reply).toContain('SIGUE-DE-LARGO');
       expect(res.body.reply).not.toContain('RAMA-PREMIUM');
+    });
+
+    it('CHAT-N-CND-12: la arista sin sourceHandle sirve de salida para CUALQUIERA de las dos ramas', async () => {
+      // Solo está dibujada la arista sin handle: ni `true` ni `false` tienen la suya, así que
+      // las dos ramas tienen que salir por ella (es inequívoca: "seguí por acá pase lo que pase").
+      const conValor = await setupScenario({
+        label: 'cnd12-true',
+        nodes: [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'plan', value: 'premium' }),
+          node('c', 'condition', {
+            compareVariable: 'plan',
+            compareOperator: 'equals',
+            compareValue: 'premium',
+          }),
+          messageNode('unica', 'SALIDA-UNICA'),
+          endNode('e'),
+        ],
+        edges: [edge('s', 'v', 'known'), edge('v', 'c'), edge('c', 'unica'), edge('unica', 'e')],
+      });
+      const resTrue = await simulate(conValor.phone, 'hola');
+      expect(resTrue.body.reply).toContain('SALIDA-UNICA');
+
+      const sinValor = await setupScenario({
+        label: 'cnd12-false',
+        nodes: [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'plan', value: 'basico' }),
+          node('c', 'condition', {
+            compareVariable: 'plan',
+            compareOperator: 'equals',
+            compareValue: 'premium',
+          }),
+          messageNode('unica', 'SALIDA-UNICA'),
+          endNode('e'),
+        ],
+        edges: [edge('s', 'v', 'known'), edge('v', 'c'), edge('c', 'unica'), edge('unica', 'e')],
+      });
+      const resFalse = await simulate(sinValor.phone, 'hola');
+      expect(resFalse.body.reply).toContain('SALIDA-UNICA');
+    });
+
+    it('CHAT-N-CND-13: una variable inexistente con equals y valor vacío da true (borde documentado)', async () => {
+      const { phone } = await setupScenario({
+        label: 'cnd13',
+        nodes: [
+          startNode('s'),
+          node('c', 'condition', {
+            compareVariable: 'sede',
+            compareOperator: 'equals',
+            compareValue: '',
+          }),
+          messageNode('si', 'RAMA-VERDADERA'),
+          messageNode('no', 'RAMA-FALSA'),
+          endNode('e'),
+        ],
+        edges: [
+          edge('s', 'c', 'known'),
+          edge('c', 'si', 'true'),
+          edge('c', 'no', 'false'),
+          edge('si', 'e'),
+          edge('no', 'e'),
+        ],
+      });
+
+      const res = await simulate(phone, 'hola');
+
+      // El valor ausente se normaliza a cadena vacía y coincide: "no existe" y "está vacía"
+      // son indistinguibles con `equals`. Para separarlas hay que usar `exists`/`not_exists`.
+      expect(res.body.reply).toContain('RAMA-VERDADERA');
+      expect(res.body.reply).not.toContain('RAMA-FALSA');
+    });
+
+    it('CHAT-N-CND-13: el nombre de la variable admite llaves — {{sede}} y sede son lo mismo', async () => {
+      const { phone } = await setupScenario({
+        label: 'cnd13-llaves',
+        nodes: [
+          startNode('s'),
+          variableNode('v', { action: 'set', name: 'sede', value: 'central' }),
+          node('c', 'condition', {
+            compareVariable: '{{sede}}',
+            compareOperator: 'equals',
+            compareValue: 'central',
+          }),
+          messageNode('si', 'RAMA-VERDADERA'),
+          messageNode('no', 'RAMA-FALSA'),
+          endNode('e'),
+        ],
+        edges: [
+          edge('s', 'v', 'known'),
+          edge('v', 'c'),
+          edge('c', 'si', 'true'),
+          edge('c', 'no', 'false'),
+          edge('si', 'e'),
+          edge('no', 'e'),
+        ],
+      });
+
+      const res = await simulate(phone, 'hola');
+
+      expect(res.body.reply).toContain('RAMA-VERDADERA');
     });
   });
 });

@@ -17,16 +17,25 @@
  * compartido), con una app extra acá porque hay DOS selecciones de proveedor (Twilio y
  * Gupshup) en vez de una sola.
  */
+import { Logger } from '@nestjs/common';
 import {
   createTestApp,
   TestApp,
+  http,
   uniquePhone,
+  uniqueEmail,
+  uniqueSlug,
+  createTenant,
+  createRole,
+  createUser,
   setSetting,
   deleteSetting,
   installFetchMock,
+  FakeLlmService,
 } from './support';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { BrokerService } from '../src/modules/broker/broker.service';
+import { LlmService } from '../src/modules/llm/llm.service';
 import { TwilioSmsService } from '../src/modules/sms/twilio-sms.service';
 import { GupshupSmsService } from '../src/modules/sms/gupshup-sms.service';
 import { WhatsAppInteractive } from '../src/modules/whatsapp/whatsapp-interactive.types';
@@ -370,6 +379,176 @@ describe('1.21 Canal SMS, mecánica del conector (BE-SMS-06, BE-SMS-08, BE-SMS-1
       await deleteSetting(t.prisma, 'GUPSHUP_API_KEY');
       await deleteSetting(t.prisma, 'GUPSHUP_SMS_APP_ID');
     }
+  });
+
+  it('BE-SMS-13: la request de salida lleva el appId en la URL, la API key en el header y el source solo si está configurado', async () => {
+    // ⚠️ Verificado contra el código y la documentación de Gupshup, NO contra tráfico real: la
+    // documentación no lista Argentina entre los destinos permitidos de esta API.
+    await setSetting(t.prisma, 'GUPSHUP_API_KEY', GUPSHUP_API_KEY);
+    await setSetting(t.prisma, 'GUPSHUP_SMS_APP_ID', GUPSHUP_SMS_APP_ID);
+    const gupshup = t.moduleRef.get(GupshupSmsService);
+    const { requests, restore } = installFetchMock(() => ({ status: 202, body: { status: 'submitted' } }));
+    try {
+      await gupshup.sendText(uniquePhone(), 'sin sender id');
+
+      const req = requests[0];
+      expect(req.url).toBe(`https://api.gupshup.io/sms/v1/message/${GUPSHUP_SMS_APP_ID}`);
+      // Endpoint de SMS, no el de WhatsApp: pegarle al de WhatsApp con channel:'sms' devolvía
+      // 202 "submitted" y entregaba el mensaje POR WHATSAPP (roto entre el 27/08 y el 31/08).
+      expect(req.url).not.toContain('/wa/api/v1/msg');
+      const headers = req.init!.headers as Record<string, string>;
+      expect(headers.Authorization).toBe(GUPSHUP_API_KEY);
+      expect(headers.apikey).toBeUndefined(); // ese es el header del canal de WhatsApp
+      // Sin GUPSHUP_SMS_SOURCE configurado, no se manda un sender id vacío.
+      expect(new URLSearchParams(req.init!.body as string).get('source')).toBeNull();
+
+      await setSetting(t.prisma, 'GUPSHUP_SMS_SOURCE', 'PCIBOT');
+      await gupshup.sendText(uniquePhone(), 'con sender id');
+      expect(new URLSearchParams(requests[1].init!.body as string).get('source')).toBe('PCIBOT');
+    } finally {
+      restore();
+      await deleteSetting(t.prisma, 'GUPSHUP_API_KEY');
+      await deleteSetting(t.prisma, 'GUPSHUP_SMS_APP_ID');
+      await deleteSetting(t.prisma, 'GUPSHUP_SMS_SOURCE');
+    }
+  });
+
+  it('BE-SMS-14: sin API key o sin App ID, avisa nombrando el grupo de cada clave, no envía y no rompe el consumer', async () => {
+    const gupshup = t.moduleRef.get(GupshupSmsService);
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const { requests, restore } = installFetchMock(() => ({ status: 202, body: {} }));
+    try {
+      // Sin ninguna de las dos.
+      await expect(gupshup.sendText(uniquePhone(), 'sin credenciales')).resolves.toBeUndefined();
+
+      // Con la API key pero sin el App ID: el error de carga esperable, porque viven en
+      // pestañas distintas de /settings.
+      await setSetting(t.prisma, 'GUPSHUP_API_KEY', GUPSHUP_API_KEY);
+      await expect(gupshup.sendText(uniquePhone(), 'sin app id')).resolves.toBeUndefined();
+
+      expect(requests).toHaveLength(0);
+      const mensajes = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(mensajes).toContain('GUPSHUP_API_KEY');
+      expect(mensajes).toContain('GUPSHUP_SMS_APP_ID');
+      // Cada clave nombra el grupo de /settings donde vive.
+      expect(mensajes).toContain('Mensajería: WhatsApp (Gupshup)');
+      expect(mensajes).toContain('Mensajería: SMS (Gupshup)');
+    } finally {
+      warnSpy.mockRestore();
+      restore();
+      await deleteSetting(t.prisma, 'GUPSHUP_API_KEY');
+    }
+  });
+});
+
+/**
+ * SMS como canal 100% SALIENTE: no hay webhooks ni cola de entrada. Los casos que antes
+ * describían la entrada (BE-SMS-09/12) ahora verifican que esa superficie no existe.
+ */
+describe('1.21 Canal SMS, canal saliente y superficie de entrada eliminada (BE-SMS-01, 04, 05, 09, 12)', () => {
+  let t: TestApp;
+  let broker: BrokerService;
+  let tenantId: string;
+  let phone: string;
+
+  beforeAll(async () => {
+    t = await createTestApp({
+      customize: (b) =>
+        b.overrideProvider(LlmService).useValue(new FakeLlmService().setReply('respuesta del bot')),
+    });
+    broker = t.moduleRef.get(BrokerService);
+    const tenant = await createTenant(t.prisma, { slug: uniqueSlug('sms-canal') });
+    tenantId = tenant.id;
+    const role = await createRole(t.prisma, { tenantId, name: 'Rol SMS' });
+    phone = uniquePhone();
+    await createUser(t.prisma, {
+      email: uniqueEmail('sms-canal'),
+      phone,
+      memberships: [{ tenantId, roleId: role.id }],
+    });
+  }, 30000);
+
+  afterAll(async () => {
+    await new Promise((r) => setTimeout(r, 300));
+    await t.close();
+  });
+
+  it('BE-SMS-01: un mensaje con channel:"sms" abre su propia conversación y su respuesta va a sms.outgoing', async () => {
+    const publishSpy = jest.spyOn(broker, 'publish');
+    try {
+      // Se publica SIN `replyTo` (como un canal real, no como `/simulate`): con `replyTo` la
+      // respuesta vuelve por la cola RPC y nunca se ve el ruteo a `${channel}.outgoing`, que es
+      // justo lo que este caso verifica.
+      for (const channel of ['sms', 'whatsapp']) {
+        await broker.publish('whatsapp.incoming', {
+          pattern: 'message.received',
+          data: { from: phone, body: `hola por ${channel}`, channel },
+          tenantId,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      await waitFor(async () => {
+        const convs = await t.prisma.conversation.findMany({ where: { tenantId, user: { phone } } });
+        return convs.length === 2;
+      }, 15000);
+
+      const conversaciones = await t.prisma.conversation.findMany({
+        where: { tenantId, user: { phone } },
+      });
+      // Una conversación por canal, independientes entre sí.
+      expect(conversaciones.map((c) => c.channel).sort()).toEqual(['sms', 'whatsapp']);
+
+      // La respuesta del canal sms se rutea a `${channel}.outgoing`.
+      await waitFor(() => publishSpy.mock.calls.some((c) => c[0] === 'sms.outgoing'), 15000);
+    } finally {
+      publishSpy.mockRestore();
+    }
+  }, 30000);
+
+  it('BE-SMS-04: los webhooks de SMS ya no existen — POST a sus rutas devuelve 404', async () => {
+    for (const ruta of ['/webhooks/twilio-sms', '/webhooks/gupshup-sms']) {
+      const res = await http(t).post(ruta).type('form').send({ From: phone, Body: 'entrante' });
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it('BE-SMS-09: no hay ninguna superficie de entrada de SMS que necesite verificación de firma', async () => {
+    // Esta parte de SEC-16 se cerró por ELIMINACIÓN de la superficie, no agregando un guard:
+    // ninguna variante de ruta de SMS entrante responde.
+    for (const ruta of ['/webhooks/sms', '/webhooks/twilio/sms', '/webhooks/gupshup/sms']) {
+      const res = await http(t).post(ruta).send({});
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it('BE-SMS-12: sin webhook de entrada no hay MMS que procesar', async () => {
+    // Un MMS entrante llegaría por el webhook de SMS, que ya no existe: la descarga de media
+    // sigue viva solo para WhatsApp (BE-TWA-12/13, BE-GUP-08).
+    const res = await http(t)
+      .post('/webhooks/twilio-sms')
+      .type('form')
+      .send({ From: phone, Body: '', NumMedia: '1', MediaUrl0: 'https://api.twilio.com/x.jpg' });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('BE-SMS-05: publicar en la cola histórica sms.incoming no tiene efecto (nadie la consume)', async () => {
+    const antes = await t.prisma.conversation.count({ where: { tenantId } });
+
+    await broker.publish('sms.incoming', {
+      pattern: 'message.received',
+      data: { from: phone, body: 'mensaje a la cola muerta', channel: 'sms' },
+      timestamp: new Date().toISOString(),
+    });
+    await new Promise((r) => setTimeout(r, 500));
+
+    // El mensaje se acumula en la cola sin efecto: ni conversación nueva ni Message nuevo.
+    expect(await t.prisma.conversation.count({ where: { tenantId } })).toBe(antes);
+    const mensajes = await t.prisma.message.findMany({
+      where: { conversation: { tenantId }, content: 'mensaje a la cola muerta' },
+    });
+    expect(mensajes).toHaveLength(0);
   });
 });
 

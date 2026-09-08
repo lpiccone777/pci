@@ -447,4 +447,49 @@ describe('1.2 RBAC dinámico (BE-RBAC-*)', () => {
     const pairs = res.body.map((p: any) => `${p.resource}:${p.action}`).sort();
     expect(pairs).toEqual(['areas:read', 'permissions:read']);
   });
+
+  it('BE-RBAC-25: GET /roles acepta roles:read O users:create; sin ninguno de los dos, 403 con las alternativas', async () => {
+    const soloAlta = await scenario(['users:create'], 'Alta sin roles');
+    const soloRoles = await scenario(['roles:read'], 'Solo roles');
+    const sinNada = await scenario(['areas:read'], 'Sin ninguno');
+
+    const conAlta = await withAuth(http(t).get('/roles'), soloAlta.token, soloAlta.tenant.id);
+    const conRoles = await withAuth(http(t).get('/roles'), soloRoles.token, soloRoles.tenant.id);
+    const sin = await withAuth(http(t).get('/roles'), sinNada.token, sinNada.tenant.id);
+
+    expect(conAlta.status).toBe(200);
+    expect(conRoles.status).toBe(200);
+    expect(sin.status).toBe(403);
+    expect(sin.body.message).toBe('Permiso denegado: roles:read o users:create');
+  });
+
+  it('BE-RBAC-26: con roles:read viene el rol completo; con solo users:create, únicamente id y nombre', async () => {
+    const conRoles = await scenario(['roles:read'], 'Administra roles');
+    // Mismo tenant que el anterior, para comparar la MISMA lista de roles desde los dos lados.
+    const rolAlta = await createRole(t.prisma, {
+      tenantId: conRoles.tenant.id,
+      name: 'Alta sin roles',
+      permissions: ['users:create'],
+    });
+    const userAlta = await createUser(t.prisma, {
+      email: uniqueEmail('rbac26'),
+      password: DEFAULT_PASSWORD,
+      memberships: [{ tenantId: conRoles.tenant.id, roleId: rolAlta.id }],
+    });
+    const tokenAlta = tokenFor(t, userAlta);
+
+    const completo = await withAuth(http(t).get('/roles'), conRoles.token, conRoles.tenant.id);
+    const recortado = await withAuth(http(t).get('/roles'), tokenAlta, conRoles.tenant.id);
+
+    expect(completo.status).toBe(200);
+    expect(completo.body[0]).toHaveProperty('permissions');
+
+    expect(recortado.status).toBe(200);
+    expect(recortado.body.length).toBe(completo.body.length);
+    // Lo justo para el desplegable de asignación: nada de la matriz de permisos ajena.
+    for (const rol of recortado.body) {
+      expect(Object.keys(rol).sort()).toEqual(['id', 'name']);
+    }
+    expect(JSON.stringify(recortado.body)).not.toContain('users:create');
+  });
 });

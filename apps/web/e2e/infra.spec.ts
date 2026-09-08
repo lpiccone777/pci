@@ -14,11 +14,16 @@ import {
   adminContext,
   apiLogin,
   createTenant,
+  createRole,
+  createUser,
   createUserWithPermissions,
   type AdminCtx,
 } from './support/seed';
 import { injectSession } from './support/session';
 import { API_URL } from './support/ports';
+
+/** Centinela de "Todas las empresas" (mismo valor que `@/lib/system-tenant`). */
+const ALL_TENANTS = '__all__';
 
 let admin: AdminCtx;
 
@@ -432,4 +437,33 @@ test('FE-INF-19: la navegación del panel usa rutas con barra final y el editor 
   await expect(page).toHaveURL(/\/dashboard\/flows\/edit\/\?id=new$/);
   // El editor montó (no 404): su input de nombre está presente.
   await expect(page.getByPlaceholder('Nombre del flujo')).toBeVisible();
+});
+
+test('FE-INF-17: en consolidado el sidebar lista todas las empresas y el filtro de la página solo las que tienen filas', async ({
+  page,
+}) => {
+  // Una empresa CON gente y otra recién creada, sin ninguna fila en el listado de Usuarios.
+  const conGente = await createTenant(admin);
+  const rol = await createRole(admin, { tenantId: conGente.id, permissions: ['users:read'] });
+  await createUser(admin, { memberships: [{ tenantId: conGente.id, roleId: rol.id }] });
+  const sinGente = await createTenant(admin);
+
+  await injectSession(page, { token: admin.token, activeTenant: ALL_TENANTS });
+  await page.goto('/dashboard/users');
+  await expect(page.getByRole('heading', { name: 'Usuarios' })).toBeVisible();
+
+  // El selector del sidebar lista TODAS las empresas del sistema, tengan filas o no.
+  const selectorSidebar = page.locator('aside select');
+  await expect(selectorSidebar.locator(`option[value="${conGente.id}"]`)).toBeAttached();
+  await expect(selectorSidebar.locator(`option[value="${sinGente.id}"]`)).toBeAttached();
+
+  // El filtro "Empresa:" de la página se arma con las empresas PRESENTES en el listado: una
+  // empresa sin usuarios aparece en el sidebar pero no acá. No es un bug — no tiene sentido
+  // filtrar hacia una empresa sin filas que mostrar—, se documenta porque los dos selectores
+  // se ven distintos.
+  // Se acota a `main`: el selector del sidebar también dice "Todas" ("🌐 Todas las empresas") y
+  // va antes en el DOM, así que sin acotar `.first()` agarraría ese y no el filtro de la página.
+  const filtroPagina = page.locator('main select').filter({ hasText: 'Todas' }).first();
+  await expect(filtroPagina.locator(`option[value="${conGente.id}"]`)).toBeAttached();
+  await expect(filtroPagina.locator(`option[value="${sinGente.id}"]`)).toHaveCount(0);
 });

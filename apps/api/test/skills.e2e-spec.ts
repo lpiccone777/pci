@@ -26,6 +26,7 @@ import {
   createUser,
   createFlow,
   createSkill,
+  getSystemContext,
   uniqueEmail,
   uniquePhone,
   uniqueSlug,
@@ -313,4 +314,78 @@ describe('1.23 Skills (BE-SKL-*)', () => {
     },
     20000,
   );
+
+  describe('BE-SKL-11: listados consolidados /skills/all y /mine', () => {
+    it('BE-SKL-11: /all trae las de todas las empresas vigentes con la suya en cada fila, y exige tenant de sistema', async () => {
+      const a = await buildTenantWithPerms(t, 'skl11a', SKILL_CRUD_PERMS);
+      const b = await buildTenantWithPerms(t, 'skl11b', SKILL_CRUD_PERMS);
+      const nombreA = uniqueSlug('skl11-a');
+      const nombreB = uniqueSlug('skl11-b');
+      await createSkill(t.prisma, { tenantId: a.tenant.id, name: nombreA, promptText: 'texto A' });
+      await createSkill(t.prisma, { tenantId: b.tenant.id, name: nombreB, promptText: 'texto B' });
+
+      // Desde una empresa común, el candado cross-tenant corta.
+      const desdeComun = await withAuth(http(t).get('/skills/all'), a.token, a.tenant.id);
+      expect(desdeComun.status).toBe(403);
+
+      const { tenant: systemTenant, admin } = await getSystemContext(t.prisma);
+      const res = await withAuth(http(t).get('/skills/all'), tokenFor(t, admin), systemTenant.id);
+
+      expect(res.status).toBe(200);
+      const filaA = (res.body as any[]).find((s) => s.name === nombreA);
+      const filaB = (res.body as any[]).find((s) => s.name === nombreB);
+      expect(filaA.tenant.id).toBe(a.tenant.id);
+      expect(filaB.tenant.id).toBe(b.tenant.id);
+    });
+
+    it('BE-SKL-11: /all excluye las skills de empresas dadas de baja', async () => {
+      const baja = await createTenant(t.prisma, { slug: uniqueSlug('skl11-baja') });
+      const nombre = uniqueSlug('skl11-muerta');
+      await createSkill(t.prisma, { tenantId: baja.id, name: nombre, promptText: 'texto' });
+      await t.prisma.tenant.update({ where: { id: baja.id }, data: { deletedAt: new Date() } });
+
+      const { tenant: systemTenant, admin } = await getSystemContext(t.prisma);
+      const res = await withAuth(http(t).get('/skills/all'), tokenFor(t, admin), systemTenant.id);
+
+      expect((res.body as any[]).map((s) => s.name)).not.toContain(nombre);
+    });
+
+    it('BE-SKL-11: /mine trae las de las empresas donde el usuario tiene skills:read', async () => {
+      const conPermiso = await createTenant(t.prisma, { slug: uniqueSlug('skl11-con') });
+      const sinPermiso = await createTenant(t.prisma, { slug: uniqueSlug('skl11-sin') });
+      const rolCon = await createRole(t.prisma, {
+        tenantId: conPermiso.id,
+        name: 'Lee skills',
+        permissions: ['skills:read'],
+      });
+      const rolSin = await createRole(t.prisma, { tenantId: sinPermiso.id, name: 'No lee skills' });
+      const persona = await createUser(t.prisma, {
+        email: uniqueEmail('skl11-mine'),
+        memberships: [
+          { tenantId: conPermiso.id, roleId: rolCon.id },
+          { tenantId: sinPermiso.id, roleId: rolSin.id },
+        ],
+      });
+      const visible = uniqueSlug('skl11-visible');
+      const invisible = uniqueSlug('skl11-invisible');
+      await createSkill(t.prisma, { tenantId: conPermiso.id, name: visible, promptText: 'texto' });
+      await createSkill(t.prisma, { tenantId: sinPermiso.id, name: invisible, promptText: 'texto' });
+
+      const res = await withAuth(http(t).get('/skills/mine'), tokenFor(t, persona), conPermiso.id);
+
+      expect(res.status).toBe(200);
+      const nombres = (res.body as any[]).map((s) => s.name);
+      expect(nombres).toContain(visible);
+      expect(nombres).not.toContain(invisible);
+    });
+
+    it('BE-SKL-11: /mine devuelve [] —no 403— para quien no tiene skills:read en ninguna empresa', async () => {
+      const sinNada = await buildTenantWithPerms(t, 'skl11-nada', ['areas:read']);
+
+      const res = await withAuth(http(t).get('/skills/mine'), sinNada.token, sinNada.tenant.id);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
+    });
+  });
 });

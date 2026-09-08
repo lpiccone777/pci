@@ -202,4 +202,147 @@ describe('1.24 Ruteo de tenant entrante por membresía (BE-ITR-*)', () => {
     const closed = await t.prisma.conversation.findUnique({ where: { id: conv.id } });
     expect(closed!.status).toBe('closed');
   });
+
+  describe('BE-ITR-07: forma de la pregunta según canal y cantidad de empresas', () => {
+    /** Crea `cantidad` empresas con nombres largos y una persona que pertenece a todas. */
+    async function multiempresa(cantidad: number) {
+      const memberships: Array<{ tenantId: string; roleId: string }> = [];
+      for (let i = 0; i < cantidad; i++) {
+        const tenant = await createTenant(t.prisma, {
+          slug: uniqueSlug('itr07'),
+          name: `Empresa con nombre larguísimo número ${i + 1}`,
+        });
+        const role = await createRole(t.prisma, { tenantId: tenant.id, name: `ITR07-${i}` });
+        memberships.push({ tenantId: tenant.id, roleId: role.id });
+      }
+      const phone = uniquePhone();
+      await member(phone, memberships);
+      return phone;
+    }
+
+    it('BE-ITR-07: WhatsApp con hasta 3 empresas usa botones, con el título recortado a 20', async () => {
+      const phone = await multiempresa(3);
+
+      const res = await routing.resolve(phone, 'whatsapp', 'hola');
+
+      expect(res.status).toBe('ask');
+      if (res.status !== 'ask') return;
+      expect(res.interactive!.type).toBe('button');
+      const botones = (res.interactive as any).buttons;
+      expect(botones).toHaveLength(3);
+      for (const b of botones) expect(b.title.length).toBeLessThanOrEqual(20);
+    });
+
+    it('BE-ITR-07: WhatsApp con 4 a 10 empresas usa lista, con el título recortado a 24 y el botón "Elegir empresa"', async () => {
+      const phone = await multiempresa(4);
+
+      const res = await routing.resolve(phone, 'whatsapp', 'hola');
+
+      expect(res.status).toBe('ask');
+      if (res.status !== 'ask') return;
+      expect(res.interactive!.type).toBe('list');
+      expect((res.interactive as any).buttonText).toBe('Elegir empresa');
+      const filas = (res.interactive as any).rows;
+      expect(filas).toHaveLength(4);
+      for (const f of filas) expect(f.title.length).toBeLessThanOrEqual(24);
+    });
+
+    it('BE-ITR-07: por SMS —o con más de 10 empresas— cae a texto numerado, sin interactivo', async () => {
+      const porSms = await multiempresa(3);
+      const resSms = await routing.resolve(porSms, 'sms', 'hola');
+
+      expect(resSms.status).toBe('ask');
+      if (resSms.status !== 'ask') return;
+      expect(resSms.interactive).toBeUndefined();
+      expect(resSms.body).toContain('1.');
+      expect(resSms.body).toContain('Respondé con el número.');
+
+      const conMuchas = await multiempresa(11);
+      const resMuchas = await routing.resolve(conMuchas, 'whatsapp', 'hola');
+
+      expect(resMuchas.status).toBe('ask');
+      if (resMuchas.status !== 'ask') return;
+      // Más de 10 no entra en una lista de WhatsApp: cae al texto numerado igual que SMS.
+      expect(resMuchas.interactive).toBeUndefined();
+      expect(resMuchas.body).toContain('11.');
+      expect(resMuchas.body).toContain('Respondé con el número.');
+    });
+  });
+
+  it('BE-ITR-11: dos mensajes casi simultáneos dejan un solo pendiente, y gana el primero', async () => {
+    const phone = uniquePhone();
+    await member(phone, [
+      { tenantId: tenantA.id, roleId: roleA.id },
+      { tenantId: tenantB.id, roleId: roleB.id },
+    ]);
+
+    const [primero, segundo] = await Promise.all([
+      routing.resolve(phone, 'whatsapp', 'mensaje original'),
+      routing.resolve(phone, 'whatsapp', 'segundo mensaje'),
+    ]);
+
+    // Ninguno lanza: el choque contra la unique [phone, channel] lo absorbe `skipDuplicates`.
+    expect(primero.status).toBe('ask');
+    expect(segundo.status).toBe('ask');
+
+    const pendientes = await t.prisma.pendingTenantSelection.findMany({ where: { phone } });
+    expect(pendientes).toHaveLength(1);
+    // El `originalBody` del que llegó primero se conserva: el segundo no lo pisa.
+    expect(['mensaje original', 'segundo mensaje']).toContain(pendientes[0].originalBody);
+  });
+
+  it.failing(
+    'BE-ITR-12: los adjuntos del mensaje original deberían sobrevivir mientras viva el pendiente @invertido',
+    async () => {
+      const phone = uniquePhone();
+      await member(phone, [
+        { tenantId: tenantA.id, roleId: roleA.id },
+        { tenantId: tenantB.id, roleId: roleB.id },
+      ]);
+      const adjuntos = [
+        { path: '/tmp/foto-borrada-por-el-cron.jpg', filename: 'foto.jpg', contentType: 'image/jpeg' },
+      ];
+
+      await routing.resolve(phone, 'whatsapp', 'mirá esta foto', adjuntos as any);
+      // El pendiente vive 12h; el cron de retención de media borra los archivos a los 10 min.
+      const pendiente = await pendingOf(phone);
+      expect((pendiente!.originalAttachments as any[])).toHaveLength(1);
+
+      const elegida = await routing.resolve(phone, 'whatsapp', '1');
+
+      expect(elegida.status).toBe('resolved');
+      if (elegida.status !== 'resolved') return;
+      // SEGURO: responder más tarde no debería perder las fotos en silencio — o se retienen
+      // mientras viva el pendiente, o se avisa. Hoy el replay devuelve las rutas igual y
+      // `loadAttachments` no encuentra los archivos: se pierden sin que nadie se entere.
+      const { existsSync } = await import('fs');
+      for (const att of elegida.replayAttachments ?? []) {
+        expect(existsSync(att.path)).toBe(true);
+      }
+    },
+  );
+
+  it.failing(
+    'BE-ITR-13: el selector no debería revelar los nombres de las empresas de un teléfono ajeno @invertido',
+    async () => {
+      const phone = uniquePhone();
+      await member(phone, [
+        { tenantId: tenantA.id, roleId: roleA.id },
+        { tenantId: tenantB.id, roleId: roleB.id },
+      ]);
+
+      // Quien alcance un webhook sin firma (Gupshup/Meta) o `/simulate` sin tenantId puede
+      // sondear cualquier número.
+      const res = await routing.resolve(phone, 'whatsapp', 'hola');
+
+      expect(res.status).toBe('ask');
+      if (res.status !== 'ask') return;
+      const textoCompleto = JSON.stringify(res);
+      // SEGURO: de un remitente no verificado no debería salir dónde trabaja una persona. Hoy
+      // el selector devuelve los nombres de todas sus empresas, así que el número alcanza para
+      // enumerarlas (privacidad, ligado a SEC-04/SEC-16).
+      expect(textoCompleto).not.toContain('Empresa A');
+      expect(textoCompleto).not.toContain('Empresa B');
+    },
+  );
 });

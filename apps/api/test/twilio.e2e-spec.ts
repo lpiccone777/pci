@@ -408,6 +408,100 @@ describe('1.19 Canal WhatsApp — Twilio, verificación de firma del webhook (BE
       publishSpy.mockRestore();
     }
   });
+
+  it('BE-TWA-16: firma ausente y firma inválida se rechazan igual, sin distinguirse hacia afuera', async () => {
+    const params = { From: `whatsapp:${uniquePhone()}`, Body: 'sondeo' };
+
+    const sinFirma = await http(t).post('/webhooks/twilio').type('form').send(params);
+    const invalida = await http(t)
+      .post('/webhooks/twilio')
+      .type('form')
+      .set('X-Twilio-Signature', 'firma-que-no-matchea')
+      .send(params);
+
+    // Misma respuesta en los dos casos: nunca se le da al atacante una señal distinguible de
+    // "acá hay algo que validar".
+    expect(sinFirma.status).toBe(invalida.status);
+    expect(sinFirma.status).toBe(403);
+    expect(sinFirma.body).toEqual(invalida.body);
+  });
+
+  it('BE-TWA-16: una firma de largo distinto se rechaza sin lanzar (timingSafeEqual protegido)', async () => {
+    const params = { From: `whatsapp:${uniquePhone()}`, Body: 'firma rara' };
+
+    const corta = await http(t)
+      .post('/webhooks/twilio')
+      .type('form')
+      .set('X-Twilio-Signature', 'x')
+      .send(params);
+    const larga = await http(t)
+      .post('/webhooks/twilio')
+      .type('form')
+      .set('X-Twilio-Signature', 'y'.repeat(500))
+      .send(params);
+
+    // Sin el chequeo de largo previo, `timingSafeEqual` tira y esto sería un 500.
+    expect(corta.status).toBe(403);
+    expect(larga.status).toBe(403);
+  });
+
+  it('BE-TWA-16: sin TWILIO_WEBHOOK_PUBLIC_URL cargada, el guard NO corta (deuda deliberada)', async () => {
+    await deleteSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL');
+    try {
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .send({ From: `whatsapp:${uniquePhone()}`, Body: 'sin guard configurado' });
+
+      // Deja pasar (solo advierte en el log) para que un despliegue que todavía no cargó el
+      // setting no deje de recibir mensajes de un día para el otro. Queda tan expuesto como
+      // antes del guard: es la deuda que documenta el caso.
+      expect(res.status).toBe(200);
+    } finally {
+      await setSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL', publicUrl);
+    }
+  });
+
+  it('BE-TWA-17: con la URL pública cargada CON el path, el path se duplica y se cortan todos los mensajes', async () => {
+    await setSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL', `${publicUrl}/webhooks/twilio`);
+    try {
+      const params = { From: `whatsapp:${uniquePhone()}`, Body: 'apagón silencioso' };
+      // Firma correcta según la URL REAL que Twilio ve.
+      const signature = computeSignature(`${publicUrl}/webhooks/twilio`, params);
+
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .set('X-Twilio-Signature', signature)
+        .send(params);
+
+      // El guard arma `.../webhooks/twilio/webhooks/twilio`: la firma nunca matchea y el canal
+      // entero queda mudo, con un único "firma inválida" en el log como todo rastro.
+      expect(res.status).toBe(403);
+    } finally {
+      await setSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL', publicUrl);
+    }
+  });
+
+  it('BE-TWA-17: una barra final de más en la URL pública no rompe la validación', async () => {
+    await setSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL', `${publicUrl}///`);
+    try {
+      const phone = await knownPhone();
+      const params = { From: `whatsapp:${phone}`, Body: 'con barra final' };
+      const signature = computeSignature(`${publicUrl}/webhooks/twilio`, params);
+
+      const res = await http(t)
+        .post('/webhooks/twilio')
+        .type('form')
+        .set('X-Twilio-Signature', signature)
+        .send(params);
+
+      // El guard normaliza las barras finales antes de concatenar el path.
+      expect(res.status).toBe(200);
+    } finally {
+      await setSetting(t.prisma, 'TWILIO_WEBHOOK_PUBLIC_URL', publicUrl);
+    }
+  });
 });
 
 describe('1.19 Canal WhatsApp — Twilio, mecánica del conector (BE-TWA-05..09, BE-TWA-11)', () => {
@@ -685,6 +779,194 @@ describe('1.19 Canal WhatsApp — Twilio, mecánica del conector (BE-TWA-05..09,
         expect(new Set(sidsUsados).size).toBe(1);
         expect(stored).toHaveLength(1);
       }
+    } finally {
+      restore();
+    }
+  });
+
+  it('BE-TWA-18: cambiar de cuenta de Twilio no reusa los templates de la anterior', async () => {
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí',
+      buttons: [
+        { id: 'cta_a', title: 'Cuenta A' },
+        { id: 'cta_b', title: 'Cuenta B' },
+      ],
+    };
+    let contentCallCount = 0;
+    const { requests, restore } = installFetchMock((url) => {
+      if (url.includes('content.twilio.com')) {
+        contentCallCount++;
+        return { status: 201, body: { sid: `HXcuenta${contentCallCount}` } };
+      }
+      if (url.includes('api.twilio.com')) return { status: 201, body: { sid: 'SM18' } };
+      return { status: 404 };
+    });
+    try {
+      await service.sendText(uniquePhone(), 'cuerpo', interactive);
+
+      // Otra cuenta de Twilio: el `shapeHash` incluye el accountSid, así que la forma no matchea
+      // las filas de la anterior y crea sus propios templates (las viejas quedan huérfanas).
+      const otraCuenta = 'AC00000000000000000000000000000018';
+      await setSetting(t.prisma, 'TWILIO_ACCOUNT_SID', otraCuenta);
+      await service.sendText(uniquePhone(), 'cuerpo', interactive);
+
+      const contentCalls = requests.filter((r) => r.url.includes('content.twilio.com'));
+      expect(contentCalls).toHaveLength(2);
+      const sidsUsados = requests
+        .filter((r) => r.url.includes('api.twilio.com'))
+        .map((r) => new URLSearchParams(r.init!.body as string).get('ContentSid'));
+      expect(sidsUsados).toEqual(['HXcuenta1', 'HXcuenta2']);
+      // Y el segundo envío salió por la cuenta nueva.
+      expect(requests.filter((r) => r.url.includes(otraCuenta))).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('BE-TWA-18: un ContentSid borrado en Twilio (21655) se descarta del caché y se recrea una sola vez', async () => {
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí',
+      buttons: [
+        { id: 'muerto_a', title: 'Muerto A' },
+        { id: 'muerto_b', title: 'Muerto B' },
+      ],
+    };
+    let contentCallCount = 0;
+    let messageCallCount = 0;
+    const { requests, restore } = installFetchMock((url) => {
+      if (url.includes('content.twilio.com')) {
+        contentCallCount++;
+        return { status: 201, body: { sid: `HXmuerto${contentCallCount}` } };
+      }
+      if (url.includes('api.twilio.com')) {
+        messageCallCount++;
+        // El primer envío falla con "Content was not found"; el reintento tras recrear, pasa.
+        if (messageCallCount === 1) return { status: 400, body: { code: 21655, message: 'Content was not found' } };
+        return { status: 201, body: { sid: 'SM18b' } };
+      }
+      return { status: 404 };
+    });
+    try {
+      await service.sendText(uniquePhone(), 'cuerpo', interactive);
+
+      const contentCalls = requests.filter((r) => r.url.includes('content.twilio.com'));
+      const msgCalls = requests.filter((r) => r.url.includes('api.twilio.com'));
+      expect(contentCalls).toHaveLength(2); // el original + el recreado
+      expect(msgCalls).toHaveLength(2); // el que falló + el reintento
+      expect(new URLSearchParams(msgCalls[1].init!.body as string).get('ContentSid')).toBe(
+        'HXmuerto2',
+      );
+      // La entrada muerta se borró de la BD; queda la recreada.
+      const stored = await t.prisma.twilioContentTemplate.findMany({
+        where: { contentSid: { in: ['HXmuerto1', 'HXmuerto2'] } },
+      });
+      expect(stored.map((s) => s.contentSid)).toEqual(['HXmuerto2']);
+    } finally {
+      restore();
+    }
+  });
+
+  it('BE-TWA-18: si el 21655 se repite tras recrear, se propaga y degrada a texto plano', async () => {
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí',
+      buttons: [
+        { id: 'siempre_a', title: 'Siempre A' },
+        { id: 'siempre_b', title: 'Siempre B' },
+      ],
+    };
+    const { requests, restore } = installFetchMock((url, init) => {
+      if (url.includes('content.twilio.com')) return { status: 201, body: { sid: 'HXsiempre' } };
+      if (url.includes('api.twilio.com')) {
+        // El envío interactivo (con ContentSid) siempre falla; el de texto plano pasa.
+        const body = init?.body as string | undefined;
+        if (body?.includes('ContentSid')) return { status: 400, body: { code: 21655 } };
+        return { status: 201, body: { sid: 'SM18c' } };
+      }
+      return { status: 404 };
+    });
+    try {
+      await service.sendText(uniquePhone(), 'cuerpo de respaldo', interactive);
+
+      const msgCalls = requests.filter((r) => r.url.includes('api.twilio.com'));
+      const ultimo = new URLSearchParams(msgCalls[msgCalls.length - 1].init!.body as string);
+      // Degradó a texto plano: el último envío ya no lleva ContentSid, lleva Body — con las
+      // opciones anexadas como texto numerado, que es el fallback de `sendPlainText` cuando el
+      // interactivo no se pudo mandar.
+      expect(ultimo.get('ContentSid')).toBeNull();
+      expect(ultimo.get('Body')).toContain('cuerpo de respaldo');
+      expect(ultimo.get('Body')).toContain('1. Siempre A');
+    } finally {
+      restore();
+    }
+  });
+
+  it('BE-TWA-19: las llaves sin resolver se sacan del título, del hash y del body antes de enviar', async () => {
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí',
+      buttons: [
+        { id: 'llaves_a', title: 'Sede {{sede}}' },
+        { id: 'llaves_b', title: 'Otra' },
+      ],
+    };
+    const { requests, restore } = installFetchMock((url) => {
+      if (url.includes('content.twilio.com')) return { status: 201, body: { sid: 'HXllaves' } };
+      if (url.includes('api.twilio.com')) return { status: 201, body: { sid: 'SM19' } };
+      return { status: 404 };
+    });
+    try {
+      await service.sendText(uniquePhone(), 'Ticket {{numero}} sin resolver', interactive);
+
+      // 1) El template se crea con el título ya saneado.
+      const contentPayload = JSON.parse(
+        requests.find((r) => r.url.includes('content.twilio.com'))!.init!.body as string,
+      );
+      expect(JSON.stringify(contentPayload)).not.toContain('{{sede}}');
+      expect(JSON.stringify(contentPayload.types['twilio/quick-reply'].actions)).toContain('Sede sede');
+
+      // 2) La variable {{1}} del body también viaja sin llaves: `{{ }}` es sintaxis reservada de
+      //    Twilio en cualquier parte del template y el envío rebotaba con 21656.
+      const msgBody = new URLSearchParams(
+        requests.find((r) => r.url.includes('api.twilio.com'))!.init!.body as string,
+      );
+      const variables = JSON.parse(msgBody.get('ContentVariables')!);
+      expect(variables['1']).toBe('Ticket numero sin resolver');
+
+      // 3) Y la fila persistida guarda la misma forma saneada (el hash se calcula sobre ella).
+      const stored = await t.prisma.twilioContentTemplate.findFirst({
+        where: { contentSid: 'HXllaves' },
+      });
+      expect(stored!.label).not.toContain('{{');
+    } finally {
+      restore();
+    }
+  });
+
+  it('BE-TWA-19: un cuerpo multilínea se manda tal cual (los saltos de línea no eran el problema)', async () => {
+    const interactive: WhatsAppInteractive = {
+      type: 'button',
+      body: 'Elegí',
+      buttons: [
+        { id: 'multi_a', title: 'Ver detalle' },
+        { id: 'multi_b', title: 'Volver' },
+      ],
+    };
+    const { requests, restore } = installFetchMock((url) => {
+      if (url.includes('content.twilio.com')) return { status: 201, body: { sid: 'HXmulti' } };
+      if (url.includes('api.twilio.com')) return { status: 201, body: { sid: 'SM19b' } };
+      return { status: 404 };
+    });
+    try {
+      const multilinea = 'Ticket #123\nEstado: abierto\nAgente: sin asignar';
+      await service.sendText(uniquePhone(), multilinea, interactive);
+
+      const msgBody = new URLSearchParams(
+        requests.find((r) => r.url.includes('api.twilio.com'))!.init!.body as string,
+      );
+      expect(JSON.parse(msgBody.get('ContentVariables')!)['1']).toBe(multilinea);
     } finally {
       restore();
     }

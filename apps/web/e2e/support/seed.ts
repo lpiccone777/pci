@@ -537,3 +537,106 @@ export async function setFlowDefault(admin: AdminCtx, flowId: string): Promise<v
     tenantId: admin.systemTenantId,
   });
 }
+
+// --- Calendario de feriados/guardias ---
+
+export interface SeededScheduleEntry {
+  id: string;
+  type: string;
+  title: string;
+  roleId: string | null;
+  startAt: string;
+  endAt: string;
+  allDay: boolean;
+  recurrenceFreq: string | null;
+  recurrenceUntil: string | null;
+  source: string;
+}
+
+/**
+ * Crea una entrada de calendario en `tenantId` (mismo bypass de superusuario que el resto de
+ * las altas: el backend saca la empresa del header, nunca del body). Las fechas van en ISO;
+ * el default arma un feriado de todo el día para que el caso simple sea una línea.
+ */
+export async function createScheduleEntry(
+  admin: AdminCtx,
+  opts: {
+    tenantId: string;
+    type?: string;
+    title?: string;
+    roleId?: string | null;
+    startAt: string;
+    endAt: string;
+    allDay?: boolean;
+    recurrenceFreq?: string | null;
+    recurrenceUntil?: string | null;
+  },
+): Promise<SeededScheduleEntry> {
+  const body: Record<string, unknown> = {
+    type: opts.type ?? 'feriado',
+    title: opts.title ?? `Entrada ${uniqueSlug('cal')}`,
+    startAt: opts.startAt,
+    endAt: opts.endAt,
+    allDay: opts.allDay ?? true,
+  };
+  if (opts.roleId !== undefined && opts.roleId !== null) body.roleId = opts.roleId;
+  if (opts.recurrenceFreq) body.recurrenceFreq = opts.recurrenceFreq;
+  if (opts.recurrenceUntil) body.recurrenceUntil = opts.recurrenceUntil;
+
+  return req('/schedule-calendar', {
+    method: 'POST',
+    token: admin.token,
+    tenantId: opts.tenantId,
+    body,
+  });
+}
+
+/** Entradas de calendario de una empresa, para verificar contra la API lo que muestra la UI. */
+export async function listScheduleEntries(
+  admin: AdminCtx,
+  tenantId: string,
+): Promise<SeededScheduleEntry[]> {
+  return req('/schedule-calendar', { token: admin.token, tenantId });
+}
+
+// --- Variantes de flujo (Feriado / Guardia) ---
+
+/**
+ * Crea la variante `type` del flujo `baseFlowId` (`POST /flows/:id/variants`). Sin `sourceFlowId`
+ * ni `blank`, duplica el grafo del Principal — el default del editor. La fila nace sin empresas
+ * asignadas: solo se llega a ella por las pestañas de su Principal.
+ */
+export async function createFlowVariant(
+  admin: AdminCtx,
+  baseFlowId: string,
+  type: 'feriado' | 'guardia',
+  opts: { blank?: boolean; sourceFlowId?: string } = {},
+): Promise<SeededFlow> {
+  const body: Record<string, unknown> = { type };
+  if (opts.blank) body.blank = true;
+  if (opts.sourceFlowId) body.sourceFlowId = opts.sourceFlowId;
+  return req(`/flows/${baseFlowId}/variants`, {
+    method: 'POST',
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+    body,
+  });
+}
+
+/** Reemplaza nodos (y opcionalmente aristas) de un flujo ya creado — útil para darle a una variante un grafo propio. */
+export async function updateFlowGraph(
+  admin: AdminCtx,
+  flowId: string,
+  nodes: FlowNodeSeed[],
+  edges: FlowEdgeSeed[] = [],
+): Promise<SeededFlow> {
+  return req(`/flows/${flowId}`, {
+    method: 'PATCH',
+    token: admin.token,
+    tenantId: admin.systemTenantId,
+    body: {
+      nodes: nodes.map((n) => ({ id: n.id, type: n.type, data: n.data ?? {}, position: n.position ?? { x: 0, y: 0 } })),
+      edges,
+    },
+  });
+}

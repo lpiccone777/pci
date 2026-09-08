@@ -1,10 +1,17 @@
 # 🧪 Plan de pruebas — PCI Chatbot
 
-> **Actualizado hasta el commit `45c6f2b`** en la rama `juang-dev` — «test(web): la batería e2e
-> vuelve a correr contra el backoffice actualizado» (2026-08-25). Incorpora la importación masiva de
-> usuarios desde Excel, el nodo `llm_query` multi-variable con `temperature` configurable, la media
-> entrante de Twilio (imágenes al ticket de InvGate), la separación del superusuario del sistema del
-> simple miembro de la empresa de sistema, y cierra **SEC-08** (`ticket_query` scopeado por empresa).
+> **Actualizado hasta el commit `f0633ab`** en la rama `juang-dev` — «test: actualizar la batería
+> e2e desactualizada» (2026-09-07). Incorpora el **calendario de feriados/guardias** y las
+> **variantes de flujo** que dispara (§1.25, §1.26, §3.13), el **ruteo del mensaje entrante por la
+> membresía del teléfono** con su selector de empresa (§1.24), los nodos **Notificación** y
+> **Webhook** —este último dejó de ser un simulacro—, el rediseño de **Condición** (comparación de
+> variable con dos salidas) y de **Consultar ticket** (lista en vivo contra InvGate), el saludo
+> configurable del nodo Inicio, los tiempos de vida de una charla como configuración, las métricas
+> reales del inicio, y la recepción de imágenes por Gupshup. El canal **SMS pasó a ser 100%
+> saliente** (sus dos webhooks se eliminaron). Cierra **SEC-18** y **SEC-21**, casi todo **SEC-03**
+> (queda `POST /flows/:id/default`) y la parte de **SEC-16** que cubría Twilio y SMS; suma como
+> riesgos nuevos el nodo Webhook sin restricción de destino, la descarga de media de Gupshup sin
+> validar y la enumeración de empresas por el selector.
 
 Documento de casos de prueba del sistema. Tres secciones independientes:
 
@@ -44,9 +51,9 @@ la fija para cada bloque.
 
 - **`P2` — deseable.** Comportamiento responsive. Se ejecuta si hay margen 🟢
 
-**Los 44 casos invertidos son `P0` por definición**, sin importar en qué bloque
-estén: describen el comportamiento seguro o correcto que hoy no existe (incluye los 11 de la
-auditoría de frontend multiempresa del 2026-08-21). Liberar con alguno en `❌` es una
+**Los 37 casos invertidos son `P0` por definición**, sin importar en qué bloque
+estén: describen el comportamiento seguro o correcto que hoy no existe (incluye los 4 que quedan
+de la auditoría de frontend multiempresa del 2026-08-21). Liberar con alguno en `❌` es una
 decisión de riesgo tomada a propósito, no un descuido del tablero.
 
 ### Caso excluido (⏭️)
@@ -115,42 +122,46 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **623 casos** · Backend 333 · Chatbot 152 · Frontend 138 · de los cuales **310 son `P0`**
-(283 por la prioridad del bloque + los 27 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
-BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
-BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
-FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24 y FE-FLW-25).
+Total del plan: **727 casos** · Backend 394 · Chatbot 181 · Frontend 152 · de los cuales **346 son `P0`**
+(328 por la prioridad del bloque + los 18 casos invertidos que caen en bloques `P1`: BE-FLW-21, BE-FLW-22,
+BE-WHK-08, BE-TWA-14, BE-GUP-06, BE-GUP-10, BE-SMS-07, BE-IG-11, BE-SKL-08, BE-SKL-09, BE-SKL-10,
+BE-VAR-11, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-FLW-23 y FE-FLW-25).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **333** |
+| **Backend (§1)** | | **394** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
-| 1.2 RBAC | 🔴 P0 | 24 |
+| 1.2 RBAC | 🔴 P0 | 26 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
 | 1.4 Tenants | 🟠 P1 | 11 |
-| 1.5 Usuarios | 🔴 P0 | 35 |
+| 1.5 Usuarios | 🔴 P0 | 36 |
 | 1.6 Áreas | 🟠 P1 | 23 |
-| 1.7 Configuración y secretos | 🔴 P0 | 20 |
-| 1.8 Flujos | 🟠 P1 | 21 |
-| 1.9 Fuentes de verdad | 🟠 P1 | 19 |
+| 1.7 Configuración y secretos | 🔴 P0 | 22 |
+| 1.8 Flujos | 🟠 P1 | 25 |
+| 1.9 Fuentes de verdad | 🟠 P1 | 20 |
 | 1.10 LLM | 🟠 P1 | 20 |
 | 1.11 Broker | 🟠 P1 | 13 |
-| 1.12 Webhook WhatsApp | 🟠 P1 | 10 |
+| 1.12 Webhook WhatsApp | 🟠 P1 | 8 |
 | 1.13 Salida WhatsApp | 🟠 P1 | 9 |
 | 1.14 Canal de email | 🔴 P0 | 8 |
 | 1.15 Datos, seed y migraciones | 🔴 P0 | 6 |
 | 1.16 Endpoints públicos | 🟠 P1 | 3 |
 | 1.17 Seguridad transversal | 🔴 P0 | 3 |
 | 1.18 Placeholders | 🚧 | 6 |
-| 1.19 Canal WhatsApp — Twilio | 🟠 P1 | 15 |
-| 1.20 Canal WhatsApp — Gupshup | 🟠 P1 | 7 |
-| 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
+| 1.19 Canal WhatsApp — Twilio | 🟠 P1 | 19 |
+| 1.20 Canal WhatsApp — Gupshup | 🟠 P1 | 10 |
+| 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 14 |
 | 1.22 Integración InvGate | 🟠 P1 | 17 |
-| 1.23 Skills | 🟠 P1 | 10 |
-| **Chatbot (§2)** | | **152** |
-| 2.1 Pipeline | 🔴 P0 | 8 |
-| 2.2 Arranque de flujo | 🔴 P0 | 5 |
-| 2.3 Nodos del motor | 🔴 P0 | 92 |
+| 1.23 Skills | 🟠 P1 | 11 |
+| 1.24 Ruteo de tenant entrante | 🔴 P0 | 13 |
+| 1.25 Calendario de feriados/guardias | 🟠 P1 | 14 |
+| 1.26 Variantes de flujo | 🟠 P1 | 11 |
+| 1.27 Métricas del inicio | 🟠 P1 | 2 |
+| 1.28 Registros en disco | 🟠 P1 | 3 |
+| **Chatbot (§2)** | | **181** |
+| 2.1 Pipeline | 🔴 P0 | 11 |
+| 2.2 Arranque de flujo | 🔴 P0 | 8 |
+| 2.3 Nodos del motor | 🔴 P0 | 113 |
 | 2.4 Encadenamiento | 🟠 P1 | 5 |
 | 2.5 Espera en dos fases | 🟠 P1 | 3 |
 | 2.6 Conocido vs desconocido | 🔴 P0 | 4 |
@@ -158,42 +169,48 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24 y FE-FLW-25).
 | 2.8 Cierre y cancelación | 🟠 P1 | 3 |
 | 2.9 Interpolación | 🟠 P1 | 3 |
 | 2.10 End-to-end | 🔴 P0 | 5 |
-| 2.11 Cierre por inactividad | 🟠 P1 | 4 |
+| 2.11 Cierre por inactividad | 🟠 P1 | 6 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **138** |
+| **Frontend (§3)** | | **152** |
 | 3.1 Infraestructura | 🔴 P0 | 19 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
-| 3.4 Usuarios | 🟠 P1 | 20 |
+| 3.4 Usuarios | 🟠 P1 | 22 |
 | 3.5 Roles | 🟠 P1 | 10 |
 | 3.6 Tenants | 🟠 P1 | 7 |
 | 3.7 Áreas | 🟠 P1 | 5 |
 | 3.8 Configuración | 🟠 P1 | 17 |
 | 3.9 Fuentes de verdad | 🟠 P1 | 12 |
-| 3.10 Flujos (editor) | 🟠 P1 | 29 |
+| 3.10 Flujos (editor) | 🟠 P1 | 34 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **623** |
+| 3.13 Calendario (UI) | 🟠 P1 | 7 |
+| **TOTAL** | | **727** |
 
-> **Nota:** 44 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
-> deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
-> ligados a los **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa BE-TWA-10 /
-> BE-GUP-06 / BE-SMS-09, y `SEC-17` agrupa BE-SKL-08 / BE-SKL-09; **SEC-08 ya quedó cerrado** —
-> CHAT-N-TKQ-03 pasó a `✅`). Los otros **19** son de **robustez, calidad o UX**, sin número de hallazgo:
-> BE-EML-03 (canal de email caído), CHAT-N-LLM-04 (nodo LLM sin blindar), BE-SMS-07 (Gupshup SMS descarta
-> el menú), BE-SKL-10 (`isActive` de Skill sin efecto en el motor), CHAT-LLMF-11 / CHAT-LLMF-12 (prompt
-> injection y alucinación desde la fuente de verdad), BE-FLW-21 (validación floja de los parámetros de
-> extracción de `llm_query`), BE-TWA-14 (media de Twilio sin tope de bytes), y los **11 de la auditoría de frontend multiempresa**
-> (2026-08-21): FE-INF-16 (no redirige al salir de una pantalla solo-sistema), FE-USR-15 (falso "cambios
-> sin guardar"), FE-USR-16 (`users:create` sin `roles:read`), FE-TEN-06 / FE-TEN-07 (cache del sidebar
-> stale), FE-CS-11 / FE-CS-12 (Fuentes de verdad ignora el modo consolidado), FE-FLW-22 / FE-FLW-23
-> (editor de flujos: empresa activa vs. la del flujo), FE-FLW-24 (500 del catálogo InvGate) y FE-FLW-25
-> (Flujos oculta el 403). **Casos ya corregidos** (pasaron a `✅` en esta actualización): SEC-08 /
-> CHAT-N-TKQ-03, BE-MT-12 y FE-INF-13 (superusuario), BE-IG-10 (creator_id de InvGate en caliente),
-> FE-FLW-29 (importar un flujo ya sanea los ids embebidos de otra empresa; el SuperAdmin queda
-> exceptuado a propósito). El
-> escenario de datos sobre el que corre todo el plan está en el **Apéndice C**; las matrices de
+> **Nota:** **37 casos** arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
+> deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. **22** están
+> ligados a los **21 hallazgos `SEC-*`** (varios `SEC-*` cubren más de un caso: `SEC-16` agrupa ahora
+> BE-GUP-06 y BE-GUP-10, `SEC-17` agrupa BE-SKL-08 / BE-SKL-09, `SEC-09` agrupa CHAT-N-CND-06 / 08, y
+> BE-FLW-22 es lo que queda vivo de `SEC-03`). Los otros **15** son de **robustez, calidad, privacidad o
+> UX**, sin número de hallazgo: BE-EML-03 (canal de email caído), CHAT-N-LLM-04 (nodo LLM sin blindar),
+> BE-SMS-07 (Gupshup SMS descarta el menú), BE-SKL-10 (`isActive` de Skill sin efecto en el motor),
+> CHAT-LLMF-11 / CHAT-LLMF-12 (prompt injection y alucinación desde la fuente de verdad), BE-FLW-21
+> (validación floja de los parámetros de extracción de `llm_query`), BE-TWA-14 (media de Twilio sin tope
+> de bytes), BE-ITR-12 (los adjuntos del selector de empresa se borran antes de que se responda),
+> BE-VAR-11 (borrar un flujo Principal deja su variante huérfana y reaparece en el listado global),
+> CHAT-N-NOT-07 (la URL del botón de link no se interpola), CHAT-N-WHK-04 (el nodo webhook llama a
+> cualquier destino), y los **3 que quedan de la auditoría de frontend multiempresa** (2026-08-21):
+> FE-USR-15 (falso "cambios sin guardar"), FE-FLW-23 (dropdowns del editor con la empresa activa en vez
+> de la del flujo) y FE-FLW-25 (Flujos oculta el 403).
+>
+> **Casos que pasaron a `✅` en esta actualización** (13): CHAT-N-SMS-04 (SEC-18), BE-FLW-14 y BE-FLW-16
+> (SEC-03, salvo BE-FLW-22), BE-TWA-10 y BE-SMS-09 (SEC-16, este último por eliminación del webhook),
+> BE-SMS-10 (SEC-21), FE-INF-16, FE-TEN-06, FE-TEN-07, FE-CS-11, FE-CS-12, FE-USR-16 y FE-FLW-24
+> (auditoría de frontend multiempresa). En actualizaciones previas ya habían pasado SEC-08 /
+> CHAT-N-TKQ-03, BE-MT-12, FE-INF-13, BE-IG-10 y FE-FLW-29.
+>
+> El escenario de datos sobre el que corre todo el plan está en el **Apéndice C**; las matrices de
 > comprobación transversales, en el **Apéndice B**.
 
 ---
@@ -246,9 +263,11 @@ header `User-Agent` (401 si falta).
 ## 1.2 RBAC dinámico — roles y permisos
 
 **Precondición:** roles y permisos son datos (no enums). El seed asigna al `SuperAdmin` el
-catálogo completo (60 permisos = 15 recursos × 4 acciones; el 15º recurso es `skills`, sumado
-por el PR de Skills). Un endpoint sin `@RequirePermission` **permite** (el guard sólo corta
-cuando hay permiso declarado).
+catálogo completo (**64 permisos = 16 recursos × 4 acciones**; el 15º recurso es `skills` y el 16º
+`schedule-calendar`, sumado por el calendario de feriados/guardias — §1.25). Un endpoint sin
+`@RequirePermission` **permite** (el guard sólo corta cuando hay permiso declarado). Un endpoint
+puede además declarar **varios** permisos alternativos con `RequireAnyPermission` (semántica "o"):
+alcanza con tener **uno** de ellos.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
@@ -268,7 +287,7 @@ cuando hay permiso declarado).
 | BE-RBAC-14 | `GET /roles/:id/users` | Usuarios que tienen ese rol (id, email, nombre); pide `roles:read` |
 | BE-RBAC-15 | `GET /roles/all` y `GET /roles/by-tenant/:id` desde el tenant de sistema (positivo de BE-RBAC-10) | `all` = roles de todas las empresas (excluye las dadas de baja); `by-tenant` = los de la empresa del path |
 | BE-RBAC-16 | `GET /roles/mine` | Roles de las empresas donde el usuario tiene `roles:read`; `[]` si en ninguna |
-| BE-RBAC-17 | `GET /roles/catalog` | El catálogo de permisos (15 recursos × 4 acciones; el 15º es `skills`) con el que se dibuja la matriz del backoffice |
+| BE-RBAC-17 | `GET /roles/catalog` | El catálogo de permisos (**16 recursos × 4 acciones = 64**; el 15º es `skills` y el 16º `schedule-calendar`) con el que se dibuja la matriz del backoffice |
 | BE-RBAC-18 | `PATCH /roles/:id` renombrando un rol común | 200; nombre único por empresa (repetido → 409 "Ya existe un rol llamado X en esta empresa") |
 | BE-RBAC-19 | `PATCH /roles/:id` sobre el rol protegido (SuperAdmin de sistema) | 409 (`assertNotProtected`): no se puede renombrar |
 | BE-RBAC-20 | `DELETE /roles/:id` de un rol **sin** usuarios asignados | 200, lo elimina |
@@ -276,6 +295,8 @@ cuando hay permiso declarado).
 | BE-RBAC-22 | `DELETE /roles/:id` del rol protegido | 409 (`assertNotProtected`) |
 | BE-RBAC-23 | `DELETE /roles/permissions/:id` (quitar un permiso puntual) | Quita esa fila `RolePermission` del rol; el cambio se refleja en la siguiente request sin reiniciar |
 | BE-RBAC-24 | `GET /roles/:roleId/permissions` | Lista los pares `resource`/`action` de ese rol; pide `permissions:read` |
+| BE-RBAC-25 | `GET /roles` con un rol que tiene **solo `users:create`** (sin `roles:read`), con **solo `roles:read`**, y sin ninguno de los dos | Los dos primeros: 200. El tercero: 403 con las alternativas listadas ("Permiso denegado: roles:read o users:create"). El alta de usuarios necesita listar los roles para asignarlos, y sin esta apertura el desplegable quedaba vacío y el alta trabada (FE-USR-16) |
+| BE-RBAC-26 | Forma de la respuesta de `GET /roles` según quién llama | Con `roles:read` (o siendo el superusuario del sistema) viene el rol completo, con su matriz de permisos. Con **solo** `users:create` vienen únicamente id y nombre: lo que el desplegable de asignación necesita, sin exponerle la matriz de permisos de cada rol de la empresa. Abrir el endpoint no debe convertirse en una fuga del diseño de permisos ajeno |
 
 ## 1.3 Multitenant — aislamiento y resolución de tenant
 
@@ -364,6 +385,7 @@ dentro del servicio (empresas en el body), no por header. La **importación masi
 | BE-USR-33 | `bulk-import` con `defaultRoleId` o `defaultAreaId` de **otro** tenant | 400 "…no existe o no pertenece a este tenant" (`assertRoleBelongsToTenant` / `assertAreaBelongsToTenant`) |
 | BE-USR-34 | `bulk-import` parado (header `X-Tenant-Id`) en una empresa donde el solicitante **no** es miembro | 403 (`TenantGuard`), salvo superusuario del sistema. El aislamiento no depende del body |
 | BE-USR-35 | Sensibilidad de la respuesta: `created[].tempPassword` viaja en claro (no hay invitación por email) | Documentar que la respuesta y el CSV que descarga el backoffice contienen contraseñas en texto plano — dato sensible, uso acotado a la carga inicial |
+| BE-USR-36 | Asignar el rol protegido **SuperAdmin** mandando su `roleId` en `POST /users`, `/users/multi`, `PATCH /users/:id`, `/users/:id/full` o `bulk-import`, sin ser superusuario del sistema | 403 "Solo el superusuario del sistema puede asignar ese rol" en los cinco caminos. La validación de pertenencia sola **no alcanzaba**: ese rol pertenece de verdad al tenant de sistema, así que cualquiera con `users:create`/`users:update` ahí podía ver su id por `GET /roles` y otorgárselo a sí mismo o a un tercero — escalada de privilegios directa. El superusuario sí puede asignarlo |
 
 ## 1.6 Áreas — CRUD por empresa y aislamiento
 
@@ -425,9 +447,11 @@ Las claves válidas son sólo las del catálogo. Los secretos se cifran con AES-
 | BE-SET-15 | `GET /settings/:key` de una key del catálogo vs. una key inexistente | La del catálogo: valor resuelto con `source` (los secretos, enmascarado + `isSet`); una key fuera del catálogo: 400 con la lista de keys válidas |
 | BE-SET-16 | `PATCH /settings/:key` | Equivale a `POST /settings` (`upsert`): fija el valor con las mismas validaciones (catálogo, rango, enum, secreto cifrado) |
 | BE-SET-17 | `DELETE /settings/:key` de una key **sin** valor en BD | 404 "…no tiene valor en BD (usa env var o default)" |
-| BE-SET-18 | Guardar los secretos de los canales nuevos e InvGate (`TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) | Se guardan **cifrados** (AES-256-GCM); el `GET` los enmascara + `isSet`. Los identificadores **no** secretos (`TWILIO_ACCOUNT_SID`, `GUPSHUP_SMS_USERID`, `INVGATE_API_USER`, números `*_FROM`) van en claro |
+| BE-SET-18 | Guardar los secretos de los canales e InvGate (`TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `INVGATE_API_KEY`) | Se guardan **cifrados** (AES-256-GCM); el `GET` los enmascara + `isSet`. Los identificadores **no** secretos (`TWILIO_ACCOUNT_SID`, `TWILIO_WEBHOOK_PUBLIC_URL`, `GUPSHUP_SMS_APP_ID`, `GUPSHUP_SMS_SOURCE`, `INVGATE_API_USER`, números `*_FROM`) van en claro. `GUPSHUP_SMS_PASSWORD`/`GUPSHUP_SMS_USERID` **ya no existen**: eran de la cuenta legacy "Enterprise SMS", reemplazada por la API de SMS con `GUPSHUP_API_KEY` compartida (§1.21) |
 | BE-SET-19 | Selectores de proveedor `WHATSAPP_PROVIDER` (`meta`/`twilio`/`gupshup`) y `SMS_PROVIDER` (`twilio`/`gupshup`) | Cascada estándar BD → env → default (`meta`/`twilio`); un valor fuera del enum → 400 (`allowedValues`). ⚠️ A diferencia de `LLM_PROVIDER`, se leen **una sola vez al arrancar**: cambiarlos no re-suscribe los consumers sin reiniciar (ver BE-TWA-02) |
 | BE-SET-20 | Descripciones de `TWILIO_ACCOUNT_SID` e `INVGATE_API_USER` | Dicen "solo escritura por consistencia" pero están `secret:false`: el `GET` los devuelve **en claro**. Inocuo (un SID no es sensible), pero la descripción sugiere algo que el flag no cumple — anotar la discrepancia |
+| BE-SET-21 | Grupos nuevos del catálogo: **Simulación** (`CONVERSATIONS_SIMULATE_ENABLED`) y **Otros** (`CONVERSATION_INACTIVITY_MINUTES`, `CONVERSATION_RESUME_WINDOW_HOURS`), más los asuntos de email (`OTP_EMAIL_SUBJECT`, `DEVICE_VALIDATION_EMAIL_SUBJECT`) | Aparecen en `GET /settings` con su grupo, tipo y rango. Los dos tiempos de charla respetan `min`/`max` (1–10080 minutos y 1–720 horas): fuera de rango → 400 (BE-SET-04). Son **dos ventanas encadenadas y distintas**, no lo mismo: primero la charla se cierra por inactividad, después queda retomable (§2.11). Los dos asuntos de email son de **mails distintos** —login del backoffice vs. validación de dispositivo del chat— y no deben confundirse |
+| BE-SET-22 | `CONVERSATIONS_SIMULATE_ENABLED` sin valor explícito, en `NODE_ENV=production` y fuera de producción | Sin valor fijado, `resolveDefault` deja el endpoint **habilitado** fuera de producción (dev y test — Jest fija `NODE_ENV=test`, así que los e2e siguen andando) y **deshabilitado** en producción: `POST /conversations/simulate` responde **404**, no 403 (el endpoint no debería ni figurar como existente). Fijar la clave a mano manda en cualquier sentido. Mismo mecanismo que `defaultOtpEnabled` |
 
 ## 1.8 Flujos — CRUD y asignación por tenant
 
@@ -451,14 +475,18 @@ transacción.
 | BE-FLW-11 | `GET /flows/:id` de un flujo | 200 con el flujo (nodos, aristas y sus asignaciones de empresa/rol); 404 "Flujo no encontrado" si no existe |
 | BE-FLW-12 | `PATCH /flows/:id` editando nodos/aristas | 200; persiste `nodes`/`edges` (los campos ausentes no se tocan); sigue filtrando por la whitelist como BE-FLW-02 |
 | BE-FLW-13 | `DELETE /flows/:id` de un flujo | 200 "Flujo eliminado"; borrado físico (el cascade limpia sus `TenantFlow`/roles) |
-| BE-FLW-14 | `GET`/`PATCH`/`DELETE /flows/:id` con el id de un flujo de **otra** empresa | **Debe** cortar (403/404): las operaciones por id tendrían que scopear por la empresa activa (o el tenant de sistema). ⚠️ Hoy operan **sin filtrar** por empresa (SEC-03): `❌` hasta gatearlas |
+| BE-FLW-14 | `GET`/`PATCH`/`DELETE /flows/:id` con el id de un flujo de **otra** empresa | ✅ **404 "Flujo no encontrado"** en los tres: pasan por `assertFlowAccessible`. Se devuelve 404 y no 403 a propósito, para no filtrar que ese id existe en otra empresa. El SuperAdmin queda exceptuado (administra el sistema entero). Cierra la parte de **SEC-03** que cubre estas rutas |
 | BE-FLW-15 | Crear/editar un flujo con `context` fuera de la lista (distinto de `none`/`invgate`/`internal_kb`/`other`) | 400 (`@IsIn(FLOW_CONTEXT_VALUES)`); un `context` válido se persiste |
-| BE-FLW-16 | `POST /flows/:id/assign-tenants` y `POST /flows/:id/default` con el id de un flujo de **otra** empresa | **Debe** cortar (mismo criterio que BE-FLW-14): operan por id sin scope de tenant. ⚠️ Hoy también operan **sin filtrar** (SEC-03): `❌` hasta gatearlas |
+| BE-FLW-16 | `POST /flows/:id/assign-tenants` con el id de un flujo de **otra** empresa | ✅ **404**: `assignTenants` corta por el flujo de **origen** (`assertFlowAccessible`) además de validar las empresas destino (BE-FLW-23). El caso hermano de `POST /flows/:id/default`, que **sigue abierto**, se separó en BE-FLW-22 |
 | BE-FLW-17 | Vincular una Skill a un flujo con `skillId` (y desvincular con `skillId:null`) | 200; `findById` incluye `skill { id, name, promptText }` y en runtime el `promptText` se concatena al system prompt base (`buildBasePrompt`). Reemplaza en el editor al dropdown viejo `context` (que sobrevive `@IsIn(FLOW_CONTEXT_VALUES)`, DEPRECATED, sólo por compatibilidad — BE-FLW-15). El aislamiento por empresa del `skillId` se cubre en BE-SKL-08/09 |
 | BE-FLW-18 | `GET /flows/mine` (vista "Todas mis empresas") de un usuario con `flows:read` **solo en la empresa B**, parado en la **A** (header) donde **no** lo tiene | 200 con los flujos de B, **no 403**. La autorización es por-empresa adentro de `FlowService.findMine` (filtra cada empresa por su `flows:read`), no sobre el tenant activo — por eso `/flows/mine` **no** lleva `@RequirePermission`, igual que `/areas/mine` (BE-ARE-05), `/users/mine` (BE-USR-19) y `/roles/mine` (BE-RBAC-16). Reponer el decorator lo evaluaría contra el rol de A y cortaría con 403 a quien sí tiene el permiso en otra empresa: regresión que este caso detecta |
 | BE-FLW-19 | `GET /flows/mine` de un usuario **sin `flows:read` en ninguna** de sus empresas | 200 con `[]`, **no 403** (mismo criterio que BE-ARE-06 / BE-USR-19). La ausencia de permiso da lista vacía, no error: otra red de seguridad contra un `@RequirePermission` repuesto en el controlador |
 | BE-FLW-20 | `POST /flows/:id/assign-tenants` con un `roleId` que pertenece a **otro** tenant (o inexistente) | 400 "El rol … no existe o no pertenece al tenant …": `applyTenantAssignment` valida la pertenencia de cada `roleId` antes de la transacción de reemplazo (mismo criterio que `assertRoleBelongsToTenant`) |
 | BE-FLW-21 | Nodo `llm_query` con `temperature`, `maxAttempts` o items de `extractVariables` fuera de rango/forma por API directa (`temperature:999`, `maxAttempts:"abc"`, item sin esquema) | **Debería** validarse (rango de `temperature`, `@Min` de `maxAttempts`, `@ValidateNested` de cada item). ⚠️ Hoy el DTO valida `temperature`/`extractVariables` solo con `@IsNumber`/`@IsArray` y `maxAttempts` sin `@IsNumber`: pasan sin control y llegan al motor: `❌` (robustez, sin número de hallazgo) |
+| BE-FLW-22 | `POST /flows/:id/default` con el id de un flujo de **otra** empresa, teniendo `flows:update` en la propia | **Debe** cortar: `isDefault` es un fallback **global del sistema entero**, así que la operación tendría que exigir el candado de tenant de sistema (o al menos pertenencia, como sus hermanas). ⚠️ Es el **resto vivo de SEC-03**: a diferencia de `findById`/`update`/`delete`/`assign-tenants`, esta ruta nunca recibió `req.userTenant` y `setDefault` no chequea nada — con un permiso de nivel empresa se cambia el flujo por defecto de todo el sistema, y se puede promover uno ajeno: `❌` hasta gatearla |
+| BE-FLW-23 | `POST /flows` o `POST /flows/:id/assign-tenants` con una empresa destino a la que el solicitante **no pertenece** (o que está dada de baja) | 403 "No podés asignar el flujo a una empresa a la que no pertenecés: …". Se valida **antes** de crear, para no dejar un flujo huérfano. La membresía sobrevive a la baja lógica de la empresa, así que el chequeo filtra además `tenant.deletedAt: null`. El SuperAdmin asigna a cualquiera |
+| BE-FLW-24 | `GET /flows/:id` de un flujo **sin empresas** (borrador recién creado) pedido por su creador vs. por otra persona; y de un flujo compartido con varias empresas del usuario, parado en una de ellas | El borrador solo lo abre su `createdBy` (nadie más puede descubrir su id: no aparece en ningún listado); para los demás, 404. El flujo compartido se abre desde **cualquiera** de las empresas del usuario donde tenga `flows:read` — el scope lo pone la membresía, **no** el header: la vista "Todas mis empresas" manda una empresa de respaldo que puede no ser la del flujo, y cortar por la activa rompería abrirlo |
+| BE-FLW-25 | Un usuario de la empresa A edita un flujo **compartido** con B (acceso legítimo) y cuela en el payload una referencia a un recurso de B (`skillId`, `contextSourceId`, `userId` de un nodo) sin ser miembro de B | La referencia se **sanea igual**: las empresas que el flujo ya tiene asignadas solo cuentan para el saneo si quien edita **realmente pertenece** a ellas. Sin este recorte, compartir un flujo alcanzaba para vincular recursos de la otra empresa. El SuperAdmin no pasa por el saneo, a propósito |
 
 ## 1.9 Fuentes de verdad (context sources)
 
@@ -492,6 +520,7 @@ por `fetch` directo desde el controlador.
 | BE-CS-17 | `test-connection` de una fuente de tipo **RAG** | Mismo mecanismo que MCP: alcance HTTP contra la URL configurada. No valida el contrato de consulta, sólo que el servicio está arriba |
 | BE-CS-18 | `test-connection` de una fuente de tipo **n8n** | ⚠️ **Hace un POST real al webhook**: probar la conexión puede **disparar el workflow**. Usar siempre una URL de prueba (ver Apéndice C), nunca la productiva. Devuelve el resultado del webhook |
 | BE-CS-19 | `test-connection` de una fuente de tipo **broker** | No sale por HTTP: publica en la cola configurada y espera respuesta por el broker (modo correlacionado o cola fija según la fuente); si nadie consume, corta por timeout con `ok:false` |
+| BE-CS-20 | `GET /context-sources/all` (superusuario) y `GET /context-sources/mine` (usuario común) | `all` trae las fuentes de **todas** las empresas con la suya en cada fila, excluyendo las dadas de baja, y va con `SystemTenantGuard` — desde un tenant que no es el de sistema, 403. `mine` trae las de las empresas donde el usuario tiene `context-sources:read`, sin `@RequirePermission` (la autorización es por-empresa adentro del servicio) y devolviendo `[]` —no 403— si no lo tiene en ninguna, mismo criterio que `/areas/mine` y `/flows/mine`. Los dos siguen enmascarando los campos secretos de `config` |
 
 ## 1.10 LLM — proveedores y modelos
 
@@ -560,6 +589,11 @@ ahora lo hace el orquestador por la membresía del teléfono, ver §1.24).
 | BE-WHK-06 | POST sin `messages` (ej. `statuses` de entrega) | 200 `{ status: ok }`, no genera nada |
 | BE-WHK-08 | POST con `X-Hub-Signature-256` **ausente o inválida** | **Se rechaza** (401/403) antes de encolar: la firma se valida con el App Secret de Meta. ⚠️ Hoy se **procesa igual** sin validar firma (SEC-04): `❌` hasta validar `X-Hub-Signature-256` |
 | BE-WHK-09 | POST con `X-Hub-Signature-256` **válida** | 200 `{ status: ok }`, publica en `whatsapp.incoming` (el camino legítimo sigue funcionando tras sumar la validación) |
+
+> Los números **BE-WHK-07** y **BE-WHK-10** están libres a propósito: cubrían el ruteo por
+> `WHATSAPP_TENANT_ID` y el respaldo a "la empresa más antigua", que se eliminaron al pasar al
+> ruteo por membresía (§1.24). No se reutilizan, para que las referencias viejas no apunten a otra
+> cosa.
 
 ## 1.13 Conector de salida de WhatsApp (`WhatsAppService`)
 
@@ -679,12 +713,16 @@ Template pre-creado por **forma** de menú, cacheado en la tabla `TwilioContentT
 | BE-TWA-07 | Segundo menú con la **misma forma** pero distinto texto de body | Reusa el mismo `ContentSid` (el hash no incluye el body): no crea un template nuevo |
 | BE-TWA-08 | La Content API falla al crear o enviar el template | Degrada a **texto numerado** en vez de perder el mensaje |
 | BE-TWA-09 | `sendText` sin `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_WHATSAPP_FROM` | Warn y **no** envía (retorna sin lanzar): el consumer no se rompe (paridad con BE-WAO-02) |
-| BE-TWA-10 | `POST webhooks/twilio` **sin** `X-Twilio-Signature` válida | **Debe** rechazarse validando el HMAC con el auth token antes de encolar. ⚠️ Hoy **acepta cualquier POST** sin validar firma (SEC-16): `❌`. Agravante: el webhook está activo **aunque `WHATSAPP_PROVIDER`≠twilio** |
+| BE-TWA-10 | `POST webhooks/twilio` **sin** `X-Twilio-Signature` válida, con el guard configurado | ✅ **Se rechaza antes de encolar**: `TwilioSignatureGuard` valida el HMAC-SHA1 del auth token sobre la URL completa más los parámetros del body ordenados por clave. Cierra la parte de **SEC-16** que cubre el webhook de WhatsApp por Twilio — Gupshup (BE-GUP-06) sigue abierto. El detalle del guard y sus bordes, en BE-TWA-16/17 |
 | BE-TWA-11 | Carrera: dos requests crean el mismo Content Template a la vez | `P2002` en `shapeHash` único; el que pierde usa el `ContentSid` **huérfano** que él creó (válido en Twilio, distinto del persistido en BD). Documentar la divergencia memoria-vs-BD y el template sin uso en la cuenta de Twilio |
 | BE-TWA-12 | `POST webhooks/twilio` con `MediaUrl0..N` (imagen) | `TwilioMediaService` baja cada adjunto con `Authorization: Basic` (SID/token de `/settings`), auto-orienta por EXIF y redimensiona a ≤1920×1080 (`sharp`, solo jpeg/png/webp; gif/pdf sin resize) y publica el mensaje con `attachments` en `whatsapp.incoming`. Un mensaje solo-imagen (sin caption) ya no se descarta. Tope `MAX_MEDIA_ITEMS=10` |
 | BE-TWA-13 | Media con URL falsa/404, sin credenciales, o cron de retención | URL no-2xx o sin credenciales → `warn` y se saltea ese adjunto (no rompe la charla); el `@Cron('*/2 …')` borra los temporales de más de 10 min sin consumir. Ni el SID ni el token se loguean |
 | BE-TWA-14 | Adjunto de media **muy grande** (o muchos juntos) | **Debería** haber un tope de bytes en la descarga. ⚠️ Hoy `res.arrayBuffer()` carga el archivo entero en memoria y el único freno es el timeout de 20s (no chequea `Content-Length`): `❌` (robustez, sin número de hallazgo) |
 | BE-TWA-15 | El webhook de Twilio publica en `whatsapp.incoming` **sin** `tenantId` | La empresa se resuelve aguas abajo por membresía (§1.24); se eliminó el ruteo por `*_TENANT_ID` + fallback al tenant más viejo |
+| BE-TWA-16 | `TwilioSignatureGuard` en sus tres estados | Firma **válida** → pasa y encola. Firma **ausente o inválida** → rechazo, sin distinguir un caso del otro hacia afuera (nunca se le da al atacante una señal de "acá hay algo que validar"); la comparación usa `timingSafeEqual` y chequea el largo antes, para que una firma corta o larga a mano no lance. **Sin `TWILIO_AUTH_TOKEN` o `TWILIO_WEBHOOK_PUBLIC_URL` cargados, NO corta**: solo advierte en el log y deja pasar — deuda deliberada, para que un despliegue que todavía no cargó el setting no deje de recibir mensajes de un día para el otro. Ese despliegue queda tan expuesto como antes del guard |
+| BE-TWA-17 | `TWILIO_WEBHOOK_PUBLIC_URL` cargada **con el path** del webhook (`https://miapp.com/webhooks/twilio`) en vez de solo protocolo + host | El path queda **duplicado** al armar la URL a firmar, la firma nunca matchea y se cortan **todos** los mensajes entrantes por Twilio. El único rastro es un "firma inválida" en el log, sin ninguna alerta: es un apagón silencioso del canal. La descripción del setting lo advierte expresamente — verificar que sigue siendo clara y probar el borde de la barra final |
+| BE-TWA-18 | Cambiar las credenciales de Twilio (otra cuenta) con menús ya cacheados; y un `ContentSid` borrado desde la consola de Twilio | El `shapeHash` incluye el `accountSid`, así que una cuenta nueva **no matchea** las filas de la anterior y crea sus propios templates (las viejas quedan huérfanas, sin uso y sin molestar). Si igual llega un `21655` "Content was not found", se descarta la entrada muerta (memoria + BD) y se recrea el template **una sola vez**; un segundo fallo se propaga y degrada a texto (BE-TWA-08). Sin esto el caché quedaba envenenado para siempre |
+| BE-TWA-19 | Menú o detalle cuyo texto trae `{{` / `}}` sin resolver (ej. un título de ticket con una variable de flujo que nunca se cargó) | Las llaves se sacan de los títulos de botón/fila y de la variable `{{1}}` del body **antes** de calcular el hash, crear el template y enviar, así los tres ven el mismo texto. `{{ }}` es sintaxis reservada de Twilio para **sus** variables en cualquier parte del template: sin este saneo, Twilio rechaza el envío con `21656` aunque la creación del template haya funcionado (caso real, 2026-08-31). Un body **multilínea** sí se manda tal cual: los saltos de línea no eran el problema |
 
 ## 1.20 Canal WhatsApp — Gupshup (`GupshupWhatsAppService` + `GupshupWebhookController`)
 
@@ -700,33 +738,42 @@ interactivos van **inline** (`quick_reply`/`list`), sin templates pre-creados. C
 | BE-GUP-03 | Encolar un menú | `buildInteractiveMessage` lo traduce a `quick_reply` (≤3) o `list` y lo manda inline en el mismo request |
 | BE-GUP-04 | El usuario toca una opción | Vuelve el **`id`** de la opción como `body` |
 | BE-GUP-05 | `sendText` sin `GUPSHUP_API_KEY`/`SOURCE`/`APP_NAME` | Warn y **no** envía; no rompe el consumer |
-| BE-GUP-06 | `POST webhooks/gupshup` sin ninguna verificación de autenticidad | **Debe** verificar que el POST viene de Gupshup. ⚠️ Hoy **acepta cualquier POST** (SEC-16): `❌` |
+| BE-GUP-06 | `POST webhooks/gupshup` sin ninguna verificación de autenticidad | **Debe** verificar que el POST viene de Gupshup. ⚠️ Hoy **acepta cualquier POST** (SEC-16): `❌`. Twilio ya cerró su parte (BE-TWA-10/16), así que Gupshup queda como la única puerta de entrada sin verificar — y es la que además dispara una descarga (BE-GUP-10) |
 | BE-GUP-07 | Menú de tipo lista con `buttonText` | Reusa `buttonText` como header/título de la lista, sin equivalente real en el tipo interno `WhatsAppInteractive`; el propio comentario del código pide **confirmarlo contra tráfico real** antes de producción |
+| BE-GUP-08 | `POST webhooks/gupshup` con un mensaje de tipo `image` (con y sin caption) | `GupshupMediaService` descarga la `url` del payload (pública, con expiración — no hace falta autenticarse, a diferencia de Twilio), la redimensiona a ≤1920×1080 y la guarda en el **mismo** directorio y con el mismo contrato que Twilio, así `flowState.pendingAttachments` y el motor funcionan igual con los dos proveedores. Publica con `attachments`; el `caption` viaja como `body` (`''` si no tiene, que **no** es lo mismo que `null` = tipo no soportado). Un mensaje solo-imagen sigue de largo, no se descarta. Si la URL ya venció, el adjunto se pierde best-effort y la charla sigue |
+| BE-GUP-09 | `POST webhooks/gupshup` con `type:'message-event'` y con otros tipos de evento | De los eventos de entrega solo interesa `failed`: deja un `warn` con el destino y el motivo (ej. Error 131037, nombre para mostrar sin aprobar) y una línea en el log de archivo (§1.28) — es la única forma de enterarse de que WhatsApp no entregó la respuesta del bot. `enqueued`/`sent`/`delivered`/`read` y los eventos de plantilla, cuenta o facturación se descartan con 200, sin ruido |
+| BE-GUP-10 | `POST webhooks/gupshup` con `type:'image'` y una `url` apuntando a la red interna (`http://127.0.0.1:…`, `http://169.254.169.254/…`) o a un archivo enorme | **Debería** validarse el destino y acotarse el tamaño. ⚠️ Hoy `GupshupMediaService` hace `fetch` a esa URL **tal cual**, sin lista blanca de host ni esquema y sin tope de bytes — y el webhook **no valida firma** (BE-GUP-06), así que la URL la controla quien mande el POST. La inconsistencia es lo que lo vuelve un defecto y no un límite de diseño: su hermano `TwilioMediaService` **sí** exige `https://api.twilio.com`. `❌` (seguridad, familia SEC-16; el tope de bytes es el mismo pendiente que BE-TWA-14) |
 
 ## 1.21 Canal SMS (Twilio y Gupshup) — canal propio
 
-**Precondición:** SMS es un **canal independiente**, no un fallback de WhatsApp. Colas propias
-`sms.incoming`/`sms.outgoing` y `Conversation` con `channel:'sms'` separada: un mismo usuario
-puede tener charla activa por WhatsApp **y** por SMS a la vez. El proveedor lo decide
-`SMS_PROVIDER` (`twilio` default / `gupshup`), leído al arrancar. Twilio **reusa** la cuenta de
-Twilio-WhatsApp (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`) y sólo cambia el número
-(`TWILIO_SMS_FROM`). Gupshup usa su API legacy (`GUPSHUP_SMS_USERID` + `GUPSHUP_SMS_PASSWORD`
-secreto). SMS **no** tiene interactivo: los menús se degradan a texto numerado.
+**Precondición:** SMS es un **canal independiente**, no un fallback de WhatsApp — y desde
+2026-08-27 es **100% saliente**: avisos, no conversación bidireccional. Los dos webhooks de
+entrada (`webhooks/twilio-sms` y `webhooks/gupshup-sms`) y la cola `sms.incoming` **se
+eliminaron**; queda solo `sms.outgoing`. La `Conversation` con `channel:'sms'` sigue existiendo
+para lo que sí corre por acá (el nodo `sms` del editor de flujos), así que un mismo usuario puede
+tener charla por WhatsApp **y** registro por SMS. El proveedor lo decide `SMS_PROVIDER` (`twilio`
+default / `gupshup`), leído al arrancar. Twilio **reusa** la cuenta de Twilio-WhatsApp
+(`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`) y sólo cambia el número (`TWILIO_SMS_FROM`). Gupshup
+usa la API de SMS (`GUPSHUP_API_KEY` compartida con WhatsApp + `GUPSHUP_SMS_APP_ID`); la cuenta
+legacy "Enterprise SMS" quedó atrás. SMS **no** tiene interactivo: los menús se degradan a texto
+numerado.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
-| BE-SMS-01 | `handleMessage` con un mensaje `channel:'sms'` | Resuelve/crea la `Conversation` del canal `sms` (independiente de la de `whatsapp` del mismo usuario) y rutea la respuesta a `sms.outgoing` (`${channel}.outgoing`) |
+| BE-SMS-01 | `handleMessage` con un mensaje `channel:'sms'` (hoy solo por `/simulate`) | Resuelve/crea la `Conversation` del canal `sms` (independiente de la de `whatsapp` del mismo usuario) y rutea la respuesta a `sms.outgoing` (`${channel}.outgoing`). El motor sigue siendo channel-aware aunque ya no entren mensajes por SMS desde afuera |
 | BE-SMS-02 | `SMS_PROVIDER=twilio` | Sólo `TwilioSmsService` consume `sms.outgoing`; Gupshup inactivo |
 | BE-SMS-03 | `SMS_PROVIDER=gupshup` | Sólo `GupshupSmsService` consume `sms.outgoing` |
-| BE-SMS-04 | `POST webhooks/twilio-sms` con texto | Publica `{ from, body, channel:'sms' }` en `sms.incoming` |
-| BE-SMS-05 | `POST webhooks/gupshup-sms` | Mapea **best-effort** los campos candidatos (`phno`/`mobile`/`from`/`sender`, `text`/`msg`/`message`) y publica en `sms.incoming`. ⚠️ Puede **no funcionar** hasta ajustarlo con tráfico real (reconocido en el propio código) |
+| BE-SMS-04 | `POST webhooks/twilio-sms` y `POST webhooks/gupshup-sms` | **404: los dos controladores se eliminaron.** El canal es 100% saliente y no hay cola `sms.incoming`. Verificar que ninguna ruta de SMS entrante quedó publicada — era una puerta abierta sin firma (parte de SEC-16) que se cerró sacando la superficie entera, no agregándole un guard |
+| BE-SMS-05 | Un `publish` manual a `sms.incoming` (cola histórica) | Nadie la consume: el mensaje se acumula sin efecto. Documentar que la cola ya no forma parte del pipeline |
 | BE-SMS-06 | Menú del flujo enviado por **Twilio SMS** | Se degrada a texto numerado (`appendInteractiveAsText`), conservando el orden para que el índice tipeado matchee el `case 'menu'` |
-| BE-SMS-07 | Menú del flujo enviado por **Gupshup SMS** | ⚠️ **Bug real:** `GupshupSmsService` **descarta** el `interactive` (sólo manda el `body`): el usuario recibe "Elegí una opción:" **sin las opciones** y no sabe qué tipear. **Debe** anexar las opciones numeradas como Twilio SMS: `❌` hasta emparejarlo (robustez, sin número de hallazgo) |
+| BE-SMS-07 | Menú del flujo enviado por **Gupshup SMS** | ⚠️ `GupshupSmsService` **descarta** el `interactive` (sólo manda el `body`): el usuario recibe "Elegí una opción:" **sin las opciones**. Con el canal 100% saliente el impacto bajó mucho (ya no hay respuesta que matchear por SMS), pero un aviso con opciones sigue saliendo mutilado. **Debe** anexar las opciones numeradas como Twilio SMS: `❌` hasta emparejarlo (robustez, sin número de hallazgo) |
 | BE-SMS-08 | Twilio SMS reusando la cuenta de WhatsApp | Usa `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`, saca el prefijo `whatsapp:` y envía desde `TWILIO_SMS_FROM` |
-| BE-SMS-09 | `POST webhooks/twilio-sms` o `webhooks/gupshup-sms` sin firma/autenticación | **Debe** rechazar. ⚠️ Hoy ambos aceptan cualquier POST (SEC-16): `❌` |
-| BE-SMS-10 | Gupshup SMS legacy: inspeccionar la request de salida | ⚠️ Manda `userid`/`password` en la **query string** de un `GET` → pueden filtrarse a logs de proxies (SEC-21): `❌`. La verificación de éxito (`startsWith('success')` sobre texto plano) es frágil |
+| BE-SMS-09 | Autenticidad de los webhooks de SMS | Ya no aplica: **no hay webhooks de SMS** (BE-SMS-04). Esta parte de SEC-16 se cierra por eliminación de la superficie. Lo que sigue abierto es Gupshup WhatsApp (BE-GUP-06) |
+| BE-SMS-10 | Credenciales de Gupshup SMS en la request de salida | ✅ Ya **no** viajan en la query string de un `GET`: la API nueva usa `POST` con la API key en el header `Authorization` y los parámetros en el cuerpo. Cierra **SEC-21**, que era propio de la API legacy "Enterprise SMS" (`userid`/`password` en la URL, expuestos a los logs de cualquier proxy intermedio) |
 | BE-SMS-11 | Nodo `sms` saliente a un número argentino guardado como `+549…` | El destinatario `To` pasa por `stripArgentinaMobileNine` (`+549 11…` → `+5411…`, el SMS por red celular no usa el 9); un número no argentino cae a `+${digits}` sin romper. El `From` sigue con `normalizeRecipient` |
-| BE-SMS-12 | `POST webhooks/twilio-sms` con media (MMS de 2 imágenes) | Reusa `TwilioMediaService` (misma descarga/resize/retención que WhatsApp): ambas imágenes se bajan y viajan al próximo `ticket_create` como adjuntos |
+| BE-SMS-12 | Media entrante por SMS (MMS) | Ya no aplica: sin webhook de entrada no hay MMS que procesar. La descarga y retención de media siguen vivas para WhatsApp (BE-TWA-12/13, BE-GUP-08) |
+| BE-SMS-13 | Inspeccionar la request de salida de **Gupshup SMS** | Pega a `api.gupshup.io/sms/v1/message/{appId}` con la API key en el header `Authorization` — **no** al endpoint de WhatsApp (`/wa/api/v1/msg`, header `apikey`). Es la diferencia que ya rompió el canal: entre el 27/08 y el 31/08 pegaba al de WhatsApp con `channel:'sms'` en el cuerpo, Gupshup respondía `202 {"status":"submitted"}` —así que parecía andar— y **entregaba el mensaje por WhatsApp**. El `source` (sender ID) solo se manda si está configurado. ⚠️ Sin confirmar contra tráfico real, y la documentación de Gupshup no lista Argentina entre los destinos permitidos de esta API |
+| BE-SMS-14 | `sendText` de Gupshup SMS sin `GUPSHUP_API_KEY` o sin `GUPSHUP_SMS_APP_ID` | Warn nombrando **el grupo de `/settings` de cada clave** (la API key vive en el grupo de WhatsApp y el App ID en el de SMS: son de pestañas distintas y es el error de carga esperable), no envía y **no** rompe el consumer. El intento queda en el log de archivo (§1.28), igual que los errores de red |
 
 ## 1.22 Integración InvGate (`InvgateService` + catálogo)
 
@@ -774,6 +821,7 @@ cadena estándar `@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)` y permisos
 | BE-SKL-05 | `PATCH /skills/:id` cambiando el `promptText` | 200; actualiza |
 | BE-SKL-06 | `DELETE /skills/:id` de una skill **vinculada a un flujo** | 200; `Flow.skillId` queda en `null` (`onDelete: SetNull`), el flujo no se rompe |
 | BE-SKL-07 | Cualquier operación sin el permiso `skills:*` | 403 "Permiso denegado: skills:acción" |
+| BE-SKL-11 | `GET /skills/all` (superusuario) y `GET /skills/mine` (usuario común) | Mismo criterio que BE-CS-20, espejo exacto: `all` con `SystemTenantGuard` trae las de todas las empresas vigentes con la suya en cada fila; `mine` trae las de las empresas donde el usuario tiene `skills:read`, sin `@RequirePermission`, y `[]` si en ninguna. Son los dos endpoints que alimentan la pestaña Skills en modo consolidado (FE-CS-12) |
 | BE-SKL-08 | Un `Flow` compartido (`TenantFlow` N:N) entre la empresa **A** (dueña de la skill) y **B**; una charla del tenant **B** pasa por ese flujo | **No debe** filtrar: la skill de A no tendría que inyectarse en las conversaciones de B. ⚠️ Hoy `findById` carga `skill.promptText` **sin re-chequear el tenant en curso** → el texto de A entra en el prompt de B. A diferencia de la fuente de verdad (que falla-seguro por tenant), la skill **filtra en silencio** (SEC-17): `❌` |
 | BE-SKL-09 | `POST`/`PATCH /flows` con un `skillId` de **otra** empresa | **Debe** rechazar (no pertenece al tenant activo). ⚠️ Hoy `FlowService.create/update` propagan `skillId` por spread **sin validar pertenencia**; la FK sólo valida existencia (SEC-17): `❌` |
 | BE-SKL-10 | Marcar una Skill como `isActive:false` y usar un flujo vinculado a ella | **Debería** dejar de concatenarse. ⚠️ Hoy el motor **no chequea `isActive`** (`findById` ni lo trae): el texto se inyecta igual. El flag es letra muerta en el motor: `❌` (robustez, sin número de hallazgo) |
@@ -787,19 +835,100 @@ la **membresía del teléfono**. Los webhooks (§1.12, §1.19–1.21) publican e
 `InboundTenantRoutingService.resolve(from, channel, body)`. Un mensaje que llega **con** `tenantId`
 explícito (p. ej. `/conversations/simulate`) saltea el ruteo y usa esa empresa.
 
-Orden de decisión: pendiente de selección → conversación **activa** en alguna empresa → 1 membresía
-(directo) / ≥2 (se pregunta) / 0 (tenant de sistema). El estado intermedio de la pregunta vive en
-`PendingTenantSelection` (por teléfono+canal, expira a las 12h). En WhatsApp el selector va como
-lista/botones interactivos; en SMS como texto numerado.
+Orden de decisión: pendiente de selección → **ninguna membresía** (se ignora: no hablamos con
+desconocidos) → conversación **activa** en alguna empresa ruteable → 1 membresía (directo) / ≥2 (se
+pregunta). El estado intermedio de la pregunta vive en `PendingTenantSelection` (por
+teléfono+canal, expira a las 12h, guarda el texto **y los adjuntos** del mensaje original). En
+WhatsApp el selector va como lista/botones interactivos; en SMS como texto numerado.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
 | BE-ITR-01 | Teléfono miembro de **una sola** empresa | `resolve` → `{ resolved, tenantId }` de esa empresa, sin preguntar ni crear pendiente |
-| BE-ITR-02 | Teléfono **sin ninguna** empresa (desconocido) | `resolve` → tenant de **sistema** (`SYSTEM_TENANT_SLUG`), que lo atiende con su flujo global (`Flow.isDefault`) |
+| BE-ITR-02 | Teléfono **sin ninguna** empresa (desconocido) | `resolve` → `{ ignored }`: **no** hay empresa de respaldo. No se crea `User` ni `Conversation` ni se gasta LLM; el intento queda en el log de archivo (§1.28). Por canal real es silencio total; por RPC (`/simulate` sin `tenantId`) se contesta un aviso para no colgar al llamador. Reemplaza al ruteo previo al tenant de sistema (pedido 2026-08-27) |
 | BE-ITR-03 | Teléfono **multiempresa** | `resolve` → `{ ask }` con el selector; crea `PendingTenantSelection` con las opciones (ordenadas por antigüedad de la empresa) y el mensaje original |
 | BE-ITR-04 | Responder el selector con el **número** de la empresa | `resolve` → `{ resolved, tenantId elegido, replayBody }` (reprocesa el mensaje original); borra el pendiente |
-| BE-ITR-05 | Responder el selector con algo **inválido** | `resolve` → `{ ask }` otra vez; conserva el pendiente (se re-pregunta; expira a las 12h) |
+| BE-ITR-05 | Responder el selector con algo **inválido** | `resolve` → `{ ask }` otra vez, con el encabezado "No reconocí esa opción…"; conserva el pendiente y **le refresca la expiración** (12h desde el reintento, no desde la pregunta original) |
 | BE-ITR-06 | Multiempresa con una **conversación activa** en una empresa | `resolve` → esa empresa (continúa la charla), sin volver a preguntar. Una charla **cerrada** ya no cuenta: el próximo mensaje vuelve a preguntar |
+| BE-ITR-07 | Forma de la pregunta según canal y cantidad de empresas | WhatsApp con ≤3 empresas → **botones** (título recortado a 20); 4–10 → **lista** (recortado a 24, botón "Elegir empresa"); SMS —o más de 10 empresas— → texto numerado con "Respondé con el número" (SMS no tiene botones y el conector de Gupshup descarta el interactivo) |
+| BE-ITR-08 | Responder el selector con el **nombre** de la empresa | Resuelve igual que con el número o el id: el match acepta el nombre completo y también el título **recortado** que muestran botones (20) y listas (24). Sin esto, tocar un botón en Twilio entraba en bucle — su webhook entrega el título visible, no el id (mismo criterio que el nodo `menu` con `opt.label`) |
+| BE-ITR-09 | La empresa elegida fue **dada de baja** dentro de las 12h del pendiente | `resolve` → `{ notice }`: avisa que esa empresa ya no está disponible y borra el pendiente; el próximo mensaje re-rutea de cero. Antes el corte de baja lógica de `handleMessage` descartaba el mensaje original —texto y adjuntos— en silencio total |
+| BE-ITR-10 | Conversación **activa** en una empresa que un cambio administrativo (membresía revocada o baja de la empresa) dejó fuera del ruteo | La conversación varada se **cierra** y se avisa (`notice`); no se abandona en silencio ni su respuesta a medias se inyecta como apertura del flujo de la empresa nueva. Si hay otra charla activa en una empresa **sí** ruteable, gana esa: la búsqueda filtra por membresía a nivel BD antes de mirar la más reciente |
+| BE-ITR-11 | Dos mensajes casi simultáneos de un teléfono **multiempresa** sin pendiente previo | Queda **un solo** `PendingTenantSelection` (unique `[phone, channel]` + `createMany` con `skipDuplicates`): gana el primero y su `originalBody` se conserva; el segundo no lo pisa ni lanza. Antes era una transacción `Serializable` que ante ese choque tiraba sin reintentar y el mensaje se descartaba |
+| BE-ITR-12 | El mensaje que dispara el selector traía **fotos**, y la persona responde **más de 10 minutos después** | El pendiente guarda `originalAttachments` y el replay reprocesa texto **y** adjuntos. ⚠️ Los archivos en disco los borra el cron de retención de media a los **10 min** (`RETENTION_MS`), pero el pendiente vive **12h**: respondiendo más tarde, `loadAttachments` no encuentra los archivos y las fotos se pierden **en silencio**. **Debería** avisar (o retener los adjuntos mientras viva el pendiente): `❌` (robustez, sin número de hallazgo) |
+| BE-ITR-13 | Sondear el selector con teléfonos ajenos desde un webhook **sin firma** (Gupshup/Meta) o desde `/conversations/simulate` sin `tenantId` | **No debería** revelar nada de un remitente no verificado. ⚠️ Hoy el selector devuelve los **nombres** de todas las empresas del teléfono, así que quien alcance esas puertas puede enumerar dónde trabaja una persona a partir de su número: `❌` (privacidad, ligado a SEC-04/SEC-16) |
+
+## 1.25 Calendario de feriados/guardias (`ScheduleCalendarService`)
+
+**Precondición:** `ScheduleCalendarEntry` es **por empresa** (como `Area`/`ContextSource`): el
+tenant sale siempre de `@CurrentTenant()`, nunca del body. `roleId` en `null` = aplica a **todos**
+los roles de la empresa. Los tipos válidos (`feriado`, `guardia`) y las frecuencias de repetición
+(`daily`/`weekly`/`monthly`/`yearly`) son catálogos cerrados en código, no enums de Prisma —mismo
+criterio que `context-source-types.catalog.ts`—, y los comparte `FlowAlternative.type` (§1.26).
+`startAt`/`endAt` son siempre la **primera** ocurrencia; cada repetición reusa esa misma duración
+desplazada al ciclo que corresponda. Cadena estándar `@UseGuards(JwtAuthGuard, TenantGuard,
+RolesGuard)` con `@RequirePermission('schedule-calendar', <acción>)`.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-CAL-01 | ABM completo: `POST` con tipo/título/rango/rol, `GET` con filtros (`roleId`, `type`, `from`, `to`), `PATCH` y `DELETE` | 201/200 en cada uno; todo scopeado por el tenant activo y ordenado por `startAt` ascendente. Los filtros de fecha se cruzan (`endAt >= from`, `startAt <= to`), así que una entrada que abarca el rango sin empezar dentro también aparece |
+| BE-CAL-02 | `type` o `recurrenceFreq` fuera del catálogo | 400 con la lista de valores válidos (`@IsIn` del DTO, mensaje armado desde el propio catálogo). Sumar un tipo nuevo al catálogo lo habilita sin migración de schema |
+| BE-CAL-03 | Rangos inválidos: `endAt` ≤ `startAt`, o `recurrenceUntil` anterior a `startAt` | 400 "La fecha de fin debe ser posterior a la de inicio" / "La fecha «hasta» debe ser posterior al inicio" |
+| BE-CAL-04 | `recurrenceUntil` **sin** `recurrenceFreq`, y desactivar la repetición en un `PATCH` | Sin frecuencia, el "hasta" se **descarta en silencio** (queda `null`), no se rechaza. Al apagar la repetición en un `PATCH`, `recurrenceUntil` se fuerza a `null` con ella: no queda un "hasta" huérfano. Con frecuencia y sin "hasta" = repite indefinidamente |
+| BE-CAL-05 | `roleId` de **otra** empresa (o inexistente) | 400 "El rol … no existe o no pertenece a este tenant" (mismo criterio que `FlowService.applyTenantAssignment`) |
+| BE-CAL-06 | `GET`/`PATCH`/`DELETE /schedule-calendar/:id` con el id de una entrada de **otra** empresa | 404 "La entrada de calendario no existe en este tenant": todas las operaciones por id pasan por `getOwned`, que filtra por `tenantId` además del id |
+| BE-CAL-07 | `resolveStatus(tenant, rol, instante)` con entradas que compiten | Devuelve `'feriado'` si hay feriado, `'guardia'` si solo hay guardia, `null` si ninguna matchea; con las dos en el mismo instante **gana feriado**. Una entrada con `roleId:null` matchea cualquier rol consultado; una de **otro** rol no matchea; con `roleId` en `null` (usuario sin rol) solo matchean las de `roleId:null` |
+| BE-CAL-08 | Repetición en las cuatro frecuencias | Semanal matchea el mismo día y horario de la semana siguiente pero **no** otro día de esa semana; diaria repite el mismo horario; mensual y anual, la misma fecha del ciclo siguiente. Un rango que cruza medianoche matchea la madrugada del día siguiente. `recurrenceUntil` corta: pasada esa fecha ya no matchea, aunque el ciclo siga cayendo |
+| BE-CAL-09 | Repetición **mensual** anclada un día 29, 30 o 31 | Limitación conocida y asumida: la aritmética usa `Date.setMonth`, que ante un mes más corto **desborda al siguiente** (el 31/01 repetido mensual "cae" el 03/03 en un año no bisiesto). Documentar el borde; no es `❌` porque el MVP lo asume explícitamente |
+| BE-CAL-10 | `POST /schedule-calendar/import-ar-holidays/:year` | Trae los feriados de ese año de la API pública de argentinadatos.com y crea una entrada por feriado: `type:'feriado'`, `allDay:true`, `roleId:null` y `source:'ar_holidays_import'`. Las fechas se anclan en **-03:00**, no en UTC: con "Z" la medianoche real caía 3hs antes en hora local y el feriado se veía **partido en dos días** |
+| BE-CAL-11 | Reimportar el mismo año, y `DELETE …/import-ar-holidays/:year` | Reimportar **reemplaza limpio**: borra el import anterior de ese año antes de crear el nuevo, así un segundo intento no duplica. El `DELETE` borra en bloque solo las entradas con `source:'ar_holidays_import'` de ese año — las cargadas **a mano** quedan intactas (para eso existe la columna `source`) |
+| BE-CAL-12 | La API externa falla: status no-2xx, sin red (timeout de 15s) o lista vacía | 400 con el motivo concreto en cada caso; **no se borra nada** de lo que ya había: el borrado del import anterior corre **después** del fetch exitoso, no antes |
+| BE-CAL-13 | Año inválido en la ruta de import: `0`, `3000`, `abc` | 400 **sin** llamar a la API externa (`ParseIntPipe` para lo no numérico + `assertValidYear`, rango 1900–2100). Aplica igual al `DELETE` del import |
+| BE-CAL-14 | Empresa con un calendario grande (varios años importados y entradas repetidas) recibiendo mensajes | `resolveStatus` corre al **arrancar cada conversación** y trae **todas** las entradas de (tenant, rol) sin filtro de fecha en el `WHERE` —no se puede: una entrada anual puede matchear hoy con `startAt` de años atrás— y filtra en memoria. Medir el costo por mensaje y dejarlo documentado; el volumen esperado es bajo, pero es el punto que hay que vigilar si el calendario crece |
+
+## 1.26 Variantes de flujo por feriado/guardia (`FlowAlternative`)
+
+**Precondición:** una variante es **otra fila `Flow` completa e independiente** (su propio
+`nodes`/`edges`), vinculada al flujo Principal por `FlowAlternative` con el mismo catálogo de tipos
+del calendario. **No** es un nodo del grafo ni tiene relación con el nodo `subflow` (ese es un
+salto en vivo durante la charla; esto es una variante elegida **antes** de arrancar). La variante
+nace sin `TenantFlow` ni `isDefault`: la tenencia vive en el flujo base. `findActiveFlowForTenant`
+resuelve primero el Principal (§1.8) y recién después consulta el calendario.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-VAR-01 | `GET /flows/:id/variants` | Los tipos configurados para ese flujo como Principal, con su `variantFlowId` |
+| BE-VAR-02 | `POST /flows/:id/variants` en sus **tres** orígenes | Sin opciones, duplica el grafo del Principal (default); con `sourceFlowId`, el de otro flujo cualquiera; con `blank:true`, arranca con el nodo `start` de un flujo nuevo. En los tres casos la fila nace `isActive:true`, `isDefault:false`, **sin empresas asignadas** y con nombre `"<base> (<tipo>)"` |
+| BE-VAR-03 | Crear dos veces la variante del **mismo** tipo para el mismo flujo | 409 "Ya existe una variante de este tipo para este flujo" (unique `[baseFlowId, type]`) |
+| BE-VAR-04 | `type` fuera del catálogo de tipos del calendario | 400 "Tipo de variante desconocido: …" — la misma lista que valida `ScheduleCalendarEntry.type` (§1.25) |
+| BE-VAR-05 | `DELETE /flows/:id/variants/:type` | Borra la fila `Flow` variante (y con ella el `FlowAlternative`, por cascade); sin variante de ese tipo → 404 "No hay variante de ese tipo para este flujo" |
+| BE-VAR-06 | `GET`/`POST`/`DELETE /flows/:id/variants` con el id de un flujo de **otra** empresa | 404 en los tres: pasan por `assertFlowAccessible` como el resto de las rutas `:id`. Antes no recibían el `userTenant` y con `flows:read`/`create` en la empresa propia se podían listar, crear y borrar variantes de un flujo ajeno — y la respuesta del `POST` devolvía sus `nodes`/`edges` copiados enteros |
+| BE-VAR-07 | Crear una variante **propia** con un `sourceFlowId` de **otra** empresa | 404: el corte se aplica también al flujo de origen, no solo al base. Sin eso, el flujo base podía ser propio pero el grafo copiado, ajeno — lectura cruzada por la puerta de atrás |
+| BE-VAR-08 | La fila `Flow` variante en listados y desplegables | **No** aparece en `GET /flows` ni en los dropdowns generales (nodo `subflow`, asignación de empresas): `findAll` filtra `variantOf: null`. Tampoco es elegible por `resolvePrincipalFlow`, porque nace sin `TenantFlow` y sin `isDefault`. Solo se llega a ella por `listAlternatives`/`findById` |
+| BE-VAR-09 | `findActiveFlowForTenant` con y sin estado temporal | Sin feriado ni guardia (`resolveStatus` → `null`) devuelve el Principal **sin** consultar `FlowAlternative`. Con estado resuelto: variante **activa** → la variante; variante `isActive:false` o sin configurar para ese tipo → cae al Principal |
+| BE-VAR-10 | Un feriado que **empieza a mitad** de una conversación en curso | La variante se elige **una sola vez, al iniciar** la charla — nunca se re-evalúa mientras la conversación sigue viva. Quien ya estaba conversando termina por el flujo con el que arrancó |
+| BE-VAR-11 | Borrar el flujo **Principal** que tiene variantes | El cascade borra sus `FlowAlternative`, pero **no** las filas `Flow` variantes: quedan huérfanas. Peor, al perder su `FlowAlternative` dejan de estar excluidas por `variantOf: null` y **reaparecen** en `GET /flows/all` (vista del superusuario). **Debería** borrarlas junto con el base, como hace `deleteVariant`: `❌` (robustez, sin número de hallazgo) |
+
+## 1.27 Métricas del panel de inicio (`MetricsService`)
+
+**Precondición:** `GET /metrics/dashboard` alimenta las cuatro tarjetas del inicio (§3.3). Cadena
+estándar con `@RequirePermission('metrics', 'read')`.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-MET-01 | `GET /metrics/dashboard` con `metrics:read` | `{ users, tenants, conversations, tickets }`. `users` cuenta las membresías de la empresa activa (excluyendo personas dadas de baja), `conversations` y `tickets` son de esa empresa; **`tenants` es global a propósito** — es un total del sistema, no expone datos de otras empresas |
+| BE-MET-02 | Mismo endpoint parado en la empresa A, con datos sembrados también en B; y sin el permiso | Los tres conteos por empresa **no** incluyen nada de B, y las empresas dadas de baja no suman en `tenants`. Sin `metrics:read` → 403; sin `X-Tenant-Id` resoluble → el corte de `TenantGuard` (§1.3) |
+
+## 1.28 Registros en disco (`GupshupFileLoggerService`, `UnknownSenderLogService`)
+
+**Precondición:** dos registros en archivo, con el mismo esquema: un archivo por semana ISO en
+formato JSON Lines, rotación automática al cambiar de semana y borrado de los viejos en cada
+escritura. No viven en la BD a propósito.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-LOG-01 | Actividad de Gupshup (webhook recibido, evento de entrega, envío saliente) | Se escribe una línea JSON en `logs/gupshup/gupshup-YYYY-Www.log`; al cambiar de semana empieza un archivo nuevo y los de más de **8 semanas** se borran solos. Un fallo de disco (permisos, disco lleno) **no** tira la request del webhook ni el envío: queda un `warn` y sigue |
+| BE-LOG-02 | Mensaje rechazado por venir de un número no registrado (§1.24 BE-ITR-02 y §2.1) | Se registra en `logs/unknown-senders/unknown-YYYY-Www.log` con canal, teléfono y los primeros 200 caracteres del mensaje; retención de **4 semanas**. No queda **ninguna** fila en `User`, `Conversation` ni `Message`. El `tenantId` va solo cuando el rechazo ocurre dentro de una empresa ya resuelta (`/simulate` contra un tenant puntual) |
+| BE-LOG-03 | Contenido de los dos archivos frente a datos sensibles | El log de Gupshup vuelca el **payload crudo** del webhook (`raw`), que incluye el texto de los mensajes de los usuarios y sus teléfonos, en claro y sin cifrar por 8 semanas; el de desconocidos guarda teléfono y un fragmento del mensaje por 4. Verificar que **ningún secreto** (API key, token de Twilio, credenciales de InvGate) caiga en ninguno de los dos, y evaluar si la retención es compatible con el tratamiento de datos personales del despliegue |
 
 ---
 
@@ -817,7 +946,7 @@ conocidos (con membresía) y desconocidos (sin membresía). Todos los casos se e
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
-| CHAT-PIPE-01 | Primer mensaje de un número nuevo | Crea contacto placeholder, crea conversación, ejecuta el flujo |
+| CHAT-PIPE-01 | Primer mensaje de un número **registrado** (con membresía y rol en la empresa) | Crea la conversación y ejecuta el flujo. Ya **no** se crea ningún contacto placeholder: `findOrCreateByPhone` —que fabricaba un `User` con email `whatsapp-{tel}@local.pci` para cualquier número que escribiera— quedó eliminada (ver CHAT-PIPE-09) |
 | CHAT-PIPE-02 | Mensaje dirigido a un tenant **dado de baja** (canal real) | Se ignora en silencio (`return ''`), sin crear usuario ni gastar LLM |
 | CHAT-PIPE-03 | Mismo caso pero por `simulate` (con `replyTo`) | Responde un aviso, no cuelga al llamador |
 | CHAT-PIPE-04 | Segundo mensaje dentro de la ventana de reanudación (12h) tras cerrar | Reabre la conversación cerrada, mantiene historial |
@@ -825,16 +954,22 @@ conocidos (con membresía) y desconocidos (sin membresía). Todos los casos se e
 | CHAT-PIPE-06 | Se persiste el mensaje del usuario y luego el del asistente | Ambos quedan en `Message` con `senderType` correcto |
 | CHAT-PIPE-07 | Dos mensajes del mismo teléfono, uno con `channel:'whatsapp'` y otro con `channel:'sms'` | Cada uno resuelve/crea **su propia** `Conversation` (una por canal), no se pisan; la respuesta de cada uno va a `${channel}.outgoing`. `handleMessage` es channel-aware (el resto del motor de flujos/LLM no sabe de canales) |
 | CHAT-PIPE-08 | Mensaje entrante **sin** `channel` explícito | Default `whatsapp` (retrocompatible): resuelve la conversación de WhatsApp y rutea a `whatsapp.outgoing` |
+| CHAT-PIPE-09 | Mensaje de un número **no registrado** en la empresa resuelta (no hablamos con desconocidos) | Se rechaza **antes de tocar la base**: no se crea `User`, no se abre `Conversation`, no se gasta LLM. Por canal real, silencio total; por RPC (`/simulate` con `tenantId`), un aviso para no colgar al llamador. El intento queda solo en el log de archivo (§1.28). Hay dos cortes con este mismo criterio: el de §1.24 (el teléfono no pertenece a **ninguna** empresa) y éste (no pertenece a **esta**) |
+| CHAT-PIPE-10 | Turno silencioso: el flujo avanzó de nodo sin nada que mostrar (ej. `notification` en modo link cayendo a un `end` sin texto) | **No** se guarda un `Message` vacío ni se publica un WhatsApp en blanco. Por RPC sí se publica una respuesta vacía, porque `simulate` espera con `broker.request()` y sin ese publish la llamada quedaba colgada hasta el timeout de 5 min. Ojo con la distinción: "el flujo corrió y no tuvo nada que decir" (texto vacío) **no** es lo mismo que "no hay flujo activo" (`null`), que es lo que deriva al orquestador |
+| CHAT-PIPE-11 | La resolución de empresa **lanza** (ej. un choque transitorio al registrar el pendiente del selector) | Se le avisa a la persona que reintente y se corta, en vez de descartar el mensaje en silencio; el aviso sale por la cola que corresponda (RPC o canal real). Es la red de seguridad de §1.24: cualquier falla del ruteo se convierte en una respuesta, no en un mensaje perdido |
 
 ## 2.2 Arranque de flujo por tenant y rol
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
 | CHAT-START-01 | Usuario **conocido** cuyo rol tiene flujo de inicio | Arranca ese flujo |
-| CHAT-START-02 | Usuario **desconocido** (sin membresía) | No hay rol → cae al flujo `isDefault` global |
+| CHAT-START-02 | Usuario **desconocido** (sin membresía en esa empresa) | El mensaje **se rechaza antes** de llegar a ningún flujo (CHAT-PIPE-09): no hay "flujo del desconocido". La caída al `isDefault` global sigue existiendo para el caso legítimo de un usuario **conocido** cuyo rol no tiene flujo de inicio propio (CHAT-START-03) |
 | CHAT-START-03 | Rol conocido sin flujo de inicio propio | Cae al default global |
 | CHAT-START-04 | No hay flujo de inicio ni default activo | `executeFlow` devuelve `null` → responde el orquestador LLM |
-| CHAT-START-05 | Mismo teléfono, conocido en el tenant A y desconocido en el B | En A arranca su flujo; en B va por la rama de desconocido |
+| CHAT-START-05 | Mismo teléfono, conocido en el tenant A y desconocido en el B | En A arranca su flujo; en B el mensaje se rechaza (CHAT-PIPE-09). Por canal real ni siquiera se llega a B, porque el ruteo lo manda a la única empresa donde tiene membresía (§1.24); el escenario se ejercita con `/simulate` apuntando a B |
+| CHAT-START-06 | Nodo `start` con `data.text` cargado, usando `{{variable}}` de la charla | El saludo sale de ahí, **interpolado** con las variables que el propio nodo acaba de sembrar (`{{userFirstName}}`, `{{userName}}`, `{{userRole}}`…). Sin `data.text` se mantiene el texto de siempre, así ningún flujo existente cambia de comportamiento al actualizar. El mismo texto sirve para las dos ramas a propósito: desde "no hablamos con desconocidos" la rama de desconocido no se ejecuta más (CHAT-START-02) y el campo, que antes era **solo** el saludo del desconocido, quedaba sin ningún efecto visible |
+| CHAT-START-07 | Nodo `start` con el tilde **"No enviar saludo"** (`noGreeting`), y con `data.text` **vacío** | Con `noGreeting`, el nodo no manda **nada**: el flujo sigue de largo por su arista y el primer texto que ve la persona es el del nodo siguiente. Un `data.text` vacío **no** alcanza para eso, a propósito: ningún flujo tenía ese campo cargado cuando se volvió configurable, así que tomar "vacío" como "sin saludo" los habría dejado a todos mudos de golpe |
+| CHAT-START-08 | Flujo cuyo rol y calendario resuelven a **feriado** o **guardia**, con la variante configurada | Arranca la **variante**, no el Principal (§1.26 BE-VAR-09). Sin variante para ese estado, o con la variante inactiva, arranca el Principal. La decisión se toma una sola vez, al iniciar la charla |
 
 ## 2.3 Nodos del motor — uno por uno
 
@@ -845,10 +980,13 @@ config del nodo en el editor.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
-| CHAT-N-START-01 | Entrada de un usuario conocido | Saluda "¡Hola {nombre}! Bienvenido de nuevo."; siembra `userName/userEmail/userRole…` en el estado; enruta por el handle `known` |
-| CHAT-N-START-02 | Entrada de un usuario desconocido | Usa `data.text` o saludo genérico; enruta por el handle `unknown` |
+| CHAT-N-START-01 | Entrada de un usuario conocido, con el nodo **sin configurar** | Saluda "¡Hola {nombre}! Bienvenido de nuevo."; siembra `userName/userEmail/userRole/userRoleId/userId/userPhone…` en el estado; enruta por el handle `known`. La identidad viene resuelta desde `handleMessage`, **no** se vuelve a consultar acá: repetir la consulta era el bug original (para entonces el placeholder ya existía y ningún número se detectaba como desconocido) |
+| CHAT-N-START-02 | Rama `unknown` del nodo | Sigue existiendo como capacidad del motor, pero es **inalcanzable por canal**: un número sin membresía se rechaza antes (CHAT-PIPE-09). Verificar que el handle y su cableado no se rompieron, sabiendo que hoy ningún mensaje real la recorre |
 | CHAT-N-START-03 | Conocido sin `firstName` cargado | Saluda sin romper (dejar registrado el saludo con espacio de más como cosmético) |
 | CHAT-N-START-04 | `start` sin aristas `known`/`unknown` ni `*TargetNodeId` | Cae a la primera arista saliente |
+
+El saludo configurable (`data.text` interpolado) y el tilde "No enviar saludo" se cubren en
+**CHAT-START-06/07** (§2.2), donde viven sus pruebas.
 
 ### `message`
 
@@ -908,7 +1046,29 @@ config del nodo en el editor.
 | CHAT-N-INP-04 | Respuesta que parece cancelación, confirmada por el LLM | Cancela la gestión (`cancelFlow`) |
 | CHAT-N-INP-05 | Respuesta que parece cancelación pero el LLM dice continuar | Guarda el texto y avanza |
 
+### `notification`
+
+**Precondición:** texto más **un único** botón. Dos modos: `confirm` (default — al tocarlo, el
+flujo sigue por la única arista de salida) y `link` (el botón abre una URL). No ramifica: acá no
+hay nada que elegir, solo confirmar o desviarse. Cualquier otro mensaje lo toma el LLM, mismo
+mecanismo de fallback que `menu` pero sin opciones.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| CHAT-N-NOT-01 | Primera llegada en modo `confirm` | Muestra el texto con el botón (`data.buttonLabel`, "Continuar" por defecto) y espera. Sin interactivo disponible en el canal, cae a `texto\n\n[Etiqueta]` |
+| CHAT-N-NOT-02 | La persona toca el botón (o responde `1`) | Avanza por la única arista de salida, sin ramificar |
+| CHAT-N-NOT-03 | La persona responde otra cosa (una pregunta, por ejemplo) | Entra en **fallback LLM** (`__llmFallback`) y lo sigue atendiendo el modelo hasta que toque el botón —o mande una imagen, si corresponde—, en vez de insistir con el botón |
+| CHAT-N-NOT-04 | Tilde **"Espera una foto"** (`expectsPhoto`) prendido y apagado, con la persona mandando una imagen | Prendido: la imagen **avanza igual que el botón** (no tiene sentido derivar al modelo a alguien que ya hizo lo que el nodo le pidió, ej. "Agregue sus fotos"); también saca del fallback si ya estaba en él. Apagado: la imagen cae al LLM como cualquier otro mensaje que no matchea. Los adjuntos ya los dejó `handleMessage` en `pendingAttachments` antes de llegar acá |
+| CHAT-N-NOT-05 | Modo `link` con `buttonUrl` cargada | Manda el botón de tipo CTA con la URL y **frena** con `waitForInput`, aunque WhatsApp no avise cuándo se toca un botón de link. Sin ese freno, el encadenamiento seguía al próximo nodo en el mismo turno y ese nodo **pisaba** el interactivo (solo se manda el último de la cadena): el botón nunca llegaba a salir. El próximo mensaje, sea cual sea, avanza |
+| CHAT-N-NOT-06 | Modo `link` **sin** `buttonUrl` | Se degrada a mensaje de texto plano en vez de mandar un botón roto, y sigue de largo |
+| CHAT-N-NOT-07 | Modo `link` con una `buttonUrl` que trae `{{variable}}` | ⚠️ La URL **no se interpola** (a diferencia del nodo `webhook`, que sí): las llaves llegan crudas. Peor por Twilio, donde la URL viaja como variable de Content Template y el saneo de `{{ }}` (BE-TWA-19) alcanza al título del botón pero **no** a la URL, así que el envío puede rebotar con `21656`. **Debería** interpolarse como el resto de los campos de nodo: `❌` (robustez, sin número de hallazgo) |
+
 ### `condition`
+
+**Precondición:** el formato **nuevo** es una única comparación contra una variable del estado
+(incluidas las que siempre siembra `start`, como `userRole`), con **dos salidas fijas** por
+`sourceHandle`: `true` / `false`. La lista vieja de `conditions` sigue funcionando para los flujos
+que no tengan `compareVariable` cargado — es lo que cubren CHAT-N-CND-01..09.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
@@ -921,6 +1081,10 @@ config del nodo en el editor.
 | CHAT-N-CND-07 | Condición `keyword` con valor vacío | `includes("")` siempre da true (dejar documentado el borde) |
 | CHAT-N-CND-08 | Condición `keyword` o `variable` con el campo `value` **ausente** (no cargado en el editor) | **Debe** ignorar esa condición y seguir (cae a default o a la primera arista), sin romper. ⚠️ Hoy `cond.value.toLowerCase()` corre sobre `undefined` y lanza una excepción **no capturada** que corta la charla — mismo patrón que la regex inválida (SEC-09) y el subflujo inexistente (SEC-15): `❌` hasta blindar la evaluación de condiciones |
 | CHAT-N-CND-09 | Condición con un `type` **desconocido** (ni `keyword`/`regex`/`variable`) | Se ignora (no matchea); el flujo cae a `defaultTargetNodeId` o a la primera arista. Borde de configuración inválida, no rompe |
+| CHAT-N-CND-10 | Formato **nuevo**: `compareVariable` con cada uno de los cinco operadores (`equals`, `not_equals`, `contains`, `exists`, `not_exists`) | Sale por el handle `true` o `false` según el resultado. `contains` compara sin distinguir mayúsculas; `exists`/`not_exists` miran presencia real del valor (no `undefined`, no `null`, no cadena vacía) e ignoran `compareValue`. Tener `compareVariable` cargado es lo que activa este formato: sin él, se evalúa la lista vieja |
+| CHAT-N-CND-11 | Nodo con **solo la rama afirmativa** cableada (la forma más común: "si es X, algo especial; si no, seguí de largo") y un resultado **falso** | El flujo **no** se va por la arista del `true`: sin arista para el handle declarado, nunca se cae a la de **otro** handle. Si tampoco hay una arista sin handle, no hay próximo nodo y el flujo se cierra ahí. Era un bug silencioso de alto impacto: el nodo hacía exactamente lo contrario de lo que declaraba |
+| CHAT-N-CND-12 | Nodo con una arista **sin `sourceHandle`** | Esa arista sirve de salida por defecto para cualquiera de las dos ramas: es inequívoca, no pertenece a ninguna, y quien la dibujó quiso "seguir por acá pase lo que pase" |
+| CHAT-N-CND-13 | `compareVariable` que nombra una variable **inexistente** en el estado, con `equals` y `compareValue` vacío | Da **true**: el valor ausente se normaliza a cadena vacía y coincide. Borde a documentar — "la variable no existe" y "la variable está vacía" son indistinguibles con `equals`; para separarlas hay que usar `exists`/`not_exists`. El nombre admite llaves (`{{sede}}` y `sede` son lo mismo) |
 
 ### `ticket_create` / `ticket_query`
 
@@ -930,14 +1094,20 @@ config del nodo en el editor.
 | CHAT-N-TKC-02 | `ticket_create` sin subject explícito | Usa los primeros 100 caracteres del mensaje |
 | CHAT-N-TKC-03 | `ticket_create` tomando `priority` y `description` del nodo o del estado | `priority` = `data.priority` (o `medium` por defecto); `description` = `data.description` → `flowState.description` → mensaje, en ese orden |
 | CHAT-N-TKC-04 | La creación del ticket falla (BD caída) dentro del nodo | `prisma.ticket.create` no está protegido: la excepción se propaga y hoy corta la charla. **Límite de robustez documentado, no `❌`** — y la diferencia con CHAT-N-LLM-04 (que sí es `❌`) es deliberada: aquél es `❌` porque sus nodos **hermanos** `menu`/`input` **sí** blindan la llamada al LLM y `llm_query` quedó inconsistente (defecto puntual con fix claro); acá, en cambio, **ningún** nodo blinda su I/O de BD — es un límite arquitectónico **uniforme** (familia SEC-15), no una inconsistencia entre hermanos. Si se blinda, hacerlo para todos los nodos con I/O de BD a la vez |
-| CHAT-N-TKQ-01 | `ticket_query` con `lastTicketId` del propio tenant | Devuelve asunto y estado del ticket |
-| CHAT-N-TKQ-02 | `ticket_query` sin ticket disponible | "No encontré el ticket solicitado." |
+| CHAT-N-TKQ-01 | `ticket_query`, primera llegada: **lista** los tickets abiertos | Consulta InvGate **en vivo** (`incidents.by.customer`) y arma una lista interactiva con los abiertos del cliente, más recientes primero, tope de 10 filas por el límite de WhatsApp (con aviso "te muestro los 10 más recientes" si hay más). No usa la tabla local `Ticket`: solo tiene los que creó el bot y su estado cacheado puede estar viejo (no hay webhook de InvGate). Cada fila muestra la referencia y el título, con el estado como descripción |
+| CHAT-N-TKQ-02 | `ticket_query` sin ningún ticket abierto | "No tenés tickets abiertos en este momento." y **sigue de largo**: no se queda esperando una opción que no existe |
 | CHAT-N-TKQ-03 | `ticket_query` con una variable de ticket que apunta a un ticket de **otro tenant** | ✅ **No lo devuelve**: `ticket.findFirst` filtra por `tenantId` (match exacto por `id` **o** `invgateId`, sin coincidencia parcial) → "No encontré el ticket solicitado." Cierra **SEC-08** |
 | CHAT-N-TKC-05 | `ticket_create` con `category`/`priority`/`ticketType` elegidos **por nombre** en el editor | Crea el `Ticket` local y lo sincroniza a InvGate **best-effort**; los nombres se resuelven contra el catálogo real (BE-IG-05). Si InvGate falla, el ticket local queda igual y la charla sigue (BE-IG-08) |
 | CHAT-N-TKC-06 | `ticket_create` cuando el usuario final **no** matchea un `customer_id` de InvGate | El ticket **local** se crea igual; la sincronización a InvGate se saltea con `warn` (no corta la charla) |
 | CHAT-N-TKQ-04 | `ticket_query` de un ticket **sincronizado** con InvGate | `refreshInvgateStatus` trae el estado real y lo traduce a nombre legible; si InvGate no responde, cae al estado local (best-effort) |
 | CHAT-N-TKC-07 | Usuario manda una o varias imágenes y después dispara `ticket_create` | Los adjuntos se acumulan en `flowState.pendingAttachments` al llegar (un mensaje solo-imagen guarda el placeholder `[N imagen(es) adjunta(s)]`) y se consumen al crear el ticket (se leen y borran del disco); viajan a InvGate. Sin ticket, el cron de retención los limpia a los 10 min |
 | CHAT-N-TKQ-05 | `lastTicketId` y el identificador que consulta `ticket_query` | Al sincronizar, `lastTicketId` pasa a ser el **número real de InvGate** (cae al cuid local si InvGate falla); `ticket_query` acepta cualquiera de los dos (`OR:[{id},{invgateId}]`, scopeado por tenant) y muestra `#${invgateId ?? id}` |
+| CHAT-N-TKQ-06 | Elegir un ticket de la lista: **detalle** | Trae el incidente en vivo (con comentarios) y arma el texto con referencia y título, estado, prioridad, fecha de creación, agente asignado ("sin asignar" si no tiene) y el **último comentario**, más un botón "Volver a la lista". Muestra el último comentario y no la descripción original a propósito: la descripción la escribió la propia persona, lo útil es la última novedad |
+| CHAT-N-TKQ-07 | El ticket tiene comentarios **internos** (no visibles para el cliente) mezclados con los visibles | Solo se muestra el último **visible para el cliente**: un comentario interno es una nota privada del equipo y nunca debe llegarle a quien consulta. Sin ningún comentario visible → "Sin comentarios aún.". Ante una forma inesperada de los comentarios devuelve "sin comentarios" en vez de romper el detalle (la forma está relevada contra documentación, no contra tráfico real) |
+| CHAT-N-TKQ-08 | Tocar "Volver a la lista", y volver a entrar al nodo **más tarde** | "Volver" reusa la **misma** lista ya armada (cacheada en el estado), no reconsulta InvGate: por Twilio la lista viaja como Content Template cacheado por la forma exacta —incluidos los ids de cada fila—, así que reconstruirla, aunque diera igual, podría armar un hash distinto y forzar un template nuevo (lento, y justo el que a veces no llega a renderizar). Al **salir** del nodo el caché se descarta, así una visita posterior sí trae los tickets al día. Cualquier respuesta que no sea "Volver" sigue de largo por la arista, como `input` |
+| CHAT-N-TKQ-09 | Tipear a mano el id de un incidente que **no le pertenece** a quien pregunta | Se trata como "no encontrado": el detalle compara el cliente del incidente contra el de quien consulta antes de mostrar nada. Vuelve a la lista con "No reconocí esa opción. ". Sin ese chequeo, cualquiera podría ver el ticket de otra persona adivinando un id bajo — el `body` es texto libre, no solo el id de una fila que se le mostró |
+| CHAT-N-TKQ-10 | InvGate **sin configurar**, o el usuario final sin `customer_id` que matchee | Mensaje claro ("No pude vincular tu usuario con InvGate para buscar tus tickets. Contactá a un administrador."), limpia el estado del nodo y sigue de largo; no se queda esperando ni rompe la charla. Si InvGate falla al listar, se degrada a "sin tickets abiertos" con un `warn` |
+| CHAT-N-TKQ-11 | El último comentario viene con HTML de InvGate y entidades **numéricas** (`&#xA0;`, `&#160;`) | Se convierte a texto plano en **una sola pasada**: `<br>`/`</p>` a saltos de línea, etiquetas fuera, y las entidades —con nombre y numéricas, decimales y hexadecimales— a su carácter. Los espacios duros pasan a espacio común. Un `&amp;nbsp;` queda como el texto literal "&nbsp;", **no** como un espacio: encadenar un reemplazo por entidad lo decodificaba de más. Una entidad desconocida se deja tal cual, que es más honesto que comerse el contenido |
 
 ### `transfer_agent`
 
@@ -964,7 +1134,7 @@ conector SMS activo (`SMS_PROVIDER`, ver §1.21).
 | CHAT-N-SMS-01 | Nodo `sms` con `message` y `recipients` válidos | Interpola el `message` y publica un mensaje en `sms.outgoing` por cada `recipient` que tenga `user.phone` cargado; a los que no tienen teléfono los **saltea**. Avanza a la próxima arista |
 | CHAT-N-SMS-02 | Nodo `sms` sin `recipients` o sin `message` | No manda nada; avanza igual (borde de configuración incompleta) |
 | CHAT-N-SMS-03 | Nodo `sms` con `SMS_PROVIDER` sin configurar (nadie consume `sms.outgoing`) | El nodo publica igual y avanza; el SMS **se pierde en silencio** por falta de consumidor. Documentar el borde |
-| CHAT-N-SMS-04 | Nodo `sms` con un `recipientId` que apunta a un usuario de **otra** empresa | **No debe** mandarle SMS. ⚠️ Hoy `prisma.user.findMany({ where:{ id:{ in: recipientIds } } })` **no** scopea por `tenantId`: mandaría un SMS al teléfono de un usuario de otra empresa. El editor sólo ofrece usuarios del tenant, pero el id llega por `data` del flujo sin re-validar (SEC-18): `❌` hasta filtrar por empresa |
+| CHAT-N-SMS-04 | Nodo `sms` con un `recipientId` que apunta a un usuario de **otra** empresa | ✅ **No le manda nada**: la búsqueda de destinatarios filtra por membresía en la empresa de la conversación (y excluye empresas dadas de baja), mismo criterio que el reparto de agentes de `transfer_agent`. Importa porque `data.recipients` es config del nodo y un flujo compartido entre empresas puede traer gente de todas ellas: sin el filtro, la charla de un cliente de una empresa terminaba mandando un SMS con su nombre y su nota a alguien de otra. Cierra **SEC-18** |
 
 ### `llm_query`
 
@@ -977,9 +1147,10 @@ conector SMS activo (`SMS_PROVIDER`, ver §1.21).
 | CHAT-N-LLM-05 | `llm_query` de un flujo con una **Skill** vinculada | El `promptText` de la Skill se concatena al system prompt base (`buildBasePrompt`). ⚠️ En modo `replace` (**default**) un `systemPrompt` propio del nodo **reemplaza el base entero — y con él se pierde la Skill** para ese nodo; puede sorprender a quien configuró la Skill esperando que aplique en todos lados |
 | CHAT-N-LLM-06 | `llm_query` con `data.systemPromptMode:'append'` y un `systemPrompt` propio | El prompt del nodo se **agrega a continuación** del base (`base + nodo`); en `replace` (default) lo reemplaza. Un `systemPromptMode` inválido cae a `replace` (el DTO valida sólo `@IsString`, sin `@IsIn(['replace','append'])`) |
 | CHAT-N-LLM-07 | `llm_query` de un flujo con una `ContextSource` vinculada | Consulta la fuente **siempre** (ver CHAT-LLMF-07, comportamiento nuevo): inyecta la respuesta como mensaje `system` autoritativo antes de responder. Antes el nodo ignoraba por completo la fuente |
-| CHAT-N-LLM-08 | `llm_query` con `extractVariables` y el dato **ya dicho** en la charla | Un solo llamado al LLM (temperature 0) extrae el valor, lo valida contra `allowedValues` (case-insensitive), lo guarda en el estado y **no** pregunta; ramifica por `foundTargetNodeId` |
+| CHAT-N-LLM-08 | `llm_query` con `extractVariables` y el dato **ya dicho** en la charla | Un solo llamado al LLM (temperature 0) extrae el valor, lo valida contra `allowedValues` sin distinguir mayúsculas, guarda el valor **canónico** del catálogo (no el texto crudo del modelo) y **no** pregunta |
 | CHAT-N-LLM-09 | `llm_query` en modo extracción con una variable **ausente** | Se detiene y pregunta (`waitForInput`, reusa `__awaiting`), lleva la cuenta en `__llmQueryAttempts`; con la respuesta resuelve y avanza |
-| CHAT-N-LLM-10 | El usuario se niega (`REFUSED`) o agota `maxAttempts` (default 2) | La variable queda en `'no definido'` y ramifica por `missingTargetNodeId`; **no** inventa un valor ni entra en loop infinito de preguntas |
+| CHAT-N-LLM-10 | El usuario se niega (`REFUSED`) o agota `maxAttempts` (default 2) | La variable queda en `'no definido'` y el nodo **avanza igual**; **no** inventa un valor ni entra en loop infinito de preguntas. `REFUSED` corta de una, sin esperar a agotar los intentos |
+| CHAT-N-LLM-13 | Salida del nodo en modo extracción, con `foundTargetNodeId`/`missingTargetNodeId` cargados en el flujo | **Una sola salida**, siempre por la arista dibujada en el canvas: tanto "todas resueltas" como "alguna quedó en no definido" siguen el mismo camino, y quien necesite ramificar pone un nodo `condition` después. Los dos campos de destino se **ignoran** a propósito —eran texto libre en el editor y un id con un error de tipeo mandaba el flujo a un nodo inexistente, que el motor reseteaba en silencio— y sobreviven en el DTO solo para que los flujos viejos que los tengan guardados pasen la validación al re-guardarse. Un nodo de extracción **sin** arista de salida deja un `WARN` explícito |
 | CHAT-N-LLM-11 | Respuesta fuera de `allowedValues` (un valor no listado) | No matchea → `NONE` → vuelve a preguntar; nunca guarda un valor arbitrario |
 | CHAT-N-LLM-12 | `llm_query` conversacional con `data.temperature` seteado vs. ausente | Con valor, se pasa al `chat`; ausente, respeta la cascada de `/settings` (el spread condicional evita pisar el default con `undefined`). La extracción/clasificación corre siempre a temperature 0 |
 
@@ -992,7 +1163,10 @@ conector SMS activo (`SMS_PROVIDER`, ver §1.21).
 | CHAT-N-VAR-01 | `variable` con `action:set` y `name` | Guarda `data.value` (o el mensaje) en el estado |
 | CHAT-N-VAR-02 | `variable` con `action` distinto de `set` | No hace nada, avanza |
 | CHAT-N-VAR-03 | `variable` con `action:set` pero **sin** `name` | No guarda nada (la condición exige `name`); avanza igual. Borde de configuración incompleta |
-| CHAT-N-WHK-01 | Nodo `webhook` | Hoy responde "Acción webhook ejecutada (stub)." (🚧 sin HTTP real) |
+| CHAT-N-WHK-01 | Nodo `webhook` con URL configurada | Hace la llamada **real** y sigue de largo sin decir nada: es "dispará y olvidate", no interrumpe la conversación con la persona. La URL se interpola con las variables de la charla. Dejó de ser un simulacro ("Acción webhook ejecutada (stub)") |
+| CHAT-N-WHK-02 | Nodo `webhook` **sin** URL configurada | Deja un `warn` y avanza; no llama a nada ni rompe el flujo |
+| CHAT-N-WHK-03 | Método y cuerpo, y el servicio de destino caído | Con `POST`/`PATCH`/etc. manda el `body` interpolado con `Content-Type: application/json`; con `GET` no manda cuerpo. Tiene tiempo máximo de espera propio. Una respuesta no-2xx se loguea con el status y los primeros 200 caracteres; un error de red se loguea y **el flujo sigue igual**: un webhook caído (una alerta a un chat externo, por ejemplo) no debe trabar el bot |
+| CHAT-N-WHK-04 | `data.url` apuntando a la **red interna** (`http://127.0.0.1:…`, `http://169.254.169.254/…`, `http://10.x`) o con un esquema raro (`file:`) | **Debería** validarse el destino: lista blanca de esquemas, bloqueo de direcciones privadas y del servicio de metadatos de la nube. ⚠️ Hoy la llamada sale sin ninguna restricción, y como el `body` se interpola con las variables de la charla, un nodo mal intencionado —o un flujo importado— puede además **exfiltrar** lo que la persona contó. Alcanza con `flows:update` para configurarlo: `❌` (seguridad, sin número de hallazgo). Es exactamente el riesgo que CHAT-PH-03 anticipaba para cuando el nodo se implementara |
 | CHAT-N-SUB-01 | `subflow` con `flowId` válido | Cambia al sub-flujo entrando por su nodo de inicio (o `entryNodeId`) |
 | CHAT-N-SUB-02 | `subflow` sin `flowId` | "Error: sub-flujo no configurado." |
 | CHAT-N-SUB-03 | `subflow` con `flowId` inexistente | **Debe** dar un error controlado sin romper el flujo. ⚠️ Hoy `flowService.findById` lanza `NotFoundException` (el guard `if (!subFlow)` es código muerto) y la excepción se propaga sin captura hasta cortar la charla (`simulate` expira a los 300s → 504) (SEC-15): `❌` hasta blindarlo |
@@ -1071,15 +1245,20 @@ conector SMS activo (`SMS_PROVIDER`, ver §1.21).
 ## 2.11 Cierre automático por inactividad (`@Cron`)
 
 **Precondición:** un `@Cron` corre cada 10 minutos (`ScheduleModule`). Cierra toda conversación
-`active` sin ningún `Message` en la última hora (`INACTIVITY_TIMEOUT_MS = 1h`), reseteando
-flujo/nodo/estado. La conversación queda **retomable** dentro de `RESUME_WINDOW_MS = 12h`.
+`active` sin ningún `Message` en la última hora, reseteando flujo/nodo/estado. La conversación
+queda **retomable** por 12h. Los dos tiempos son **configurables** desde `/settings > Otros`
+(`CONVERSATION_INACTIVITY_MINUTES`, `CONVERSATION_RESUME_WINDOW_HOURS`, ver BE-SET-21): los valores
+de 1h y 12h son los defaults, no constantes fijas. Son ventanas **encadenadas y distintas**:
+primero la charla se cierra sola, después queda un rato retomable.
 
 | ID | Escenario | Resultado esperado |
 |----|-----------|--------------------|
 | CHAT-IDLE-01 | Conversación `active` sin mensajes en la última hora | El cron la cierra (`status:closed`, `closedAt`) y resetea `currentFlowId`/`currentNodeId`/`flowState` |
 | CHAT-IDLE-02 | Conversación `active` con un mensaje dentro de la última hora | No se cierra (el filtro es por `Message` reciente, no por `updatedAt` de la fila) |
-| CHAT-IDLE-03 | Mensaje nuevo tras el autocierre, **dentro** de las 12h | Reabre la **misma** conversación con el flujo reseteado (arranca de nuevo sin perder el historial de `Message`) |
+| CHAT-IDLE-03 | Mensaje nuevo tras el autocierre, **dentro** de las 12h | Reabre la **misma** conversación con el flujo reseteado (arranca de nuevo sin perder el historial de `Message`). `sessionStartedAt` se resetea, así el LLM no recibe como contexto lo dicho antes del cierre |
 | CHAT-IDLE-04 | Mensaje nuevo tras el autocierre, **pasadas** las 12h | Arranca una conversación nueva |
+| CHAT-IDLE-05 | Fijar `CONVERSATION_INACTIVITY_MINUTES` a un valor distinto de 60 | Manda sobre el default: el cron cierra según ese valor. Como el chequeo corre cada 10 minutos, el cierre real cae entre el valor configurado y 10 minutos más — verificar que el margen se documenta y no se lee como un error |
+| CHAT-IDLE-06 | Fijar `CONVERSATION_RESUME_WINDOW_HOURS` a un valor distinto de 12 | Manda sobre el default para decidir si el próximo mensaje retoma la charla cerrada o abre una nueva. Ojo con la desalineación deliberada: el pendiente del selector de empresa (§1.24) sigue con **12h fijas**, así que bajar esta ventana no acorta aquél |
 
 ## 2.12 Concurrencia y carga
 
@@ -1101,7 +1280,7 @@ ningún endpoint, así que la contención tampoco viene de afuera.
 |----|-----------|---------|
 | CHAT-PH-01 | Recepción + envío reales de punta a punta por WhatsApp | El código de entrada (webhook, §1.12) y de salida (`WhatsAppService`, §1.13) **está implementado**; sólo falta validar contra Meta real (credenciales/sandbox, `WHATSAPP_SANDBOX_RECIPIENT_OVERRIDES`) |
 | CHAT-PH-02 | Creación real de tickets en Invgate desde `ticket_create`/`transfer_agent` | Integración pendiente; hoy los tickets viven sólo en la tabla local |
-| CHAT-PH-03 | Nodo `webhook` llamando a un servicio externo | Stub; al implementarlo, cubrir con los casos de SSRF del apéndice |
+| CHAT-PH-03 | ~~Nodo `webhook` llamando a un servicio externo~~ | ✅ **Implementado** (CHAT-N-WHK-01/03). Lo que quedó pendiente es justo lo que este placeholder anticipaba: la validación del destino, que hoy no existe — ver CHAT-N-WHK-04 |
 | CHAT-PH-04 | Retorno automático de un `subflow` al flujo padre | Se guarda `previousFlowId` pero no hay retorno implementado |
 
 ---
@@ -1154,7 +1333,7 @@ guard de rutas (`AuthGuard`) y el sidebar dinámico. El JWT y el tenant activo v
 | FE-INF-13 | **Superadmin recorriendo el selector de empresas:** sistema → una empresa común → otra empresa común → "🌐 Todas las empresas" | ✅ El menú muestra **siempre las mismas 8 opciones**, incluidas "Tenants" y "Configuración": el sidebar arma el menú del superadmin sin filtrar por empresa (`isSuperAdmin ? menuDefinition : filtrado`), así que el selector cambia **qué datos se ven**, nunca **qué opciones existen**. Entrar a esas dos pantallas parado en una empresa común funciona (ver BE-MT-12) |
 | FE-INF-14 | Cualquier respuesta de una request autenticada trae `X-Access-Token` | `apiFetch` lee el header y **pisa** `localStorage.token`; la próxima request ya usa el token nuevo (sesión deslizante del lado cliente, ver BE-AUTH-26). No toca el estado de React. Con actividad continua la sesión ya no se cae a los 15 min |
 | FE-INF-15 | Un **401 con token presente** en cualquier request del panel | `apiFetch` llama a `clearSession()` (única fuente de qué keys de `localStorage` borra) y redirige a `/login` de inmediato — antes la UI mostraba datos viejos o fallaba en silencio hasta recargar a mano. Un 401 de login/OTP (sin `Authorization`) **no** cae acá |
-| FE-INF-16 | Parado en **Tenants** o **Configuración** (pantallas solo-sistema), cambiar el selector del sidebar a una empresa **no-sistema** | **Debe** sacar al usuario de esa URL —que ya no figura en el menú— y llevarlo al dashboard. ⚠️ Hoy el reload lo deja en la **misma URL huérfana**: la pantalla lo maneja con elegancia ("Esta operación solo puede realizarse desde el tenant de sistema", no crashea) pero **no redirige**, dejando una página con error fuera del menú. UX menor (el error ya está bien manejado): `❌` hasta agregar la redirección |
+| FE-INF-16 | Parado en **Tenants** o **Configuración** (pantallas solo-sistema), cambiar el selector del sidebar a una empresa **no-sistema** | ✅ **Redirige al dashboard** en vez de dejar una URL huérfana fuera del menú. El sidebar decide el destino antes de cambiar de empresa y navega ahí (navegar también recarga, así que la resolución por header sigue igual). La comparación normaliza la barra final, porque con `trailingSlash` la ruta puede llegar con una de más y el match exacto contra el menú fallaba |
 | FE-INF-17 | En modo consolidado, comparar el **selector de empresas del sidebar** con el filtro **"Empresa:" de la página** (ej. Usuarios) | El sidebar lista **todas** las empresas; el filtro de la página lista **sólo** las que tienen filas en ese listado, así que una empresa sin filas (ej. una recién creada, 0 usuarios) aparece en el sidebar pero **no** en el filtro. **No es un bug:** decisión de diseño aceptable (no tiene sentido filtrar hacia una empresa sin filas que mostrar); se documenta sólo porque genera una diferencia visible entre los dos selectores |
 | FE-INF-18 | Un **miembro común** del tenant de sistema (rol distinto de SuperAdmin) recorre el panel | **No** ve el menú completo ni la opción "🌐 Todas las empresas" global: el sidebar distingue `isSystemMember` de `isSuperAdmin` (`user.isSuperAdmin` lo calcula el backend en `/auth/me`), y `useAuth` ya no hereda el rol de sistema a un no-superadmin. Regresión de privilegio que separa "pertenecer al tenant de sistema" de "ser superusuario" |
 | FE-INF-19 | Build estático (`output:'export'` + `trailingSlash`) y navegación del panel | Las rutas se emiten como `carpeta/index.html`; los `router.push` llevan barra final y el editor de flujos viaja por query (`/dashboard/flows/edit/?id=…`, antes `/flows/[id]`, que el export no soporta sin `generateStaticParams`). Verificar que no queden links rotos ni redirects de más |
@@ -1204,11 +1383,13 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-USR-13 | Cerrar un modal con cambios sin guardar (Escape o click afuera) | Pide confirmación antes de descartar |
 | FE-USR-14 | Clic en una fila (fuera de los botones de acción) | Abre el modal de **detalle de solo lectura**, con botón "Editar" si el usuario tiene permiso |
 | FE-USR-15 | Abrir "Nuevo usuario" y cancelar (Escape o click afuera) **sin tocar nada** | **No debería** avisar de cambios sin guardar (no se editó nada). ⚠️ Hoy salta igual el confirm "Tenés cambios sin guardar. ¿Descartarlos?" porque el modal **pre-agrega la empresa activa** como membresía (`presetTenantId`) y eso ya cuenta como "cambio" en la comparación. Menor: `❌` hasta que el preset no dispare el aviso (complementa FE-USR-13, el confirm legítimo cuando sí hubo cambios) |
-| FE-USR-16 | Alta de usuarios con un rol que tiene `users:read` + `users:create` pero **sin** `roles:read` (rol `Alta sin roles`, ver Apéndice C) | **Debería** poder completar el alta, o al menos avisar con claridad. ⚠️ Hoy el desplegable **Rol** (obligatorio) se llena con `GET /roles` → **403** → queda vacío → "Crear" **deshabilitado**: el alta es imposible. Peor, dos mensajes engañosos: dice "Esta empresa no tiene roles" cuando **sí** los tiene (confunde "sin permiso" con "sin datos"), y muestra la empresa preseleccionada como **UUID crudo**. No es falla de seguridad (el backend enforce el 403), es una brecha de UX entre dos permisos acoplados: `❌` hasta distinguir el 403 de "sin roles" y resolver el nombre de la empresa |
+| FE-USR-16 | Alta de usuarios con un rol que tiene `users:read` + `users:create` pero **sin** `roles:read` (rol `Alta sin roles`, ver Apéndice C) | ✅ **El alta se completa**: `GET /roles` acepta `users:create` como permiso alternativo (BE-RBAC-25), así que el desplegable **Rol** se llena y "Crear" se habilita. Ese rol recibe id y nombre de cada rol, **no** su matriz de permisos (BE-RBAC-26): se destrabó el alta sin abrirle el diseño de permisos de la empresa |
 | FE-USR-17 | Botón "Importar desde Excel" → modal de 3 pasos (subir → mapear → resultado) | Parsea `.xlsx/.xls/.csv` en el navegador (primera hoja, primera fila = headers), mapea columnas a campos (requeridos Nombre/Apellido/Email), postea a `/users/bulk-import` con el `X-Tenant-Id` activo y muestra creados (con contraseña temporal, botón "Descargar CSV") y fallidos con fila+motivo |
 | FE-USR-18 | El botón "Importar desde Excel" en modo "Todas las empresas" | No aparece (solo con `canCreate` y parado en una empresa puntual); el modal tampoco monta en consolidado |
 | FE-USR-19 | Subir un archivo no soportado / vacío / sin filas, o con más de 10.000 filas | Mensaje de error en el modal, no avanza / no postea (corte cliente `MAX_ROWS=10000`, además del `@ArrayMaxSize` del backend) |
 | FE-USR-20 | Mapeo de columnas con headers vacíos o repetidos | Las columnas sin header se renombran "Columna N"; el mapeo es por índice (una columna a un solo campo); sin los 3 requeridos no deja importar |
+| FE-USR-21 | Filtros de la tabla: **nombre**, **apellido** y **rol** | Filtran en vivo sobre lo ya cargado, sin distinguir mayúsculas y combinables entre sí; el desplegable de rol se arma con los roles **presentes en el listado**, no con el catálogo entero. El botón de limpiar aparece solo si hay algún filtro puesto. En modo consolidado se suma el filtro por empresa que ya existía (FE-USR-11) |
+| FE-USR-22 | **Paginado** de a 20, y su interacción con los filtros | La tabla pagina de a 20 con su navegación; cambiar cualquier filtro **vuelve a la página 1**, y si un filtro deja la página actual fuera de rango se muestra la última válida en vez de una tabla vacía. Es paginado del lado del cliente: la API sigue trayendo el listado completo — anotarlo por si el volumen crece |
 
 ## 3.5 Roles y matriz de permisos (`/dashboard/roles`)
 
@@ -1236,8 +1417,8 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-TEN-03 | Crear/editar una empresa | Nombre y slug (único, validación local); `POST /tenants` o `PATCH /tenants/:id` |
 | FE-TEN-04 | Empresa de sistema | Slug bloqueado (no editable) y sin opción de baja (botón gris con motivo) |
 | FE-TEN-05 | Baja lógica y reactivación por fila | Confirmación inline (roja para baja, verde para restaurar); `DELETE` / `POST /tenants/:id/restore` |
-| FE-TEN-06 | Crear una empresa desde Tenants y mirar el **selector de empresas del sidebar** | La empresa nueva **debería** aparecer también en el selector del sidebar. ⚠️ Hoy aparece de inmediato en la **tabla** de la pantalla pero **no** en el selector, que cachea `/tenants/all` al montar y queda con la lista vieja hasta **refrescar** la página (crear en Tenants sólo refresca la tabla local; no hay estado compartido ni evento que avise al sidebar): `❌` hasta que el alta refresque el selector |
-| FE-TEN-07 | **Renombrar**, dar de **baja** o **restaurar** una empresa y mirar el selector del sidebar | Igual que FE-TEN-06: el cambio **debería** reflejarse en el selector. ⚠️ Hoy la tabla se actualiza pero el selector del sidebar sigue con el valor viejo hasta recargar (mismo cache stale de `/tenants/all`; extiende FE-TEN-06 —que era sólo "crear"— a los otros tres disparadores): `❌` |
+| FE-TEN-06 | Crear una empresa desde Tenants y mirar el **selector de empresas del sidebar** | ✅ La empresa nueva aparece **de inmediato** en el selector, sin recargar: la pantalla de Tenants emite un evento de ventana tras cada cambio y el sidebar vuelve a traer la lista. Antes el selector cacheaba la lista al montar y quedaba con la versión vieja |
+| FE-TEN-07 | **Renombrar**, dar de **baja** o **restaurar** una empresa y mirar el selector del sidebar | ✅ Igual que FE-TEN-06: los cuatro disparadores (alta, renombre, baja y restauración) refrescan el selector. El caso sigue valiendo por separado para verificar que el evento se emite en **todos** los caminos, no solo en el alta |
 
 ## 3.7 Áreas (`/dashboard/areas`)
 
@@ -1288,8 +1469,8 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-CS-08 | Botones de ABM según permisos | `context-sources:create/update/delete` |
 | FE-CS-09 | La pantalla se parte en dos pestañas: **Conexiones** / **Skills** | La pestaña Skills muestra el CRUD de skills; la de Conexiones es el listado de fuentes de siempre |
 | FE-CS-10 | Alta/edición de una **Skill** en la pestaña Skills | Formulario con `name` y `promptText` (texto libre) + toggle activa/inactiva; `POST`/`PATCH /skills`; los botones se gatean por `skills:create/update/delete` |
-| FE-CS-11 | Fuentes de verdad en modo consolidado (**Todas las empresas / Todas mis empresas**) | **Debería** consolidar como Usuarios/Áreas/Roles (columna Empresa, juntando las fuentes de todas las empresas) o, como mínimo, **esconder el alta** y pedir "elegí una empresa en el selector" (como hacen Áreas/Roles). ⚠️ Hoy **no consolida**: cae **en silencio** a una sola empresa (la de sistema para el superadmin; la primera membresía para el común), muestra "No hay fuentes de verdad configuradas en esta empresa" **aunque existan** en otras, y deja el formulario **"Crear" activo** — si se completa, guarda la fuente en esa empresa de respaldo **sin avisar en cuál**: `❌` hasta manejar el modo consolidado |
-| FE-CS-12 | La pestaña **Skills** de esta pantalla en el mismo modo consolidado | Mismo problema y mismo arreglo que FE-CS-11: hoy muestra vacío (empresa de sistema) y deja "Crear" activo. El hallazgo abarca **las dos pestañas** (Conexiones y Skills) de Fuentes de verdad: `❌` |
+| FE-CS-11 | Fuentes de verdad en modo consolidado (**Todas las empresas / Todas mis empresas**) | ✅ **Consolida** como Usuarios/Áreas/Roles: trae las fuentes de todas las empresas (`/context-sources/all` para el superusuario, `/mine` para el común) y suma la columna **Empresa**. Es **solo lectura**: el alta se esconde y un aviso pide elegir una empresa puntual en el selector. Se terminó el alta a ciegas en una empresa de respaldo sin avisar en cuál |
+| FE-CS-12 | La pestaña **Skills** de esta pantalla en el mismo modo consolidado | ✅ Mismo tratamiento que FE-CS-11 (`/skills/all` y `/skills/mine`): el arreglo abarca **las dos pestañas**. El caso queda separado para verificar que ninguna se dejó atrás |
 
 ## 3.10 Flujos IVR — listado y editor (`/dashboard/flows`, `/dashboard/flows/edit?id=…`)
 
@@ -1320,14 +1501,19 @@ puede listar todas las empresas.
 | FE-FLW-19 | Nodo **SMS** (verde) en la paleta | ⏭️ **Excluido** (gesto de canvas difícil de automatizar, aporta poco valor): hereda el drag nativo de la paleta (ver FE-FLW-05). Se arrastra al canvas; su panel tiene `message` + selector de **destinatarios** (usuarios del tenant, mismo criterio que `transfer_agent`, no números a mano) |
 | FE-FLW-20 | Nodo **Generar Ticket** (`ticket_create`) con catálogo InvGate | `category`/`priority`/`ticketType` como dropdowns poblados desde `GET /invgate/catalog/*`; si el catálogo no cargó, **caen a input de texto libre**; más el campo descripción. La tarjeta del nodo muestra categoría y tipo |
 | FE-FLW-21 | Nodo `llm_query`: toggle `systemPromptMode` | "reemplaza" / "agrega" respecto del prompt base del flujo (ver CHAT-N-LLM-06) |
-| FE-FLW-22 | Dentro del editor de un flujo (`/dashboard/flows/edit?id=…`), cambiar la empresa en el selector del sidebar | **Debería** sacar al usuario del editor y devolverlo al listado de flujos (el flujo abierto puede ser de otra empresa). ⚠️ Hoy el reload lo deja **en el mismo editor, con el flujo abierto y editable** aunque sea de otra empresa: el editor **no** recarga el flujo por la empresa nueva pero sus desplegables por-empresa **sí**, quedando un estado mezclado (flujo de una empresa, "Fuente de verdad" de **otra**) que permite **vincular la fuente de una empresa a un flujo de otra**. La barrera real la impone el backend (hoy también sin scope, ver SEC-03 / BE-FLW-14): `❌` hasta sacar del editor al cambiar de empresa |
+| FE-FLW-22 | Dentro del editor de un flujo (`/dashboard/flows/edit?id=…`), cambiar la empresa en el selector del sidebar | ✅ **Saca del editor y vuelve al listado** de flujos, en vez de dejar el flujo de una empresa abierto con los desplegables de otra. Y aunque alguien reconstruya ese estado mezclado a mano, el backend ya no lo acepta: el saneo de referencias cruzadas descarta lo que no pertenezca a una empresa válida (BE-FLW-25) y las rutas por id cortan por pertenencia (BE-FLW-14) |
 | FE-FLW-23 | Abrir un flujo (o "Nuevo Flujo") en "Todas las empresas" y revisar los dropdowns **Skill**, **Fuente de verdad**, **Sub-flujo** y los pickers de usuario de *Transferir Agente* | **Deberían** poblarse según la empresa **del flujo**, no la empresa **activa**. ⚠️ Hoy se pueblan con la empresa activa (o la traducida en consolidado): abrir un flujo de `tenant1` en "Todas las empresas" deja "Fuente de verdad" **vacío** aunque `tenant1` tenga fuente. Riesgo de integridad: una fuente/skill ya asignada se ve como "Sin fuente" y **puede borrarse al guardar**, y permite cruzar datos de una empresa a un flujo de otra. Complemento de FE-FLW-22 (aquél es la no-redirección; éste, el **contenido** cruzado de los dropdowns): `❌` |
-| FE-FLW-24 | Abrir cualquier flujo en el editor y mirar la red/consola | Los catálogos de InvGate **no deberían** dar 500. ⚠️ Hoy `GET /invgate/catalog/priorities` y `/invgate/catalog/types` responden **500** en cada apertura del editor (el de `categories` no falla). La UI **degrada bien** (el nodo Generar Ticket cae a texto libre por el `try/catch` de la carga del catálogo, ver FE-FLW-20), pero ensucia consola/logs. Causa (backend): InvGate sin configurar debería devolver lista vacía o un 4xx controlado, no un 500. Robustez: `❌` hasta que el catálogo no tire 500 |
+| FE-FLW-24 | Abrir cualquier flujo en el editor **con InvGate sin configurar**, y mirar la red/consola | ✅ Los tres catálogos (`priorities`, `types`, `categories`) responden **200 con lista vacía**, no 500: cada uno corta antes de armar la URL cuando falta la base o las credenciales. Antes, sin configurar, se terminaba construyendo una URL inválida y el error subía como 500 crudo en cada apertura del editor — la UI degradaba bien (el nodo Generar Ticket cae a texto libre, FE-FLW-20) pero ensuciaba consola y logs con un error que no era tal |
 | FE-FLW-25 | Entrar a `/dashboard/flows` con un usuario **sin** `flows:read` (ej. el rol `Sin permisos`, por URL directa) | **Debería** mostrar "Permiso denegado: flows:read", como las pantallas hermanas (Áreas, Roles, Usuarios y Fuentes de verdad ante su propio 403). ⚠️ Hoy `GET /flows` da **403** y la pantalla muestra "No hay flujos configurados." —el `catch` sólo hace `console.error` y deja la lista vacía, sin estado de error—, así que el usuario **no distingue** "empresa sin flujos" de "no tengo acceso". Flujos es la **única** de su clase que oculta el 403: `❌` hasta igualar el aviso de las hermanas (misma postura que FE-SEC-05) |
 | FE-FLW-26 | Botón "Duplicar" un flujo | `GET /flows/:id` + `POST /flows` con `name+" (copia)"`, nodos/aristas/`contextSourceId`/`skillId`; redirige al editor del nuevo (nace sin empresas asignadas). Gateado por `flows:create` |
 | FE-FLW-27 | Botón "Exportar" | Descarga un `.flow.json` (`name/description/nodes/edges/contextSourceId/skillId`); gateado por `flows:read` |
 | FE-FLW-28 | Botón "Importar" un `.flow.json` | Valida superficialmente (`name` presente, `nodes`/`edges` arrays) y hace `POST /flows`; un JSON sin esos campos → alert de formato inválido, no llama a la API. Gateado por `flows:create` |
 | FE-FLW-29 | Importar en la empresa B un `.flow.json` exportado de A (o editado) con ids embebidos (`contextSourceId`/`skillId`/`userId` de assignees/recipients, `flowId` de un `subflow`) | `POST /flows` sanea esos ids contra la empresa destino: `contextSourceId`/`skillId` ajenos quedan en `null`, los `userId` que no son miembros de una empresa válida se filtran, y el `flowId` de un `subflow` se borra sólo si es claramente ajeno (un subflujo global se respeta). El conjunto válido es la empresa activa más las que asigne el propio payload. **El SuperAdmin queda exceptuado a propósito**: administra el sistema entero y puede vincular recursos de cualquier empresa, así que el caso se ejecuta con un usuario común de la empresa destino — que es donde la protección actúa: `✅` |
+| FE-FLW-30 | Pestañas **Principal / Guardia / Feriado** del editor | El canvas carga el flujo de la pestaña activa y guarda contra **ese** flujo (Principal usa el id de la URL; las variantes, el suyo propio). Al abrir el editor se traen las variantes ya configuradas; cambiar de pestaña con una variante existente carga su grafo, no el del Principal |
+| FE-FLW-31 | Elegir una pestaña de variante que **todavía no existe** | Abre el modal de creación con los tres orígenes del grafo inicial: duplicar el Principal (opción por defecto), copiar otro flujo (con selector) o empezar en blanco. Al confirmar, `POST /flows/:id/variants` y el canvas pasa a la variante nueva (§1.26 BE-VAR-02) |
+| FE-FLW-32 | Botón **"Copiar flujo…"**, disponible solo en las pestañas de variante | Reemplaza el grafo del canvas por el de otro flujo, **sin** crear una variante nueva ni tocar nombre y descripción — sirve para resincronizar una variante existente contra otro flujo. Verificar que en la pestaña Principal no aparece |
+| FE-FLW-33 | Paneles de los nodos nuevos y rediseñados | **Notificación**: texto, etiqueta del botón, modo confirmar/link (con el campo URL solo en link) y el tilde "Espera una foto" solo en confirmar. **Condición**: variable, operador y valor, con el valor oculto para "existe"/"no existe", y la tarjeta del nodo mostrando la comparación con **dos salidas** rotuladas. **Webhook**: método, URL y cuerpo JSON (el cuerpo desaparece con `GET`). **Inicio**: saludo con `{{variable}}` y el tilde "No enviar saludo", que deshabilita el campo de texto |
+| FE-FLW-34 | Los flujos **variante** en el listado y en los desplegables del editor | No aparecen en `/dashboard/flows` ni en el selector de sub-flujo ni en el de "copiar flujo": se llega a ellos solo por las pestañas de su flujo base (§1.26 BE-VAR-08). Es lo que evita que alguien asigne empresas o marque como inicio una variante por error |
 
 ## 3.11 Responsive
 
@@ -1353,6 +1539,22 @@ esa postura ni exponga datos.
 | FE-SEC-05 | Un usuario común entra por URL directa a una pantalla `systemTenantOnly` (ej. `/settings`) | El backend rechaza sus llamadas (403) y la pantalla muestra el estado de sin acceso; el ítem tampoco está en el menú |
 | FE-SEC-06 | Pestaña Skills y selector de Skill del editor sin el permiso `skills` | Gateados por `hasPermission('skills', …)`: sin permiso no se muestran los botones/selector, y forzar la request equivalente igual la rechaza el backend (403). Misma postura defensa-en-profundidad que FE-SEC-01 |
 
+## 3.13 Calendario de feriados/guardias (`/dashboard/schedule-calendar`)
+
+**Precondición:** pantalla de calendario por empresa, con vistas de mes, semana y día. El ítem del
+menú aparece con `schedule-calendar:read` (§1.2). Las entradas son las de §1.25 y alimentan la
+elección de flujo alternativo (§1.26).
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| FE-CAL-01 | Entrar a la pantalla y recorrer las vistas mes / semana / día | Muestra las entradas de la empresa activa en la grilla, navegables por período. Los feriados (día completo) van en la franja de arriba; las guardias con horario, en la grilla horaria |
+| FE-CAL-02 | Una guardia que **cruza la medianoche** (ej. 20:00 a 08:00) en la vista de semana o día | Se dibuja como dos tramos, uno hasta medianoche y otro desde, cada uno en su columna y en su horario real. La grilla horaria no puede pintar una barra que cruce columnas, así que sin partirla el evento se iba entero al renglón de "todo el día". Los feriados **no** se parten: una entrada de varios días se ve como una sola barra continua arriba |
+| FE-CAL-03 | Alta desde el modal: tipo, título, rol, rango y "todo el día" | Crea la entrada y aparece en la grilla. El selector de rol ofrece los roles de la empresa e incluye la opción "todos los roles"; el tipo sale del catálogo (`GET /schedule-calendar/types`), no de una lista escrita a mano en el frontend |
+| FE-CAL-04 | Repetición en el modal: frecuencia y "hasta" (indefinido o con fecha) | Con frecuencia elegida se habilita el "hasta", con sus dos modos; sin frecuencia el "hasta" no aplica. Las ocurrencias repetidas se dibujan en la grilla del período que se esté mirando, con el mismo criterio que usa el backend para resolverlas (§1.25 BE-CAL-08) |
+| FE-CAL-05 | Editar y borrar una entrada existente | Abre el modal con los valores cargados, guarda con `PATCH` y borra con confirmación; la grilla se actualiza |
+| FE-CAL-06 | Importar los feriados de un año y **deshacer** ese import | El botón de importar pide el año y muestra cuántos se crearon; el de deshacer borra el import de ese año **sin tocar** las entradas cargadas a mano (§1.25 BE-CAL-11). Los errores de la API externa se muestran en pantalla, no en la consola |
+| FE-CAL-07 | La pantalla con un rol **sin** los permisos de calendario | Sin `schedule-calendar:read` el ítem no está en el menú y entrar por URL directa muestra el estado de sin acceso. Sin `create`/`update`/`delete`, los botones correspondientes no se ofrecen — y forzar la request igual la rechaza el backend (misma postura que FE-SEC-01) |
+
 ---
 
 # 🔒 Apéndice A — Auditoría de seguridad
@@ -1362,11 +1564,24 @@ contenido e impacto (sin referencias de archivo/línea, según lo acordado). Cad
 ID para referenciarlo desde los casos de arriba (ver "Trazabilidad rápida" al final).
 
 **Resumen:** la base de autorización multitenant/RBAC y el cifrado de secretos están bien
-resueltos. Los focos a atender son un **bypass de 2FA por fuerza bruta**, un **endpoint core
-sin autenticación**, **fugas de datos entre tenants** en flujos y consulta de tickets, y la
-**ausencia de rate limiting**. El PR de canales, InvGate y Skills suma dos focos: **los webhooks
-de Twilio y Gupshup no validan firma ni autenticidad** (SEC-16, misma clase que el de Meta) y **la
-Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
+resueltos. El foco principal sigue siendo un **bypass de 2FA por fuerza bruta** y la **ausencia de
+rate limiting**, que es lo que lo vuelve práctico.
+
+**Qué se cerró en esta actualización:** el aislamiento de flujos entre empresas (**SEC-03**, salvo
+la ruta de "marcar por defecto" — BE-FLW-22), la firma del webhook de **Twilio** (parte de
+**SEC-16**), el nodo `sms` cruzando empresas (**SEC-18**), las credenciales de Gupshup SMS
+viajando en la URL (**SEC-21**, por reemplazo de la API) y la autenticación de
+`/conversations/simulate` (**SEC-02**, mitigado: exige login y queda cerrado en producción, aunque
+el tenant sigue viniendo del cuerpo, ahora a propósito). Los webhooks de **SMS** dejaron de existir,
+así que esa parte de SEC-16 se cierra por eliminación de la superficie.
+
+**Qué queda abierto de esa familia:** los webhooks de **Meta** (SEC-04) y **Gupshup** (SEC-16) no
+verifican nada — y el de Gupshup, además, dispara una descarga contra una URL que controla quien
+manda el POST (BE-GUP-10). Se suman dos focos nuevos del rango: el **nodo `webhook`** llama a
+cualquier destino sin restricción, con el cuerpo interpolado con datos de la charla
+(CHAT-N-WHK-04), y el **selector de empresa** revela a qué empresas pertenece un teléfono ante un
+remitente no verificado (BE-ITR-13). También sigue **la Skill de una empresa filtrándose a otra en
+un flujo compartido** (SEC-17).
 
 ## 🔴 Críticos
 
@@ -1385,39 +1600,47 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
 
 ## 🟠 Altos
 
-### SEC-02 — `/conversations/simulate` sin autenticación y con el tenant en el body
-- **Qué pasa:** el endpoint que inyecta mensajes al orquestador no tiene ningún guard y toma
-  el tenant del cuerpo del request (no del header validado). El cuerpo tampoco es un DTO, así
-  que no pasa por la validación global.
-- **Cómo se explota:** cualquiera con acceso de red al API inyecta mensajes como si fueran de
-  cualquier teléfono en cualquier empresa, disparando todo el orquestador: crea usuarios y
-  conversaciones, invoca al LLM (costo monetario → DoS económico) y puede llegar a crear
+### SEC-02 — `/conversations/simulate` sin autenticación y con el tenant en el body — 🟡 **mitigado**
+- **Qué pasaba:** el endpoint que inyecta mensajes al orquestador no tenía ningún guard y
+  cualquiera con acceso de red podía inyectar mensajes como si fueran de cualquier teléfono en
+  cualquier empresa: crear conversaciones, invocar al LLM (costo monetario) y llegar a crear
   tickets o transferencias.
-- **Impacto:** abuso del bot, suplantación de usuarios, gasto de LLM no autorizado.
-- **Sugerencia:** exigir autenticación (o una key de servicio), tomar el tenant del header
-  validado y tipar el body como DTO.
+- **Qué cambió:** ahora exige **login** (`JwtAuthGuard`) y, además, el endpoint entero queda
+  **cerrado por defecto en producción** (`CONVERSATIONS_SIMULATE_ENABLED`, BE-SET-22): responde
+  404, no 403 — no debería ni figurar como existente. Con el ruteo por membresía, sin el guard un
+  anónimo podía además enumerar a qué empresas pertenece un teléfono (BE-ITR-13).
+- **Qué queda:** el tenant sigue viniendo del cuerpo y el cuerpo sigue sin ser un DTO. Es
+  **deliberado**: `tenantId` es opcional a propósito, porque probar el ruteo por membresía exige
+  no fijar empresa. Es autenticación, no autorización: cualquier persona logueada puede simular
+  cualquier tenant o teléfono. Se acepta porque el cierre en producción es el control real.
 
-### SEC-03 — Fuga entre empresas en la gestión de flujos (IDOR)
-- **Qué pasa:** los endpoints de un flujo por id (ver, editar, borrar, asignar empresas,
-  marcar default) exigen el permiso `flows:*` pero **no** el candado de tenant de sistema ni
-  filtran por la empresa activa. El listado sí filtra por tenant; la inconsistencia es el
-  problema.
-- **Cómo se explota:** un administrador de una empresa cualquiera que tenga (o se
-  auto-asigne) el permiso de flujos puede pasar el id de un flujo de **otra** empresa y
-  leerlo, reescribir su lógica conversacional, borrarlo o reasignarlo. Marcar "default"
-  además cambia un default **global** del sistema con un permiso de nivel empresa.
-- **Impacto:** manipulación cross-tenant de la lógica del bot.
-- **Sugerencia:** gatear las operaciones de flujo por el tenant de sistema (como el resto de
-  lo cross-tenant) o scopear cada operación por la empresa activa.
+### SEC-03 — Fuga entre empresas en la gestión de flujos (IDOR) — 🟡 **casi cerrado**
+- **Qué pasaba:** los endpoints de un flujo por id (ver, editar, borrar, asignar empresas, marcar
+  por defecto) exigían el permiso `flows:*` pero no filtraban por empresa. Un administrador de
+  cualquier empresa podía pasar el id de un flujo ajeno y leerlo, reescribir su lógica, borrarlo o
+  reasignarlo.
+- **Qué cambió:** ver, editar, borrar, asignar empresas y las tres rutas de variantes pasan por un
+  corte de pertenencia y devuelven **404** (no 403, para no filtrar que el id existe en otra
+  empresa). El scope lo pone la **membresía** del usuario, no la empresa activa del header, así que
+  sigue funcionando abrir un flujo de otra de sus empresas. Se suma la validación de las empresas
+  **destino** al asignar (BE-FLW-23) y el saneo de referencias cruzadas al crear o editar
+  (BE-FLW-25). El SuperAdmin queda exceptuado a propósito.
+- **Qué queda:** `POST /flows/:id/default` **nunca recibió el corte** (BE-FLW-22). Es la peor de
+  las cinco en impacto: `isDefault` es un fallback **global del sistema entero**, así que con un
+  permiso de nivel empresa se cambia el flujo por defecto de todo el despliegue, y se puede
+  promover uno ajeno.
+- **Sugerencia:** gatearla con el candado de tenant de sistema, no solo con pertenencia.
 
 ### SEC-04 — El webhook de WhatsApp (POST) no verifica la firma de Meta
 - **Qué pasa:** el handshake GET valida el verify token, pero el POST de mensajes no valida
   ninguna firma con el App Secret de Meta.
 - **Cómo se explota:** quien conozca la URL del webhook publica mensajes falsos con cualquier
-  remitente; el sistema los asigna al tenant configurado y los procesa como reales.
+  remitente; el sistema los rutea por la membresía de ese teléfono y los procesa como reales.
 - **Impacto:** suplantación de usuarios por la puerta pública, avance de flujos y gasto de
-  LLM. Mismo efecto que SEC-02 pero desde el webhook.
+  LLM. Mismo efecto que SEC-02 pero desde el webhook. Con el ruteo por membresía se agrega la
+  enumeración de empresas por teléfono (BE-ITR-13).
 - **Sugerencia:** validar `X-Hub-Signature-256` con el App Secret antes de encolar el mensaje.
+  Twilio ya tiene su equivalente resuelto (SEC-16): el mismo patrón aplica acá.
 
 ## 🟡 Medios
 
@@ -1505,19 +1728,24 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
 - **Sugerencia:** envolver el `findById` del nodo `subflow` en try/catch (o usar una variante
   que devuelva `null`) y responder el mensaje controlado que el guard ya intenta dar.
 
-### SEC-16 — Los webhooks de Twilio y Gupshup (WhatsApp y SMS) no verifican firma ni autenticidad (🟠 Alto)
-- **Qué pasa:** los cuatro webhooks nuevos —`POST webhooks/twilio`, `webhooks/gupshup`,
-  `webhooks/twilio-sms`, `webhooks/gupshup-sms`— aceptan cualquier `POST` sin validar firma ni el
-  origen. Twilio expone `X-Twilio-Signature` (HMAC con el auth token) pero **no** se comprueba;
-  Gupshup no se verifica de ninguna forma. Agravante: los cuatro quedan activos **aunque
-  `WHATSAPP_PROVIDER`/`SMS_PROVIDER` no sean ese proveedor**.
-- **Cómo se explota:** quien conozca la URL publica mensajes falsos con cualquier remitente en
-  `whatsapp.incoming`/`sms.incoming`; el sistema los rutea al tenant según la membresía del teléfono
-  (o al de sistema si no pertenece a ninguna empresa) y los procesa como reales.
-- **Impacto:** suplantación de usuarios por la puerta pública, avance de flujos, gasto de LLM y hasta
-  creación de tickets. Mismo efecto que SEC-04 (webhook de Meta), ahora multiplicado por cuatro canales.
-- **Sugerencia:** validar `X-Twilio-Signature` con el auth token antes de encolar; para Gupshup, un
-  secreto compartido o allowlist de IP; y no procesar en un webhook cuyo proveedor no está activo.
+### SEC-16 — Los webhooks de canal no verifican firma ni autenticidad (🟠 Alto) — 🟡 **parcialmente cerrado**
+- **Qué pasaba:** los cuatro webhooks —`POST webhooks/twilio`, `webhooks/gupshup`,
+  `webhooks/twilio-sms`, `webhooks/gupshup-sms`— aceptaban cualquier `POST` sin validar firma ni
+  origen. Quien conociera la URL publicaba mensajes falsos con cualquier remitente y el sistema los
+  procesaba como reales.
+- **Qué se cerró:** **Twilio WhatsApp** ahora valida `X-Twilio-Signature` (HMAC-SHA1 del auth token
+  sobre la URL completa más los parámetros ordenados) antes de encolar, con comparación en tiempo
+  constante (BE-TWA-10/16). Los **dos webhooks de SMS se eliminaron**: el canal quedó 100% saliente,
+  así que esa superficie no existe más (BE-SMS-04).
+- **Qué queda:** **Gupshup WhatsApp** sigue sin ninguna verificación (BE-GUP-06), y es la peor de
+  las que quedan porque además dispara una **descarga** contra una URL que viaja en el propio
+  payload, sin validar host ni tamaño (BE-GUP-10). Dos salvedades del lado de Twilio: el guard **no
+  corta** si falta `TWILIO_AUTH_TOKEN` o `TWILIO_WEBHOOK_PUBLIC_URL` —solo advierte, para no dejar
+  un despliegue sin recibir mensajes de un día para el otro—, así que un despliegue sin esa carga
+  queda igual de expuesto; y cargar mal esa URL (con el path incluido) corta **todos** los
+  entrantes con un simple "firma inválida" en el log (BE-TWA-17).
+- **Sugerencia:** para Gupshup, un secreto compartido o una lista blanca de IP, y validar el destino
+  de la descarga de media. Convendría además no procesar en un webhook cuyo proveedor no está activo.
 
 ### SEC-17 — La Skill de una empresa se filtra a otra en un flujo compartido (🟠 Alto)
 - **Qué pasa:** un `Flow` puede estar asignado a varias empresas (`TenantFlow`, N:N), pero `Skill` es
@@ -1532,16 +1760,14 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
 - **Sugerencia:** re-chequear el tenant de la skill en `findById` (o filtrarla por tenant al cargarla),
   y validar la pertenencia del `skillId` en `create/update` de flujo.
 
-### SEC-18 — El nodo `sms` no scopea los destinatarios por empresa (🟡 Medio)
-- **Qué pasa:** el nodo `sms` resuelve los destinatarios con
-  `prisma.user.findMany({ where: { id: { in: recipientIds } } })`, **sin** filtrar por `tenantId`. El
-  editor sólo ofrece usuarios del tenant, pero el id viaja en el `data` del flujo y no se re-valida en
-  ejecución.
-- **Cómo se explota:** un flujo (compartido o manipulado) con un `recipientId` de otra empresa haría
-  que el bot mande un SMS al teléfono de un usuario de ese otro tenant.
-- **Impacto:** envío de mensajes a usuarios de otra empresa; confirma que ese teléfono existe.
-- **Sugerencia:** filtrar el `findMany` por el `tenantId` de la conversación, como el resto de las
-  queries del motor.
+### SEC-18 — El nodo `sms` no scopea los destinatarios por empresa (🟡 Medio) — ✅ **cerrado**
+- **Qué pasaba:** el nodo `sms` resolvía los destinatarios sin filtrar por empresa. El editor solo
+  ofrece usuarios del tenant, pero el id viaja en el `data` del flujo y no se re-validaba en
+  ejecución: un flujo compartido o manipulado con un `recipientId` de otra empresa hacía que el bot
+  le mandara un SMS a alguien de ese otro tenant, confirmando además que ese teléfono existe.
+- **Qué cambió:** la búsqueda de destinatarios exige membresía en la empresa de la conversación y
+  excluye empresas dadas de baja, mismo criterio que ya usaba el reparto rotativo de agentes de
+  `transfer_agent`. Cubierto por CHAT-N-SMS-04.
 
 ### SEC-19 — La sesión deslizante no tiene techo, revocación ni chequeo de usuario deshabilitado (🟡 Medio)
 - **Qué pasa:** `SlidingSessionInterceptor` reemite un JWT de 15 min en cada request autenticado. No
@@ -1564,14 +1790,16 @@ Skill de una empresa se filtra a otra en un flujo compartido** (SEC-17).
 - **Sugerencia:** validar que la URL sea `https://` (el placeholder ya sugiere `…cloud.invgate.net`), o
   al menos advertir al guardarla.
 
-### SEC-21 — Gupshup SMS legacy manda usuario y contraseña en la query string (🟢 Bajo)
-- **Qué pasa:** el conector de SMS por Gupshup usa la API legacy, que recibe `userid` y `password` como
-  parámetros de la **query string** de un `GET`. TLS los cubre en tránsito, pero la URL completa puede
-  quedar registrada en logs de proxies/gateways. La verificación de éxito (`startsWith('success')` sobre
-  texto plano) es además frágil.
-- **Impacto:** posible filtración de las credenciales de Gupshup SMS a logs intermedios.
-- **Sugerencia:** usar la API que admita credenciales por header/body si está disponible; si no, asegurar
-  que esos logs no se retengan y rotar la contraseña periódicamente.
+### SEC-21 — Gupshup SMS legacy manda usuario y contraseña en la query string (🟢 Bajo) — ✅ **cerrado**
+- **Qué pasaba:** el conector de SMS por Gupshup usaba la API legacy "Enterprise SMS", que recibe
+  `userid` y `password` como parámetros de la **query string** de un `GET`. TLS los cubre en
+  tránsito, pero la URL completa puede quedar registrada en los logs de cualquier proxy o pasarela
+  intermedia.
+- **Qué cambió:** esa API se reemplazó por la API de SMS de Gupshup, que usa `POST` con la API key
+  en el header `Authorization` y los parámetros en el cuerpo. Las claves `GUPSHUP_SMS_USERID` y
+  `GUPSHUP_SMS_PASSWORD` dejaron de existir. Cubierto por BE-SMS-10/13.
+- **Nota:** se cerró como efecto de un cambio funcional (la cuenta legacy estaba rota del lado de
+  Gupshup), no por una corrección deliberada de seguridad — vale igual, pero conviene saberlo.
 
 ## 📌 Notas registradas sin número de hallazgo
 
@@ -1649,15 +1877,30 @@ comportamiento **seguro**: hoy están en `❌` y pasan a `✅` cuando se corrige
 - SEC-13 → BE-AUTH-18
 - SEC-14 → BE-AUTH-22
 - SEC-15 → CHAT-N-SUB-03
-- SEC-16 → BE-TWA-10 + BE-GUP-06 + BE-SMS-09 (webhooks de canal sin validar firma/autenticidad)
+- SEC-16 → BE-TWA-10 ✅ + BE-SMS-09 ✅ (por eliminación) + BE-GUP-06 ❌ (webhooks de canal sin
+  validar firma); bordes del guard de Twilio en BE-TWA-16/17, descarga sin validar en BE-GUP-10
 - SEC-17 → BE-SKL-08 + BE-SKL-09 (fuga de la Skill entre empresas en un flujo compartido)
-- SEC-18 → CHAT-N-SMS-04 (nodo `sms` sin scope de tenant en los destinatarios)
+- SEC-18 → CHAT-N-SMS-04 ✅ (cerrado: destinatarios del nodo `sms` filtrados por empresa)
 - SEC-19 → BE-AUTH-28 (sesión deslizante sin techo, revocación ni chequeo de deshabilitado)
 - SEC-20 → BE-IG-11 (InvGate sin HTTPS)
-- SEC-21 → BE-SMS-10 (Gupshup SMS con credenciales en la query string)
+- SEC-21 → BE-SMS-10 ✅ (cerrado: la API nueva manda las credenciales por header, no en la URL)
 
 Los **21 hallazgos** quedan con caso de aceptación propio; ninguno depende ya sólo de cobertura
-indirecta. **SEC-08 ya está cerrado** (CHAT-N-TKQ-03 en `✅`).
+indirecta.
+
+**Estado al día de hoy:** cerrados del todo **SEC-08**, **SEC-18** y **SEC-21**. Parcialmente
+cerrados **SEC-02** (mitigado: exige login y queda cerrado en producción), **SEC-03** (solo queda
+`POST /flows/:id/default`, BE-FLW-22) y **SEC-16** (queda Gupshup WhatsApp). Los demás siguen
+abiertos.
+
+**Riesgos nuevos sin número de hallazgo**, surgidos de funcionalidad de este rango — se anotan acá
+para que no queden sueltos aunque no tengan `SEC-*` propio:
+
+- Nodo `webhook` sin restricción de destino, con el cuerpo interpolado → **CHAT-N-WHK-04**
+- Descarga de media de Gupshup sin validar host ni tamaño → **BE-GUP-10** (familia SEC-16)
+- Enumeración de empresas por teléfono a través del selector → **BE-ITR-13** (ligado a SEC-04/16)
+- `POST /flows/:id/default` sin candado, cambia un default global → **BE-FLW-22** (resto de SEC-03)
+- Datos personales en los registros en disco, sin cifrar → **BE-LOG-03**
 
 ---
 
@@ -1682,21 +1925,30 @@ el mismo patrón: **sin el permiso → 403** (ver BE-RBAC-02). Rutas relativas a
 | permissions | GET `/roles/:id/permissions` | POST `/roles/:id/permissions` | PUT `/roles/:id/permissions` | DELETE `/roles/permissions/:id` |
 | flows | GET `/` · `/all` · `/:id` | POST `/` | PATCH `/:id` · POST `/:id/assign-tenants` · `/:id/default` | DELETE `/:id` |
 | settings | GET `/` · `/:key` · `/providers/status` · `/providers/:p/models` | POST `/` | PATCH `/:key` | DELETE `/:key` |
-| context-sources | GET `/` · `/:id` · `/types` · POST `/:id/test-connection` | POST `/` | PATCH `/:id` | DELETE `/:id` |
-| devices · conversations · tickets · metrics · channels · llm | — | — | — | — |
+| context-sources | GET `/` · `/all` · `/:id` · `/types` · POST `/:id/test-connection` | POST `/` | PATCH `/:id` | DELETE `/:id` |
+| schedule-calendar | GET `/` · `/:id` · `/types` | POST `/` · `/import-ar-holidays/:year` | PATCH `/:id` | DELETE `/:id` · `/import-ar-holidays/:year` |
+| metrics | GET `/dashboard` | — | — | — |
+| devices · conversations · tickets · channels · llm | — | — | — | — |
 
 Notas:
 
-- **Sin endpoint protegido aún:** `devices`, `conversations`, `tickets`, `metrics`, `channels`,
-  `llm` están en el catálogo (para repartir el permiso antes de proteger sus módulos), pero
-  ninguna operación los exige hoy.
+- **Sin endpoint protegido aún:** `devices`, `conversations`, `tickets`, `channels`, `llm` están
+  en el catálogo (para repartir el permiso antes de proteger sus módulos), pero ninguna operación
+  los exige hoy. `metrics` salió de esa lista: ya protege `GET /metrics/dashboard` (§1.27).
+- **Permisos alternativos (`RequireAnyPermission`, semántica "o"):** `GET /roles` acepta
+  `roles:read` **o** `users:create` — alcanza con uno. El detalle de permisos de cada rol solo
+  viaja para el primero (BE-RBAC-25/26). Es la única celda de esta matriz con más de un permiso
+  posible.
 - **Candado extra `SystemTenantGuard`** (además del permiso RBAC): `users/all`, `areas/all`,
   `areas/by-tenant/:id`, **todo** el CRUD de `tenants`, `roles/all`, `roles/by-tenant/:id`,
-  `flows/all`, y **todo** `settings` (a nivel clase). El negativo es "desde un tenant que no es
-  el de sistema → 403" (BE-TEN-03, BE-ARE-04/08, BE-RBAC-10, BE-SET-02).
+  `flows/all`, `context-sources/all`, `skills/all`, y **todo** `settings` (a nivel clase). El
+  negativo es "desde un tenant que no es el de sistema → 403" (BE-TEN-03, BE-ARE-04/08,
+  BE-RBAC-10, BE-SET-02).
 - **Sin `@RequirePermission`** (autorización por-empresa dentro del servicio): `users/mine`,
   `users/multi`, `users/:id/full`, `users/check-availability`, `users/:id/memberships`,
-  `areas/mine`, `roles/mine`; y `auth/me` (sólo `JwtAuthGuard`).
+  `areas/mine`, `roles/mine`, `flows/mine`, `context-sources/mine`, `skills/mine`; y `auth/me`
+  (sólo `JwtAuthGuard`). `conversations/simulate` también: solo `JwtAuthGuard`, más el interruptor
+  `CONVERSATIONS_SIMULATE_ENABLED` (BE-SET-22).
 
 ## B.2 — Matriz de aislamiento multitenant
 
@@ -1706,8 +1958,8 @@ Notas:
 ajeno (usuario de sistema) = OK con rol de sistema; empresa inexistente o dada de baja = 404; sin
 ninguna membresía = 403.
 
-**Aislamiento por id** — pedir un recurso de OTRA empresa *teniendo* el permiso. Es donde vive el
-IDOR de flujos (SEC-03):
+**Aislamiento por id** — pedir un recurso de OTRA empresa *teniendo* el permiso. Es donde vivía el
+IDOR de flujos (SEC-03), hoy cerrado salvo una ruta:
 
 | Recurso (operación por id) | Con id de otra empresa | Caso |
 |---|---|---|
@@ -1715,9 +1967,23 @@ IDOR de flujos (SEC-03):
 | users (`GET /:id`) | 404 "no existe en este tenant" | BE-USR-20 |
 | areas (`GET/PATCH/DELETE /:id`) | 404 aislado | BE-ARE-10 / 19 / 22 |
 | context-sources (`GET /:id`) | 404 aislado | BE-CS-03 |
-| flows (`GET/PATCH/DELETE /:id`) | debería 403/404 | BE-FLW-14 |
-| flows (`assign-tenants` / `default`) | debería 403/404 | BE-FLW-16 |
+| schedule-calendar (`GET/PATCH/DELETE /:id`) | 404 aislado | BE-CAL-06 |
+| flows (`GET/PATCH/DELETE /:id`) | 404 aislado ✅ | BE-FLW-14 |
+| flows (`assign-tenants`) | 404 aislado ✅ | BE-FLW-16 |
+| flows (`default`) | **sin corte** ❌ — cambia un default global | BE-FLW-22 |
+| flows (`variants`, los tres verbos) | 404 aislado ✅ | BE-VAR-06 / 07 |
 | settings (`:key`) | n/a — `key` es única global, no por tenant | §1.7 |
+
+**Aislamiento en ejecución** — un flujo compartido entre empresas corriendo una conversación de
+**una** de ellas no debe alcanzar recursos de las otras:
+
+| Qué se resuelve en ejecución | Comportamiento | Caso |
+|---|---|---|
+| Destinatarios del nodo `sms` | filtrados por la empresa de la charla ✅ | CHAT-N-SMS-04 |
+| Asignados de `transfer_agent` | filtrados por la empresa de la charla ✅ | CHAT-N-TRF-08 |
+| Ticket consultado por `ticket_query` | filtrado por empresa, y por cliente en InvGate ✅ | CHAT-N-TKQ-03 / 09 |
+| Skill del flujo | **sin re-chequeo** ❌ (SEC-17) | BE-SKL-08 |
+| Referencias embebidas al guardar | saneadas contra las empresas válidas ✅ | BE-FLW-25 / FE-FLW-29 |
 
 ---
 
@@ -1747,7 +2013,9 @@ plan. Se arma una vez, sobre una base recién migrada y con el seed aplicado.
 | `acme` | `Sin permisos` | Ninguno (para los negativos de 403) |
 | `acme` | `Rol vacío` | Ninguno y **sin usuarios asignados** (para probar el borrado de un rol) |
 | `acme` | `Recepción inactiva` | Ninguno relevante; existe sólo para portar un flujo de inicio **inactivo** (`F-INACTIVO`) sin chocar con el par `(acme, Soporte N1)` que ya usa `F-PRINCIPAL` |
-| `acme` | `Alta sin roles` | `users:read` + `users:create`, **sin** `roles:read` (para FE-USR-16 / N7: el alta de usuarios queda rota porque el dropdown de rol obligatorio se llena con `GET /roles` → 403) |
+| `acme` | `Alta sin roles` | `users:read` + `users:create`, **sin** `roles:read` (para FE-USR-16 y BE-RBAC-25/26: el alta tiene que funcionar por el permiso alternativo, recibiendo id y nombre de cada rol pero **no** su matriz de permisos) |
+| `acme` | `Agenda` | Las cuatro acciones de `schedule-calendar` y nada más: sirve para el ABM del calendario (§1.25) y para los negativos de la pantalla (FE-CAL-07), donde otro rol sin ese permiso no ve el ítem del menú |
+| `acme` | `Guardia` | Rol **portador de calendario**: existe para colgarle entradas de feriado y guardia acotadas a un rol (BE-CAL-07) y para que su flujo de inicio tenga variantes (`F-VARIANTES`) |
 | `globex` | `Soporte N1` | Mismo nombre que el de Acme: verifica que el nombre es único **por empresa** |
 
 ## C.3 — Áreas
@@ -1787,9 +2055,28 @@ plan. Se arma una vez, sobre una base recién migrada y con el seed aplicado.
 | `F-GLOBEX` | `globex` | Objetivo de los casos de aislamiento por id |
 | `F-SMS-TICKET` | `acme`, sin marcar inicio | Un nodo `sms` (destinatarios = usuarios del tenant) y un nodo `ticket_create` con `category`/`priority`/`ticketType` elegidos **por nombre** de InvGate: precondición de los casos de nodo SMS (CHAT-N-SMS-*), del ticket con catálogo (CHAT-N-TKC-05/06) y del editor (FE-FLW-19/20) |
 | `F-COMPARTIDO` | `acme` **y** `globex` (mismo `Flow`, N:N vía `TenantFlow`), vinculado a la Skill `Contexto Soporte N1` de **acme** | Precondición de la fuga cross-tenant de la Skill (BE-SKL-08): una charla de `globex` por este flujo **no** debería recibir en el prompt la skill de `acme` |
+| `F-VARIANTES` | `acme` + rol `Guardia`, marcado **Inicio** para ese rol | Flujo Principal con **las dos variantes** configuradas (Feriado y Guardia), cada una con un texto de arranque distinguible para saber cuál corrió. Precondición de §1.26, de CHAT-START-08 y de las pestañas del editor (FE-FLW-30…34) |
+| `F-NODOS-2` | `acme`, sin marcar inicio | Los nodos que faltaban en `F-NODOS`: `notification` en sus dos modos (confirmar con "Espera una foto" y link), `condition` en formato **nuevo** (con solo la rama afirmativa cableada, para CHAT-N-CND-11, y otra con una arista sin handle), `webhook` con cuerpo JSON apuntando a un receptor de prueba **local**, y `ticket_query` contra InvGate |
 
 > `F-NODOS` incluye a propósito un nodo `subflow` que apunta a un flujo **borrado** y una
 > condición con expresión regular inválida: son las precondiciones de dos casos de fallo.
+>
+> El nodo `webhook` de `F-NODOS-2` apunta a un receptor **de prueba y local**, nunca a un servicio
+> productivo ni a un endpoint público: la llamada es real (CHAT-N-WHK-01) y el cuerpo se interpola
+> con las variables de la charla, así que un destino equivocado publica datos de la conversación
+> hacia afuera. El caso adversarial de destino interno (CHAT-N-WHK-04) se ejercita en un ambiente
+> aislado, no contra la red del despliegue.
+
+## C.5.1 — Calendario de feriados/guardias
+
+| Empresa | Entrada | Para qué |
+|---------|---------|----------|
+| `acme` | Feriado de un día, `roleId` **null** | Aplica a todos los roles: el caso base de `resolveStatus` y de la variante Feriado |
+| `acme` | Guardia 20:00→08:00 del rol `Guardia`, repetición **semanal** sin "hasta" | Cruza medianoche (FE-CAL-02), repite indefinidamente (BE-CAL-08) y es la que dispara la variante Guardia |
+| `acme` | Feriado y guardia **solapados** el mismo instante, mismo rol | Verifica que gana feriado (BE-CAL-07) |
+| `acme` | Entrada mensual anclada un **31** | Documenta el desborde de días conocido (BE-CAL-09) |
+| `acme` | Import de feriados de un año completo (`source` = importado) | Reimportar sin duplicar y deshacer en bloque sin tocar las manuales (BE-CAL-11) |
+| `globex` | Una entrada cualquiera | Aislamiento por id (BE-CAL-06) y que no se mezcle en el `resolveStatus` de `acme` |
 
 ## C.6 — Fuentes de verdad
 
