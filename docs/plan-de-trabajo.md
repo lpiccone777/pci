@@ -1259,10 +1259,9 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 - [x] **Connector real, solo `broker` por ahora** (era el único tipo con contrato probado en
   producción): `ContextSourceConnectorService.queryBroker` publica `{"text": "<pregunta>"}` y
   espera `{answer, error}` — contrato verificado end-to-end contra DonQuijote (el RAG de
-  referencia, `responseMode: fixedQueue`). `mcp`/`rag`/`n8n` devuelven `ok:false` con mensaje
+  referencia, `responseMode: fixedQueue`). `rag`/`n8n` devuelven `ok:false` con mensaje
   explícito ("consulta en vivo todavía no implementada") en vez de fallar — quedan pendientes:
-  - `mcp`: handshake JSON-RPC del protocolo (`initialize` → `tools/list` / `resources/list` →
-    invocar), no solo un GET a `serverUrl`
+  - ~~`mcp`~~ ✅ hecho el 2026-09-18, ver "Connector MCP real" abajo
   - `rag`: contrato de request/response del endpoint de consulta es hoy desconocido/genérico
     (no hay un estándar) — probablemente haga falta un campo más en el catálogo para el
     "shape" del request, o aceptar que cada RAG necesita su propio adapter
@@ -1325,6 +1324,33 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
   correcta) con historial limpio vs. historial contaminado: con historial limpio el LLM
   responde bien ("Rocinante."); con el historial real de la charla de prueba, sigue
   devolviendo el texto de "reinicio" — la causa es el historial, no el LLM ni el RAG
+- [x] **Connector MCP real, con una o varias tools por conexión (2026-09-18):** el tipo `mcp`
+  dejó de ser un GET a `serverUrl` y habla el protocolo con el SDK oficial
+  (`@modelcontextprotocol/sdk`), en los dos transportes del catálogo (SSE y Streamable HTTP)
+  — `apps/api/src/modules/context-sources/broker/mcp-client.ts`:
+  - Campo nuevo del catálogo `tools` (tipo de campo `mcpTools`): lista `[{ name, arguments }]`.
+    `arguments` es una plantilla JSON donde `{{pregunta}}` se reemplaza por el mensaje del
+    usuario. Validado al guardar (`ContextSourcesService.normalizeMcpTools`: nombre
+    obligatorio, sin repetidos, argumentos objeto, máximo 10)
+  - Consulta (`queryKnowledge` → `context-source.query`): `initialize` → `tools/call` de
+    TODAS las tools configuradas, en paralelo, en una sola sesión. Con varias, cada
+    resultado va bajo `### <tool>`; alcanza con que una responda para `ok:true` (las que
+    fallan quedan en `message`, que se loguea). Cada resultado se recorta a 8000 caracteres.
+    Invocación determinística, no la decide el LLM — mismo criterio que el resto de las
+    fuentes de verdad
+  - "Probar conexión": `initialize` + `tools/list` y verifica que las tools configuradas
+    existan en el servidor (si falta alguna, `ok:false` con el nombre)
+  - "Descubrir tools" (`POST /context-sources/mcp/tools`, cola RPC nueva
+    `context-source.mcp.list-tools`): lista las tools del servidor con la config del
+    formulario todavía sin guardar; editando, completa el `apiKey` cifrado de la base.
+    Requiere `context-sources:create` o `:update` (la URL viene del body)
+  - Frontend (`/dashboard/context-sources`): editor de tools con "Descubrir tools", que
+    arma la plantilla de argumentos desde el `inputSchema` (el primer string requerido
+    recibe `{{pregunta}}`), y alta manual
+  - Tests: `context-source-connector.mcp.spec.ts` (unit, ambos transportes) y BE-CS-16/20-23
+    en el e2e, contra un servidor MCP real en loopback (`test/support/fake-mcp-server.ts`)
+  - Pendiente: que el LLM elija qué tool invocar (hoy se invocan todas), y `resources/*`
+    / `prompts/*` del protocolo (solo se usan tools)
 - [ ] **Multi-tenant de `Flow.contextSourceId`:** un `Flow` puede estar asignado a varios tenants
   (`TenantFlow`, N:N) pero `ContextSource` es por tenant — hoy el FK es un solo valor global
   del flujo, no por tenant. Si un flujo compartido entre dos empresas necesita una fuente
@@ -1562,7 +1588,7 @@ Están declarados en `app.module.ts` pero son cáscaras `@Module({})` sin servic
 
 **E. Fuentes de verdad — segunda etapa (ejecución real)**
 1. Ver "Fuentes de verdad (context sources)" arriba, sección "Ejecución real — PENDIENTE":
-   wiring en `ConversationsService`, connector real por tipo (handshake MCP, contrato de RAG),
+   wiring en `ConversationsService`, connector real por tipo (MCP ✅ 2026-09-18, contrato de RAG),
    cola RPC dedicada para la consulta en vivo, y la limitación de `Flow.contextSourceId` como
    FK única (no por tenant) si un flujo compartido lo necesita
 

@@ -179,11 +179,11 @@ solución es una tabla puente `FlowContextSource` con `tenantId` (mismo patrón 
 `TenantFlow`), no forzar el FK actual. Ver `docs/plan-de-trabajo.md`, sección "Fuentes de
 verdad — Ejecución real".
 
-**Pendiente (deliberadamente fuera de esta etapa):** la ejecución real — que el motor de
-conversaciones (`ConversationsService.executeNode`) consulte la fuente vinculada durante una
-conversación — no está implementada. Lo que existe hoy es administración (CRUD + probar
-conexión) y la vinculación flujo↔fuente. Ver `docs/plan-de-trabajo.md` para el detalle de qué
-falta por tipo (handshake MCP, contrato de RAG, cola RPC dedicada para la consulta en vivo).
+**Ejecución real:** el motor de conversaciones (`orchestratorLlm` y el nodo `llm_query`)
+consulta la fuente vinculada por la cola RPC `context-source.query`. Responden consultas
+`broker` (`{"text"}` → `{answer, error}`) y `mcp` (SDK oficial: `initialize` → `tools/call` de
+las tools configuradas en la conexión, ver `broker/mcp-client.ts`); `rag`/`n8n` todavía no
+tienen contrato de consulta. Detalle en `docs/plan-de-trabajo.md`.
 
 ## Resolución del tenant
 

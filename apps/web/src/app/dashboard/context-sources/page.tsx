@@ -19,7 +19,8 @@ interface FieldOption {
 
 interface FieldDef {
   key: string;
-  type: 'string' | 'number' | 'select' | 'boolean';
+  /** `mcpTools`: lista `[{ name, arguments }]` con editor propio (`McpToolsEditor`). */
+  type: 'string' | 'number' | 'select' | 'boolean' | 'mcpTools';
   label: string;
   required?: boolean;
   placeholder?: string;
@@ -55,6 +56,58 @@ interface TestResult {
   statusCode?: number;
 }
 
+/** Tool tal como la anuncia el servidor MCP (`tools/list`). */
+interface McpToolInfo {
+  name: string;
+  description?: string;
+  inputSchema?: {
+    properties?: Record<string, { type?: string; default?: unknown; description?: string }>;
+    required?: string[];
+  };
+}
+
+interface McpToolsListResult {
+  ok: boolean;
+  message: string;
+  tools?: McpToolInfo[];
+}
+
+/** Fila del editor: los argumentos se editan como texto JSON y se parsean al guardar. */
+interface ToolRow {
+  name: string;
+  argsText: string;
+  description?: string;
+}
+
+const QUESTION_PLACEHOLDER = '{{pregunta}}';
+
+/**
+ * Plantilla de argumentos a partir del `inputSchema` de la tool: el primer string
+ * requerido (o el primero a secas) recibe `{{pregunta}}`; el resto de los requeridos va
+ * con su default o un valor vacío de su tipo, para que el admin solo tenga que completar.
+ */
+function argsTemplateFor(tool: McpToolInfo): Record<string, unknown> {
+  const props = tool.inputSchema?.properties ?? {};
+  const required = tool.inputSchema?.required ?? [];
+  const names = Object.keys(props);
+  const questionKey =
+    required.find((k) => props[k]?.type === 'string') ?? names.find((k) => props[k]?.type === 'string');
+
+  const args: Record<string, unknown> = {};
+  if (questionKey) args[questionKey] = QUESTION_PLACEHOLDER;
+  for (const k of required) {
+    if (k in args) continue;
+    const p = props[k] ?? {};
+    if (p.default !== undefined) args[k] = p.default;
+    else if (p.type === 'number' || p.type === 'integer') args[k] = 0;
+    else if (p.type === 'boolean') args[k] = false;
+    else if (p.type === 'array') args[k] = [];
+    else if (p.type === 'object') args[k] = {};
+    else args[k] = '';
+  }
+  return args;
+}
+
 interface SkillData {
   id: string;
   name: string;
@@ -84,6 +137,10 @@ export default function ContextSourcesPage() {
   const [isActive, setIsActive] = useState(true);
   const [formConfig, setFormConfig] = useState<Record<string, string>>({});
   const [fieldsToClear, setFieldsToClear] = useState<Set<string>>(new Set());
+  // Campo `mcpTools` (solo tipo `mcp`): va aparte de `formConfig` porque no es un string.
+  const [formTools, setFormTools] = useState<ToolRow[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discovered, setDiscovered] = useState<McpToolsListResult | null>(null);
 
   const [testing, setTesting] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
@@ -210,6 +267,8 @@ export default function ContextSourcesPage() {
     setIsActive(true);
     setFormConfig({});
     setFieldsToClear(new Set());
+    setFormTools([]);
+    setDiscovered(null);
   }
 
   function startEdit(s: ContextSourceData) {
@@ -220,12 +279,24 @@ export default function ContextSourcesPage() {
     setIsActive(s.isActive);
     const initial: Record<string, string> = {};
     const def = types.find((t) => t.type === s.type);
+    let tools: ToolRow[] = [];
     for (const f of def?.fields ?? []) {
       if (f.secret) continue; // los secrets nunca se prellenan: se dejan vacíos a propósito
+      if (f.type === 'mcpTools') {
+        tools = (Array.isArray(s.config?.[f.key]) ? s.config[f.key] : []).map(
+          (t: { name: string; arguments?: Record<string, unknown> }) => ({
+            name: t.name,
+            argsText: JSON.stringify(t.arguments ?? {}, null, 2),
+          }),
+        );
+        continue;
+      }
       initial[f.key] = s.config?.[f.key] ?? '';
     }
     setFormConfig(initial);
     setFieldsToClear(new Set());
+    setFormTools(tools);
+    setDiscovered(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -248,9 +319,32 @@ export default function ContextSourcesPage() {
     setFieldsToClear((prev) => new Set(prev).add(key));
   }
 
-  function buildConfigPayload(def: TypeDef): Record<string, unknown> {
+  /** Tira con un mensaje legible si alguna plantilla de argumentos no es JSON válido. */
+  function toolsPayload(): { name: string; arguments: Record<string, unknown> }[] {
+    return formTools
+      .filter((t) => t.name.trim())
+      .map((t) => {
+        let args: unknown;
+        try {
+          args = t.argsText.trim() ? JSON.parse(t.argsText) : {};
+        } catch {
+          throw new Error(`Los argumentos de la tool "${t.name}" no son JSON válido.`);
+        }
+        if (!args || typeof args !== 'object' || Array.isArray(args)) {
+          throw new Error(`Los argumentos de la tool "${t.name}" deben ser un objeto JSON ({ ... }).`);
+        }
+        return { name: t.name.trim(), arguments: args as Record<string, unknown> };
+      });
+  }
+
+  /** `includeTools: false` para "Descubrir tools": solo hacen falta los datos de conexión. */
+  function buildConfigPayload(def: TypeDef, { includeTools = true } = {}): Record<string, unknown> {
     const config: Record<string, unknown> = {};
     for (const f of def.fields) {
+      if (f.type === 'mcpTools') {
+        if (includeTools) config[f.key] = toolsPayload();
+        continue;
+      }
       if (f.secret) {
         if (fieldsToClear.has(f.key)) {
           config[f.key] = null;
@@ -294,6 +388,43 @@ export default function ContextSourcesPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function discoverMcpTools() {
+    if (!typeDef) return;
+    setDiscovering(true);
+    setDiscovered(null);
+    try {
+      const result: McpToolsListResult = await apiFetch('/context-sources/mcp/tools', {
+        method: 'POST',
+        body: JSON.stringify({
+          sourceId: editingId ?? undefined,
+          config: buildConfigPayload(typeDef, { includeTools: false }),
+        }),
+      });
+      setDiscovered(result);
+    } catch (err: any) {
+      setDiscovered({ ok: false, message: err.message });
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+  function addTool(tool?: McpToolInfo) {
+    setFormTools((prev) => [
+      ...prev,
+      tool
+        ? { name: tool.name, description: tool.description, argsText: JSON.stringify(argsTemplateFor(tool), null, 2) }
+        : { name: '', argsText: JSON.stringify({ query: QUESTION_PLACEHOLDER }, null, 2) },
+    ]);
+  }
+
+  function updateTool(index: number, patch: Partial<ToolRow>) {
+    setFormTools((prev) => prev.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  }
+
+  function removeTool(index: number) {
+    setFormTools((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function remove(s: ContextSourceData) {
@@ -418,6 +549,8 @@ export default function ContextSourcesPage() {
                     setType(e.target.value);
                     setFormConfig({});
                     setFieldsToClear(new Set());
+                    setFormTools([]);
+                    setDiscovered(null);
                   }}
                   className="border px-3 py-2 rounded w-full"
                   required
@@ -455,6 +588,117 @@ export default function ContextSourcesPage() {
                   const maskedValue = editingId
                     ? sources.find((s) => s.id === editingId)?.config?.[f.key]
                     : '';
+
+                  if (f.type === 'mcpTools') {
+                    const configured = new Set(formTools.map((t) => t.name));
+                    return (
+                      <div key={f.key} className="md:col-span-2 border rounded p-3 space-y-3 bg-gray-50">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label className="text-xs text-gray-600 font-medium">
+                            {f.label}
+                            {f.required && ' *'}
+                            <span className="ml-1 font-normal text-gray-400">({formTools.length})</span>
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={discoverMcpTools}
+                              disabled={discovering}
+                              className="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 border border-blue-200 rounded bg-white disabled:opacity-50"
+                            >
+                              {discovering ? 'Consultando servidor...' : 'Descubrir tools'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => addTool()}
+                              className="text-gray-600 hover:bg-gray-100 text-xs px-2 py-1 border border-gray-300 rounded bg-white"
+                            >
+                              + Agregar a mano
+                            </button>
+                          </div>
+                        </div>
+
+                        {f.helpText && <p className="text-[11px] text-gray-400">{f.helpText}</p>}
+
+                        {discovered && !discovered.ok && (
+                          <p className="text-xs text-red-500">✗ {discovered.message}</p>
+                        )}
+                        {discovered?.ok && (
+                          <div className="border rounded bg-white">
+                            <p className="text-[11px] text-gray-500 px-3 py-2 border-b">
+                              ✓ {discovered.message}
+                            </p>
+                            {(discovered.tools ?? []).length === 0 && (
+                              <p className="text-xs text-gray-400 px-3 py-2">El servidor no expone ninguna tool.</p>
+                            )}
+                            <ul className="max-h-56 overflow-y-auto divide-y">
+                              {(discovered.tools ?? []).map((tool) => (
+                                <li key={tool.name} className="flex items-start justify-between gap-3 px-3 py-2">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-mono text-gray-800 break-all">{tool.name}</p>
+                                    {tool.description && (
+                                      <p className="text-[11px] text-gray-500 line-clamp-2">{tool.description}</p>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => addTool(tool)}
+                                    disabled={configured.has(tool.name)}
+                                    className="shrink-0 text-xs px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50 disabled:text-gray-400 disabled:border-gray-200 disabled:hover:bg-transparent"
+                                  >
+                                    {configured.has(tool.name) ? 'Agregada' : 'Agregar'}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {formTools.length === 0 ? (
+                          <p className="text-xs text-gray-400">
+                            Sin tools configuradas: la conexión no va a poder responder consultas.
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            {formTools.map((tool, i) => (
+                              <div key={i} className="bg-white border rounded p-2 space-y-2">
+                                <div className="flex gap-2">
+                                  <input
+                                    value={tool.name}
+                                    onChange={(e) => updateTool(i, { name: e.target.value })}
+                                    placeholder="nombre_de_la_tool"
+                                    className="border px-2 py-1 rounded w-full font-mono text-sm"
+                                    aria-label={`Nombre de la tool ${i + 1}`}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeTool(i)}
+                                    className="text-red-600 hover:text-red-800 text-xs px-2"
+                                  >
+                                    Quitar
+                                  </button>
+                                </div>
+                                {tool.description && (
+                                  <p className="text-[11px] text-gray-500">{tool.description}</p>
+                                )}
+                                <label className="block text-[11px] text-gray-500">
+                                  Argumentos (JSON) — <code>{QUESTION_PLACEHOLDER}</code> se reemplaza por el mensaje del usuario
+                                </label>
+                                <textarea
+                                  value={tool.argsText}
+                                  onChange={(e) => updateTool(i, { argsText: e.target.value })}
+                                  rows={Math.min(8, Math.max(2, tool.argsText.split('\n').length))}
+                                  className="border px-2 py-1 rounded w-full font-mono text-xs"
+                                  spellCheck={false}
+                                  aria-label={`Argumentos de la tool ${tool.name || i + 1}`}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
 
                   return (
                     <div key={f.key}>

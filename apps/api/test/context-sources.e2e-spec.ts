@@ -16,10 +16,11 @@
  * `ContextSourceConnectorService` — vive en el MISMO módulo/proceso (ver
  * `context-sources.module.ts`), así que el viaje RPC completo corre de verdad dentro de la
  * misma app de test, sin mockear nada. Los casos que necesitan una fuente REAL alcanzable
- * (BE-CS-13/16/17/18/19) quedan bloqueados (`it.skip`): BE-CS-18 en particular dispararía
+ * (BE-CS-13/17/18/19) quedan bloqueados (`it.skip`): BE-CS-18 en particular dispararía
  * un webhook real de n8n. BE-CS-14 (fuente inalcanzable) sí es real y rápido: apunta a un
  * puerto local cerrado — la conexión se rechaza (ECONNREFUSED) en milisegundos, sin
- * esperar el timeout de 20s del connector.
+ * esperar el timeout de 20s del connector. Los de MCP (BE-CS-16/20-23) sí corren: usan un
+ * servidor MCP real en loopback (`support/fake-mcp-server.ts`).
  *
  * Frontera mockeada: NINGUNA. No se mockea el broker ni `ContextSourcesService` (es la
  * lógica bajo prueba); tampoco `fetch` — BE-CS-14 hace una conexión TCP real a un puerto
@@ -41,6 +42,7 @@ import {
   uniqueSlug,
 } from './support';
 import { SecretsCipher } from '../src/config/secrets.cipher';
+import { FAKE_MCP_API_KEY, startFakeMcp } from './support/fake-mcp-server';
 
 const CS_PERMS = [
   'context-sources:read',
@@ -414,12 +416,127 @@ describe('1.9 Fuentes de verdad — context sources (BE-CS-*)', () => {
     expect(resPost.body.message).toBe('Permiso denegado: context-sources:create');
   });
 
-  it.skip(
-    'BE-CS-16: test-connection de una fuente MCP comprueba la URL con las cabeceras configuradas [BLOQUEADO: requiere un servidor MCP real respondiendo]',
-    async () => {
-      // Intencionalmente vacío: ver motivo en el título.
-    },
-  );
+  /**
+   * MCP contra un servidor MCP REAL en loopback (`test/support/fake-mcp-server.ts`, SDK
+   * oficial) — por eso BE-CS-16 dejó de estar bloqueado. Todo el viaje es real: REST →
+   * broker (RPC) → connector → protocolo MCP (Streamable HTTP) con el bearer descifrado.
+   */
+  describe('MCP', () => {
+    let fake: { baseUrl: string; close: () => Promise<void> };
+
+    beforeAll(async () => {
+      fake = await startFakeMcp();
+    });
+
+    afterAll(async () => {
+      await fake.close();
+    });
+
+    const mcpConfig = () => ({
+      serverUrl: `${fake.baseUrl}/mcp`,
+      transport: 'http',
+      authType: 'bearer',
+      apiKey: FAKE_MCP_API_KEY,
+    });
+
+    it('BE-CS-16: test-connection de un MCP hace initialize + tools/list con las cabeceras configuradas', async () => {
+      const create = await withAuth(http(t).post('/context-sources'), tokenA, tenantA.id).send({
+        name: `MCP ${Date.now()}`,
+        type: 'mcp',
+        config: { ...mcpConfig(), tools: [{ name: 'buscar_kb', arguments: { query: '{{pregunta}}' } }] },
+      });
+      expect(create.status).toBe(201);
+
+      const res = await withAuth(http(t).post(`/context-sources/${create.body.id}/test-connection`), tokenA, tenantA.id);
+      expect(res.status).toBe(201);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.message).toContain('configuradas: buscar_kb');
+    });
+
+    it('BE-CS-20: POST de un MCP con tools las guarda normalizadas y el GET las devuelve', async () => {
+      const create = await withAuth(http(t).post('/context-sources'), tokenA, tenantA.id).send({
+        name: `MCP tools ${Date.now()}`,
+        type: 'mcp',
+        config: {
+          ...mcpConfig(),
+          tools: [{ name: '  buscar_kb  ', arguments: { query: '{{pregunta}}' } }, { name: 'horarios' }],
+        },
+      });
+      expect(create.status).toBe(201);
+      expect(create.body.config.tools).toEqual([
+        { name: 'buscar_kb', arguments: { query: '{{pregunta}}' } },
+        { name: 'horarios', arguments: {} },
+      ]);
+    });
+
+    it('BE-CS-21: POST de un MCP con tools mal formadas devuelve 400 y no guarda nada', async () => {
+      const cases = [
+        { tools: 'buscar_kb' },
+        { tools: [{ arguments: {} }] },
+        { tools: [{ name: 'a' }, { name: 'a' }] },
+        { tools: [{ name: 'a', arguments: ['no', 'objeto'] }] },
+      ];
+      for (const extra of cases) {
+        const name = `MCP inválido ${Date.now()}-${Math.random()}`;
+        const res = await withAuth(http(t).post('/context-sources'), tokenA, tenantA.id).send({
+          name,
+          type: 'mcp',
+          config: { ...mcpConfig(), ...extra },
+        });
+        expect(res.status).toBe(400);
+        expect(await t.prisma.contextSource.findFirst({ where: { name } })).toBeNull();
+      }
+    });
+
+    it('BE-CS-22: POST /mcp/tools descubre las tools con la config sin guardar y, editando, completa el secreto guardado', async () => {
+      const draft = await withAuth(http(t).post('/context-sources/mcp/tools'), tokenA, tenantA.id).send({
+        config: mcpConfig(),
+      });
+      expect(draft.status).toBe(201);
+      expect(draft.body.ok).toBe(true);
+      expect(draft.body.tools.map((x: { name: string }) => x.name)).toEqual(['buscar_kb', 'horarios', 'rota']);
+
+      // Editando: el frontend nunca tiene el apiKey en claro, así que no lo manda — se toma
+      // el cifrado de la base.
+      const create = await withAuth(http(t).post('/context-sources'), tokenA, tenantA.id).send({
+        name: `MCP editando ${Date.now()}`,
+        type: 'mcp',
+        config: mcpConfig(),
+      });
+      const { apiKey: _omit, ...sinSecreto } = mcpConfig();
+      const editing = await withAuth(http(t).post('/context-sources/mcp/tools'), tokenA, tenantA.id).send({
+        sourceId: create.body.id,
+        config: sinSecreto,
+      });
+      expect(editing.body.ok).toBe(true);
+
+      // Sin secreto ni fuente guardada de donde tomarlo: el servidor rechaza (401).
+      const sinAuth = await withAuth(http(t).post('/context-sources/mcp/tools'), tokenA, tenantA.id).send({
+        config: sinSecreto,
+      });
+      expect(sinAuth.body.ok).toBe(false);
+      expect(sinAuth.body.message).toContain('401');
+    });
+
+    it('BE-CS-23: POST /mcp/tools sin permiso de crear/editar fuentes devuelve 403; con una fuente de otra empresa, 404', async () => {
+      const sinPermiso = await withAuth(http(t).post('/context-sources/mcp/tools'), tokenSinPermiso, tenantC.id).send({
+        config: mcpConfig(),
+      });
+      expect(sinPermiso.status).toBe(403);
+
+      const ajena = await createContextSource(t.prisma, {
+        tenantId: tenantB.id,
+        name: `MCP ajena ${Date.now()}`,
+        type: 'mcp',
+        config: { serverUrl: `${fake.baseUrl}/mcp` },
+      });
+      const res = await withAuth(http(t).post('/context-sources/mcp/tools'), tokenA, tenantA.id).send({
+        sourceId: ajena.id,
+        config: {},
+      });
+      expect(res.status).toBe(404);
+    });
+  });
 
   it.skip(
     'BE-CS-17: test-connection de una fuente RAG comprueba alcanzabilidad HTTP contra la URL configurada [BLOQUEADO: requiere un servicio RAG real respondiendo]',

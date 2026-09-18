@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { BrokerService, BrokerMessage } from '../../broker/broker.service';
+import { McpToolInfo, callMcpTool, listMcpTools, readConfiguredTools, withMcpSession } from './mcp-client';
 
 /** Cola RPC de "probar conexión". Ver AGENTS.md § Broker / RabbitMQ — patrón RPC. */
 export const CONTEXT_SOURCE_TEST_QUEUE = 'context-source.test-connection';
@@ -13,6 +14,13 @@ export const CONTEXT_SOURCE_TEST_QUEUE = 'context-source.test-connection';
  */
 export const CONTEXT_SOURCE_QUERY_QUEUE = 'context-source.query';
 
+/**
+ * Cola RPC de "descubrir tools" de un servidor MCP (`tools/list`), para que el
+ * formulario de alta/edición ofrezca las tools reales del servidor en vez de que el
+ * admin tipee los nombres a ciegas. Solo aplica al tipo `mcp`.
+ */
+export const CONTEXT_SOURCE_MCP_TOOLS_QUEUE = 'context-source.mcp.list-tools';
+
 const TEST_TIMEOUT_MS = 20_000;
 /** Más generoso que TEST_TIMEOUT_MS: acá puede haber un RAG "razonando" de verdad
  *  del otro lado, no solo un chequeo de alcanzabilidad. */
@@ -23,6 +31,14 @@ export interface ConnectionTestResult {
   message: string;
   latencyMs: number;
   statusCode?: number;
+}
+
+export interface McpToolsListResult {
+  ok: boolean;
+  message: string;
+  latencyMs: number;
+  /** Presente solo si `ok`. */
+  tools?: McpToolInfo[];
 }
 
 export interface ContextSourceQueryResult {
@@ -51,10 +67,10 @@ export interface ContextSourceQueryResult {
  * flujos), que si puede vivir en un proceso/worker separado. Ver
  * docs/plan-de-trabajo.md, sección "Fuentes de verdad — pendiente".
  *
- * Los connectors de acá son deliberadamente simples para esta primera etapa: un
- * chequeo de alcanzabilidad HTTP, no una validación completa del protocolo de cada
- * tipo (el handshake JSON-RPC de MCP, el contrato de query de un RAG específico).
- * Ver la misma sección de pendientes.
+ * `mcp` y `broker` hablan su protocolo completo (MCP: `initialize` → `tools/list` →
+ * `tools/call`, ver `mcp-client.ts`). `rag`/`n8n` siguen con un chequeo de
+ * alcanzabilidad HTTP, sin contrato de consulta definido — ver la misma sección de
+ * pendientes.
  */
 @Injectable()
 export class ContextSourceConnectorService implements OnModuleInit {
@@ -65,6 +81,23 @@ export class ContextSourceConnectorService implements OnModuleInit {
   async onModuleInit() {
     await this.broker.subscribe(CONTEXT_SOURCE_TEST_QUEUE, this.handleTestConnection.bind(this));
     await this.broker.subscribe(CONTEXT_SOURCE_QUERY_QUEUE, this.handleQuery.bind(this));
+    await this.broker.subscribe(CONTEXT_SOURCE_MCP_TOOLS_QUEUE, this.handleListMcpTools.bind(this));
+  }
+
+  private async handleListMcpTools(msg: BrokerMessage): Promise<void> {
+    const { config } = msg.data as { config: Record<string, unknown> };
+    const result = await this.listMcpTools(config);
+
+    if (!msg.replyTo) {
+      this.logger.warn('Mensaje de mcp.list-tools sin replyTo: no hay a quién responderle');
+      return;
+    }
+
+    await this.broker.publish(
+      msg.replyTo,
+      { pattern: 'context-source.mcp.list-tools.result', data: result, correlationId: msg.correlationId },
+      { assert: false },
+    );
   }
 
   private async handleTestConnection(msg: BrokerMessage): Promise<void> {
@@ -110,7 +143,7 @@ export class ContextSourceConnectorService implements OnModuleInit {
   private async testConnection(type: string, config: Record<string, unknown>): Promise<ConnectionTestResult> {
     switch (type) {
       case 'mcp':
-        return this.testHttpReachable(String(config.serverUrl ?? ''), this.mcpAuthHeaders(config));
+        return this.testMcp(config);
       case 'rag':
         return this.testHttpReachable(String(config.endpointUrl ?? ''), this.bearerHeaders(config.apiKey));
       case 'n8n':
@@ -125,14 +158,16 @@ export class ContextSourceConnectorService implements OnModuleInit {
   /**
    * Consulta real con la pregunta del usuario, para cuando la charla se sale del
    * flujo armado (ver `ConversationsService.orchestratorLlm`). A diferencia de
-   * `testConnection`, hoy solo `broker` tiene un contrato de pregunta/respuesta
-   * definido — `mcp` (handshake JSON-RPC) y `rag`/`n8n` (contrato de request propio
-   * de cada servicio) quedan pendientes, ver docs/plan-de-trabajo.md.
+   * `testConnection`, solo `broker` y `mcp` tienen un contrato de pregunta/respuesta
+   * definido — `rag`/`n8n` (contrato de request propio de cada servicio) quedan
+   * pendientes, ver docs/plan-de-trabajo.md.
    */
   private async query(type: string, config: Record<string, unknown>, question: string): Promise<ContextSourceQueryResult> {
     switch (type) {
       case 'broker':
         return this.queryBroker(config, question);
+      case 'mcp':
+        return this.queryMcp(config, question);
       default:
         return {
           ok: false,
@@ -142,13 +177,108 @@ export class ContextSourceConnectorService implements OnModuleInit {
     }
   }
 
-  private mcpAuthHeaders(config: Record<string, unknown>): Record<string, string> {
-    const authType = config.authType;
-    const apiKey = typeof config.apiKey === 'string' ? config.apiKey : '';
-    if (!apiKey) return {};
-    if (authType === 'bearer') return { Authorization: `Bearer ${apiKey}` };
-    if (authType === 'apiKey') return { 'x-api-key': apiKey };
-    return {};
+  /**
+   * "Probar conexión" de un MCP con el protocolo de verdad, no un GET a la URL (que
+   * en Streamable HTTP responde 405 aunque el servidor ande perfecto, y en SSE deja
+   * un stream abierto): `initialize` + `tools/list`, y además verifica que las tools
+   * configuradas en la conexión sigan existiendo en el servidor — si alguna falta,
+   * la consulta real va a fallar, así que es un `ok:false` con el detalle.
+   */
+  private async testMcp(config: Record<string, unknown>): Promise<ConnectionTestResult> {
+    const start = Date.now();
+    try {
+      const { serverName, tools } = await withMcpSession(config, TEST_TIMEOUT_MS, async (client, remaining) => ({
+        serverName: client.getServerVersion()?.name,
+        tools: await listMcpTools(client, remaining),
+      }));
+      const latencyMs = Date.now() - start;
+      const available = new Set(tools.map((t) => t.name));
+      const configured = readConfiguredTools(config).map((t) => t.name);
+      const missing = configured.filter((name) => !available.has(name));
+      const head =
+        `Conectado a ${serverName ? `"${serverName}"` : 'el servidor MCP'} en ${latencyMs}ms — ` +
+        `${tools.length} tools disponibles`;
+
+      if (missing.length) {
+        return { ok: false, latencyMs, message: `${head}, pero no existen: ${missing.join(', ')}` };
+      }
+      if (!configured.length) {
+        return { ok: true, latencyMs, message: `${head}. Todavía no hay ninguna configurada para consultar.` };
+      }
+      return { ok: true, latencyMs, message: `${head}; configuradas: ${configured.join(', ')}` };
+    } catch (err) {
+      return { ok: false, latencyMs: Date.now() - start, message: this.mcpErrorMessage(err) };
+    }
+  }
+
+  private async listMcpTools(config: Record<string, unknown>): Promise<McpToolsListResult> {
+    const start = Date.now();
+    try {
+      const tools = await withMcpSession(config, TEST_TIMEOUT_MS, (client, remaining) =>
+        listMcpTools(client, remaining),
+      );
+      const latencyMs = Date.now() - start;
+      return { ok: true, tools, latencyMs, message: `${tools.length} tools encontradas en ${latencyMs}ms` };
+    } catch (err) {
+      return { ok: false, latencyMs: Date.now() - start, message: this.mcpErrorMessage(err) };
+    }
+  }
+
+  /**
+   * Consulta real contra un MCP: abre sesión e invoca, en paralelo y con la pregunta
+   * interpolada en sus argumentos (`{{pregunta}}`), TODAS las tools configuradas en la
+   * conexión. Invocación determinística a propósito, mismo criterio que
+   * `orchestratorLlm` con la fuente de verdad: no queda a criterio del LLM decidir si
+   * consultar. Con varias tools, cada resultado va bajo un encabezado con el nombre de
+   * la tool; alcanza con que una responda para que la consulta sea `ok` (las que
+   * fallaron quedan en `message`, que el caller loguea).
+   */
+  private async queryMcp(config: Record<string, unknown>, question: string): Promise<ContextSourceQueryResult> {
+    const tools = readConfiguredTools(config);
+    if (!tools.length) {
+      return { ok: false, latencyMs: 0, message: 'La conexión MCP no tiene ninguna tool configurada para consultar' };
+    }
+
+    const start = Date.now();
+    try {
+      const settled = await withMcpSession(config, QUERY_TIMEOUT_MS, (client, remaining) =>
+        Promise.allSettled(tools.map((tool) => callMcpTool(client, tool, question, remaining))),
+      );
+      const latencyMs = Date.now() - start;
+
+      const answers: { name: string; text: string }[] = [];
+      const failures: string[] = [];
+      settled.forEach((r, i) => {
+        if (r.status === 'fulfilled') answers.push({ name: tools[i].name, text: r.value });
+        else failures.push(`${tools[i].name}: ${this.mcpErrorMessage(r.reason)}`);
+      });
+
+      if (!answers.length) {
+        return { ok: false, latencyMs, message: `Ninguna tool respondió — ${failures.join(' | ')}` };
+      }
+      const answer =
+        tools.length === 1 ? answers[0].text : answers.map((a) => `### ${a.name}\n${a.text}`).join('\n\n');
+      const message = failures.length
+        ? `Respondieron ${answers.length}/${tools.length} tools en ${latencyMs}ms — fallaron: ${failures.join(' | ')}`
+        : `Respondió en ${latencyMs}ms`;
+      return { ok: true, answer, message, latencyMs };
+    } catch (err) {
+      return { ok: false, latencyMs: Date.now() - start, message: this.mcpErrorMessage(err) };
+    }
+  }
+
+  /**
+   * Errores del SDK/fetch a un texto útil para el admin: los de red vienen anidados en
+   * `cause`, y los HTTP del transporte traen el status en `code` pero no en el mensaje.
+   */
+  private mcpErrorMessage(err: unknown): string {
+    if (!(err instanceof Error)) return String(err);
+    const { cause, code } = err as { cause?: unknown; code?: unknown };
+    const detail =
+      cause instanceof Error && cause.message && !err.message.includes(cause.message) ? ` (${cause.message})` : '';
+    const status = typeof code === 'number' && code >= 400 && code < 600 ? `HTTP ${code} — ` : '';
+    const hint = code === 401 || code === 403 ? ' Revisá la autenticación y la API key.' : '';
+    return `${status}${err.message}${detail}${hint}`;
   }
 
   private bearerHeaders(apiKey: unknown): Record<string, string> {

@@ -7,15 +7,19 @@ import { BrokerService } from '../broker/broker.service';
 import { CreateContextSourceDto, UpdateContextSourceDto } from './dto/context-source.dto';
 import {
   CONTEXT_SOURCE_TYPES,
+  ContextSourceFieldDefinition,
   getContextSourceType,
   isValidContextSourceType,
 } from './context-source-types.catalog';
 import {
   CONTEXT_SOURCE_TEST_QUEUE,
   CONTEXT_SOURCE_QUERY_QUEUE,
+  CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
   ConnectionTestResult,
   ContextSourceQueryResult,
+  McpToolsListResult,
 } from './broker/context-source-connector.service';
+import type { McpToolConfig } from './broker/mcp-client';
 
 // Debe quedar por encima de TEST_TIMEOUT_MS (context-source-connector.service.ts):
 // este timeout envuelve por RPC a ese chequeo interno, así que si vencen a la vez
@@ -25,6 +29,9 @@ const TEST_CONNECTION_TIMEOUT_MS = 22_000;
 
 // Mismo motivo que TEST_CONNECTION_TIMEOUT_MS, por encima de QUERY_TIMEOUT_MS.
 const QUERY_TIMEOUT_MS = 32_000;
+
+/** Cada tool configurada es un `tools/call` por mensaje del usuario: acotado a propósito. */
+const MAX_MCP_TOOLS = 10;
 
 /**
  * Fuentes de verdad (MCP / RAG / n8n) del tenant activo.
@@ -242,6 +249,48 @@ export class ContextSourcesService {
     }
   }
 
+  /**
+   * "Descubrir tools" (`tools/list`) de un servidor MCP para el formulario de
+   * alta/edición. Trabaja sobre la config que está en pantalla, todavía sin guardar
+   * (`draftConfig`) — así se pueden elegir las tools antes de crear la conexión. Si se
+   * está editando una existente (`sourceId`), la base es su config guardada: los
+   * secretos nunca vuelven al frontend en claro, así que un `apiKey` que no viene en el
+   * body se toma de la base (mismo criterio que `mergeConfigForWrite`).
+   */
+  async listMcpTools(
+    tenantId: string,
+    sourceId: string | undefined,
+    draftConfig: Record<string, unknown>,
+  ): Promise<McpToolsListResult> {
+    let config: Record<string, unknown> = {};
+    if (sourceId) {
+      const stored = await this.getResolvedConfig(tenantId, sourceId);
+      if (stored.type !== 'mcp') throw new BadRequestException('La fuente de verdad no es de tipo MCP');
+      config = stored.config;
+    }
+    for (const field of getContextSourceType('mcp')?.fields ?? []) {
+      const incoming = draftConfig[field.key];
+      if (incoming === undefined) continue;
+      if (incoming === null || incoming === '') delete config[field.key];
+      else config[field.key] = incoming;
+    }
+
+    try {
+      const reply = await this.broker.request(
+        CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
+        { pattern: 'context-source.mcp.list-tools', data: { config }, tenantId },
+        { timeoutMs: TEST_CONNECTION_TIMEOUT_MS },
+      );
+      return reply.data as McpToolsListResult;
+    } catch (err) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        message: err instanceof Error ? err.message : 'No se pudieron listar las tools del servidor MCP',
+      };
+    }
+  }
+
   // --- helpers ---
 
   private async getOwned(tenantId: string, id: string) {
@@ -284,9 +333,41 @@ export class ContextSourcesService {
     for (const field of typeDef?.fields ?? []) {
       const value = input[field.key];
       if (value === undefined || value === null || value === '') continue;
-      out[field.key] = field.secret ? this.cipher.encrypt(String(value)) : value;
+      out[field.key] = this.normalizeForWrite(field, value);
     }
     return out;
+  }
+
+  /** Cifra los `secret` y valida/normaliza los campos estructurados (`mcpTools`). */
+  private normalizeForWrite(field: ContextSourceFieldDefinition, value: unknown): unknown {
+    if (field.secret) return this.cipher.encrypt(String(value));
+    if (field.type === 'mcpTools') return this.normalizeMcpTools(field.label, value);
+    return value;
+  }
+
+  /**
+   * `config.tools` de un `mcp`: `[{ name, arguments }]`. Se valida acá (y no en el DTO)
+   * porque `config` es un Json libre cuyo shape depende del `type` — mismo criterio que
+   * el resto del catálogo. `arguments` es la plantilla con `{{pregunta}}`, ver
+   * `broker/mcp-client.ts`.
+   */
+  private normalizeMcpTools(label: string, value: unknown): McpToolConfig[] {
+    if (!Array.isArray(value)) throw new BadRequestException(`"${label}" debe ser una lista de tools`);
+    if (value.length > MAX_MCP_TOOLS) {
+      throw new BadRequestException(`"${label}": como máximo ${MAX_MCP_TOOLS} tools por conexión`);
+    }
+    const seen = new Set<string>();
+    return value.map((item, i) => {
+      const name = item && typeof item === 'object' && typeof item.name === 'string' ? item.name.trim() : '';
+      if (!name) throw new BadRequestException(`"${label}": la tool #${i + 1} no tiene nombre`);
+      if (seen.has(name)) throw new BadRequestException(`"${label}": la tool "${name}" está repetida`);
+      seen.add(name);
+      const args = item.arguments ?? {};
+      if (typeof args !== 'object' || Array.isArray(args)) {
+        throw new BadRequestException(`"${label}": los argumentos de "${name}" deben ser un objeto JSON`);
+      }
+      return { name, arguments: args as Record<string, unknown> };
+    });
   }
 
   /**
@@ -309,7 +390,7 @@ export class ContextSourcesService {
         continue;
       }
       if (incoming === null || incoming === '') continue;
-      out[field.key] = field.secret ? this.cipher.encrypt(String(incoming)) : incoming;
+      out[field.key] = this.normalizeForWrite(field, incoming);
     }
     return out;
   }

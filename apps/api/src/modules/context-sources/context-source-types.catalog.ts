@@ -17,7 +17,13 @@
  * o el nombre de una cola para el tipo `broker`), nunca un proceso local.
  */
 
-export type ContextSourceFieldType = 'string' | 'number' | 'select' | 'boolean';
+/**
+ * `mcpTools`: lista estructurada de tools de un servidor MCP a invocar en cada consulta,
+ * `[{ name, arguments }]` (ver `McpToolConfig` en `broker/mcp-client.ts`). No es un
+ * input plano: el frontend la dibuja con su propio editor (descubrir tools del servidor
+ * + plantilla de argumentos) y `ContextSourcesService` la valida al guardar.
+ */
+export type ContextSourceFieldType = 'string' | 'number' | 'select' | 'boolean' | 'mcpTools';
 
 export interface ContextSourceFieldOption {
   value: string;
@@ -59,7 +65,8 @@ export const CONTEXT_SOURCE_TYPES: ContextSourceTypeDefinition[] = [
     label: 'MCP (Model Context Protocol)',
     description:
       'Servidor MCP remoto ya desplegado. Se conecta por HTTP/SSE — no se instala ' +
-      'ni se hostea ningún servidor acá.',
+      'ni se hostea ningún servidor acá. Cada conexión define una o más tools del ' +
+      'servidor que se invocan con la pregunta del usuario.',
     fields: [
       {
         key: 'serverUrl',
@@ -96,6 +103,16 @@ export const CONTEXT_SOURCE_TYPES: ContextSourceTypeDefinition[] = [
         secret: true,
         placeholder: 'sk-xxxxxxxxxxxxxxxxxxxx',
         helpText: 'Solo hace falta si Autenticación no es "Sin autenticación".',
+      },
+      {
+        key: 'tools',
+        type: 'mcpTools',
+        label: 'Tools a invocar',
+        helpText:
+          'En cada consulta se invocan TODAS las tools de esta lista, en paralelo, y sus ' +
+          'resultados se le pasan al LLM como contexto. En los argumentos, "{{pregunta}}" se ' +
+          'reemplaza por el mensaje del usuario. Usá "Descubrir tools" para traer las que ' +
+          'expone el servidor.',
       },
     ],
   },

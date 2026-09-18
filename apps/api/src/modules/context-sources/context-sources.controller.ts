@@ -1,11 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ContextSourcesService } from './context-sources.service';
-import { CreateContextSourceDto, UpdateContextSourceDto } from './dto/context-source.dto';
+import { CreateContextSourceDto, ListMcpToolsDto, UpdateContextSourceDto } from './dto/context-source.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 import { SystemTenantGuard } from '../../common/guards/system-tenant.guard';
-import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
+import { RequireAnyPermission, RequirePermission } from '../rbac/decorators/require-permission.decorator';
 import { RolesGuard } from '../rbac/guards/roles.guard';
 
 @Controller('context-sources')
@@ -74,6 +74,20 @@ export class ContextSourcesController {
   @RequirePermission('context-sources', 'delete')
   async remove(@Param('id') id: string, @CurrentTenant() tenantId: string) {
     return this.contextSourcesService.remove(tenantId, id);
+  }
+
+  /**
+   * "Descubrir tools" (`tools/list`) de un servidor MCP con la config del formulario, antes
+   * de guardarla. Pide `create` o `update` (no alcanza `read`): a diferencia de
+   * test-connection, la URL viene del body, así que es alguien armando una conexión.
+   */
+  @Post('mcp/tools')
+  @RequireAnyPermission(
+    { resource: 'context-sources', action: 'create' },
+    { resource: 'context-sources', action: 'update' },
+  )
+  async listMcpTools(@Body() dto: ListMcpToolsDto, @CurrentTenant() tenantId: string) {
+    return this.contextSourcesService.listMcpTools(tenantId, dto.sourceId, dto.config);
   }
 
   @Post(':id/test-connection')

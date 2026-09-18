@@ -43,3 +43,17 @@ export class UpdateContextSourceDto {
   @IsOptional()
   isActive?: boolean;
 }
+
+/**
+ * "Descubrir tools" de un MCP (`POST /context-sources/mcp/tools`). `config` es la del
+ * formulario, sin guardar; `sourceId` (opcional) es la conexión que se está editando,
+ * de donde se completan los secretos que el frontend no tiene en claro.
+ */
+export class ListMcpToolsDto {
+  @IsString()
+  @IsOptional()
+  sourceId?: string;
+
+  @IsObject()
+  config: Record<string, unknown>;
+}
