@@ -21,6 +21,13 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname, "../.."),
   },
+  // Caché persistente de Turbopack en dev (`.next/dev`) desactivada: se corrompió tras cortes
+  // abruptos (procesos node matados, PC colgada) y al arrancar con ella corrupta `next dev`
+  // lanzaba decenas de procesos node hasta agotar la memoria del sistema y colgar la PC.
+  // Costo: cada arranque compila de cero (~30s en vez de <1s). No reactivar sin revisar eso.
+  experimental: {
+    turbopackFileSystemCacheForDev: false,
+  },
   // Permite un directorio de build alternativo (default `.next`). Lo usan los tests e2e para
   // compilar un web aislado sin pisar el `.next` del dev server que corre en paralelo. Sin la
   // env var, el comportamiento es el de siempre.
