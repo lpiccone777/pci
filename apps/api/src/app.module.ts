@@ -25,6 +25,7 @@ import { SmsModule } from './modules/sms/sms.module';
 import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
 import { SkillsModule } from './modules/skills/skills.module';
 import { ScheduleCalendarModule } from './modules/schedule-calendar/schedule-calendar.module';
+import { TitanSyncModule } from './modules/titan-sync/titan-sync.module';
 
 @Module({
   imports: [
@@ -53,6 +54,8 @@ import { ScheduleCalendarModule } from './modules/schedule-calendar/schedule-cal
     ContextSourcesModule,
     SkillsModule,
     ScheduleCalendarModule,
+    // Módulo instalable: se enciende con TITAN_SYNC_ENABLED (ver titan-sync.module.ts).
+    TitanSyncModule,
   ],
   controllers: [AppController],
   providers: [AppService, TenantGuard],

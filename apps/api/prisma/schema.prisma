@@ -51,6 +51,7 @@ model User {
   tickets           Ticket[]           @relation("TicketReporter")
   assignedTickets   Ticket[]           @relation("TicketAssignee")
   metrics           Metric[]
+  titanLinks        TitanUserLink[]
 }
 
 model Tenant {
@@ -78,6 +79,8 @@ model Tenant {
   contextSources          ContextSource[]
   skills                  Skill[]
   scheduleCalendarEntries ScheduleCalendarEntry[]
+  titanConnection         TitanConnection?
+  titanUserLinks          TitanUserLink[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -522,4 +525,57 @@ model FlowAlternative {
 
   @@unique([baseFlowId, type])
   @@index([baseFlowId])
+}
+
+// --- Módulo titan-sync (importación de usuarios desde TitanHR) ---
+// Tablas propias del módulo: el núcleo (User/UserTenant/Role) no sabe nada de Titan, solo
+// tiene las back-relations que Prisma exige. Si el módulo se desactiva
+// (`TITAN_SYNC_ENABLED=false`), estas tablas quedan inertes.
+
+// Conexión de UNA empresa de PCI con su TitanHR, vía un usuario técnico de rol IT (mismo
+// criterio que Invgate: nunca con credenciales del usuario final). Por tenant y no en
+// `Setting` porque `Setting.key` es único global y cada empresa puede apuntar a otra
+// instancia o usuario técnico. La contraseña se guarda cifrada con `SecretsCipher` y es de
+// solo escritura: la API devuelve un enmascarado y `itPasswordIsSet`, jamás el valor.
+model TitanConnection {
+  id            String    @id @default(cuid())
+  tenantId      String    @unique
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // URL base de la API de Titan, sin el sufijo /api (ej. https://titan.empresa.com).
+  baseUrl       String
+  itEmail       String
+  itPassword    String?
+  lastImportAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// Vínculo de un usuario de PCI con su usuario de TitanHR dentro de una empresa. Guarda lo
+// necesario para que, más adelante, ese usuario pueda obtener un token de Titan (el email
+// de login y el userId) y los roles de Titan COMPLETOS: Titan no tiene rol primario y los
+// flujos van a armar condiciones sobre esta lista. El rol de PCI (`UserTenant.roleId`) es
+// otra cosa: gobierna los permisos del backoffice y se elige al importar.
+// `titanRoles` es una foto del momento de la importación; se refresca re-importando.
+model TitanUserLink {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  titanUserId      Int
+  // Email de login en Titan. Coincide con `User.email` al importar, pero se guarda aparte
+  // porque es la credencial de Titan y el email de PCI se puede editar.
+  titanEmail       String
+  titanPersonId    String?
+  titanCompanyId   String?
+  titanCompanyName String?
+  titanRoles       String[]
+  titanLocked      Boolean  @default(false)
+  lastSyncedAt     DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([tenantId, titanUserId])
+  @@unique([userId, tenantId])
+  @@index([tenantId])
 }

@@ -115,7 +115,7 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **623 casos** · Backend 333 · Chatbot 152 · Frontend 138 · de los cuales **311 son `P0`**
+Total del plan: **633 casos** · Backend 343 · Chatbot 152 · Frontend 138 · de los cuales **311 son `P0`**
 (283 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
@@ -123,7 +123,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **333** |
+| **Backend (§1)** | | **343** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -147,6 +147,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
 | 1.22 Integración InvGate | 🟠 P1 | 17 |
 | 1.23 Skills | 🟠 P1 | 10 |
+| 1.25 Importación desde TitanHR | 🟠 P1 | 10 |
 | **Chatbot (§2)** | | **152** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
 | 2.2 Arranque de flujo | 🔴 P0 | 5 |
@@ -267,7 +268,7 @@ cuando hay permiso declarado).
 | BE-RBAC-14 | `GET /roles/:id/users` | Usuarios que tienen ese rol (id, email, nombre); pide `roles:read` |
 | BE-RBAC-15 | `GET /roles/all` y `GET /roles/by-tenant/:id` desde el tenant de sistema (positivo de BE-RBAC-10) | `all` = roles de todas las empresas (excluye las dadas de baja); `by-tenant` = los de la empresa del path |
 | BE-RBAC-16 | `GET /roles/mine` | Roles de las empresas donde el usuario tiene `roles:read`; `[]` si en ninguna |
-| BE-RBAC-17 | `GET /roles/catalog` | El catálogo de permisos (15 recursos × 4 acciones; el 15º es `skills`) con el que se dibuja la matriz del backoffice |
+| BE-RBAC-17 | `GET /roles/catalog` | El catálogo de permisos (17 recursos × 4 acciones; el 17º es `titan-sync`) con el que se dibuja la matriz del backoffice |
 | BE-RBAC-18 | `PATCH /roles/:id` renombrando un rol común | 200; nombre único por empresa (repetido → 409 "Ya existe un rol llamado X en esta empresa") |
 | BE-RBAC-19 | `PATCH /roles/:id` sobre el rol protegido (SuperAdmin de sistema) | 409 (`assertNotProtected`): no se puede renombrar |
 | BE-RBAC-20 | `DELETE /roles/:id` de un rol **sin** usuarios asignados | 200, lo elimina |
@@ -801,6 +802,28 @@ lista/botones interactivos; en SMS como texto numerado.
 | BE-ITR-04 | Responder el selector con el **número** de la empresa | `resolve` → `{ resolved, tenantId elegido, replayBody }` (reprocesa el mensaje original); borra el pendiente |
 | BE-ITR-05 | Responder el selector con algo **inválido** | `resolve` → `{ ask }` otra vez; conserva el pendiente (se re-pregunta; expira a las 12h) |
 | BE-ITR-06 | Multiempresa con una **conversación activa** en una empresa | `resolve` → esa empresa (continúa la charla), sin volver a preguntar. Una charla **cerrada** ya no cuenta: el próximo mensaje vuelve a preguntar |
+
+---
+
+## 1.25 Importación desde TitanHR (módulo `titan-sync`)
+
+**Precondición:** módulo encendido con `TITAN_SYNC_ENABLED=true`; conexión de la empresa cargada
+(`TitanConnection`: URL, usuario técnico IT, contraseña cifrada). Frontera simulada: solo el HTTP de
+TitanHR (`installFetchMock`) con el contrato de `docs/titanhr-rbac.md`. Spec:
+`apps/api/test/titan-sync.e2e-spec.ts`.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-TS-01 | Módulo apagado | `GET /titan-sync/status` → `{enabled:false}`; el resto de `/titan-sync/*` → 404 |
+| BE-TS-02 | Sin el permiso `titan-sync:<acción>` | 403 en conexión e importación |
+| BE-TS-03 | Guardar la conexión | Contraseña cifrada (`enc:v1:`), nunca devuelta (solo `itPasswordIsSet`); ausente = conservar, `''` = borrar |
+| BE-TS-04 | Probar conexión | Login IT → `GET /api/users` → logout; devuelve total y elegibles |
+| BE-TS-05 | Titan exige MFA al usuario técnico | `{ok:false}` con mensaje que menciona MFA, sin 500 |
+| BE-TS-06 | Previsualizar | Estado por usuario (nuevo / ya en PCI / otra empresa / vinculado) y elegibilidad (bloqueado, sin persona); el hash y el `mfaSecret` que expone Titan no viajan |
+| BE-TS-07 | Importar un usuario nuevo | Crea `User` + membresía con el rol de PCI elegido + `TitanUserLink` con **todos** los roles de Titan; celular normalizado a `+549…` |
+| BE-TS-08 | Re-importar / miembro existente / otra empresa / inexistente | Vinculado → `updated` (roles refrescados); miembro → `linked` sin pisar su teléfono; otra empresa → `skipped`; id inexistente → `skipped` |
+| BE-TS-09 | Teléfono no reconocido o ya en uso | Se importa sin teléfono y con aviso |
+| BE-TS-10 | Rol de PCI de otra empresa | 400 |
 
 ---
 

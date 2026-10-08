@@ -46,6 +46,7 @@ export type SettingGroup =
   | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
   | 'Integración: InvGate'
+  | 'Integración: TitanHR'
   | 'Simulación'
   | 'Otros';
 
@@ -669,6 +670,21 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'Asunto del email con el código que manda el nodo de flujo de validación de dispositivo, ' +
       'cuando alguien escribe por WhatsApp desde un dispositivo nuevo. No es el mismo email que ' +
       'el login del backoffice — ver OTP_EMAIL_SUBJECT.',
+  },
+
+  // --- Integración: TitanHR ---
+  // Interruptor del módulo titan-sync (importación de usuarios desde TitanHR). La conexión en
+  // sí (URL, usuario técnico IT, contraseña) NO va acá: es por empresa y se carga desde el
+  // botón "Importar desde Titan" de la lista de usuarios (tabla `TitanConnection`).
+  {
+    key: 'TITAN_SYNC_ENABLED',
+    type: 'boolean',
+    group: 'Integración: TitanHR',
+    label: 'Módulo de importación desde TitanHR',
+    defaultValue: 'false',
+    description:
+      'Habilita el botón "Importar desde Titan" en la lista de usuarios y sus endpoints ' +
+      '(/titan-sync). Apagado, el módulo queda inerte: no se puede configurar ni importar.',
   },
 
   // --- Integración: InvGate ---

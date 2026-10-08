@@ -1406,6 +1406,35 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
 
 ---
 
+## Importación de usuarios desde TitanHR (módulo `titan-sync`) ✅ COMPLETADO — primera etapa (pedido 2026-10-08)
+
+Módulo instalable (`apps/api/src/modules/titan-sync/`) que trae a una empresa de PCI los usuarios
+válidos de TitanHR. Relevamiento de Titan en `docs/titanhr-rbac.md`.
+
+- [x] Interruptor `TITAN_SYNC_ENABLED` en `/settings` (grupo "Integración: TitanHR", default apagado)
+- [x] Permiso `titan-sync` en el catálogo RBAC (read: ver/probar · update: conexión · create: importar)
+- [x] Conexión por empresa (`TitanConnection`): URL + usuario técnico de rol IT + contraseña cifrada
+      (AES-256-GCM, solo escritura)
+- [x] Previsualización: estado de cada usuario de Titan respecto de PCI y elegibilidad (no bloqueado,
+      con persona = no es cuenta técnica)
+- [x] Importación: crea usuario + membresía (rol de PCI elegido en el modal) + `TitanUserLink` con
+      `titanUserId`, email de login, `personId`, empresa y **todos** los roles de Titan
+      (Titan no tiene rol primario; los flujos van a armar condiciones sobre la lista)
+- [x] Teléfono tomado del celular de `hr.person_contacts` y normalizado al formato de WhatsApp
+- [x] Botón "Importar desde Titan" en la lista de usuarios (solo con el módulo encendido)
+- [x] e2e `titan-sync.e2e-spec.ts` (BE-TS-01..10) + unit de normalización de teléfonos
+
+**Pendiente / decidido para después:**
+- [ ] Obtener un token de Titan para el usuario que habla por WhatsApp. Titan **no** tiene login de
+      servicio ni impersonación: solo email + contraseña (+ MFA). Opciones evaluadas: link a una
+      página de login de PCI (la contraseña nunca pasa por WhatsApp/LLM) o un endpoint nuevo de
+      intercambio de token en Titan. El vínculo ya guarda lo necesario (`titanUserId`, `titanEmail`).
+- [ ] Condiciones de flujo sobre `TitanUserLink.titanRoles` (selección de flujo por rol de Titan)
+- [ ] Re-sincronización periódica (hoy los roles son una foto del momento de importar)
+- [ ] Avisar al equipo de Titan: `GET /api/users` devuelve la entidad completa (incluye hash de
+      contraseña y `mfaSecret`) y `/api/users` y `/api/roles` solo exigen `authGuard` (hallazgo 1 de
+      `docs/titanhr-rbac.md`)
+
 ## Flows alternativos por rol: Feriado / Guardia 🔄 EN PROGRESO (pedido 2026-08-25)
 
 Diseño completo en `docs/plan-subflows-feriados-guardias.md`. Cada flow "Principal" puede

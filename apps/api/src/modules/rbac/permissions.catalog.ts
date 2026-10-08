@@ -30,10 +30,10 @@ export interface PermissionAction {
 }
 
 /**
- * Los 16 recursos del sistema.
+ * Los 17 recursos del sistema.
  *
  * Hoy solo `users`, `tenants`, `roles`, `permissions`, `areas`, `settings`, `flows`,
- * `context-sources`, `skills` y `schedule-calendar` protegen alguna operación con
+ * `context-sources`, `skills`, `schedule-calendar` y `titan-sync` protegen alguna operación con
  * `@RequirePermission`. El resto se declara igual: son los módulos que todavía no se
  * protegieron, y tener el permiso disponible antes evita tener que repartirlo a mano el
  * día que se protejan.
@@ -57,6 +57,7 @@ export const PERMISSION_RESOURCES: readonly PermissionResource[] = [
   { key: 'context-sources', label: 'Fuentes de verdad' },
   { key: 'skills', label: 'Skills' },
   { key: 'schedule-calendar', label: 'Calendario de feriados/guardias' },
+  { key: 'titan-sync', label: 'Importación desde TitanHR' },
 ] as const;
 
 /** Las 4 acciones CRUD. `read` va primera porque es la que habilita a las demás. */
@@ -67,7 +68,7 @@ export const PERMISSION_ACTIONS: readonly PermissionAction[] = [
   { key: 'delete', label: 'Eliminar' },
 ] as const;
 
-/** Cantidad de permisos asignables: 16 recursos × 4 acciones = 64. */
+/** Cantidad de permisos asignables: 17 recursos × 4 acciones = 68. */
 export const PERMISSION_TOTAL = PERMISSION_RESOURCES.length * PERMISSION_ACTIONS.length;
 
 /** Un par recurso-acción, que es todo lo que hace falta para decidir si algo se permite. */

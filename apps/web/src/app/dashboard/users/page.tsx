@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
 import { ALL_TENANTS, SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
 import { ImportUsersModal } from './import-users-modal';
+import { TitanImportModal, fetchTitanStatus } from './titan-import-modal';
 
 export interface RoleOption {
   id: string;
@@ -167,8 +168,21 @@ export default function UsersPage() {
   const [viewing, setViewing] = useState<UserData | null>(null);
   /** Modal de carga masiva desde Excel, abierto. */
   const [importing, setImporting] = useState(false);
+  /** Modal de importación desde TitanHR, abierto. */
+  const [importingTitan, setImportingTitan] = useState(false);
+  /** Módulo titan-sync encendido (TITAN_SYNC_ENABLED). Si no, el botón ni aparece. */
+  const [titanEnabled, setTitanEnabled] = useState(false);
 
   const canCreate = hasPermission('users', 'create');
+  const canTitan = hasPermission('titan-sync', 'read');
+
+  useEffect(() => {
+    if (isAllTenants || !canTitan) {
+      setTitanEnabled(false);
+      return;
+    }
+    fetchTitanStatus().then((s) => setTitanEnabled(!!s?.enabled));
+  }, [activeTenant, isAllTenants, canTitan]);
 
   // Empresas donde el usuario común puede dar de alta: alcanza con `users:create`. El rol es
   // obligatorio en el alta, pero `GET /roles` ya es accesible con `users:create` (no hace falta
@@ -335,9 +349,17 @@ export default function UsersPage() {
     <div>
       <div className="flex items-center justify-between gap-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Usuarios</h1>
-        {canCreate && (
+        {(canCreate || titanEnabled) && (
           <div className="flex items-center gap-2">
-            {!isAllTenants && (
+            {titanEnabled && (
+              <button
+                onClick={() => setImportingTitan(true)}
+                className="border border-blue-600 text-blue-600 px-4 py-2 rounded hover:bg-blue-50 whitespace-nowrap"
+              >
+                Importar desde Titan
+              </button>
+            )}
+            {canCreate && !isAllTenants && (
               <button
                 onClick={() => setImporting(true)}
                 className="border border-blue-600 text-blue-600 px-4 py-2 rounded hover:bg-blue-50 whitespace-nowrap"
@@ -345,12 +367,14 @@ export default function UsersPage() {
                 Importar desde Excel
               </button>
             )}
-            <button
-              onClick={() => openModal(null)}
-              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 whitespace-nowrap"
-            >
-              Nuevo usuario
-            </button>
+            {canCreate && (
+              <button
+                onClick={() => openModal(null)}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 whitespace-nowrap"
+              >
+                Nuevo usuario
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -659,6 +683,14 @@ export default function UsersPage() {
           canEdit={canUpdateRow(viewing)}
           onEdit={() => openModal(viewing)}
           onClose={() => setViewing(null)}
+        />
+      )}
+
+      {importingTitan && titanEnabled && activeTenant && (
+        <TitanImportModal
+          tenantId={activeTenant}
+          onClose={() => setImportingTitan(false)}
+          onImported={afterSave}
         />
       )}
 

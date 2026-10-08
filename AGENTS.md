@@ -185,6 +185,24 @@ consulta la fuente vinculada por la cola RPC `context-source.query`. Responden c
 las tools configuradas en la conexión, ver `broker/mcp-client.ts`); `rag`/`n8n` todavía no
 tienen contrato de consulta. Detalle en `docs/plan-de-trabajo.md`.
 
+## Módulo `titan-sync` (importación desde TitanHR)
+
+Módulo instalable: tablas propias (`TitanConnection`, `TitanUserLink`), permiso propio
+(`titan-sync`) e interruptor `TITAN_SYNC_ENABLED` (apagado → todo 404 salvo `GET /titan-sync/status`,
+que el frontend usa para mostrar o no el botón). Ningún otro módulo depende de él.
+
+- **Usuario técnico IT por empresa**, nunca credenciales del usuario final (mismo criterio que
+  Invgate). La contraseña se cifra con `SecretsCipher` y es de solo escritura — ni siquiera el
+  enmascarado parcial de `mask()`: es una contraseña, se devuelve solo `••••••••` + `itPasswordIsSet`.
+- **Siempre `logout()` al terminar**: Titan limita sesiones concurrentes por usuario y revoca la
+  más vieja. `TitanSyncService.withClient` lo garantiza con `finally`.
+- **Rol de PCI ≠ roles de Titan.** `UserTenant.roleId` sigue gobernando el backoffice; los roles de
+  Titan van completos en `TitanUserLink.titanRoles` (Titan no tiene rol primario).
+- **El teléfono se normaliza** (`toWhatsappPhone`) al formato que compara exacto
+  `findMembershipByPhone`; si no se puede interpretar sin adivinar, se importa sin teléfono.
+- No se reutiliza a una persona de otra empresa (sería el "alta encubierta" que se quitó del alta
+  de usuarios): se reporta como `skipped`.
+
 ## Resolución del tenant
 
 El JWT identifica **a la persona y nada más**: `{ sub, email }`. El tenant activo viaja
