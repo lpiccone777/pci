@@ -10,7 +10,7 @@ import { LlmMessage } from '../llm/llm-provider.interface';
 import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
-import { ContextSourcesService } from '../context-sources/context-sources.service';
+import { AgentToolset, ContextSourcesService } from '../context-sources/context-sources.service';
 import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-tenant-routing.service';
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
@@ -2501,12 +2501,20 @@ export class ConversationsService implements OnModuleInit {
           content: m.content,
         }));
 
+        // Fuente MCP en modo agente: en vez de consultarla con la pregunta cruda, el LLM
+        // recibe sus tools y decide cuáles usar (ver `resolveAgentToolset`). Solo para la
+        // respuesta conversacional; el modo extracción sigue sin tools.
+        const agentToolset =
+          contextSourceId && !data.extractVariables?.length
+            ? await this.resolveAgentToolset(tenantId, contextSourceId, conversation.userId)
+            : null;
+
         // Fuente de verdad vinculada al flujo: igual que en `orchestratorLlm`, se
         // consulta siempre que esté presente, antes de generar la respuesta —
         // este nodo antes la ignoraba por completo aunque `executeNode` ya la
         // recibía como parámetro.
-        if (contextSourceId) {
-          const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
+        if (contextSourceId && !agentToolset) {
+          const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body, conversation.userId);
           if (knowledge.ok && knowledge.answer) {
             llmMessages.push({
               role: 'system',
@@ -2591,10 +2599,13 @@ export class ConversationsService implements OnModuleInit {
         // explícito pisaría el default de LlmService (LLM_TEMPERATURE de /settings) con
         // `undefined` en el merge (`{...defaults, ...tenantConfig}`), perdiendo la cascada
         // BD → env → default y cayendo al 0.7 hardcodeado de cada provider.
-        const responseText = await this.llmService.chat(llmMessages, {
+        const chatOptions = {
           systemPrompt,
           ...(data.temperature !== undefined ? { temperature: data.temperature } : {}),
-        });
+        };
+        const responseText = agentToolset
+          ? await this.chatWithAgentTools(llmMessages, agentToolset, chatOptions)
+          : await this.llmService.chat(llmMessages, chatOptions);
 
         return { responseText };
       }
@@ -3069,8 +3080,13 @@ export class ConversationsService implements OnModuleInit {
     // tal cual, así que la fuente terminaba sin consultarse). `queryKnowledge`
     // nunca tira (atrapa timeout/error internamente y devuelve `ok:false`).
     let knowledgeContext: string | null = null;
-    if (contextSourceId) {
-      const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
+    // Fuente MCP en modo agente: el LLM recibe las tools en vez del resultado de una
+    // consulta fija (ver `resolveAgentToolset`).
+    const agentToolset = contextSourceId
+      ? await this.resolveAgentToolset(tenantId, contextSourceId, conversation.userId)
+      : null;
+    if (contextSourceId && !agentToolset) {
+      const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body, conversation.userId);
       if (knowledge.ok && knowledge.answer) {
         knowledgeContext = knowledge.answer;
       } else {
@@ -3124,7 +3140,9 @@ export class ConversationsService implements OnModuleInit {
     }
 
     try {
-      const responseText = await this.llmService.chat(llmMessages);
+      const responseText = agentToolset
+        ? await this.chatWithAgentTools(llmMessages, agentToolset)
+        : await this.llmService.chat(llmMessages);
       return responseText;
     } catch (err) {
       // A diferencia de `interpretMenuChoice` (que tiene un fallback silencioso
@@ -3135,5 +3153,62 @@ export class ConversationsService implements OnModuleInit {
       this.logger.error(`orchestratorLlm: el proveedor LLM falló — ${err instanceof Error ? err.message : err}`);
       return 'Perdón, tuve un problema para responderte. ¿Podés reformular tu consulta o intentar de nuevo en un momento?';
     }
+  }
+
+  /**
+   * Toolset del modo agente de la fuente vinculada, o `null` si la fuente no está en modo
+   * agente o el proveedor LLM activo no soporta herramientas (en ese caso se sigue con la
+   * consulta fija de siempre, `queryKnowledge`). Nunca tira.
+   */
+  private async resolveAgentToolset(
+    tenantId: string,
+    contextSourceId: string,
+    userId: string,
+  ): Promise<AgentToolset | null> {
+    try {
+      const toolset = await this.contextSourcesService.getAgentToolset(tenantId, contextSourceId, userId);
+      if (!toolset) return null;
+      if (!(await this.llmService.supportsTools())) {
+        this.logger.warn(
+          `Fuente ${toolset.sourceName} en modo agente, pero el proveedor LLM activo no soporta herramientas: se responde sin consultarla`,
+        );
+        return null;
+      }
+      return toolset;
+    } catch (err) {
+      this.logger.warn(`resolveAgentToolset: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  /**
+   * Respuesta en modo agente: el LLM ve las tools de la fuente (ya filtradas por los permisos
+   * de la persona, si la conexión envía identidad) y las invoca por el broker. Sin tools
+   * disponibles (persona no vinculada, servicio caído) responde igual, avisando el motivo.
+   */
+  private async chatWithAgentTools(
+    llmMessages: LlmMessage[],
+    toolset: AgentToolset,
+    options: { systemPrompt?: string; temperature?: number } = {},
+  ): Promise<string> {
+    const guide =
+      `Tenés herramientas del servicio "${toolset.sourceName}" para consultar datos reales en nombre de la persona ` +
+      'que te escribe. Usalas cada vez que la pregunta dependa de esos datos y respondé solo con lo que devuelvan: ' +
+      'no inventes valores. Si una herramienta dice que no hay permiso o no encuentra el dato, explicáselo a la ' +
+      'persona con claridad. Los valores "***" están ocultos por privacidad.' +
+      (toolset.unavailable ? `\nAviso: ${toolset.unavailable}` : '');
+
+    // El aviso va después de los mensajes `system` iniciales (prompt base / Skill / nodo).
+    const firstNonSystem = llmMessages.findIndex((m) => m.role !== 'system');
+    const at = firstNonSystem === -1 ? llmMessages.length : firstNonSystem;
+    const messages: LlmMessage[] = [...llmMessages.slice(0, at), { role: 'system', content: guide }, ...llmMessages.slice(at)];
+
+    if (!toolset.tools.length) return this.llmService.chat(messages, options);
+    return this.llmService.chatWithTools(
+      messages,
+      toolset.tools,
+      (call) => toolset.call(call.name, call.arguments),
+      { ...options, maxSteps: toolset.maxSteps },
+    );
   }
 }

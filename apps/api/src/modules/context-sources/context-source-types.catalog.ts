@@ -105,14 +105,61 @@ export const CONTEXT_SOURCE_TYPES: ContextSourceTypeDefinition[] = [
         helpText: 'Solo hace falta si Autenticación no es "Sin autenticación".',
       },
       {
+        key: 'queryMode',
+        type: 'select',
+        label: 'Modo de consulta',
+        defaultValue: 'fixed',
+        options: [
+          { value: 'fixed', label: 'Tools fijas: se invocan todas con la pregunta' },
+          { value: 'agent', label: 'Agente: el LLM elige qué tools usar y con qué argumentos' },
+        ],
+        helpText:
+          'En modo agente el LLM del chatbot ve las tools del servidor y decide cuáles llamar ' +
+          '(function calling). Requiere un proveedor LLM con soporte de herramientas (OpenAI, ' +
+          'Claude, Gemini, OpenRouter, MiniMax); con OpenCode Go se responde sin consultar.',
+      },
+      {
         key: 'tools',
         type: 'mcpTools',
         label: 'Tools a invocar',
         helpText:
-          'En cada consulta se invocan TODAS las tools de esta lista, en paralelo, y sus ' +
-          'resultados se le pasan al LLM como contexto. En los argumentos, "{{pregunta}}" se ' +
-          'reemplaza por el mensaje del usuario. Usá "Descubrir tools" para traer las que ' +
-          'expone el servidor.',
+          'Modo "tools fijas": en cada consulta se invocan TODAS las tools de esta lista, en ' +
+          'paralelo, y sus resultados se le pasan al LLM como contexto. En los argumentos, ' +
+          '"{{pregunta}}" se reemplaza por el mensaje del usuario. Modo "agente": si la lista ' +
+          'tiene tools, el LLM solo puede usar esas; vacía = todas las que exponga el servidor. ' +
+          'Usá "Descubrir tools" para traer las que expone el servidor.',
+      },
+      {
+        key: 'identityMode',
+        type: 'select',
+        label: 'Identidad de la persona',
+        defaultValue: 'none',
+        options: [
+          { value: 'none', label: 'No enviar (el servidor ve siempre lo mismo)' },
+          { value: 'titan', label: 'Usuario de TitanHR vinculado (titan-sync)' },
+        ],
+        helpText:
+          'Con "Usuario de TitanHR" cada consulta viaja firmada en nombre de la persona que ' +
+          'escribe (su usuario de Titan importado con titan-sync), y el servidor MCP aplica sus ' +
+          'permisos: cada uno ve solo lo que le corresponde. Si la persona no está vinculada, ' +
+          'no se consulta la fuente.',
+      },
+      {
+        key: 'identitySecret',
+        type: 'string',
+        label: 'Secreto de identidad (HMAC)',
+        secret: true,
+        placeholder: 'mismo valor que MCP_IDENTITY_SECRETS del servidor',
+        helpText:
+          'Firma la identidad de la persona (JWT HS256 de 5 minutos). Tiene que coincidir con ' +
+          'uno de los secretos configurados en el servidor MCP. Obligatorio si se envía identidad.',
+      },
+      {
+        key: 'maxToolSteps',
+        type: 'number',
+        label: 'Máximo de pasos del agente',
+        defaultValue: '6',
+        helpText: 'Rondas de herramientas que puede encadenar el LLM por mensaje (modo agente).',
       },
     ],
   },

@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -41,6 +42,55 @@ const MAX_TOOL_RESULT_CHARS = 8_000;
 /** Tope de páginas de `tools/list` (un servidor con cursor roto no nos deja en loop). */
 const MAX_LIST_PAGES = 20;
 
+/**
+ * Persona en cuyo nombre se consulta un MCP con identidad (`identityMode: 'titan'`): su
+ * usuario de TitanHR, tal como lo dejó `titan-sync` en `TitanUserLink`.
+ */
+export interface McpIdentity {
+  titanUserId: number;
+  titanEmail: string;
+  /** Usuario de PCI, va como claim informativo para auditoría del lado del servidor. */
+  pciUserId: string;
+  tenantId: string;
+}
+
+/** Header que lee el servidor MCP de TitanHR (ver Titan_dev/mcp, auth/identity.ts). */
+export const MCP_IDENTITY_HEADER = 'X-Titan-User-Assertion';
+const MCP_IDENTITY_AUDIENCE = 'titanhr-mcp';
+const MCP_IDENTITY_TTL_S = 300;
+
+/**
+ * Aserción de identidad: JWT HS256 de vida corta firmado con el secreto compartido
+ * (`config.identitySecret`). El Bearer autentica a PCI como cliente; esto dice en nombre
+ * de QUIÉN pregunta, y el servidor aplica los permisos de esa persona. Se firma acá (en el
+ * connector, que ya tiene la config descifrada) y nunca se guarda.
+ */
+export function signMcpIdentity(identity: McpIdentity, secret: string, now = Math.floor(Date.now() / 1000)): string {
+  const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const header = enc({ alg: 'HS256', typ: 'JWT' });
+  const payload = enc({
+    sub: String(identity.titanUserId),
+    email: identity.titanEmail,
+    iss: 'pci',
+    aud: MCP_IDENTITY_AUDIENCE,
+    pci_user: identity.pciUserId,
+    pci_tenant: identity.tenantId,
+    iat: now,
+    exp: now + MCP_IDENTITY_TTL_S,
+  });
+  const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
+  return `${header}.${payload}.${signature}`;
+}
+
+/** Headers de identidad para la sesión, o error si la conexión pide identidad y no se puede firmar. */
+export function mcpIdentityHeaders(config: Record<string, unknown>, identity?: McpIdentity | null): Record<string, string> {
+  if (config.identityMode !== 'titan') return {};
+  const secret = typeof config.identitySecret === 'string' ? config.identitySecret : '';
+  if (!secret) throw new Error('La conexión envía identidad pero no tiene "Secreto de identidad" configurado');
+  if (!identity) throw new Error('La conexión requiere la identidad de la persona (usuario de TitanHR vinculado)');
+  return { [MCP_IDENTITY_HEADER]: signMcpIdentity(identity, secret) };
+}
+
 export function mcpAuthHeaders(config: Record<string, unknown>): Record<string, string> {
   const apiKey = typeof config.apiKey === 'string' ? config.apiKey : '';
   if (!apiKey) return {};
@@ -59,6 +109,7 @@ export async function withMcpSession<T>(
   config: Record<string, unknown>,
   timeoutMs: number,
   fn: (client: Client, remaining: () => number) => Promise<T>,
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const rawUrl = typeof config.serverUrl === 'string' ? config.serverUrl.trim() : '';
   if (!rawUrl) throw new Error('Falta la URL del servidor MCP');
@@ -77,7 +128,7 @@ export async function withMcpSession<T>(
     return left;
   };
 
-  const requestInit: RequestInit = { headers: mcpAuthHeaders(config) };
+  const requestInit: RequestInit = { headers: { ...mcpAuthHeaders(config), ...extraHeaders } };
   const transport: Transport =
     config.transport === 'http'
       ? new StreamableHTTPClientTransport(url, { requestInit })
@@ -129,6 +180,25 @@ export async function callMcpTool(
   if (result.isError) throw new Error(text || 'la tool devolvió error sin detalle');
   if (!text) throw new Error('la tool respondió sin contenido de texto');
   return text.length > MAX_TOOL_RESULT_CHARS ? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n[…resultado recortado]` : text;
+}
+
+/**
+ * Invoca una tool con argumentos ya armados (modo agente: los decide el LLM) y devuelve el
+ * resultado como texto sin tirar si la tool reporta error — en ese caso el texto del error
+ * vuelve al LLM, que se lo explica al usuario o prueba otra cosa.
+ */
+export async function callMcpToolWithArgs(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  remaining: () => number,
+): Promise<{ text: string; isError: boolean }> {
+  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: remaining() });
+  const text = toolResultToText(result) || (result.isError ? 'la tool devolvió error sin detalle' : '(sin contenido)');
+  return {
+    text: text.length > MAX_TOOL_RESULT_CHARS ? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n[…resultado recortado]` : text,
+    isError: Boolean(result.isError),
+  };
 }
 
 /** Reemplaza `{{pregunta}}` en todos los strings de la plantilla, a cualquier profundidad. */

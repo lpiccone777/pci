@@ -86,13 +86,13 @@ export class ContextSourcesController {
     { resource: 'context-sources', action: 'create' },
     { resource: 'context-sources', action: 'update' },
   )
-  async listMcpTools(@Body() dto: ListMcpToolsDto, @CurrentTenant() tenantId: string) {
-    return this.contextSourcesService.listMcpTools(tenantId, dto.sourceId, dto.config);
+  async listMcpTools(@Body() dto: ListMcpToolsDto, @CurrentTenant() tenantId: string, @Req() req: any) {
+    return this.contextSourcesService.listMcpTools(tenantId, dto.sourceId, dto.config, req.user?.userId);
   }
 
   @Post(':id/test-connection')
   @RequirePermission('context-sources', 'read')
-  async testConnection(@Param('id') id: string, @CurrentTenant() tenantId: string) {
-    return this.contextSourcesService.testConnection(tenantId, id);
+  async testConnection(@Param('id') id: string, @CurrentTenant() tenantId: string, @Req() req: any) {
+    return this.contextSourcesService.testConnection(tenantId, id, req.user?.userId);
   }
 }

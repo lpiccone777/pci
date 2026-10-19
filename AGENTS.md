@@ -185,6 +185,22 @@ consulta la fuente vinculada por la cola RPC `context-source.query`. Responden c
 las tools configuradas en la conexión, ver `broker/mcp-client.ts`); `rag`/`n8n` todavía no
 tienen contrato de consulta. Detalle en `docs/plan-de-trabajo.md`.
 
+**Modo agente (`mcp` con `queryMode: 'agent'`):** en vez de invocar tools fijas con la
+pregunta, el LLM recibe las tools del servidor y elige cuáles llamar (`LlmService.chatWithTools`,
+loop provider-agnostic; cada provider solo traduce turnos en `generateWithTools`). Reglas:
+
+- La lógica de negocio sigue sin tocar SDKs: el loop vive en `LlmService` y cada `tools/call`
+  viaja por el broker (`context-source.mcp.call-tool`), nunca un MCP directo desde conversaciones.
+- Un provider sin `generateWithTools` (hoy OpenCode Go) **no rompe nada**: `supportsTools()` da
+  false y se sigue por `queryKnowledge`. Al sumar un proveedor, implementar también
+  `generateWithTools` o queda fuera del modo agente.
+- Errores de una tool vuelven al LLM como resultado (texto), no cortan la charla.
+- **Identidad por persona** (`identityMode: 'titan'`): el connector firma un JWT HS256 de 5 min
+  con el `TitanUserLink` de quien escribe (`signMcpIdentity`). El secreto (`identitySecret`) es
+  un campo `secret` del catálogo. Sin vínculo → no se consulta y se avisa: **nunca** caer a una
+  consulta sin identidad, sería ver datos de otro. `ContextSourcesService` lee `TitanUserLink`
+  por Prisma sin importar `titan-sync`, para que ese módulo siga siendo instalable.
+
 ## Módulo `titan-sync` (importación desde TitanHR)
 
 Módulo instalable: tablas propias (`TitanConnection`, `TitanUserLink`), permiso propio

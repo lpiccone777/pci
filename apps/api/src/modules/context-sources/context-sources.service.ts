@@ -15,11 +15,37 @@ import {
   CONTEXT_SOURCE_TEST_QUEUE,
   CONTEXT_SOURCE_QUERY_QUEUE,
   CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
+  CONTEXT_SOURCE_MCP_CALL_QUEUE,
   ConnectionTestResult,
   ContextSourceQueryResult,
+  McpToolCallResult,
   McpToolsListResult,
 } from './broker/context-source-connector.service';
-import type { McpToolConfig } from './broker/mcp-client';
+import { readConfiguredTools, type McpIdentity, type McpToolConfig } from './broker/mcp-client';
+
+/** Herramienta que el modo agente le ofrece al LLM (mismo shape que `LlmToolDefinition`). */
+export interface AgentTool {
+  name: string;
+  description?: string;
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * Lo que necesita el motor de conversaciones para el modo agente de una fuente MCP: las
+ * tools que puede ofrecer al LLM (ya filtradas por la conexión y, si hay identidad, por los
+ * permisos de la persona en el servidor) y cómo invocarlas. `unavailable` explica por qué
+ * no hay tools (persona no vinculada, servidor caído…) para que el LLM se lo diga al usuario.
+ */
+export interface AgentToolset {
+  sourceName: string;
+  tools: AgentTool[];
+  maxSteps: number;
+  unavailable?: string;
+  call(name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+const DEFAULT_AGENT_STEPS = 6;
+const MAX_AGENT_STEPS = 12;
 
 // Debe quedar por encima de TEST_TIMEOUT_MS (context-source-connector.service.ts):
 // este timeout envuelve por RPC a ese chequeo interno, así que si vencen a la vez
@@ -200,13 +226,27 @@ export class ContextSourcesService {
    * el broker (patrón RPC, ver `ContextSourceConnectorService`) en vez de hacer el
    * `fetch` acá mismo — todo I/O externo pasa por el broker (AGENTS.md).
    */
-  async testConnection(tenantId: string, id: string): Promise<ConnectionTestResult> {
+  async testConnection(tenantId: string, id: string, userId?: string): Promise<ConnectionTestResult> {
     const { type, config } = await this.getResolvedConfig(tenantId, id);
+    // Con identidad, se prueba EN NOMBRE de quien aprieta el botón (su usuario de Titan vinculado):
+    // el servidor lista las tools que esa persona puede usar.
+    const identity = type === 'mcp' && config.identityMode === 'titan' && userId
+      ? await this.resolveTitanIdentity(tenantId, userId)
+      : null;
+    if (type === 'mcp' && config.identityMode === 'titan' && !identity) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        message:
+          'Esta conexión envía la identidad de la persona: para probarla, tu usuario tiene que estar ' +
+          'vinculado a un usuario de TitanHR (importalo con titan-sync).',
+      };
+    }
 
     try {
       const reply = await this.broker.request(
         CONTEXT_SOURCE_TEST_QUEUE,
-        { pattern: 'context-source.test-connection', data: { type, config }, tenantId },
+        { pattern: 'context-source.test-connection', data: { type, config, identity }, tenantId },
         { timeoutMs: TEST_CONNECTION_TIMEOUT_MS },
       );
       return reply.data as ConnectionTestResult;
@@ -228,15 +268,27 @@ export class ContextSourcesService {
    * el broker, cola separada (`CONTEXT_SOURCE_QUERY_QUEUE`) — ver
    * `ContextSourceConnectorService.query`.
    */
-  async queryKnowledge(tenantId: string, contextSourceId: string, question: string): Promise<ContextSourceQueryResult> {
+  async queryKnowledge(
+    tenantId: string,
+    contextSourceId: string,
+    question: string,
+    userId?: string,
+  ): Promise<ContextSourceQueryResult> {
     try {
       // A diferencia de `testConnection` (detrás de un controller: una excepción acá
       // se traduce sola en un 404 HTTP), esto corre en medio de una conversación —
       // nunca puede tirar, o el mensaje del usuario se pierde sin respuesta.
       const { type, config } = await this.getResolvedConfig(tenantId, contextSourceId);
+      let identity: McpIdentity | null = null;
+      if (type === 'mcp' && config.identityMode === 'titan') {
+        identity = userId ? await this.resolveTitanIdentity(tenantId, userId) : null;
+        if (!identity) {
+          return { ok: false, latencyMs: 0, message: 'La persona no está vinculada a un usuario de TitanHR' };
+        }
+      }
       const reply = await this.broker.request(
         CONTEXT_SOURCE_QUERY_QUEUE,
-        { pattern: 'context-source.query', data: { type, config, question }, tenantId },
+        { pattern: 'context-source.query', data: { type, config, question, identity }, tenantId },
         { timeoutMs: QUERY_TIMEOUT_MS },
       );
       return reply.data as ContextSourceQueryResult;
@@ -261,6 +313,7 @@ export class ContextSourcesService {
     tenantId: string,
     sourceId: string | undefined,
     draftConfig: Record<string, unknown>,
+    userId?: string,
   ): Promise<McpToolsListResult> {
     let config: Record<string, unknown> = {};
     if (sourceId) {
@@ -275,13 +328,19 @@ export class ContextSourcesService {
       else config[field.key] = incoming;
     }
 
+    const identity = config.identityMode === 'titan' && userId ? await this.resolveTitanIdentity(tenantId, userId) : null;
+    if (config.identityMode === 'titan' && !identity) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        message:
+          'Esta conexión envía la identidad de la persona: para descubrir tools, tu usuario tiene que estar ' +
+          'vinculado a un usuario de TitanHR (importalo con titan-sync).',
+      };
+    }
+
     try {
-      const reply = await this.broker.request(
-        CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
-        { pattern: 'context-source.mcp.list-tools', data: { config }, tenantId },
-        { timeoutMs: TEST_CONNECTION_TIMEOUT_MS },
-      );
-      return reply.data as McpToolsListResult;
+      return await this.requestMcpTools(tenantId, config, identity);
     } catch (err) {
       return {
         ok: false,
@@ -289,6 +348,116 @@ export class ContextSourcesService {
         message: err instanceof Error ? err.message : 'No se pudieron listar las tools del servidor MCP',
       };
     }
+  }
+
+  /**
+   * Modo agente (`queryMode: 'agent'`) de una fuente MCP, para el motor de conversaciones:
+   * las tools que el LLM puede usar y cómo invocarlas. `null` si la fuente no es MCP o no
+   * está en modo agente (el caller sigue con `queryKnowledge`). Nunca tira: cualquier
+   * problema queda en `unavailable` para que la charla siga.
+   *
+   * Con `identityMode: 'titan'` todo viaja firmado en nombre de la persona que escribe
+   * (`TitanUserLink`): el servidor solo anuncia y ejecuta lo que esa persona puede ver.
+   */
+  async getAgentToolset(tenantId: string, contextSourceId: string, userId: string): Promise<AgentToolset | null> {
+    let resolved: { type: string; name: string; config: Record<string, unknown> };
+    try {
+      resolved = await this.getResolvedConfig(tenantId, contextSourceId);
+    } catch (err) {
+      this.logger.warn(`getAgentToolset: fuente ${contextSourceId} no disponible — ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+    const { type, name: sourceName, config } = resolved;
+    if (type !== 'mcp' || config.queryMode !== 'agent') return null;
+
+    const steps = Number(config.maxToolSteps);
+    const maxSteps = Number.isFinite(steps) && steps >= 1 ? Math.min(Math.trunc(steps), MAX_AGENT_STEPS) : DEFAULT_AGENT_STEPS;
+    const unavailable = (reason: string): AgentToolset => ({
+      sourceName,
+      tools: [],
+      maxSteps,
+      unavailable: reason,
+      call: async () => reason,
+    });
+
+    let identity: McpIdentity | null = null;
+    if (config.identityMode === 'titan') {
+      identity = await this.resolveTitanIdentity(tenantId, userId);
+      if (!identity) {
+        return unavailable(
+          'La persona no tiene un usuario de TitanHR vinculado (o está bloqueado), así que no se pueden consultar sus datos.',
+        );
+      }
+    }
+
+    let listed: McpToolsListResult;
+    try {
+      listed = await this.requestMcpTools(tenantId, config, identity);
+    } catch (err) {
+      listed = { ok: false, latencyMs: 0, message: err instanceof Error ? err.message : String(err) };
+    }
+    if (!listed.ok || !listed.tools) {
+      this.logger.warn(`Fuente ${sourceName}: no se pudieron listar las tools — ${listed.message}`);
+      return unavailable(`El servicio de datos "${sourceName}" no está disponible en este momento.`);
+    }
+
+    // Si la conexión lista tools, el LLM solo puede usar esas (el admin acota); vacía = todas.
+    const configured = new Set(readConfiguredTools(config).map((t) => t.name));
+    const tools: AgentTool[] = listed.tools
+      .filter((t) => !configured.size || configured.has(t.name))
+      .map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} },
+      }));
+    const allowed = new Set(tools.map((t) => t.name));
+
+    return {
+      sourceName,
+      tools,
+      maxSteps,
+      call: async (toolName, args) => {
+        if (!allowed.has(toolName)) return `La herramienta "${toolName}" no está disponible.`;
+        const reply = await this.broker.request(
+          CONTEXT_SOURCE_MCP_CALL_QUEUE,
+          { pattern: 'context-source.mcp.call-tool', data: { config, identity, name: toolName, arguments: args }, tenantId },
+          { timeoutMs: QUERY_TIMEOUT_MS },
+        );
+        const result = reply.data as McpToolCallResult;
+        if (!result.ok) throw new Error(result.message);
+        return result.text ?? '';
+      },
+    };
+  }
+
+  /**
+   * Usuario de TitanHR vinculado a una persona de PCI en esta empresa (lo deja `titan-sync`
+   * en `TitanUserLink`). Se lee la tabla directo y no el servicio de `titan-sync` para no
+   * depender del módulo (es instalable): si no está instalado o la persona no fue
+   * importada, simplemente no hay vínculo. Un usuario bloqueado en Titan no tiene identidad.
+   */
+  async resolveTitanIdentity(tenantId: string, userId: string): Promise<McpIdentity | null> {
+    try {
+      const link = await this.prisma.titanUserLink.findUnique({ where: { userId_tenantId: { userId, tenantId } } });
+      if (!link || link.titanLocked) return null;
+      return { titanUserId: link.titanUserId, titanEmail: link.titanEmail, pciUserId: userId, tenantId };
+    } catch (err) {
+      this.logger.warn(`No se pudo resolver el usuario de TitanHR de ${userId}: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  private async requestMcpTools(
+    tenantId: string,
+    config: Record<string, unknown>,
+    identity: McpIdentity | null,
+  ): Promise<McpToolsListResult> {
+    const reply = await this.broker.request(
+      CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
+      { pattern: 'context-source.mcp.list-tools', data: { config, identity }, tenantId },
+      { timeoutMs: TEST_CONNECTION_TIMEOUT_MS },
+    );
+    return reply.data as McpToolsListResult;
   }
 
   // --- helpers ---

@@ -1349,8 +1349,44 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
     recibe `{{pregunta}}`), y alta manual
   - Tests: `context-source-connector.mcp.spec.ts` (unit, ambos transportes) y BE-CS-16/20-23
     en el e2e, contra un servidor MCP real en loopback (`test/support/fake-mcp-server.ts`)
-  - Pendiente: que el LLM elija qué tool invocar (hoy se invocan todas), y `resources/*`
-    / `prompts/*` del protocolo (solo se usan tools)
+  - ~~Pendiente: que el LLM elija qué tool invocar~~ ✅ hecho el 2026-10-08, ver "Modo agente
+    y permisos por persona" abajo. Sigue pendiente `resources/*` / `prompts/*` del protocolo
+    (solo se usan tools)
+- [x] **Modo agente y permisos por persona (MCP de TitanHR, pedido 2026-10-08):** conexión al
+  servidor MCP de TitanHR (`Titan_dev/mcp`), donde cada persona ve solo lo que le corresponde
+  según sus roles y grupos de seguridad en Titan.
+  - **Tool calling en `LlmService`** (`chatWithTools`): loop provider-agnostic (el modelo pide
+    tools → se ejecutan → vuelven al modelo, hasta `maxSteps`). Contrato nuevo y opcional
+    `LlmProvider.generateWithTools` (`llm-provider.interface.ts`), implementado en OpenAI,
+    OpenRouter y MiniMax (`providers/openai-tools.ts`, formato Chat Completions), Claude
+    (`tool_use`/`tool_result`) y Gemini (`functionCall`/`functionResponse`, schema reducido al
+    subconjunto que acepta). **OpenCode Go no lo soporta** (`supportsTools()` = false): con ese
+    proveedor una fuente en modo agente se responde sin consultarla (queda en el log)
+  - **Catálogo `mcp`**: `queryMode` (`fixed` = lo de siempre | `agent` = el LLM elige tools y
+    argumentos; en modo agente `tools` acota cuáles puede usar, vacía = todas),
+    `identityMode` (`none` | `titan`), `identitySecret` (secret) y `maxToolSteps`
+  - **Identidad**: con `identityMode: 'titan'` el connector firma un JWT HS256 de 5 min
+    (`signMcpIdentity`, header `X-Titan-User-Assertion`) con el `titanUserId`/email del
+    `TitanUserLink` de la persona que escribe. El Bearer autentica a PCI; la aserción dice en
+    nombre de quién. Sin vínculo (o usuario bloqueado en Titan) la fuente no se consulta y el
+    LLM avisa el motivo. `ContextSourcesService` lee `TitanUserLink` por Prisma y no importa
+    `titan-sync` (sigue siendo instalable)
+  - **Broker**: cola RPC nueva `context-source.mcp.call-tool` (una tool con argumentos);
+    `list-tools`, `test-connection` y `query` aceptan `identity`. "Probar conexión" y
+    "Descubrir tools" con identidad corren en nombre de quien aprieta el botón (tiene que estar
+    vinculado a Titan)
+  - **Motor**: `orchestratorLlm` y `llm_query` (respuesta conversacional, no el modo
+    extracción) usan `resolveAgentToolset` + `chatWithAgentTools`; si la fuente no está en
+    modo agente o el proveedor no soporta tools, sigue el camino de `queryKnowledge`
+  - **Del lado del MCP** (no es este repo): perfiles self / manager / hr / admin según roles de
+    Titan y su equipo a cargo; alcance por empresa según `security.user_policy_groups` (AND,
+    igual que el PolicyEngine de Titan); datos sensibles solo propios. Ver
+    `Titan_dev/mcp/README.md`
+  - Tests: `llm/llm-tools.spec.ts` (loop + traducción por proveedor) y
+    `context-source-connector.titanhr.spec.ts` (firma + integración contra el MCP real,
+    se saltea sin `TITANHR_MCP_URL`; verificado 7/7 contra el MCP con usuarios reales de Titan)
+  - Pendiente: probar el loop con el proveedor real configurado (MiniMax) en un entorno con API
+    key, y condiciones de flujo por perfil/rol de Titan
 - [ ] **Multi-tenant de `Flow.contextSourceId`:** un `Flow` puede estar asignado a varios tenants
   (`TenantFlow`, N:N) pero `ContextSource` es por tenant — hoy el FK es un solo valor global
   del flujo, no por tenant. Si un flujo compartido entre dos empresas necesita una fuente

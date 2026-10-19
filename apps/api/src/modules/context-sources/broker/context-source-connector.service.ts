@@ -1,6 +1,15 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { BrokerService, BrokerMessage } from '../../broker/broker.service';
-import { McpToolInfo, callMcpTool, listMcpTools, readConfiguredTools, withMcpSession } from './mcp-client';
+import {
+  McpIdentity,
+  McpToolInfo,
+  callMcpTool,
+  callMcpToolWithArgs,
+  listMcpTools,
+  mcpIdentityHeaders,
+  readConfiguredTools,
+  withMcpSession,
+} from './mcp-client';
 
 /** Cola RPC de "probar conexión". Ver AGENTS.md § Broker / RabbitMQ — patrón RPC. */
 export const CONTEXT_SOURCE_TEST_QUEUE = 'context-source.test-connection';
@@ -21,6 +30,14 @@ export const CONTEXT_SOURCE_QUERY_QUEUE = 'context-source.query';
  */
 export const CONTEXT_SOURCE_MCP_TOOLS_QUEUE = 'context-source.mcp.list-tools';
 
+/**
+ * Cola RPC de "invocar UNA tool con argumentos" de un MCP: la usa el modo agente
+ * (`queryMode: 'agent'`), donde el LLM del chatbot decide qué tool llamar y con qué
+ * argumentos. Mismo criterio que el resto: el motor de conversaciones no habla con el
+ * MCP, publica acá y espera la respuesta por el broker.
+ */
+export const CONTEXT_SOURCE_MCP_CALL_QUEUE = 'context-source.mcp.call-tool';
+
 const TEST_TIMEOUT_MS = 20_000;
 /** Más generoso que TEST_TIMEOUT_MS: acá puede haber un RAG "razonando" de verdad
  *  del otro lado, no solo un chequeo de alcanzabilidad. */
@@ -39,6 +56,14 @@ export interface McpToolsListResult {
   latencyMs: number;
   /** Presente solo si `ok`. */
   tools?: McpToolInfo[];
+}
+
+export interface McpToolCallResult {
+  ok: boolean;
+  /** Resultado de la tool como texto (también el detalle del error si la tool falló). */
+  text?: string;
+  message: string;
+  latencyMs: number;
 }
 
 export interface ContextSourceQueryResult {
@@ -82,11 +107,56 @@ export class ContextSourceConnectorService implements OnModuleInit {
     await this.broker.subscribe(CONTEXT_SOURCE_TEST_QUEUE, this.handleTestConnection.bind(this));
     await this.broker.subscribe(CONTEXT_SOURCE_QUERY_QUEUE, this.handleQuery.bind(this));
     await this.broker.subscribe(CONTEXT_SOURCE_MCP_TOOLS_QUEUE, this.handleListMcpTools.bind(this));
+    await this.broker.subscribe(CONTEXT_SOURCE_MCP_CALL_QUEUE, this.handleCallMcpTool.bind(this));
+  }
+
+  private async handleCallMcpTool(msg: BrokerMessage): Promise<void> {
+    const { config, identity, name, arguments: args } = msg.data as {
+      config: Record<string, unknown>;
+      identity?: McpIdentity | null;
+      name: string;
+      arguments?: Record<string, unknown>;
+    };
+    const result = await this.callMcpTool(config, identity ?? null, name, args ?? {});
+
+    if (!msg.replyTo) {
+      this.logger.warn('Mensaje de mcp.call-tool sin replyTo: no hay a quién responderle');
+      return;
+    }
+    await this.broker.publish(
+      msg.replyTo,
+      { pattern: 'context-source.mcp.call-tool.result', data: result, correlationId: msg.correlationId },
+      { assert: false },
+    );
+  }
+
+  /** Una tool del modo agente: los errores de la tool vuelven como `ok: true` + texto (el LLM los explica). */
+  private async callMcpTool(
+    config: Record<string, unknown>,
+    identity: McpIdentity | null,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<McpToolCallResult> {
+    const start = Date.now();
+    try {
+      const headers = mcpIdentityHeaders(config, identity);
+      const { text, isError } = await withMcpSession(
+        config,
+        QUERY_TIMEOUT_MS,
+        (client, remaining) => callMcpToolWithArgs(client, name, args, remaining),
+        headers,
+      );
+      const latencyMs = Date.now() - start;
+      const message = isError ? `La tool ${name} respondió con error` : `Respondió en ${latencyMs}ms`;
+      return { ok: true, text, latencyMs, message };
+    } catch (err) {
+      return { ok: false, latencyMs: Date.now() - start, message: this.mcpErrorMessage(err) };
+    }
   }
 
   private async handleListMcpTools(msg: BrokerMessage): Promise<void> {
-    const { config } = msg.data as { config: Record<string, unknown> };
-    const result = await this.listMcpTools(config);
+    const { config, identity } = msg.data as { config: Record<string, unknown>; identity?: McpIdentity | null };
+    const result = await this.listMcpTools(config, identity ?? null);
 
     if (!msg.replyTo) {
       this.logger.warn('Mensaje de mcp.list-tools sin replyTo: no hay a quién responderle');
@@ -101,8 +171,12 @@ export class ContextSourceConnectorService implements OnModuleInit {
   }
 
   private async handleTestConnection(msg: BrokerMessage): Promise<void> {
-    const { type, config } = msg.data as { type: string; config: Record<string, unknown> };
-    const result = await this.testConnection(type, config);
+    const { type, config, identity } = msg.data as {
+      type: string;
+      config: Record<string, unknown>;
+      identity?: McpIdentity | null;
+    };
+    const result = await this.testConnection(type, config, identity ?? null);
 
     if (!msg.replyTo) {
       this.logger.warn('Mensaje de test-connection sin replyTo: no hay a quién responderle');
@@ -121,12 +195,13 @@ export class ContextSourceConnectorService implements OnModuleInit {
   }
 
   private async handleQuery(msg: BrokerMessage): Promise<void> {
-    const { type, config, question } = msg.data as {
+    const { type, config, question, identity } = msg.data as {
       type: string;
       config: Record<string, unknown>;
       question: string;
+      identity?: McpIdentity | null;
     };
-    const result = await this.query(type, config, question);
+    const result = await this.query(type, config, question, identity ?? null);
 
     if (!msg.replyTo) {
       this.logger.warn('Mensaje de context-source.query sin replyTo: no hay a quién responderle');
@@ -140,10 +215,14 @@ export class ContextSourceConnectorService implements OnModuleInit {
     );
   }
 
-  private async testConnection(type: string, config: Record<string, unknown>): Promise<ConnectionTestResult> {
+  private async testConnection(
+    type: string,
+    config: Record<string, unknown>,
+    identity: McpIdentity | null = null,
+  ): Promise<ConnectionTestResult> {
     switch (type) {
       case 'mcp':
-        return this.testMcp(config);
+        return this.testMcp(config, identity);
       case 'rag':
         return this.testHttpReachable(String(config.endpointUrl ?? ''), this.bearerHeaders(config.apiKey));
       case 'n8n':
@@ -162,12 +241,17 @@ export class ContextSourceConnectorService implements OnModuleInit {
    * definido — `rag`/`n8n` (contrato de request propio de cada servicio) quedan
    * pendientes, ver docs/plan-de-trabajo.md.
    */
-  private async query(type: string, config: Record<string, unknown>, question: string): Promise<ContextSourceQueryResult> {
+  private async query(
+    type: string,
+    config: Record<string, unknown>,
+    question: string,
+    identity: McpIdentity | null = null,
+  ): Promise<ContextSourceQueryResult> {
     switch (type) {
       case 'broker':
         return this.queryBroker(config, question);
       case 'mcp':
-        return this.queryMcp(config, question);
+        return this.queryMcp(config, question, identity);
       default:
         return {
           ok: false,
@@ -184,20 +268,32 @@ export class ContextSourceConnectorService implements OnModuleInit {
    * configuradas en la conexión sigan existiendo en el servidor — si alguna falta,
    * la consulta real va a fallar, así que es un `ok:false` con el detalle.
    */
-  private async testMcp(config: Record<string, unknown>): Promise<ConnectionTestResult> {
+  private async testMcp(config: Record<string, unknown>, identity: McpIdentity | null): Promise<ConnectionTestResult> {
     const start = Date.now();
     try {
-      const { serverName, tools } = await withMcpSession(config, TEST_TIMEOUT_MS, async (client, remaining) => ({
-        serverName: client.getServerVersion()?.name,
-        tools: await listMcpTools(client, remaining),
-      }));
+      const { serverName, tools } = await withMcpSession(
+        config,
+        TEST_TIMEOUT_MS,
+        async (client, remaining) => ({
+          serverName: client.getServerVersion()?.name,
+          tools: await listMcpTools(client, remaining),
+        }),
+        mcpIdentityHeaders(config, identity),
+      );
       const latencyMs = Date.now() - start;
       const available = new Set(tools.map((t) => t.name));
       const configured = readConfiguredTools(config).map((t) => t.name);
       const missing = configured.filter((name) => !available.has(name));
+      const forUser = config.identityMode === 'titan' && identity ? ` para tu usuario de TitanHR (${identity.titanEmail})` : '';
       const head =
         `Conectado a ${serverName ? `"${serverName}"` : 'el servidor MCP'} en ${latencyMs}ms — ` +
-        `${tools.length} tools disponibles`;
+        `${tools.length} tools disponibles${forUser}`;
+
+      if (config.queryMode === 'agent') {
+        if (missing.length) return { ok: false, latencyMs, message: `${head}, pero no existen: ${missing.join(', ')}` };
+        const scope = configured.length ? `puede usar ${configured.join(', ')}` : 'puede usar todas';
+        return { ok: true, latencyMs, message: `${head}. Modo agente: el LLM ${scope}.` };
+      }
 
       if (missing.length) {
         return { ok: false, latencyMs, message: `${head}, pero no existen: ${missing.join(', ')}` };
@@ -211,11 +307,14 @@ export class ContextSourceConnectorService implements OnModuleInit {
     }
   }
 
-  private async listMcpTools(config: Record<string, unknown>): Promise<McpToolsListResult> {
+  private async listMcpTools(config: Record<string, unknown>, identity: McpIdentity | null): Promise<McpToolsListResult> {
     const start = Date.now();
     try {
-      const tools = await withMcpSession(config, TEST_TIMEOUT_MS, (client, remaining) =>
-        listMcpTools(client, remaining),
+      const tools = await withMcpSession(
+        config,
+        TEST_TIMEOUT_MS,
+        (client, remaining) => listMcpTools(client, remaining),
+        mcpIdentityHeaders(config, identity),
       );
       const latencyMs = Date.now() - start;
       return { ok: true, tools, latencyMs, message: `${tools.length} tools encontradas en ${latencyMs}ms` };
@@ -233,7 +332,11 @@ export class ContextSourceConnectorService implements OnModuleInit {
    * la tool; alcanza con que una responda para que la consulta sea `ok` (las que
    * fallaron quedan en `message`, que el caller loguea).
    */
-  private async queryMcp(config: Record<string, unknown>, question: string): Promise<ContextSourceQueryResult> {
+  private async queryMcp(
+    config: Record<string, unknown>,
+    question: string,
+    identity: McpIdentity | null,
+  ): Promise<ContextSourceQueryResult> {
     const tools = readConfiguredTools(config);
     if (!tools.length) {
       return { ok: false, latencyMs: 0, message: 'La conexión MCP no tiene ninguna tool configurada para consultar' };
@@ -241,8 +344,11 @@ export class ContextSourceConnectorService implements OnModuleInit {
 
     const start = Date.now();
     try {
-      const settled = await withMcpSession(config, QUERY_TIMEOUT_MS, (client, remaining) =>
-        Promise.allSettled(tools.map((tool) => callMcpTool(client, tool, question, remaining))),
+      const settled = await withMcpSession(
+        config,
+        QUERY_TIMEOUT_MS,
+        (client, remaining) => Promise.allSettled(tools.map((tool) => callMcpTool(client, tool, question, remaining))),
+        mcpIdentityHeaders(config, identity),
       );
       const latencyMs = Date.now() - start;
 
