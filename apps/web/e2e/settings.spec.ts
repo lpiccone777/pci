@@ -835,3 +835,34 @@ test('FE-VFLW-02: el listado de voz muestra solo flujos de voz, sin "Default", y
     await deleteSetting(admin, 'VOICEBOT_ENABLED');
   }
 });
+
+test('FE-VFLW-03: "Identificar por voz" solo en la paleta de voz; sus propiedades avisan si InvGate no está configurado', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  // URL vacía guardada en BD: le gana al .env, así InvGate queda sin configurar pase lo que pase.
+  await setSetting(admin, 'INVGATE_API_URL', '');
+  try {
+    const flow = await createVoiceFlow(`Voz ident ${uniqueSlug('vi')}`, [
+      { id: 'start_1', type: 'start', data: { noGreeting: true }, position: { x: 250, y: 50 } },
+      { id: 'ident_1', type: 'voice_identify', data: { idLabel: 'legajo' }, position: { x: 250, y: 200 } },
+    ]);
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+
+    await page.goto('/dashboard/flows/edit/?id=new');
+    await expect(page.locator('.react-flow')).toBeVisible();
+    await expect(page.getByText('Identificar por voz', { exact: true })).toHaveCount(0);
+
+    await page.goto(`/dashboard/voice-flows/edit/?id=${flow.id}`);
+    await expect(page.locator('.react-flow')).toBeVisible();
+    const node = page.locator('.react-flow__node-voice_identify');
+    await expect(node).toContainText('Pide legajo');
+    await expect(node).toContainText('reconocido');
+    await node.click();
+    await expect(page.getByRole('alert').filter({ hasText: 'InvGate no está configurado' })).toBeVisible();
+    await expect(page.getByText('Qué se le pide')).toBeVisible();
+  } finally {
+    await deleteSetting(admin, 'INVGATE_API_URL');
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});

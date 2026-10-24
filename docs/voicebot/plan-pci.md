@@ -347,61 +347,48 @@ FE-VFLW-01..02. FE-FLW-08 y FE-FLW-29 ya fallaban antes de este cambio (verifica
   - `end` sigue siendo "colgar" (`hangup`).
 - [ ] **Tests:** e2e por `voice.turn` de cada modo y nodo, sin LLM real (FakeLlm).
 
-### H4c — Identificación por voz (replanteado, 2026-10-24) — EN ESPERA de un dato
+### H4c — Identificación por voz ✅
 
-El usuario decidió que el DNI y el legajo **no se cargan en pci**: salen de InvGate, que ya trae
-el dato en el usuario, o de la fuente de verdad de la empresa (MCP/n8n). Por eso H4c no lleva
-migración ni toca el ABM de usuarios.
+Hecho el 2026-10-24, sin migración y sin tocar el ABM de usuarios. El usuario decidió que DNI y
+legajo no se cargan en pci: salen de InvGate.
 
-**Qué hay hoy en el código.** `InvgateService` busca usuarios con `users.by` por `phones`,
-`username` o `email`, y con `user?id=`. `InvgateUser` solo tipa `id`, `username` y `email`; el
-resto llega como `[key: string]: unknown`. En ningún lugar del repo figura el nombre del campo del
-DNI o del legajo, ni si `users.by` puede filtrar por él. Hace falta **una consulta de solo lectura
-a la instancia**, que autoriza el usuario y que se describe abajo.
+**Lo verificado contra la instancia real.** Consultas de solo lectura autorizadas por el usuario,
+imprimiendo solo campos y tipos:
+- El usuario de InvGate trae `employee_number`: 8 dígitos, cargado en ~75 % de los usuarios. En la
+  empresa actual el DNI se usa como legajo.
+- El campo `doc` existe pero está vacío.
+- `users.by?employee_number=…&exact_match=true` filtra por ese campo: un resultado, ~0,5 s. Es una
+  llamada por intento.
 
-**Diseño del nodo `voice_identify`.** Es determinístico: no usa el LLM de pci.
+**Decisiones.**
+- Qué se pide es configurable por nodo (`idLabel`: documento | legajo). El campo es
+  `employee_number` por defecto, con `doc` como alternativa.
+- Con InvGate sin configurar, el nodo sale por "no reconocido" con un log, y el editor lo avisa.
+  `INVGATE_API_URL` vacío en la BD es intencional y no se toca.
+- Si la persona está en InvGate pero no en pci, sale por "no reconocido" con
+  `flowState.identifiedExternal` (opción a).
 
-- [ ] **Configuración del nodo:**
-  - `origen`: `invgate` | `fuente de verdad`;
-  - `campo`: el campo de InvGate que tiene el documento (con InvGate);
-  - `pregunta`: texto en modo literal o guided;
-  - `intentos`: 2 por defecto.
-- [ ] **Paso 1, documento:** se normaliza lo que dijo la persona, dejando solo los dígitos (o el
-  alfanumérico en mayúsculas si es legajo), y se busca.
-  - **InvGate:** si `users.by` filtra por ese campo, una sola llamada por intento.
-  - **Si no filtra:** índice en memoria `documento → usuario de InvGate`, armado con el listado
-    paginado de usuarios y refrescado cada N minutos (clave nueva, 15 por defecto). Así la llamada
-    no paga la latencia del listado. Se mide el costo del refresco.
-  - **Fuente de verdad:** un RPC por broker hacia la fuente de la empresa. El contrato propuesto
-    es `context-source.identify`: `{documento}` → `{nombre, apellido, email}` o `null`. Para MCP es
-    una tool configurada en la fuente; para n8n, un webhook. Se hace después del caso InvGate.
-- [ ] **Paso 2, nombre y apellido:**
-  - se comparan con los del usuario encontrado, sin tildes ni mayúsculas y por similitud, con un
-    umbral, porque el STT se equivoca en letras;
-  - un error de documento o de nombre gasta un intento, y la segunda falla sale por
-    `no reconocido`.
-- [ ] **Cruce con pci:**
-  - por **email**: el `User` activo de pci con ese email y membresía en el tenant del interno;
-  - si existe, sale por `reconocido`: completa `Conversation.userId` y la identidad del turno (rol
-    de la membresía) y carga las variables de usuario, como `start` con un conocido.
-- [ ] **Está en InvGate pero no en pci** (para decidir):
-  - **(a) Recomendada:** sale por `no reconocido` con
-    `flowState.identifiedExternal = {nombre, apellido, email, invgateId}`. Respeta "no hablamos
-    con desconocidos" y no crea un `User` fantasma. Si hace falta, en otra etapa `ticket_create`
-    puede usar ese `invgateId` como cliente de InvGate sin un usuario de pci.
-  - **(b)** Una tercera salida, `solo en InvGate`, para que el flujo decida qué hacer.
-  - **(c)** Crear el `User` en pci. No se recomienda: es exactamente lo que se eliminó con "no
-    hablamos con desconocidos".
-- [ ] **Tests:** InvGate falso (mock del `fetch` del servicio, como `invgate.e2e-spec.ts`) con
-  reconocido, documento mal, nombre aproximado, segundo intento, existe solo en InvGate y persona de
-  otro tenant.
-
-**Consulta de solo lectura que hace falta, a autorizar:** traer **un** usuario conocido y
-mirar **solo los nombres de los campos**, no los valores. Por ejemplo, el usuario técnico
-(`INVGATE_API_USER`), que ya se consulta en cada ticket:
-`GET {INVGATE_URL}/users.by?username=<INVGATE_API_USER>&exact_match=true`, con la misma auth del
-servicio. Sirve para saber cómo se llama el campo del DNI o del legajo. Para saber si `users.by`
-filtra por él, una segunda consulta con ese campo y un valor conocido que dé el usuario.
+**Implementado.**
+- [x] Nodo `voice_identify`, solo en flujos de voz; el backend lo rechaza en los de texto.
+- [x] Funcionamiento:
+  1. pide el documento o el legajo y lo normaliza (solo dígitos si hay 6 o más; si no,
+     alfanumérico);
+  2. busca en InvGate (`InvgateService.findActiveUsersBy`, que excluye `is_disabled` e
+     `is_deleted`); más de una coincidencia no identifica a nadie;
+  3. pide nombre y apellido y los compara de forma aproximada (`voice-identify.util.ts`: Levenshtein
+     por palabra, umbral 0,75; el apellido completo y al menos un nombre);
+  4. cruza con el `User` de pci por email, con membresía en la empresa del interno.
+- [x] Al reconocer:
+  - completa `Conversation.userId`, la identidad del turno (rol de la membresía) y las variables de
+    usuario de `flowState`;
+  - los turnos siguientes cargan ese usuario (`voiceCaller`), así que `ticket_create` y
+    `transfer_agent` funcionan.
+- [x] `GET /features` suma `invgate`, para el aviso del editor.
+- [x] Tests: BE-VOZ-20..23 (InvGate falso), BE-VFLW-04, FE-VFLW-03 y los unitarios de
+  `voice-identify.util`.
+- [ ] Fuente de verdad (MCP/n8n) como origen alternativo: el contrato `context-source.identify`
+  queda para cuando haga falta.
+- [ ] Prueba en vivo contra InvGate: la coordina el coordinador.
 
 ### H4d — LLM de voz por proveedor [DA10, C53] ✅
 

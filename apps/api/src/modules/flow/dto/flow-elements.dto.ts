@@ -198,9 +198,29 @@ export class FlowNodeDataDto {
     allowedValues?: string[];
   }>;
 
-  /** Nodo `llm_query` en modo extracción: cuántas veces preguntarle al usuario un dato antes de darlo por "no definido". */
+  /** Nodo `llm_query` en modo extracción: cuántas veces preguntarle al usuario un dato antes de darlo por "no definido". También: intentos del nodo `voice_identify` (default 2). */
   @IsOptional()
   maxAttempts?: number;
+
+  /** Nodo `voice_identify`: qué se le pide a la persona, `documento` (default) o `legajo`. */
+  @IsString()
+  @IsOptional()
+  idLabel?: string;
+
+  /** Nodo `voice_identify`: campo de InvGate donde se busca (`employee_number` default, o `doc`). */
+  @IsString()
+  @IsOptional()
+  idField?: string;
+
+  /** Nodo `voice_identify`: pregunta por nombre y apellido (vacío = la por defecto). */
+  @IsString()
+  @IsOptional()
+  namePrompt?: string;
+
+  /** Nodo `voice_identify`: qué dice cuando no coincide y vuelve a pedir el documento. */
+  @IsString()
+  @IsOptional()
+  retryText?: string;
 
   /**
    * LEGACY, IGNORADO por el motor (2026-08-28): `llm_query` en modo extracción sale

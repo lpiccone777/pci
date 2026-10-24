@@ -12,7 +12,7 @@ import { ScheduleCalendarService } from '../schedule-calendar/schedule-calendar.
 import { isValidScheduleEntryType } from '../schedule-calendar/schedule-entry-types.catalog';
 import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { isSystemSuperAdmin } from '../../common/system-superadmin';
-import { FLOW_RESOURCE, FlowChannel, VOICE_UNSUPPORTED_NODES } from './flow-channel';
+import { FLOW_RESOURCE, FlowChannel, TEXT_UNSUPPORTED_NODES, VOICE_UNSUPPORTED_NODES } from './flow-channel';
 
 /** Mismo nodo `start` por defecto que el editor arma para un flujo nuevo (ver `isNew` en apps/web/.../flows/edit/page.tsx). */
 const BLANK_VARIANT_NODES = [
@@ -341,11 +341,12 @@ export class FlowService {
    */
   private async assertNodesFitChannel(nodes: unknown, channel: FlowChannel): Promise<void> {
     if (!Array.isArray(nodes)) return;
-    if (channel === 'voice') {
-      const unsupported = [...new Set(nodes.map((n: any) => n?.type).filter((t) => VOICE_UNSUPPORTED_NODES.has(t)))];
-      if (unsupported.length) {
-        throw new BadRequestException(`Estos nodos no existen en un flujo de voz: ${unsupported.join(', ')}`);
-      }
+    const notHere = channel === 'voice' ? VOICE_UNSUPPORTED_NODES : TEXT_UNSUPPORTED_NODES;
+    const unsupported = [...new Set(nodes.map((n: any) => n?.type).filter((t) => notHere.has(t)))];
+    if (unsupported.length) {
+      throw new BadRequestException(
+        `Estos nodos no existen en un flujo de ${channel === 'voice' ? 'voz' : 'texto'}: ${unsupported.join(', ')}`,
+      );
     }
     const subflowIds = [
       ...new Set(

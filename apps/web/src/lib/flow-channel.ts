@@ -27,6 +27,9 @@ export const FLOW_CHANNELS: Record<FlowChannel, FlowChannelConfig> = {
   },
 };
 
+/** Nodos que solo existen por voz: la paleta de texto no los ofrece. */
+export const TEXT_UNSUPPORTED_NODES: ReadonlySet<string> = new Set(['voice_identify']);
+
 /** Nodos que no existen por voz: la paleta del editor de voz no los ofrece (el backend los rechaza). */
 export const VOICE_UNSUPPORTED_NODES: ReadonlySet<string> = new Set([
   'notification',

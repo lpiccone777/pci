@@ -55,11 +55,11 @@ describe('Flujos de voz: /voice-flows y permiso voice_flows (BE-VFLW-*)', () => 
     const { tenant, token } = await scenario(['voice_flows:read']);
     await setSetting(t.prisma, 'VOICEBOT_ENABLED', 'false');
     await withAuth(http(t).get('/voice-flows'), token, tenant.id).expect(404);
-    expect((await withAuth(http(t).get('/features'), token, tenant.id).expect(200)).body).toEqual({ voicebot: false });
+    expect((await withAuth(http(t).get('/features'), token, tenant.id).expect(200)).body).toMatchObject({ voicebot: false });
 
     await setSetting(t.prisma, 'VOICEBOT_ENABLED', 'true');
     await withAuth(http(t).get('/voice-flows'), token, tenant.id).expect(200);
-    expect((await withAuth(http(t).get('/features'), token, tenant.id).expect(200)).body).toEqual({ voicebot: true });
+    expect((await withAuth(http(t).get('/features'), token, tenant.id).expect(200)).body).toMatchObject({ voicebot: true });
   });
 
   it('BE-VFLW-02: cada canal con su permiso: flows:* no abre /voice-flows y voice_flows:* no abre /flows [DA6]', async () => {
@@ -93,7 +93,7 @@ describe('Flujos de voz: /voice-flows y permiso voice_flows (BE-VFLW-*)', () => 
     await withAuth(http(t).get(`/flows/${voice.id}`), tokenFor(t, admin), system.id).expect(404);
   });
 
-  it('BE-VFLW-04: un flujo de voz no admite nodos que no existen por voz ni subflujos de texto (y al revés)', async () => {
+  it('BE-VFLW-04: cada canal admite solo sus nodos (por voz no hay delay; por texto no hay voice_identify) y subflujos del mismo canal', async () => {
     const { tenant, token } = await scenario(['flows:create', 'voice_flows:create', 'voice_flows:update']);
     const bad = await withAuth(http(t).post('/voice-flows'), token, tenant.id)
       .send(body('con delay', [startNode('start'), delayNode('d', 1)]))
@@ -112,6 +112,10 @@ describe('Flujos de voz: /voice-flows y permiso voice_flows (BE-VFLW-*)', () => 
     await withAuth(http(t).post('/voice-flows'), token, tenant.id)
       .send(body('salta a voz', [startNode('start'), subflowNode('s', { flowId: voiceFlow.id })]))
       .expect(201);
+    // Y al revés: el nodo de identificación por voz no existe en un flujo de texto.
+    await withAuth(http(t).post('/flows'), token, tenant.id)
+      .send(body('texto con identificación', [startNode('start'), { id: 'i', type: 'voice_identify', data: {}, position: { x: 0, y: 0 } }]))
+      .expect(400);
   });
 
   it('BE-VFLW-05: asignar empresas a un flujo de voz no guarda roles; el de inicio es uno por empresa', async () => {

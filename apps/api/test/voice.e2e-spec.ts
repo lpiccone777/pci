@@ -34,6 +34,11 @@ import {
   createSkill,
   setSetting,
   deleteSetting,
+  createRole,
+  createUser,
+  uniqueEmail,
+  installFetchMock,
+  node,
 } from './support';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
 import { LlmService } from '../src/modules/llm/llm.service';
@@ -473,6 +478,120 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       } finally {
         await deleteSetting(t.prisma, 'VOICEBOT_FREE_CHAT_PROMPT');
       }
+    });
+  });
+
+  describe('Identificar por voz [C52]', () => {
+    const INVGATE = 'https://invgate.voz.e2e.test';
+    let identTenant: { id: string; name: string };
+    let identExt: string;
+    let fetchMock: ReturnType<typeof installFetchMock>;
+    const people: Record<string, { id: number; name: string; lastname: string; email: string }> = {
+      '32456789': { id: 3649, name: 'Ana María', lastname: 'Pérez', email: '' },
+      '20111222': { id: 4000, name: 'Solo', lastname: 'Externo', email: 'solo.externo@e2e.test' },
+    };
+
+    beforeAll(async () => {
+      identTenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-ident') });
+      const role = await createRole(t.prisma, { tenantId: identTenant.id, name: 'Empleado' });
+      const email = uniqueEmail('ana');
+      people['32456789'].email = email.toUpperCase(); // el cruce por email no distingue mayúsculas
+      await createUser(t.prisma, {
+        email,
+        firstName: 'Ana',
+        lastName: 'Pérez',
+        memberships: [{ tenantId: identTenant.id, roleId: role.id }],
+      });
+      await createFlow(t.prisma, {
+        name: 'voz identificación',
+        channel: 'voice',
+        nodes: [
+          startNode('start', { noGreeting: true }),
+          node('ident', 'voice_identify', { idLabel: 'legajo' }),
+          messageNode('ok', 'Hola {{userFirstName}}, sos {{userRole}}.'),
+          inputNode('sigue', { text: '¿En qué te ayudo?', variableName: 'pedido' }),
+          messageNode('no', 'No te pude identificar.'),
+          inputNode('igual', { text: '¿Te ayudo igual?', variableName: 'igual' }),
+        ],
+        edges: [
+          edge('start', 'ident'),
+          edge('ident', 'ok', 'recognized'),
+          edge('ok', 'sigue'),
+          edge('ident', 'no', 'unrecognized'),
+          edge('no', 'igual'),
+        ],
+        assign: [{ tenantId: identTenant.id, isStart: true }],
+      });
+      identExt = extNumber();
+      await t.prisma.extension.create({ data: { number: identExt, name: 'identificación', tenantId: identTenant.id } });
+
+      fetchMock = installFetchMock((url) => {
+        const u = new URL(url);
+        if (!url.startsWith(INVGATE) || !u.pathname.endsWith('/api/v1/users.by')) return { status: 404, body: {} };
+        const person = people[u.searchParams.get('employee_number') ?? ''];
+        return { body: { data: person ? { [person.id]: { ...person, is_disabled: false, is_deleted: false } } : {} } };
+      });
+    });
+    afterAll(async () => {
+      fetchMock.restore();
+      for (const key of ['INVGATE_API_URL', 'INVGATE_API_USER', 'INVGATE_API_KEY']) await deleteSetting(t.prisma, key);
+    });
+    beforeEach(async () => {
+      await setSetting(t.prisma, 'INVGATE_API_URL', INVGATE);
+      await setSetting(t.prisma, 'INVGATE_API_USER', 'tecnico');
+      await setSetting(t.prisma, 'INVGATE_API_KEY', 'key-e2e');
+    });
+    const sayTo = (callId: string, text: string) =>
+      turn({ callId, turnId: uid(), kind: 'user', text, call: callInfo(identExt) });
+
+    it('BE-VOZ-20: reconocido: legajo dictado con puntos + nombre aproximado → completa Conversation.userId y sigue con su rol', async () => {
+      const callId = uid();
+      expect(literals(await start(callId, identExt))).toEqual(['Para identificarte, decime tu número de legajo.']);
+      expect(literals(await sayTo(callId, 'es el 32.456.789'))).toEqual(['Gracias. Ahora decime tu nombre y apellido.']);
+      const r = await sayTo(callId, 'ana peres');
+      expect(literals(r)).toEqual(['Hola Ana, sos Empleado.', '¿En qué te ayudo?']);
+
+      const conv = (await callOf(callId))!.conversation;
+      const user = await t.prisma.user.findFirstOrThrow({ where: { email: { equals: people['32456789'].email, mode: 'insensitive' } } });
+      expect(conv.userId).toBe(user.id);
+      const lookups = fetchMock.requests.filter((q) => q.url.includes('users.by'));
+      expect(new URL(lookups.at(-1)!.url).searchParams.get('employee_number')).toBe('32456789');
+      expect(llm.calls).toHaveLength(0);
+    });
+
+    it('BE-VOZ-21: dos intentos fallidos (documento inexistente, después nombre que no coincide) → no reconocido', async () => {
+      const callId = uid();
+      await start(callId, identExt);
+      expect(literals(await sayTo(callId, '11111111'))[0]).toMatch(/^No pude encontrarte con esos datos/);
+      await sayTo(callId, '32456789');
+      const last = await sayTo(callId, 'Juan Gómez');
+      expect(literals(last)).toEqual(['No te pude identificar.', '¿Te ayudo igual?']);
+      expect((await callOf(callId))!.conversation.userId).toBeNull();
+    });
+
+    it('BE-VOZ-22: está en InvGate pero no en pci → no reconocido, con identifiedExternal y sin crear el User', async () => {
+      const callId = uid();
+      await start(callId, identExt);
+      await sayTo(callId, '20111222');
+      const last = await sayTo(callId, 'Solo Externo');
+      expect(literals(last)).toEqual(['No te pude identificar.', '¿Te ayudo igual?']);
+      const conv = (await callOf(callId))!.conversation;
+      expect(conv.userId).toBeNull();
+      expect((conv.flowState as Record<string, unknown>).identifiedExternal).toEqual({
+        nombre: 'Solo',
+        apellido: 'Externo',
+        email: 'solo.externo@e2e.test',
+        invgateId: 4000,
+      });
+      expect(await t.prisma.user.count({ where: { email: 'solo.externo@e2e.test' } })).toBe(0);
+    });
+
+    it('BE-VOZ-23: InvGate sin configurar → no reconocido de una, sin preguntar nada', async () => {
+      await setSetting(t.prisma, 'INVGATE_API_URL', '');
+      const before = fetchMock.requests.length;
+      const r = await start(uid(), identExt);
+      expect(literals(r)).toEqual(['No te pude identificar.', '¿Te ayudo igual?']);
+      expect(fetchMock.requests.length).toBe(before);
     });
   });
 

@@ -20,7 +20,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { apiFetch } from '@/lib/api';
 import { SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
-import { FLOW_CHANNELS, FlowChannel, VOICE_UNSUPPORTED_NODES } from '@/lib/flow-channel';
+import { FLOW_CHANNELS, FlowChannel, TEXT_UNSUPPORTED_NODES, VOICE_UNSUPPORTED_NODES } from '@/lib/flow-channel';
 import {
   StartNode,
   MessageNode,
@@ -39,6 +39,7 @@ import {
   EndNode,
   DeviceValidationNode,
   NotificationNode,
+  VoiceIdentifyNode,
 } from '@/components/flow-nodes';
 import { DeletableEdge } from '@/components/flow-edges';
 
@@ -124,6 +125,7 @@ const customNodeTypes = {
   end: EndNode,
   device_validation: DeviceValidationNode,
   notification: NotificationNode,
+  voice_identify: VoiceIdentifyNode,
 };
 
 const customEdgeTypes = {
@@ -148,6 +150,7 @@ const nodeTypeList = [
   { type: 'end', label: 'Fin', color: '#991b1b' },
   { type: 'device_validation', label: 'Validar Dispositivo', color: '#0ea5e9' },
   { type: 'notification', label: 'Notificación', color: '#eab308' },
+  { type: 'voice_identify', label: 'Identificar por voz', color: '#0d9488' },
 ];
 
 function FlowEditorInner({ channel }: { channel: FlowChannel }) {
@@ -178,6 +181,14 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
   const [invgateCategories, setInvgateCategories] = useState<InvgateCatalogOption[]>([]);
   const [invgatePriorities, setInvgatePriorities] = useState<InvgateCatalogOption[]>([]);
   const [invgateTypes, setInvgateTypes] = useState<InvgateCatalogOption[]>([]);
+  // Solo por voz: el nodo "Identificar por voz" busca en InvGate y avisa si no está configurado.
+  const [invgateConfigured, setInvgateConfigured] = useState(true);
+  useEffect(() => {
+    if (!isVoice) return;
+    apiFetch('/features')
+      .then((f: { invgate?: boolean }) => setInvgateConfigured(!!f.invgate))
+      .catch(() => setInvgateConfigured(false));
+  }, [isVoice]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   // Cache de roles por empresa: se traen de GET /roles con el header de esa empresa (así
   // el superadmin los lee parado en cualquier otra, igual que el alta de usuarios). Se
@@ -705,6 +716,8 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
         return { text: 'Seleccione una opción:', options: [] };
       case 'input':
         return { text: 'Ingrese su respuesta:', variableName: '' };
+      case 'voice_identify':
+        return { idLabel: 'documento', idField: 'employee_number', maxAttempts: 2 };
       case 'condition':
         return { compareVariable: '', compareOperator: 'equals', compareValue: '' };
       case 'ticket_create':
@@ -1035,7 +1048,7 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
           <h3 className="font-semibold mb-4 text-sm">Nodos</h3>
           <div className="space-y-2">
             {nodeTypeList
-              .filter((nt) => !isVoice || !VOICE_UNSUPPORTED_NODES.has(nt.type))
+              .filter((nt) => !(isVoice ? VOICE_UNSUPPORTED_NODES : TEXT_UNSUPPORTED_NODES).has(nt.type))
               .map((nt) => (
               <div
                 key={nt.type}
@@ -1092,6 +1105,7 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
               invgateCategories={invgateCategories}
               invgatePriorities={invgatePriorities}
               invgateTypes={invgateTypes}
+              invgateConfigured={invgateConfigured}
             />
             <button
               onClick={() => {
@@ -1525,6 +1539,7 @@ function NodeProperties({
   invgateCategories,
   invgatePriorities,
   invgateTypes,
+  invgateConfigured,
 }: {
   node: Node;
   onUpdate: (key: string, value: any) => void;
@@ -1533,6 +1548,8 @@ function NodeProperties({
   invgateCategories: InvgateCatalogOption[];
   invgatePriorities: InvgateCatalogOption[];
   invgateTypes: InvgateCatalogOption[];
+  /** `GET /features`: si InvGate tiene URL, usuario y key efectivos (para el aviso del nodo de identificación). */
+  invgateConfigured: boolean;
 }) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
@@ -1732,6 +1749,85 @@ function NodeProperties({
               )}
             </div>
           </div>
+        </>
+      )}
+
+      {type === 'voice_identify' && (
+        <>
+          {!invgateConfigured && (
+            <p role="alert" className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+              InvGate no está configurado (URL, usuario y key en Configuración → Integraciones): este nodo
+              va a salir siempre por <strong>no reconocido</strong>.
+            </p>
+          )}
+          <div>
+            <label className="block text-sm font-medium mb-1">Qué se le pide</label>
+            <select
+              value={data.idLabel || 'documento'}
+              onChange={(e) => onUpdate('idLabel', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="documento">Número de documento</option>
+              <option value="legajo">Número de legajo</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Campo de InvGate</label>
+            <select
+              value={data.idField || 'employee_number'}
+              onChange={(e) => onUpdate('idField', e.target.value)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="employee_number">employee_number (número de empleado)</option>
+              <option value="doc">doc</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Pregunta por el número</label>
+            <textarea
+              value={data.text || ''}
+              onChange={(e) => onUpdate('text', e.target.value)}
+              placeholder={`Para identificarte, decime tu número de ${data.idLabel === 'legajo' ? 'legajo' : 'documento'}.`}
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Pregunta por nombre y apellido</label>
+            <textarea
+              value={data.namePrompt || ''}
+              onChange={(e) => onUpdate('namePrompt', e.target.value)}
+              placeholder="Gracias. Ahora decime tu nombre y apellido."
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Si no coincide</label>
+            <textarea
+              value={data.retryText || ''}
+              onChange={(e) => onUpdate('retryText', e.target.value)}
+              placeholder="No pude encontrarte con esos datos. Probemos de nuevo: decime tu número de documento."
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Intentos</label>
+            <input
+              type="number"
+              min={1}
+              max={5}
+              value={data.maxAttempts ?? 2}
+              onChange={(e) => onUpdate('maxAttempts', Number(e.target.value))}
+              className="w-24 border rounded p-2 text-sm"
+            />
+          </div>
+          <p className="text-xs text-gray-400">
+            Busca el número en InvGate, compara nombre y apellido de forma aproximada (el STT se equivoca
+            en letras) y cruza con el usuario de pci por email. Reconocido: la llamada queda a nombre de
+            esa persona, con su rol. Si está en InvGate pero no en pci, sale por no reconocido.
+          </p>
         </>
       )}
 

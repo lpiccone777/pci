@@ -366,6 +366,17 @@ export class InvgateService {
     return this.findFirstUser({ email, exact_match: true });
   }
 
+  /**
+   * Personas de InvGate con `field = value` exacto (`users.by` filtra por cualquier campo del
+   * usuario: verificado con `employee_number` contra la instancia real, 2026-10-24, ~0,5 s), sin
+   * las dadas de baja ni deshabilitadas. Lo usa el nodo de identificación por voz.
+   */
+  async findActiveUsersBy(field: string, value: string): Promise<InvgateUser[]> {
+    const result = await this.get('users.by', { [field]: value, exact_match: true });
+    const data = (result as { data?: Record<string, InvgateUser> } | undefined)?.data;
+    return Object.values(data ?? {}).filter((u) => u && !u.is_disabled && !u.is_deleted);
+  }
+
   private async findFirstUser(params: Record<string, unknown>): Promise<InvgateUser | null> {
     const result = await this.get('users.by', params);
     const data = (result as { data?: Record<string, InvgateUser> } | undefined)?.data;

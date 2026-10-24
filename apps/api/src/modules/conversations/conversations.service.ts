@@ -19,6 +19,7 @@ import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { createHash } from 'crypto';
 import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../settings/voicebot-settings.catalog';
 import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
+import { nameMatches, normalizeDocument } from '../voice/voice-identify.util';
 
 /**
  * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
@@ -153,7 +154,16 @@ interface NodeExecutionResult {
   flowState?: any;
   /** Solo por voz: charla libre a cargo del LLM de voz (contrato §5.4, `delegate`). */
   delegate?: { systemPrompt: string };
+  /**
+   * Nodo `voice_identify` reconoció a la persona: desde acá el tramo (y la conversación) sigue
+   * con ese usuario y su rol en la empresa, como un `start` con un conocido.
+   */
+  identified?: { user: any; identity: { isKnown: boolean; roleId: string | null; roleName: string | null } };
 }
+
+/** Campos de InvGate que el nodo `voice_identify` puede usar como documento/legajo. */
+const VOICE_IDENTIFY_FIELDS = ['employee_number', 'doc'];
+const VOICE_IDENTIFY_DEFAULT_ATTEMPTS = 2;
 
 /**
  * Canal del motor [D10, contrato C47]: `voice` nunca arma `WhatsAppInteractive` (el menú se
@@ -324,12 +334,29 @@ export class ConversationsService implements OnModuleInit {
       conversation = { ...conversation, currentFlowId: startFlow.id, currentNodeId: startNodeId, flowState: {} };
     }
     const voice: VoiceFlowOutput = { actions: [], committed: false, ended: false };
-    const identity = { isKnown: false, roleId: null, roleName: null };
-    const ran = await this.executeFlow(conversation, null, body, tenantId, callerNumber ?? '', identity, {
+    // La llamada entra sin usuario [DA5]; si ya la identificó un `voice_identify`, sigue con él.
+    const known = await this.voiceCaller(conversation.id, tenantId);
+    const identity = known?.identity ?? { isKnown: false, roleId: null, roleName: null };
+    const ran = await this.executeFlow(conversation, known?.user ?? null, body, tenantId, callerNumber ?? '', identity, {
       channel: 'voice',
       voice,
     });
     return ran ? voice : null;
+  }
+
+  /** El usuario que ya identificó la llamada (y su rol en la empresa), o `null`. */
+  private async voiceCaller(conversationId: string, tenantId: string) {
+    const conv = await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { userId: true } });
+    if (!conv?.userId) return null;
+    const membership = await this.prisma.userTenant.findUnique({
+      where: { userId_tenantId: { userId: conv.userId, tenantId } },
+      include: { user: true, role: true },
+    });
+    if (!membership || membership.user.deletedAt) return null;
+    return {
+      user: membership.user,
+      identity: { isKnown: true, roleId: membership.role.id, roleName: membership.role.name },
+    };
   }
 
   /** Prompt de la charla libre por voz sin flujo: el de voz de pci con la empresa [C50]. */
@@ -816,6 +843,10 @@ export class ConversationsService implements OnModuleInit {
       // setear una variable (ej. `start` con userName), el mensaje que devuelve
       // ya tiene que poder usarla.
       if (result.flowState) flowState = result.flowState;
+      if (result.identified) {
+        user = result.identified.user;
+        identity = result.identified.identity;
+      }
       if (result.responseText) responses.push(this.interpolate(result.responseText, flowState));
       if (run.voice) {
         if (result.responseText) {
@@ -2099,6 +2130,9 @@ export class ConversationsService implements OnModuleInit {
         };
       }
 
+      case 'voice_identify':
+        return this.executeVoiceIdentifyNode(node, data, body, conversation, tenantId, flowState);
+
       case 'message': {
         // Avanzar automáticamente al siguiente nodo
         return { responseText: data.text };
@@ -3131,6 +3165,121 @@ export class ConversationsService implements OnModuleInit {
    * si tiene uno vinculado (`Flow.skillId`). Es el punto único donde se combinan
    * ambos — tanto el nodo `llm_query` como `orchestratorLlm` parten de acá.
    */
+  /**
+   * Nodo *Identificar por voz* (`voice_identify`, contrato C52). Determinístico, sin LLM:
+   * 1. pide el documento/legajo (`data.idLabel`) y lo busca en InvGate por `data.idField`
+   *    (`employee_number` por defecto; `users.by` filtra por ese campo, una llamada por intento);
+   * 2. pide nombre y apellido y los compara de forma aproximada con los de InvGate;
+   * 3. cruza con el `User` de pci por email, con membresía en la empresa del interno.
+   * Sale por `recognized` (completa `Conversation.userId` y la identidad del turno) o por
+   * `unrecognized`: datos que no coinciden tras los intentos, InvGate sin configurar, o una
+   * persona que está en InvGate pero no en pci (queda en `flowState.identifiedExternal`; no se
+   * crea un `User`: "no hablamos con desconocidos").
+   */
+  private async executeVoiceIdentifyNode(
+    node: any,
+    data: any,
+    body: string,
+    conversation: any,
+    tenantId: string,
+    flowState: Record<string, any>,
+  ): Promise<NodeExecutionResult> {
+    const label = data.idLabel === 'legajo' ? 'legajo' : 'documento';
+    const field = VOICE_IDENTIFY_FIELDS.includes(data.idField) ? data.idField : 'employee_number';
+    const maxAttempts = Number(data.maxAttempts) > 0 ? Number(data.maxAttempts) : VOICE_IDENTIFY_DEFAULT_ATTEMPTS;
+    const askDocument = data.text?.trim() || `Para identificarte, decime tu número de ${label}.`;
+    const askName = data.namePrompt?.trim() || 'Gracias. Ahora decime tu nombre y apellido.';
+    const retry = data.retryText?.trim() || `No pude encontrarte con esos datos. Probemos de nuevo: decime tu número de ${label}.`;
+
+    const exit = (recognized: boolean): NodeExecutionResult => {
+      delete flowState.__awaiting;
+      delete flowState.__identify;
+      return { sourceHandle: recognized ? 'recognized' : 'unrecognized', flowState };
+    };
+
+    // Primera llegada: pedir el documento.
+    if (flowState.__awaiting !== node.id) {
+      if (!(await this.invgateService.isConfigured())) {
+        this.logger.warn(
+          `[${tenantId}] voice_identify '${node.id}': InvGate no está configurado (INVGATE_API_URL/USER/KEY): sale por "no reconocido".`,
+        );
+        return exit(false);
+      }
+      flowState.__awaiting = node.id;
+      flowState.__identify = { step: 'document', attempts: 0 };
+      return { responseText: askDocument, waitForInput: true, flowState };
+    }
+
+    const state = flowState.__identify ?? { step: 'document', attempts: 0 };
+    const fail = (): NodeExecutionResult => {
+      state.attempts += 1;
+      if (state.attempts >= maxAttempts) return exit(false);
+      flowState.__identify = { step: 'document', attempts: state.attempts };
+      return { responseText: retry, waitForInput: true, flowState };
+    };
+
+    if (state.step === 'document') {
+      const document = normalizeDocument(body);
+      if (!document) return fail();
+      const started = Date.now();
+      let found: Awaited<ReturnType<InvgateService['findActiveUsersBy']>> = [];
+      try {
+        found = await this.invgateService.findActiveUsersBy(field, document);
+      } catch (err) {
+        this.logger.warn(
+          `[${tenantId}] voice_identify '${node.id}': falló la búsqueda en InvGate (${err instanceof Error ? err.message : err}).`,
+        );
+      }
+      this.logger.log(`[${tenantId}] voice_identify '${node.id}': búsqueda en InvGate por ${field} en ${Date.now() - started} ms.`);
+      // Más de una persona con el mismo documento no identifica a nadie.
+      if (found.length !== 1) return fail();
+      const person = found[0];
+      flowState.__identify = {
+        step: 'name',
+        attempts: state.attempts,
+        candidate: { invgateId: person.id, name: person.name ?? null, lastname: person.lastname ?? null, email: person.email ?? null },
+      };
+      return { responseText: askName, waitForInput: true, flowState };
+    }
+
+    const candidate = state.candidate ?? {};
+    if (!nameMatches(body, candidate.name, candidate.lastname)) return fail();
+
+    const user = candidate.email
+      ? await this.prisma.user.findFirst({
+          where: {
+            email: { equals: String(candidate.email).trim(), mode: 'insensitive' },
+            deletedAt: null,
+            tenants: { some: { tenantId } },
+          },
+          include: { tenants: { where: { tenantId }, include: { role: true } } },
+        })
+      : null;
+    if (!user) {
+      flowState.identifiedExternal = {
+        nombre: candidate.name,
+        apellido: candidate.lastname,
+        email: candidate.email,
+        invgateId: candidate.invgateId,
+      };
+      this.logger.log(`[${tenantId}] voice_identify '${node.id}': está en InvGate pero no en pci (o no en esta empresa).`);
+      return exit(false);
+    }
+
+    const role = user.tenants[0].role;
+    await this.prisma.conversation.update({ where: { id: conversation.id }, data: { userId: user.id } });
+    flowState.isKnownUser = true;
+    flowState.userName = [user.firstName, user.lastName].filter(Boolean).join(' ') || null;
+    flowState.userFirstName = user.firstName || null;
+    flowState.userLastName = user.lastName || null;
+    flowState.userEmail = user.email || null;
+    flowState.userId = user.id;
+    flowState.userRole = role.name;
+    flowState.userRoleId = role.id;
+    const result = exit(true);
+    return { ...result, identified: { user, identity: { isKnown: true, roleId: role.id, roleName: role.name } } };
+  }
+
   /** System prompt de un `llm_query`: base + Skill, reemplazado o ampliado por el del nodo. */
   private async llmQuerySystemPrompt(
     data: any,

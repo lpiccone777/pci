@@ -20,6 +20,7 @@ const nodeColors: Record<string, string> = {
   device_validation: '#0ea5e9',
   sms: '#22c55e',
   notification: '#eab308',
+  voice_identify: '#0d9488',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -156,6 +157,51 @@ export const StartNode = memo(({ id, data }: any) => (
     </div>
   </div>
 ));
+
+/**
+ * Identificar por voz (solo flujos de voz, contrato C52): pide documento o legajo y nombre y
+ * apellido, los busca en InvGate y sale por "reconocido" / "no reconocido", como el `start`.
+ */
+export const VoiceIdentifyNode = memo(({ data }: any) => {
+  const color = nodeColors.voice_identify;
+  const label = data?.idLabel === 'legajo' ? 'legajo' : 'documento';
+  return (
+    <div className="rounded-lg shadow-md border-2 bg-white" style={{ borderColor: color, minWidth: 200, maxWidth: 260 }}>
+      <div
+        className="text-white text-xs font-semibold px-2 py-1 rounded-t-md flex items-center gap-1"
+        style={{ backgroundColor: color }}
+      >
+        <div className="w-2 h-2 rounded-full bg-white/80" />
+        Identificar por voz
+      </div>
+      <div className="p-2 text-sm text-gray-700">
+        <div className="text-xs text-gray-500">
+          Pide {label} + nombre y apellido · InvGate ({data?.idField || 'employee_number'})
+        </div>
+        <div className="mt-1 text-[10px] text-gray-400">
+          {Number(data?.maxAttempts) > 0 ? data.maxAttempts : 2} intentos · Guarda: userName, userRole, userId
+        </div>
+      </div>
+      <Handle type="target" position={Position.Top} style={{ background: color }} />
+      <div className="relative h-3">
+        <Handle type="source" id="recognized" position={Position.Bottom} style={{ background: '#22c55e', left: '25%' }} />
+        <div
+          className="absolute text-[9px] text-green-600 font-semibold"
+          style={{ bottom: 4, left: '25%', transform: 'translateX(-50%)' }}
+        >
+          reconocido
+        </div>
+        <Handle type="source" id="unrecognized" position={Position.Bottom} style={{ background: '#f97316', left: '75%' }} />
+        <div
+          className="absolute text-[9px] text-orange-600 font-semibold"
+          style={{ bottom: 4, left: '75%', transform: 'translateX(-50%)' }}
+        >
+          no reconocido
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export const MessageNode = memo(({ id, data }: any) => (
   <BaseNode id={id} data={data} type="message" />

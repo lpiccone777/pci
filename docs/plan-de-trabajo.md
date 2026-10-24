@@ -1494,7 +1494,8 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 - 🔄 **H4 — Flujos de voz** (plan 2026-10-24, C52): permiso `voice_flows`, menú y editor de voz,
   modo de habla por nodo, transferir a interno, identificación por voz (DNI/legajo), LLM de voz por
   proveedor. Cuatro tramos (H4a–H4d), ver `docs/voicebot/plan-pci.md`. H4d (LLM de voz por
-  proveedor) ✅. H4a (permiso, menú, listado y editor de voz) ✅.
+  proveedor) ✅. H4a (permiso, menú, listado y editor de voz) ✅. H4c (identificación por voz contra
+  InvGate, `employee_number`) ✅.
 - ⏳ **H5 — Salientes y "probar conexión"**.
 
 ---
