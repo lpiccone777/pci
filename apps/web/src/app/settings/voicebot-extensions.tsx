@@ -113,9 +113,8 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-600">
-        Números que atiende el voicebot y la empresa que atiende cada uno. Una llamada a un número que no
-        es un interno habilitado entra igual, como llamada sin interno. El número no puede ser el interno
-        de una persona.
+        Números que atiende el voicebot y la empresa que atiende cada uno. Solo se atienden las llamadas
+        a internos habilitados: el resto se rechaza. El número no puede ser el interno de una persona.
       </p>
       {error && (
         <p role="alert" className="text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2 text-sm">
