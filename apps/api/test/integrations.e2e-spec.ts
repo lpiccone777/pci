@@ -123,7 +123,8 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect(res.body.v).toBe(1);
       expect(typeof res.body.version).toBe('number');
       expect(new Date(res.body.updatedAt).toString()).not.toBe('Invalid Date');
-      expect(res.body.extensions).toEqual([]);
+      // Los internos (H2) los cubre extensions.e2e-spec.ts; acá solo la forma.
+      expect(Array.isArray(res.body.extensions)).toBe(true);
 
       const settings = res.body.settings as Record<string, string>;
       expect(settings.LIVEKIT_URL).toBe('ws://10.0.0.1:7880');

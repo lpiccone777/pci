@@ -22,6 +22,9 @@ export const INTEGRATION_CONTRACT_VERSION = 1;
 export const VOICEBOT_EVENTS_EXCHANGE = 'voicebot.events';
 export const CONFIG_CHANGED_ROUTING_KEY = 'config.changed';
 
+/** Id de los internos en `config.changed.sections` (no son un grupo del catálogo). */
+export const EXTENSIONS_SECTION_ID = 'internos';
+
 /** Única fila de `IntegrationConfigVersion` (la crea la migración). */
 const VERSION_ID = 'voicebot';
 
@@ -48,15 +51,30 @@ export class IntegrationsConfigService {
     private readonly broker: BrokerService,
   ) {}
 
-  /** Contrato §3.1. Los internos (`extensions`) llegan en H2. */
+  /** Contrato §3.1, con los internos de §3.5 en `extensions`. */
   async voicebotConfig() {
-    const [values, version] = await Promise.all([this.resolveValues(), this.currentVersion()]);
+    const [values, version, extensions] = await Promise.all([
+      this.resolveValues(),
+      this.currentVersion(),
+      this.prisma.extension.findMany({
+        orderBy: { number: 'asc' },
+        include: { tenant: { select: { deletedAt: true } } },
+      }),
+    ]);
     return {
       v: INTEGRATION_CONTRACT_VERSION,
       version: version.version,
       updatedAt: version.updatedAt.toISOString(),
       settings: this.mapFor('voicebot', values),
-      extensions: [] as unknown[],
+      // Una empresa dada de baja no atiende: sus internos viajan deshabilitados.
+      extensions: extensions.map((e) => ({
+        id: e.id,
+        number: e.number,
+        name: e.name,
+        tenantId: e.tenantId,
+        flowId: e.flowId,
+        enabled: e.enabled && !e.tenant.deletedAt,
+      })),
     };
   }
 
@@ -89,15 +107,24 @@ export class IntegrationsConfigService {
     const changed = defs.filter(isIntegrationConfigKey);
     if (changed.length === 0) return;
 
+    const sections = [
+      ...new Set(changed.map((d) => VOICEBOT_SECTION_IDS[d.group as VoicebotSettingGroup]).filter(Boolean)),
+    ];
+    const what = changed.length === 1 ? changed[0].key : `${changed.length} claves`;
+    await this.publishChange(sections, changed.some((d) => !!d.restartsStt), what);
+  }
+
+  /** Lo llama `ExtensionsService` después de crear, editar o borrar un interno (contrato §3.5). */
+  async notifyExtensionsChanged(what: string): Promise<void> {
+    await this.publishChange([EXTENSIONS_SECTION_ID], false, what);
+  }
+
+  private async publishChange(sections: string[], restartStt: boolean, what: string): Promise<void> {
     const { version } = await this.prisma.integrationConfigVersion.update({
       where: { id: VERSION_ID },
       data: { version: { increment: 1 } },
     });
 
-    const sections = [
-      ...new Set(changed.map((d) => VOICEBOT_SECTION_IDS[d.group as VoicebotSettingGroup]).filter(Boolean)),
-    ];
-    const what = changed.length === 1 ? changed[0].key : `${changed.length} claves`;
     try {
       const sent = await this.broker.publishToExchange(VOICEBOT_EVENTS_EXCHANGE, CONFIG_CHANGED_ROUTING_KEY, {
         pattern: 'config.changed',
@@ -105,7 +132,7 @@ export class IntegrationsConfigService {
           v: INTEGRATION_CONTRACT_VERSION,
           version,
           sections,
-          restart: { stt: changed.some((d) => !!d.restartsStt) },
+          restart: { stt: restartStt },
         },
         timestamp: new Date().toISOString(),
       });

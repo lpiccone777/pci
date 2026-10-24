@@ -22,6 +22,9 @@ import {
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 
+/** El interno elegido para una persona ya es un interno del voicebot (`Extension.number`). */
+const EXTENSION_TAKEN_MESSAGE = 'Ese número es un interno del voicebot: la central comparte la numeración';
+
 const USER_SELECT = {
   id: true,
   email: true,
@@ -423,7 +426,7 @@ export class UsersService {
       .map((c) => c.data.invgateUserId)
       .filter((v): v is string => !!v);
 
-    const [takenEmails, takenPhones, takenInternalPhones, takenInvgateUserIds] =
+    const [takenEmails, takenPhones, takenInternalPhones, takenInvgateUserIds, extensionNumbers] =
       await Promise.all([
         this.prisma.user.findMany({
           where: { email: { in: candidates.map((c) => c.data.email) }, deletedAt: null },
@@ -447,11 +450,18 @@ export class UsersService {
               select: { invgateUserId: true },
             })
           : [],
+        internalPhones.length
+          ? this.prisma.extension.findMany({
+              where: { number: { in: internalPhones } },
+              select: { number: true },
+            })
+          : [],
       ]);
 
     const takenEmailSet = new Set(takenEmails.map((u) => u.email));
     const takenPhoneSet = new Set(takenPhones.map((u) => u.phone));
     const takenInternalPhoneSet = new Set(takenInternalPhones.map((u) => u.internalPhone));
+    const extensionNumberSet = new Set(extensionNumbers.map((e) => e.number));
     const takenInvgateUserIdSet = new Set(takenInvgateUserIds.map((u) => u.invgateUserId));
 
     const accepted: { row: number; data: BulkImportUserRowDto; tempPassword: string }[] = [];
@@ -462,6 +472,8 @@ export class UsersService {
         failed.push({ row: c.row, email: c.data.email, reason: 'Ya existe un usuario con ese teléfono' });
       } else if (c.data.internalPhone && takenInternalPhoneSet.has(c.data.internalPhone)) {
         failed.push({ row: c.row, email: c.data.email, reason: 'Ya existe un usuario con ese interno' });
+      } else if (c.data.internalPhone && extensionNumberSet.has(c.data.internalPhone)) {
+        failed.push({ row: c.row, email: c.data.email, reason: EXTENSION_TAKEN_MESSAGE });
       } else if (c.data.invgateUserId && takenInvgateUserIdSet.has(c.data.invgateUserId)) {
         failed.push({
           row: c.row,
@@ -1169,6 +1181,22 @@ export class UsersService {
         await this.conflictBody('Ya existe un usuario con ese interno', 'internalPhone', owner.id, requesterId),
       );
     }
+    if (await this.isVoicebotExtension(internalPhone)) {
+      throw new ConflictException({
+        message: EXTENSION_TAKEN_MESSAGE,
+        field: 'internalPhone',
+        conflict: { canView: false, userId: null, name: null },
+      });
+    }
+  }
+
+  /**
+   * El interno de una persona y los internos que atiende el voicebot (`Extension.number`)
+   * comparten la numeración de la central: no pueden coincidir [contrato de integración §3.5,
+   * C5]. El chequeo inverso vive en `ExtensionsService`.
+   */
+  private async isVoicebotExtension(number: string): Promise<boolean> {
+    return !!(await this.prisma.extension.findUnique({ where: { number }, select: { id: true } }));
   }
 
   /**
@@ -1239,6 +1267,14 @@ export class UsersService {
     });
 
     if (!owner || owner.id === excludeUserId) {
+      if (field === 'internalPhone' && (await this.isVoicebotExtension(trimmed))) {
+        return {
+          available: false,
+          field,
+          conflict: { canView: false, userId: null, name: null },
+          message: EXTENSION_TAKEN_MESSAGE,
+        };
+      }
       return { available: true, field, conflict: null };
     }
 

@@ -18,6 +18,7 @@ import {
   adminContext,
   apiLogin,
   createUserWithPermissions,
+  createTenant,
   setSetting,
   deleteSetting,
   uniqueSlug,
@@ -637,6 +638,60 @@ test('FE-SET-20: Voicebot — SIP saliente y Llamadas salientes avisan que está
     await leafTabs.getByRole('tab', { name: 'SIP entrante', exact: true }).click();
     await expect(notice).toHaveCount(0);
   } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});
+
+test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de un interno desde la UI, con el flujo de voz deshabilitado', async ({
+  page,
+}) => {
+  const tenant = await createTenant(admin);
+  const number = `8${Date.now() % 1_000_000}`;
+  const api = (path: string, init: RequestInit = {}) =>
+    fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${admin.token}`,
+        'X-Tenant-Id': admin.systemTenantId,
+      },
+    });
+
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'false');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/settings');
+    await openTab(page, 'Mensajería: Voicebot');
+    const leafTabs = page.getByRole('tablist', { name: 'Proveedores de Voicebot' });
+    const internos = leafTabs.getByRole('tab', { name: 'Internos', exact: true });
+    // Apagado: la hoja se ve pero no se abre.
+    await expect(internos).toBeDisabled();
+
+    await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+    await page.reload();
+    await openTab(page, 'Mensajería: Voicebot');
+    await expect(internos).toBeEnabled();
+    await internos.click();
+
+    await page.getByRole('button', { name: 'Nuevo interno' }).click();
+    const form = page.getByRole('form', { name: 'Nuevo interno' });
+    await form.locator('#extension-number').fill(number);
+    await form.locator('#extension-name').fill('Mesa de ayuda e2e');
+    await form.locator('#extension-tenant').selectOption(tenant.id);
+    // Hasta H4 no hay flujos de voz: el selector está deshabilitado.
+    await expect(form.locator('#extension-flow')).toBeDisabled();
+    await form.getByRole('button', { name: 'Guardar' }).click();
+
+    await expect(page.getByRole('status')).toContainText(`Interno ${number} creado.`);
+    const row = page.getByRole('row').filter({ hasText: number });
+    await expect(row).toContainText('Mesa de ayuda e2e');
+    await expect(row).toContainText(tenant.name);
+    await expect(row).toContainText('habilitado');
+  } finally {
+    const list: Array<{ id: string; number: string }> = await (await api('/voicebot/extensions')).json();
+    for (const e of list.filter((x) => x.number === number)) {
+      await api(`/voicebot/extensions/${e.id}`, { method: 'DELETE' });
+    }
     await deleteSetting(admin, 'VOICEBOT_ENABLED');
   }
 });

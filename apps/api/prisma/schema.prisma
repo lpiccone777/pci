@@ -78,6 +78,7 @@ model Tenant {
   contextSources          ContextSource[]
   skills                  Skill[]
   scheduleCalendarEntries ScheduleCalendarEntry[]
+  extensions              Extension[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -270,6 +271,30 @@ model IntegrationConfigVersion {
   updatedAt DateTime @updatedAt
 }
 
+// Interno que atiende el voicebot (contrato de integración §3.5, H2): el número llamado tal
+// como llega en el INVITE, y la empresa que atiende. Infra global: lo administra el
+// superusuario en *Voicebot → Internos* y no está scopeado por el tenant activo. Comparte la
+// numeración de la central con `User.internalPhone` (el interno de una PERSONA, otra cosa):
+// `ExtensionsService` y `UsersService` validan que no se pisen, en los dos sentidos [C5].
+// `id` es uuid porque viaja en el contrato. `flowId` queda nullable y sin uso hasta H4
+// (`Flow.channel` todavía no existe; DA8/DA15 abiertas): la API no lo acepta.
+// Cada cambio sube `IntegrationConfigVersion` y publica `config.changed` con
+// `sections: ["internos"]`.
+model Extension {
+  id        String   @id @default(uuid())
+  number    String   @unique
+  name      String
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  flowId    String?
+  flow      Flow?    @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
 model Setting {
   id        String   @id @default(cuid())
   key       String   @unique
@@ -358,6 +383,7 @@ model Flow {
   // registro inverso cuando esta fila ES una variante de otro flow. Ver FlowAlternative.
   baseAlternatives FlowAlternative[]    @relation("FlowAlternativeBase")
   variantOf        FlowAlternative?     @relation("FlowAlternativeVariant")
+  extensions       Extension[]
 
   @@index([isActive])
   @@index([isDefault])

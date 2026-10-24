@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
+import { VoicebotExtensions } from './voicebot-extensions';
 
 interface Setting {
   key: string;
@@ -93,6 +94,14 @@ interface HierarchyNode {
   notice?: string;
 }
 
+/**
+ * Hoja de los internos del voicebot. No es un grupo del catálogo (los internos son una entidad
+ * propia, `/voicebot/extensions`): se agrega a mano junto al voicebot y se habilita con
+ * `VOICEBOT_ENABLED`, como el resto de sus hojas.
+ */
+const VOICEBOT_EXTENSIONS_GROUP = 'Mensajería: Voicebot (Internos)';
+const VOICEBOT_GENERAL_GROUP = 'Mensajería: Voicebot';
+
 /** Contrato de integración 1.1 §6.0: estos grupos los usan las salientes reales desde n8n. */
 const OUTBOUND_IN_USE_NOTICE =
   'En uso por las llamadas salientes (Anura / n8n): un cambio acá afecta llamadas reales';
@@ -167,6 +176,7 @@ const GROUP_HIERARCHY: HierarchyNode[] = [
             group: 'Mensajería: Voicebot (Llamadas salientes)',
             notice: OUTBOUND_IN_USE_NOTICE,
           },
+          { key: 'internos', label: 'Internos', group: VOICEBOT_EXTENSIONS_GROUP },
         ],
       },
     ],
@@ -406,6 +416,7 @@ export default function SettingsPage() {
   const groups = useMemo(() => {
     const gs: string[] = [];
     for (const s of settings) if (!gs.includes(s.group)) gs.push(s.group);
+    if (gs.includes(VOICEBOT_GENERAL_GROUP)) gs.push(VOICEBOT_EXTENSIONS_GROUP);
     return gs;
   }, [settings]);
 
@@ -457,6 +468,9 @@ export default function SettingsPage() {
   /** Una hoja está deshabilitada si todas sus claves lo están; una rama, si todas sus hojas. */
   function isNodeDisabled(node: HierarchyNode): boolean {
     return collectLeafGroups(node).every((g) => {
+      if (g === VOICEBOT_EXTENSIONS_GROUP) {
+        return settings.find((s) => s.key === 'VOICEBOT_ENABLED')?.value !== 'true';
+      }
       const groupSettings = settings.filter((s) => s.group === g);
       return groupSettings.length > 0 && groupSettings.every((s) => !isSettingEnabled(s));
     });
@@ -810,6 +824,9 @@ export default function SettingsPage() {
             >
               {activeLeafNode.notice}
             </p>
+          )}
+          {activeGroup === VOICEBOT_EXTENSIONS_GROUP && (
+            <VoicebotExtensions canUpdate={canUpdate} canDelete={canDelete} />
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -84,7 +84,13 @@ type GlobalField = 'email' | 'phone' | 'internalPhone' | 'invgateUserId';
  * El usuario que ya ocupa un campo global. `canView` false = no se revela quién es (está en una
  * empresa que quien edita no administra), y ahí `userId` y `name` van en null.
  */
-type FieldConflict = { canView: boolean; userId: string | null; name: string | null };
+type FieldConflict = {
+  canView: boolean;
+  userId: string | null;
+  name: string | null;
+  /** Lo ocupa algo que no es una persona (p. ej. un interno del voicebot): se muestra tal cual. */
+  message?: string;
+};
 
 /**
  * Verifica en vivo si un campo global ya está en uso. Devuelve el conflicto (quién lo usa) o
@@ -102,7 +108,7 @@ async function checkFieldAvailability(
   if (excludeUserId) params.set('excludeUserId', excludeUserId);
   try {
     const res = await apiFetch(`/users/check-availability?${params.toString()}`);
-    return res.available ? null : (res.conflict as FieldConflict);
+    return res.available ? null : { ...(res.conflict as FieldConflict), message: res.message };
   } catch {
     return null;
   }
@@ -116,6 +122,7 @@ function FieldConflictError({
   conflict: FieldConflict;
   onView: (userId: string) => void;
 }) {
+  if (conflict.message) return <p className="text-xs text-red-600 mt-1">{conflict.message}.</p>;
   return (
     <p className="text-xs text-red-600 mt-1">
       Ya está en uso por{' '}

@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ⏳ H2–H5. Contrato vigente: **1.1**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · 🔄 H2 · ⏳ H3–H5. Contrato vigente: **1.3**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -77,15 +77,24 @@ endpoints con token real, la importación de los `.env` corrió con `--apply`, y
 
 ## H2 — Internos
 
-- [ ] **Modelo Prisma** de internos (contrato §3.5) con migración.
+- [x] **Modelo Prisma** de internos (`Extension`, contrato §3.5; migración
+  `20261024120000_voicebot_extensions`, **falta aplicarla** en la base de desarrollo con autorización del usuario).
   - `number` único.
-  - Validar que `flowId`, si viene, sea un flujo de canal `voice` asignado a ese `tenantId`; si no,
-    hay fuga entre empresas, como ya pasó con los roles.
-- [ ] **ABM** con `SystemTenantGuard` (infra global, D3) y UI en la subpestaña *Voicebot → Internos*.
-- [ ] Incluir los internos en `GET /integrations/voicebot/config`. Todo cambio sube la versión y publica `config.changed`.
-- [ ] Relación con `User.internalPhone`: hoy es el interno **de una persona**, otra cosa que el
-  interno que atiende el bot. No mezclarlos. Si hacen falta los dos (p. ej. transferir a la persona
-  X), documentarlo y preguntar.
+  - ⏭️ `flowId` queda nullable y la API no lo acepta todavía: la validación "flujo `voice` asignado
+    a ese tenant" llega con `Flow.channel` (H4) y depende de DA8/DA15, abiertas. En la UI, deshabilitado.
+- [x] **ABM** (`modules/extensions/`, `/voicebot/extensions`) con `SystemTenantGuard` + `settings:*`
+  (infra global, D3) y UI en la subpestaña *Voicebot → Internos* (`settings/voicebot-extensions.tsx`),
+  gateada por `VOICEBOT_ENABLED`.
+- [x] Los internos van en `extensions` de `GET /integrations/voicebot/config` (los de una empresa
+  dada de baja, con `enabled: false`). Todo cambio sube la versión y publica `config.changed` con
+  `sections: ["internos"]`.
+- [x] Relación con `User.internalPhone` [C5]: siguen siendo cosas distintas (interno de una
+  persona vs. interno que atiende el bot), pero no pueden coincidir. Se valida en los dos sentidos:
+  `ExtensionsService` contra personas activas, y `UsersService` (alta, edición, verificación en vivo,
+  carga masiva) contra los internos.
+- [x] **Tests:** `test/extensions.e2e-spec.ts` (BE-EXT-01..09), FE-SET-21, plan de pruebas §1.26.
+- Contrato 1.3 (C44): toda llamada se atiende; un número que no es interno habilitado entra "sin
+  interno". No cambia el modelo. Quién atiende esas llamadas es DA17 (H3), abierta.
 
 ## H3 — Canal de voz en el motor
 
