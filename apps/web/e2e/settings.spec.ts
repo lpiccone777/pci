@@ -615,3 +615,28 @@ test('FE-SET-19: Voicebot — con VOICEBOT_ENABLED apagado solo General es usabl
     await deleteSetting(admin, 'VOICEBOT_ENABLED');
   }
 });
+
+test('FE-SET-20: Voicebot — SIP saliente y Llamadas salientes avisan que están en uso por las salientes reales', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/settings');
+    await openTab(page, 'Mensajería: Voicebot');
+
+    const leafTabs = page.getByRole('tablist', { name: 'Proveedores de Voicebot' });
+    const notice = page.getByRole('note').filter({ hasText: 'En uso por las llamadas salientes (Anura / n8n)' });
+    // Contrato 1.1 §6.0: los endpoints de salientes están en uso desde n8n.
+    for (const leaf of ['SIP saliente', 'Llamadas salientes']) {
+      await leafTabs.getByRole('tab', { name: leaf, exact: true }).click();
+      await expect(notice).toBeVisible();
+      await expect(notice).toContainText('un cambio acá afecta llamadas reales');
+    }
+    // Los demás grupos no lo muestran.
+    await leafTabs.getByRole('tab', { name: 'SIP entrante', exact: true }).click();
+    await expect(notice).toHaveCount(0);
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});

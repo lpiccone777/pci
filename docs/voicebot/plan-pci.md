@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.0**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.1**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -60,6 +60,9 @@ Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.0**
 - [x] **Tests** (`test/integrations.e2e-spec.ts` BE-INT-01..18, `settings.spec.ts` FE-SET-19, FE-RSP-04 ampliado, plan de pruebas §1.25):
   - e2e del catálogo y de los endpoints de servicio (token válido, inválido o ausente).
   - Actualizar `apps/web/e2e/settings.spec.ts:66` y `responsive.spec.ts:84` con la jerarquía nueva.
+- [x] **Aviso de salientes en uso** (contrato 1.1 §6.0, 2026-10-24): *SIP saliente* y *Llamadas
+  salientes* muestran "En uso por las llamadas salientes (Anura / n8n): un cambio acá afecta llamadas
+  reales" (`notice` en `GROUP_HIERARCHY`, FE-SET-20).
 - [x] **Importación de los `.env` actuales** (pedido del usuario vía coordinador, 2026-10-24;
   `src/scripts/import-integration-env.ts`, `modules/integrations/env-import*.ts`, BE-INT-19..22):
   script de una sola vez que corre el usuario. Mapea cada variable con `envNames`, reporta los

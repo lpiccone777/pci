@@ -115,7 +115,7 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **646 casos** · Backend 355 · Chatbot 152 · Frontend 139 · de los cuales **333 son `P0`**
+Total del plan: **647 casos** · Backend 355 · Chatbot 152 · Frontend 140 · de los cuales **333 son `P0`**
 (305 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
@@ -162,7 +162,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 2.11 Cierre por inactividad | 🟠 P1 | 4 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **139** |
+| **Frontend (§3)** | | **140** |
 | 3.1 Infraestructura | 🔴 P0 | 19 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
@@ -170,12 +170,12 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.5 Roles | 🟠 P1 | 10 |
 | 3.6 Tenants | 🟠 P1 | 7 |
 | 3.7 Áreas | 🟠 P1 | 5 |
-| 3.8 Configuración | 🟠 P1 | 18 |
+| 3.8 Configuración | 🟠 P1 | 19 |
 | 3.9 Fuentes de verdad | 🟠 P1 | 12 |
 | 3.10 Flujos (editor) | 🟠 P1 | 29 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **646** |
+| **TOTAL** | | **647** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -1311,6 +1311,7 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-SET-17 | Tipear en varias filas con drafts sin guardar y guardar una | Solo se resetea el draft de la fila guardada (mergea esa fila y refresca el estado de proveedores con `refreshStatus`), **sin pisar** lo tipeado en las demás — antes un `load()` completo borraba todos los drafts |
 | FE-SET-18 | Botón "Recargar categorías" en la tarjeta `INVGATE_CATEGORY_PARENT_ID` (Integración: InvGate) | `POST /settings/invgate/categories/refresh`; muestra cuántas subcategorías leyó, bajo qué id y sus nombres. Si InvGate no está configurado o no hay categoría padre guardada, lo dice en ámbar en vez de mostrar 0 a secas. Si el id tipeado sin guardar difiere del usado, avisa que recargó con el **guardado**. Deshabilitado sin `settings:update` |
 | FE-SET-19 | *Mensajería → Voicebot* con `VOICEBOT_ENABLED` en falso y después habilitado | Apagado: solo *General* se puede abrir (interruptor y tokens editables); las otras 10 sub-pestañas se ven deshabilitadas. Al guardar `VOICEBOT_ENABLED=true` se habilitan. Cada clave muestra las marcas "reconecta: puede cortar llamadas" y "reinicia el STT" cuando corresponde, y el nombre con el que la recibe cada servicio (`voicebot: LIVEKIT_URL · stt: STT_LIVEKIT_URL`) |
+| FE-SET-20 | *Mensajería → Voicebot → SIP saliente* y *Llamadas salientes* | Aviso visible arriba del panel: "En uso por las llamadas salientes (Anura / n8n): un cambio acá afecta llamadas reales" (contrato 1.1 §6.0). Los demás grupos no lo muestran |
 
 ## 3.9 Fuentes de verdad (`/dashboard/context-sources`)
 

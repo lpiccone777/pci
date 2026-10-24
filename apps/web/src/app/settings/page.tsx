@@ -89,7 +89,13 @@ interface HierarchyNode {
   label: string;
   group?: string;
   children?: HierarchyNode[];
+  /** Solo hojas: aviso visible arriba del panel del grupo. */
+  notice?: string;
 }
+
+/** Contrato de integración 1.1 §6.0: estos grupos los usan las salientes reales desde n8n. */
+const OUTBOUND_IN_USE_NOTICE =
+  'En uso por las llamadas salientes (Anura / n8n): un cambio acá afecta llamadas reales';
 
 const GROUP_HIERARCHY: HierarchyNode[] = [
   {
@@ -149,11 +155,17 @@ const GROUP_HIERARCHY: HierarchyNode[] = [
           { key: 'llm', label: 'LLM de voz', group: 'Mensajería: Voicebot (LLM de voz)' },
           { key: 'conversacion', label: 'Conversación', group: 'Mensajería: Voicebot (Conversación)' },
           { key: 'sip-entrante', label: 'SIP entrante', group: 'Mensajería: Voicebot (SIP entrante)' },
-          { key: 'sip-saliente', label: 'SIP saliente', group: 'Mensajería: Voicebot (SIP saliente)' },
+          {
+            key: 'sip-saliente',
+            label: 'SIP saliente',
+            group: 'Mensajería: Voicebot (SIP saliente)',
+            notice: OUTBOUND_IN_USE_NOTICE,
+          },
           {
             key: 'llamadas-salientes',
             label: 'Llamadas salientes',
             group: 'Mensajería: Voicebot (Llamadas salientes)',
+            notice: OUTBOUND_IN_USE_NOTICE,
           },
         ],
       },
@@ -791,6 +803,14 @@ export default function SettingsPage() {
               </span>
             )}
           </div>
+          {activeLeafNode?.notice && (
+            <p
+              role="note"
+              className="text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4 text-sm"
+            >
+              {activeLeafNode.notice}
+            </p>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {activeGroupSettings
