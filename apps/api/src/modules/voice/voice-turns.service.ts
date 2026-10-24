@@ -205,12 +205,27 @@ export class VoiceTurnsService implements OnModuleInit {
     });
   }
 
-  /** Flujo de la llamada por su interno [DA8+DA15]. `null` = charla libre. */
-  private async resolveCallFlow(call: { extensionId: string | null; tenantId: string }) {
+  /**
+   * Flujo de la llamada por su interno [DA8+DA15]. `null` = charla libre. Loguea por qué paso
+   * se resolvió (flujo del interno, flujo de voz de inicio de la empresa o charla libre): un flujo
+   * asignado a otra empresa que la del interno no se toma nunca, y sin este log no se ve.
+   */
+  private async resolveCallFlow(call: { id: string; extensionId: string | null; extensionNumber: string; tenantId: string }) {
     const extension = call.extensionId
       ? await this.prisma.extension.findUnique({ where: { id: call.extensionId }, select: { tenantId: true, flowId: true } })
       : null;
-    return this.flows.findVoiceFlowForExtension(extension ?? { tenantId: call.tenantId, flowId: null });
+    const flow = await this.flows.findVoiceFlowForExtension(extension ?? { tenantId: call.tenantId, flowId: null });
+    const where = `[voz] llamada ${call.id} (interno ${call.extensionNumber}, empresa ${call.tenantId})`;
+    const ignoredOwn = extension?.flowId && extension.flowId !== flow?.id
+      ? ` El flujo del interno (${extension.flowId}) se ignoró: no es de voz, no está activo o no está asignado a esta empresa.`
+      : '';
+    if (!flow) {
+      this.logger.log(`${where}: la empresa no tiene flujo de voz de inicio → charla libre (delegate).${ignoredOwn}`);
+    } else {
+      const why = extension?.flowId === flow.id ? 'el flujo del interno' : 'el flujo de voz de inicio de la empresa (o su variante)';
+      this.logger.log(`${where}: flujo "${flow.name}" (${flow.id}) por ${why}.${ignoredOwn}`);
+    }
+    return flow;
   }
 
   /**
