@@ -141,6 +141,24 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
     return sent;
   }
 
+  /**
+   * Publica en un exchange `topic` durable en lugar de en una cola. Es para eventos con varios
+   * consumidores que pci no conoce (contrato de integración §3.3: `config.changed` en
+   * `voicebot.events`): cada consumidor declara y bindea su propia cola. Si nadie bindeó
+   * todavía, RabbitMQ descarta el mensaje — es lo esperado, los consumidores releen toda la
+   * configuración al arrancar.
+   */
+  async publishToExchange(exchange: string, routingKey: string, message: BrokerMessage): Promise<boolean> {
+    if (!this.channel) {
+      this.logger.warn(`Cannot publish to '${exchange}': channel not ready`);
+      return false;
+    }
+    await this.channel.assertExchange(exchange, 'topic', { durable: true });
+    return this.channel.publish(exchange, routingKey, Buffer.from(JSON.stringify(message)), {
+      persistent: true,
+    });
+  }
+
   async subscribe(queue: string, handler: MessageHandler) {
     if (!this.handlers.has(queue)) {
       this.handlers.set(queue, []);

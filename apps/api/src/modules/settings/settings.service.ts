@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SecretsCipher } from '../../config/secrets.cipher';
+import { IntegrationsConfigService } from '../integrations/integrations-config.service';
 import {
   SETTINGS_CATALOG,
   SettingDefinition,
@@ -28,6 +29,10 @@ export interface ResolvedSetting {
   secret?: boolean;
   provider?: string;
   placeholder?: string;
+  envNames?: SettingDefinition['envNames'];
+  reconnects?: boolean;
+  restartsStt?: boolean;
+  enabledBy?: string;
   /**
    * Valor efectivo. En claves `secret` esto es un enmascarado (`sk-•••••abcd`),
    * nunca el valor real: los secrets son de solo escritura.
@@ -48,6 +53,7 @@ export class SettingsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly cipher: SecretsCipher,
+    private readonly integrationsConfig: IntegrationsConfigService,
   ) {}
 
   async findAll(): Promise<ResolvedSetting[]> {
@@ -100,6 +106,7 @@ export class SettingsService {
         ? `Secret actualizado: ${def.key} (cifrado)`
         : `Setting actualizado: ${def.key} = ${this.truncate(stored)}`,
     );
+    await this.integrationsConfig.onSettingChanged(def);
 
     return this.resolve(def, row);
   }
@@ -114,6 +121,7 @@ export class SettingsService {
 
     await this.prisma.setting.delete({ where: { key: def.key } });
     this.logger.log(`Setting eliminado de BD: ${def.key} (vuelve a env/default)`);
+    await this.integrationsConfig.onSettingChanged(def);
 
     return this.resolve(def, null);
   }
@@ -195,6 +203,10 @@ export class SettingsService {
       secret: def.secret,
       provider: def.provider,
       placeholder: def.placeholder,
+      envNames: def.envNames,
+      reconnects: def.reconnects,
+      restartsStt: def.restartsStt,
+      enabledBy: def.enabledBy,
       source,
       updatedAt: row?.updatedAt ?? null,
     };

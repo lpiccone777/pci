@@ -1458,6 +1458,28 @@ una variante elegida antes de arrancar).
 
 ---
 
+## Voicebot 🔄 EN PROGRESO (pedido 2026-10-23)
+
+Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de verdad de su
+configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
+voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
+[`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
+**contrato de integración 1.0** (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
+
+- ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
+- 🔄 **H1 — Subpestaña Voicebot y endpoints de configuración** (2026-10-23): catálogo
+  (prefijo `VOICEBOT_`/`STT_` + `envNames`), `GET /integrations/{voicebot,stt}/config` con
+  `ServiceTokenGuard`, versión atómica en BD, `config.changed` en `voicebot.events`, UI con
+  habilitación condicional. Falta aplicar la migración en la base de desarrollo. "Probar
+  conexión" (`health.check`) pasa a H5, cuando exista el consumidor del lado del voicebot.
+- ⏳ **H2 — Internos**.
+- ⏳ **H3 — Canal de voz en el motor** (`voice.events`, RPC `voice.turn`).
+- ⏳ **H4 — Flujos de voz** (`Flow.channel`, editor, motor).
+- ⏳ **H5 — Salientes y "probar conexión"**.
+
+---
+
 ## Hito 4 - Auditoría y Métricas ⏳ PENDIENTE
 
 ### Registro estructurado

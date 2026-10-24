@@ -20,6 +20,7 @@ import { BrokerModule } from './modules/broker/broker.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { FlowModule } from './modules/flow/flow.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { SmsModule } from './modules/sms/sms.module';
 import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
@@ -48,6 +49,7 @@ import { ScheduleCalendarModule } from './modules/schedule-calendar/schedule-cal
     MetricsModule,
     FlowModule,
     SettingsModule,
+    IntegrationsModule,
     WhatsAppModule,
     SmsModule,
     ContextSourcesModule,

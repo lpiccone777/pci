@@ -14,6 +14,12 @@
  * engorroso). `.env` sigue funcionando como fallback de la cascada BD→env→default.
  */
 
+import {
+  VOICEBOT_SETTINGS,
+  VOICEBOT_SETTING_GROUPS,
+  type VoicebotSettingGroup,
+} from './voicebot-settings.catalog';
+
 export type SettingType = 'number' | 'string' | 'boolean' | 'enum';
 
 /** Proveedores de LLM soportados por LlmProviderFactory. */
@@ -45,6 +51,7 @@ export type SettingGroup =
   | 'Mensajería: SMS (Twilio)'
   | 'Mensajería: SMS (Gupshup)'
   | 'Mensajería: Email'
+  | VoicebotSettingGroup
   | 'Integración: InvGate'
   | 'Simulación'
   | 'Otros';
@@ -79,6 +86,37 @@ export interface SettingDefinition {
    * entorno. Si está, le gana a `defaultValue` al resolver el valor efectivo.
    */
   resolveDefault?: () => string;
+  /**
+   * Integración voicebot/stt (contrato de integración §3.4): nombre con el que cada consumidor
+   * recibe esta clave en `GET /integrations/{voicebot,stt}/config`. La clave de pci lleva
+   * prefijo `VOICEBOT_`/`STT_` para no chocar con las propias (`MINIMAX_API_KEY` del chat,
+   * `RABBITMQ_URL` del broker de pci) ni heredar sus valores por la cascada BD→env; el
+   * consumidor la sigue viendo con su nombre de siempre. Sin entrada para un consumidor = no
+   * se le manda.
+   */
+  envNames?: Partial<Record<IntegrationConsumer, string>>;
+  /** Cambiarla hace que el voicebot reabra la conexión afectada (puede cortar llamadas). */
+  reconnects?: boolean;
+  /** Cambiarla requiere reiniciar el stt (`restart.stt` en `config.changed`). */
+  restartsStt?: boolean;
+  /**
+   * Clave `boolean` del catálogo que habilita a esta: con esa en `false`, el backoffice muestra
+   * esta clave deshabilitada. Es solo de presentación: el backend la guarda igual.
+   */
+  enabledBy?: string;
+}
+
+/** Servicios externos que leen su configuración de pci (contrato de integración §3.1/§3.2). */
+export type IntegrationConsumer = 'voicebot' | 'stt';
+
+/**
+ * ¿La clave forma parte de la configuración que pci le sirve al voicebot/stt? Son las que
+ * suben la versión de configuración y publican `config.changed` al cambiar. Incluye las
+ * claves internas que no viajan con su nombre pero de las que se deriva otra
+ * (`STT_SINK_CONSOLE` → `STT_SINK`).
+ */
+export function isIntegrationConfigKey(def: SettingDefinition): boolean {
+  return !!def.envNames || !!def.restartsStt;
 }
 
 /**
@@ -807,6 +845,9 @@ export const SETTINGS_CATALOG: SettingDefinition[] = [
       'la charla sigue siendo retomable por este tiempo: el próximo mensaje continúa la MISMA ' +
       'conversación, conservando el historial. Pasada la ventana, arranca una conversación nueva.',
   },
+
+  // --- Mensajería: Voicebot --- (ver voicebot-settings.catalog.ts)
+  ...VOICEBOT_SETTINGS,
 ];
 
 /** Orden en que se muestran los grupos en la UI. */
@@ -827,6 +868,7 @@ export const SETTINGS_GROUP_ORDER: SettingGroup[] = [
   'Mensajería: SMS (Twilio)',
   'Mensajería: SMS (Gupshup)',
   'Mensajería: Email',
+  ...VOICEBOT_SETTING_GROUPS,
   'Integración: InvGate',
   'Simulación',
   'Otros',

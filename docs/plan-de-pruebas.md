@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **623 casos** · Backend 333 · Chatbot 152 · Frontend 138 · de los cuales **311 son `P0`**
-(283 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **642 casos** · Backend 351 · Chatbot 152 · Frontend 139 · de los cuales **329 son `P0`**
+(301 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **333** |
+| **Backend (§1)** | | **351** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -147,6 +147,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
 | 1.22 Integración InvGate | 🟠 P1 | 17 |
 | 1.23 Skills | 🟠 P1 | 10 |
+| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 18 |
 | **Chatbot (§2)** | | **152** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
 | 2.2 Arranque de flujo | 🔴 P0 | 5 |
@@ -161,7 +162,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 2.11 Cierre por inactividad | 🟠 P1 | 4 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **138** |
+| **Frontend (§3)** | | **139** |
 | 3.1 Infraestructura | 🔴 P0 | 19 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
@@ -169,12 +170,12 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.5 Roles | 🟠 P1 | 10 |
 | 3.6 Tenants | 🟠 P1 | 7 |
 | 3.7 Áreas | 🟠 P1 | 5 |
-| 3.8 Configuración | 🟠 P1 | 17 |
+| 3.8 Configuración | 🟠 P1 | 18 |
 | 3.9 Fuentes de verdad | 🟠 P1 | 12 |
 | 3.10 Flujos (editor) | 🟠 P1 | 29 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **623** |
+| **TOTAL** | | **642** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -802,6 +803,36 @@ lista/botones interactivos; en SMS como texto numerado.
 | BE-ITR-05 | Responder el selector con algo **inválido** | `resolve` → `{ ask }` otra vez; conserva el pendiente (se re-pregunta; expira a las 12h) |
 | BE-ITR-06 | Multiempresa con una **conversación activa** en una empresa | `resolve` → esa empresa (continúa la charla), sin volver a preguntar. Una charla **cerrada** ya no cuenta: el próximo mensaje vuelve a preguntar |
 
+## 1.25 Integración voicebot/stt: configuración servida por pci (`IntegrationsController`)
+
+**Precondición:** contrato de integración 1.0 (repo voicebot, `docs/integracion-pci/contrato.md`
+§2, §3.1–§3.4). pci es la fuente de verdad de la configuración del voicebot y del stt: la sirve en
+`GET /integrations/voicebot/config` y `GET /integrations/stt/config`, con un token de servicio
+por consumidor (`VOICEBOT_SERVICE_TOKEN`, `STT_SERVICE_TOKEN`, secrets del catálogo) validado por
+`ServiceTokenGuard`, fuera de `JwtAuthGuard`/`TenantGuard`. Es la **única** excepción a "nunca
+devolver secrets en claro" (DA2). Spec: `apps/api/test/integrations.e2e-spec.ts`.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-INT-01 | `GET /integrations/voicebot/config` sin `Authorization` | 401 sin datos, con `Cache-Control: no-store` |
+| BE-INT-02 | Token inválido en cualquiera de los dos endpoints | 401 |
+| BE-INT-03 | Token del voicebot contra el endpoint del stt, y al revés | 401: los tokens no son intercambiables |
+| BE-INT-04 | JWT válido del backoffice como Bearer | 401: la ruta exige token de servicio |
+| BE-INT-05 | Token de servicio sin configurar en pci (incluido `Bearer ` vacío) | 401: sin token cargado la ruta rechaza todo |
+| BE-INT-06 | Token válido | 200 con `Cache-Control: no-store` |
+| BE-INT-07 | Forma de la respuesta del voicebot | `{v:1, version, updatedAt, settings, extensions:[]}`; `settings` con los nombres del voicebot (`LIVEKIT_URL`, no `VOICEBOT_LIVEKIT_URL`), todo string, defaults del voicebot sin valor guardado; sin claves solo del stt ni tokens; incluye `STT_HTTP_JWT_LEEWAY_S` |
+| BE-INT-08 | Un secret guardado (`VOICEBOT_LIVEKIT_API_SECRET`) | Viaja en claro en el endpoint; `GET /settings/:key` lo sigue enmascarando con `isSet:true` |
+| BE-INT-09 | `MINIMAX_API_KEY` del chat y `VOICEBOT_MINIMAX_API_KEY` con valores distintos | El voicebot recibe la suya como `MINIMAX_API_KEY` (DA13: config independiente) |
+| BE-INT-10 | Forma de la respuesta del stt | `{v:1, version, env}` con nombres del stt; un valor compartido sale con el nombre de cada uno (`STT_LIVEKIT_URL`); sin `STT_HTTP_JWT_LEEWAY_S` (C38), `OMP_NUM_THREADS` (C10), claves solo del voicebot ni `STT_SINK_CONSOLE` |
+| BE-INT-11 | `VOICEBOT_SOURCE` amqp / http y `STT_SINK_CONSOLE` | `STT_SINK` derivado: `rabbitmq`, `http`, `http,console` (C39) |
+| BE-INT-12 | Catálogo | Toda clave del voicebot/stt lleva prefijo `VOICEBOT_`/`STT_`; `MINIMAX_API_KEY`/`MINIMAX_BASE_URL` siguen siendo del chat (sin `envNames`); `RABBITMQ_URL` no está en el catálogo |
+| BE-INT-13 | `GET /settings` expone `enabledBy` | Todo depende de `VOICEBOT_ENABLED` salvo el interruptor y los dos tokens |
+| BE-INT-14 | Guardar una clave del voicebot | `version` sube en 1 (misma en los dos endpoints) y se publica `config.changed` en el exchange `voicebot.events` con `{v:1, version, sections:["general"], restart:{stt:false}}` |
+| BE-INT-15 | Guardar una clave que el stt toma al arrancar | `config.changed` con `sections:["stt"]` y `restart.stt: true` |
+| BE-INT-16 | Restaurar (`DELETE /settings/:key`) una clave de la integración | También sube la versión |
+| BE-INT-17 | Guardar una clave ajena a la integración (`OTP_TTL_SECONDS`) | No sube la versión ni publica |
+| BE-INT-18 | Guardar un token de servicio | No sube la versión: no es configuración servida |
+
 ---
 
 # 💬 Sección 2 — Chatbot
@@ -1272,9 +1303,10 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-SET-13 | Botón "Cancelar" de un setting con cambios | Revierte el draft al valor efectivo, sin llamar al backend |
 | FE-SET-14 | Pestañas nuevas: Mensajería WhatsApp (Twilio) / (Gupshup), Mensajería SMS (Twilio) / (Gupshup), Integración InvGate | Aparecen los grupos con sus campos; los secretos (🔒 `TWILIO_AUTH_TOKEN`, `GUPSHUP_API_KEY`, `GUPSHUP_SMS_PASSWORD`, `INVGATE_API_KEY`) arrancan vacíos con enmascarado. El layout pasó a grid de 2 columnas (sacó `max-w-4xl`) para acomodar tantos grupos |
 | FE-SET-15 | Selectores de proveedor `WHATSAPP_PROVIDER` / `SMS_PROVIDER` | Dropdown con los valores del enum. ⚠️ Su descripción aclara que el cambio **requiere reiniciar el backend** (a diferencia del texto general de `/settings` que promete "sin reiniciar") — anotar la excepción |
-| FE-SET-16 | Pestañas de `/settings` agrupadas por tema | Jerarquía de 3 niveles (Seguridad, LLM, Mensajería con sub-temas WhatsApp/SMS y proveedores Twilio/Gupshup, Integraciones) navegable por flechas (WAI-ARIA); un grupo del catálogo no mapeado cae en la pestaña "Otros", no desaparece; el punto de estado (activo/incompleto) se propaga a las ramas |
+| FE-SET-16 | Pestañas de `/settings` agrupadas por tema | Jerarquía de 3 niveles (Seguridad, LLM, Mensajería con sub-temas WhatsApp/SMS/Email/Voicebot y proveedores Twilio/Gupshup, Integraciones) navegable por flechas (WAI-ARIA); un grupo del catálogo no mapeado cae en la pestaña "Otros", no desaparece; el punto de estado (activo/incompleto) se propaga a las ramas |
 | FE-SET-17 | Tipear en varias filas con drafts sin guardar y guardar una | Solo se resetea el draft de la fila guardada (mergea esa fila y refresca el estado de proveedores con `refreshStatus`), **sin pisar** lo tipeado en las demás — antes un `load()` completo borraba todos los drafts |
 | FE-SET-18 | Botón "Recargar categorías" en la tarjeta `INVGATE_CATEGORY_PARENT_ID` (Integración: InvGate) | `POST /settings/invgate/categories/refresh`; muestra cuántas subcategorías leyó, bajo qué id y sus nombres. Si InvGate no está configurado o no hay categoría padre guardada, lo dice en ámbar en vez de mostrar 0 a secas. Si el id tipeado sin guardar difiere del usado, avisa que recargó con el **guardado**. Deshabilitado sin `settings:update` |
+| FE-SET-19 | *Mensajería → Voicebot* con `VOICEBOT_ENABLED` en falso y después habilitado | Apagado: solo *General* se puede abrir (interruptor y tokens editables); las otras 10 sub-pestañas se ven deshabilitadas. Al guardar `VOICEBOT_ENABLED=true` se habilitan. Cada clave muestra las marcas "reconecta: puede cortar llamadas" y "reinicia el STT" cuando corresponde, y el nombre con el que la recibe cada servicio (`voicebot: LIVEKIT_URL · stt: STT_LIVEKIT_URL`) |
 
 ## 3.9 Fuentes de verdad (`/dashboard/context-sources`)
 
@@ -1338,7 +1370,7 @@ puede listar todas las empresas.
 | FE-RSP-01 | Panel a ~400px de ancho (móvil) | El contenido principal sigue usable; documentar el scroll horizontal conocido del layout del sidebar (preexistente) |
 | FE-RSP-02 | Tablas de ABM (usuarios/roles) en pantallas chicas | Se pueden leer y operar (con scroll donde haga falta), sin romper el layout de la página |
 | FE-RSP-03 | Editor de flujos en pantalla chica | El canvas de ReactFlow, la paleta y el panel de propiedades siguen operables (con `Controls`/`MiniMap`) |
-| FE-RSP-04 | Pestañas de `/settings` con muchos proveedores | El tablist se puede recorrer sin desbordar horizontalmente la página |
+| FE-RSP-04 | Pestañas de `/settings` con muchos proveedores | El tablist se puede recorrer sin desbordar horizontalmente la página, incluido *Mensajería → Voicebot* con sus 11 sub-pestañas |
 
 ## 3.12 Seguridad de la UI
 

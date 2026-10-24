@@ -70,6 +70,17 @@ const GROUP_PATH: Record<string, string[]> = {
   'Mensajería: SMS (Twilio)': ['Mensajería', 'SMS', 'Twilio'],
   'Mensajería: SMS (Gupshup)': ['Mensajería', 'SMS', 'Gupshup'],
   'Mensajería: Email': ['Mensajería', 'Email'],
+  'Mensajería: Voicebot': ['Mensajería', 'Voicebot', 'General'],
+  'Mensajería: Voicebot (LiveKit)': ['Mensajería', 'Voicebot', 'LiveKit'],
+  'Mensajería: Voicebot (RabbitMQ)': ['Mensajería', 'Voicebot', 'RabbitMQ'],
+  'Mensajería: Voicebot (Entrada STT)': ['Mensajería', 'Voicebot', 'Entrada STT'],
+  'Mensajería: Voicebot (STT)': ['Mensajería', 'Voicebot', 'STT'],
+  'Mensajería: Voicebot (TTS)': ['Mensajería', 'Voicebot', 'TTS'],
+  'Mensajería: Voicebot (LLM de voz)': ['Mensajería', 'Voicebot', 'LLM de voz'],
+  'Mensajería: Voicebot (Conversación)': ['Mensajería', 'Voicebot', 'Conversación'],
+  'Mensajería: Voicebot (SIP entrante)': ['Mensajería', 'Voicebot', 'SIP entrante'],
+  'Mensajería: Voicebot (SIP saliente)': ['Mensajería', 'Voicebot', 'SIP saliente'],
+  'Mensajería: Voicebot (Llamadas salientes)': ['Mensajería', 'Voicebot', 'Llamadas salientes'],
   'Integración: InvGate': ['Integraciones'],
 };
 
@@ -370,10 +381,10 @@ test('FE-SET-14: aparecen las pestañas de mensajería/InvGate con los secretos 
 
   const topTabs = page.getByRole('tablist', { name: 'Secciones de configuración' });
 
-  // Mensajería abre sus sub-secciones (WhatsApp / SMS / Email).
+  // Mensajería abre sus sub-secciones (WhatsApp / SMS / Email / Voicebot).
   await topTabs.getByRole('tab', { name: 'Mensajería', exact: true }).click();
   const msgTabs = page.getByRole('tablist', { name: 'Sub-secciones de Mensajería' });
-  for (const mid of ['WhatsApp', 'SMS', 'Email']) {
+  for (const mid of ['WhatsApp', 'SMS', 'Email', 'Voicebot']) {
     await expect(msgTabs.getByRole('tab', { name: mid, exact: true })).toBeVisible();
   }
 
@@ -469,7 +480,7 @@ test('FE-SET-16: las pestañas forman una jerarquía de 3 niveles navegable por 
 
   const midTabs = page.getByRole('tablist', { name: 'Sub-secciones de Mensajería' });
   await expect(midTabs).toBeVisible();
-  for (const mid of ['WhatsApp', 'SMS', 'Email']) {
+  for (const mid of ['WhatsApp', 'SMS', 'Email', 'Voicebot']) {
     await expect(midTabs.getByRole('tab', { name: mid, exact: true })).toBeVisible();
   }
 
@@ -564,4 +575,43 @@ test('FE-SET-17: guardar una fila resetea solo su draft y conserva lo tipeado en
   expect(patchCalls.length).toBe(1);
   expect(patchCalls[0]).toContain('/settings/OTP_TTL_SECONDS');
   await expect.poll(() => statusCalls.length).toBeGreaterThanOrEqual(1);
+});
+
+test('FE-SET-19: Voicebot — con VOICEBOT_ENABLED apagado solo General es usable; al habilitarlo se abren las demás y se marcan las claves que reconectan o reinician el STT', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'false');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/settings');
+    await openTab(page, 'Mensajería: Voicebot');
+
+    const leafTabs = page.getByRole('tablist', { name: 'Proveedores de Voicebot' });
+    await expect(leafTabs.getByRole('tab', { name: 'General', exact: true })).toBeEnabled();
+    // Apagado: las demás sub-pestañas se ven pero no se pueden abrir.
+    for (const leaf of ['LiveKit', 'STT', 'TTS', 'Conversación']) {
+      await expect(leafTabs.getByRole('tab', { name: leaf, exact: true })).toBeDisabled();
+    }
+    // General sigue editable: el interruptor y los tokens de servicio no dependen de nada.
+    await expect(page.locator('#VOICEBOT_ENABLED')).toBeEnabled();
+    await expect(page.locator('#VOICEBOT_SERVICE_TOKEN')).toBeEnabled();
+
+    // Se habilita desde la UI (el gate mira el valor GUARDADO, no el draft).
+    await page.locator('#VOICEBOT_ENABLED').selectOption('true');
+    await settingCard(page, 'VOICEBOT_ENABLED').getByRole('button', { name: 'Guardar' }).click();
+    await expect(page.getByText(/VOICEBOT_ENABLED actualizado\./)).toBeVisible();
+
+    const livekit = leafTabs.getByRole('tab', { name: 'LiveKit', exact: true });
+    await expect(livekit).toBeEnabled();
+    await livekit.click();
+    await expect(page.locator('#VOICEBOT_LIVEKIT_URL')).toBeEnabled();
+    // LiveKit lo usan el voicebot (reconecta) y el stt (se reinicia): las dos marcas, y el nombre
+    // con el que lo recibe cada uno.
+    const card = settingCard(page, 'VOICEBOT_LIVEKIT_URL');
+    await expect(card.getByText('reconecta: puede cortar llamadas')).toBeVisible();
+    await expect(card.getByText('reinicia el STT')).toBeVisible();
+    await expect(card.getByText(/voicebot: LIVEKIT_URL · stt: STT_LIVEKIT_URL/)).toBeVisible();
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
 });

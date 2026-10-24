@@ -259,6 +259,17 @@ model Ticket {
   @@index([assignedToId])
 }
 
+// Versión de la configuración que pci le sirve al voicebot y al stt (contrato de integración
+// §3.1/§3.2, `IntegrationsConfigService`). Sube con cada cambio de una clave del voicebot/stt
+// (y de un interno, H2). Va en BD y no en memoria para que el incremento sea atómico con
+// varias instancias de pci: es un `UPDATE ... SET version = version + 1`. Una sola fila, id
+// `voicebot`, compartida por los dos endpoints; la crea la migración.
+model IntegrationConfigVersion {
+  id        String   @id
+  version   Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
 model Setting {
   id        String   @id @default(cuid())
   key       String   @unique

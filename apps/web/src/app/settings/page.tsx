@@ -18,6 +18,14 @@ interface Setting {
   secret?: boolean;
   provider?: string;
   placeholder?: string;
+  /** Integración voicebot/stt: nombre con el que cada servicio recibe la clave. */
+  envNames?: { voicebot?: string; stt?: string };
+  /** Cambiarla hace que el voicebot reconecte (puede cortar llamadas). */
+  reconnects?: boolean;
+  /** Cambiarla requiere reiniciar el STT. */
+  restartsStt?: boolean;
+  /** Clave boolean que habilita esta: con esa en false, la clave se muestra deshabilitada. */
+  enabledBy?: string;
   value: string;
   isSet?: boolean;
   source: 'db' | 'env' | 'default';
@@ -128,6 +136,27 @@ const GROUP_HIERARCHY: HierarchyNode[] = [
         ],
       },
       { key: 'email', label: 'Email', group: 'Mensajería: Email' },
+      {
+        key: 'voicebot',
+        label: 'Voicebot',
+        children: [
+          { key: 'general', label: 'General', group: 'Mensajería: Voicebot' },
+          { key: 'livekit', label: 'LiveKit', group: 'Mensajería: Voicebot (LiveKit)' },
+          { key: 'rabbitmq', label: 'RabbitMQ', group: 'Mensajería: Voicebot (RabbitMQ)' },
+          { key: 'entrada-stt', label: 'Entrada STT', group: 'Mensajería: Voicebot (Entrada STT)' },
+          { key: 'stt', label: 'STT', group: 'Mensajería: Voicebot (STT)' },
+          { key: 'tts', label: 'TTS', group: 'Mensajería: Voicebot (TTS)' },
+          { key: 'llm', label: 'LLM de voz', group: 'Mensajería: Voicebot (LLM de voz)' },
+          { key: 'conversacion', label: 'Conversación', group: 'Mensajería: Voicebot (Conversación)' },
+          { key: 'sip-entrante', label: 'SIP entrante', group: 'Mensajería: Voicebot (SIP entrante)' },
+          { key: 'sip-saliente', label: 'SIP saliente', group: 'Mensajería: Voicebot (SIP saliente)' },
+          {
+            key: 'llamadas-salientes',
+            label: 'Llamadas salientes',
+            group: 'Mensajería: Voicebot (Llamadas salientes)',
+          },
+        ],
+      },
     ],
   },
   {
@@ -318,7 +347,13 @@ export default function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({ value: drafts[s.key] }),
       });
-      setNotice(`${s.key} actualizado.`);
+      setNotice(
+        `${s.key} actualizado.` +
+          (s.restartsStt
+            ? ' Requiere reiniciar el STT: deja de aceptar llamadas nuevas, espera que terminen las activas y se reinicia.'
+            : '') +
+          (s.reconnects ? ' El voicebot reconecta: puede cortar llamadas en curso.' : ''),
+      );
       setError('');
       applyUpdatedSetting(updated);
       const st = await refreshStatus();
@@ -397,11 +432,38 @@ export default function SettingsPage() {
   const activeLeafNode = activeGroup ? findLeafNode(categories, activeGroup) : null;
   const activeLeafLabel = activeLeafNode?.label ?? activeGroup ?? '';
 
+  /**
+   * Habilitación condicional (`enabledBy`): una clave cuya clave habilitante está guardada en
+   * `false` se muestra deshabilitada. Mira el valor GUARDADO, no el draft: "habilitar" recién
+   * cuenta cuando se guardó.
+   */
+  function isSettingEnabled(s: Setting): boolean {
+    if (!s.enabledBy) return true;
+    return settings.find((x) => x.key === s.enabledBy)?.value === 'true';
+  }
+
+  /** Una hoja está deshabilitada si todas sus claves lo están; una rama, si todas sus hojas. */
+  function isNodeDisabled(node: HierarchyNode): boolean {
+    return collectLeafGroups(node).every((g) => {
+      const groupSettings = settings.filter((s) => s.group === g);
+      return groupSettings.length > 0 && groupSettings.every((s) => !isSettingEnabled(s));
+    });
+  }
+
   /** Selecciona un nodo de la jerarquía: si es una hoja, activa su grupo
    *  directamente; si es una rama (categoría o sub-tema), activa la primera
-   *  hoja debajo — así clickear "LLM" o "WhatsApp" abre algo sensato. */
+   *  hoja habilitada debajo — así clickear "LLM" o "WhatsApp" abre algo sensato. */
   function selectNode(node: HierarchyNode) {
-    const leaf = firstLeafGroup(node);
+    if (isNodeDisabled(node)) return;
+    const firstEnabled = (n: HierarchyNode): string | undefined => {
+      if (n.group) return isNodeDisabled(n) ? undefined : n.group;
+      for (const child of n.children ?? []) {
+        const found = firstEnabled(child);
+        if (found) return found;
+      }
+      return undefined;
+    };
+    const leaf = firstEnabled(node) ?? firstLeafGroup(node);
     if (leaf) setActiveGroup(leaf);
   }
 
@@ -431,15 +493,19 @@ export default function SettingsPage() {
     items: HierarchyNode[],
     refs: Record<string, HTMLButtonElement | null>,
   ) {
+    // Las pestañas deshabilitadas (`enabledBy`) se saltean.
+    const enabled = items.filter((n) => !isNodeDisabled(n));
+    if (!enabled.length) return;
+    const pos = Math.max(0, enabled.indexOf(items[index]));
     let nextIndex: number | null = null;
-    if (e.key === 'ArrowRight') nextIndex = (index + 1) % items.length;
-    else if (e.key === 'ArrowLeft') nextIndex = (index - 1 + items.length) % items.length;
+    if (e.key === 'ArrowRight') nextIndex = (pos + 1) % enabled.length;
+    else if (e.key === 'ArrowLeft') nextIndex = (pos - 1 + enabled.length) % enabled.length;
     else if (e.key === 'Home') nextIndex = 0;
-    else if (e.key === 'End') nextIndex = items.length - 1;
+    else if (e.key === 'End') nextIndex = enabled.length - 1;
     else return;
 
     e.preventDefault();
-    const nextNode = items[nextIndex];
+    const nextNode = enabled[nextIndex];
     selectNode(nextNode);
     refs[nextNode.key]?.focus();
   }
@@ -649,6 +715,7 @@ export default function SettingsPage() {
         >
           {activeMid.children!.map((leaf, index) => {
             const selected = leaf.group === activeGroup;
+            const disabled = isNodeDisabled(leaf);
             const pStatus = status?.providers.find(
               (p) => p.provider === settings.find((s) => s.group === leaf.group && s.provider)?.provider,
             );
@@ -664,6 +731,9 @@ export default function SettingsPage() {
                 id={`tab-${leaf.group}`}
                 aria-selected={selected}
                 aria-controls={`panel-${leaf.group}`}
+                aria-disabled={disabled || undefined}
+                disabled={disabled}
+                title={disabled ? 'Se habilita desde la pestaña General' : undefined}
                 tabIndex={selected ? 0 : -1}
                 onClick={() => selectNode(leaf)}
                 onKeyDown={(e) =>
@@ -672,7 +742,9 @@ export default function SettingsPage() {
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
                   selected
                     ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    : disabled
+                      ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
               >
                 {leaf.label}
@@ -727,7 +799,9 @@ export default function SettingsPage() {
                 // En secrets el input arranca vacío y "vacío" = no cambiar nada.
                 const dirty = s.secret ? draft.length > 0 : draft !== s.value;
                 const badge = SOURCE_BADGE[s.source];
-                const busy = busyKey === s.key;
+                // La habilitación condicional deshabilita inputs y botones igual que un guardado en curso.
+                const gatedOff = !isSettingEnabled(s);
+                const busy = busyKey === s.key || gatedOff;
                 const modelList = s.provider ? models[s.provider] : undefined;
 
                 return (
@@ -756,10 +830,37 @@ export default function SettingsPage() {
                     </div>
 
                     <p className="text-xs text-gray-500 mb-1">{s.description}</p>
+                    {(s.reconnects || s.restartsStt) && (
+                      <div className="flex flex-wrap gap-1 mb-1">
+                        {s.reconnects && (
+                          <span
+                            className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800"
+                            title="Al guardarla, el voicebot reabre la conexión afectada"
+                          >
+                            reconecta: puede cortar llamadas
+                          </span>
+                        )}
+                        {s.restartsStt && (
+                          <span
+                            className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-700"
+                            title="El STT la toma solo al arrancar: se reinicia cuando terminan las llamadas activas"
+                          >
+                            reinicia el STT
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <p className="text-xs text-gray-400 mb-3 font-mono">
                       {s.key}
                       {!s.secret && ` · default: ${s.defaultValue || '(vacío)'}`}
+                      {s.envNames?.voicebot && s.envNames.voicebot !== s.key && ` · voicebot: ${s.envNames.voicebot}`}
+                      {s.envNames?.stt && s.envNames.stt !== s.key && ` · stt: ${s.envNames.stt}`}
                     </p>
+                    {gatedOff && (
+                      <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-2 py-1 mb-2">
+                        Deshabilitada: se activa con <code>{s.enabledBy}</code> en la pestaña General.
+                      </p>
+                    )}
 
                     <div className="flex flex-wrap gap-2 items-center">
                       {s.type === 'boolean' ? (
@@ -851,7 +952,7 @@ export default function SettingsPage() {
                         disabled={!canUpdate || !dirty || busy}
                         className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
                       >
-                        {busy ? 'Guardando...' : 'Guardar'}
+                        {busyKey === s.key ? 'Guardando...' : 'Guardar'}
                       </button>
 
                       {dirty && (

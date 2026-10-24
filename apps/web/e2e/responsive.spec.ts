@@ -87,4 +87,15 @@ test('FE-RSP-04: las pestañas de /settings se recorren sin desbordar horizontal
       true,
     );
   }
+
+  // Voicebot es el sub-tema con más hojas (11 "pills"): también tiene que envolver sin desbordar.
+  await tablist.getByRole('tab', { name: 'Mensajería', exact: true }).click();
+  await page
+    .getByRole('tablist', { name: 'Sub-secciones de Mensajería' })
+    .getByRole('tab', { name: 'Voicebot', exact: true })
+    .click();
+  await expect(page.getByRole('tablist', { name: 'Proveedores de Voicebot' })).toBeVisible();
+  expect(await noHorizontalOverflow(), 'no debería haber scroll horizontal a 700px en "Voicebot"').toBe(
+    true,
+  );
 });
