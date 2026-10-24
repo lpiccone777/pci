@@ -71,7 +71,11 @@ export class SettingsService {
     return this.resolve(def, row);
   }
 
-  async upsert(key: string, value: string): Promise<ResolvedSetting> {
+  /**
+   * `notify: false` guarda sin avisarle al voicebot/stt: lo usa la importación de los `.env`,
+   * que avisa una sola vez al final (`IntegrationsConfigService.notifyChanged`).
+   */
+  async upsert(key: string, value: string, opts: { notify?: boolean } = {}): Promise<ResolvedSetting> {
     const def = this.requireDefinition(key);
 
     const error = validateSettingValue(def, value);
@@ -106,7 +110,7 @@ export class SettingsService {
         ? `Secret actualizado: ${def.key} (cifrado)`
         : `Setting actualizado: ${def.key} = ${this.truncate(stored)}`,
     );
-    await this.integrationsConfig.onSettingChanged(def);
+    if (opts.notify !== false) await this.integrationsConfig.onSettingChanged(def);
 
     return this.resolve(def, row);
   }

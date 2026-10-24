@@ -1471,7 +1471,9 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 - 🔄 **H1 — Subpestaña Voicebot y endpoints de configuración** (2026-10-23): catálogo
   (prefijo `VOICEBOT_`/`STT_` + `envNames`), `GET /integrations/{voicebot,stt}/config` con
   `ServiceTokenGuard`, versión atómica en BD, `config.changed` en `voicebot.events`, UI con
-  habilitación condicional. Falta aplicar la migración en la base de desarrollo. "Probar
+  habilitación condicional. Migración aplicada en la base de desarrollo (2026-10-24).
+  Importación de una sola vez de los `.env` actuales del voicebot y del stt
+  (`pnpm --filter api run integrations:import-env`, dry-run por default; 2026-10-24). "Probar
   conexión" (`health.check`) pasa a H5, cuando exista el consumidor del lado del voicebot.
 - ⏳ **H2 — Internos**.
 - ⏳ **H3 — Canal de voz en el motor** (`voice.events`, RPC `voice.turn`).

@@ -50,7 +50,7 @@ Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.0**
     con un guard de token de servicio propio, fuera de `JwtAuthGuard`/`TenantGuard`.
   - Tokens `VOICEBOT_SERVICE_TOKEN` y `STT_SERVICE_TOKEN` como secrets del catálogo.
   - Devuelven secrets en claro **solo si DA2 se aprueba**; nunca loguear el cuerpo.
-- [x] **Versión de configuración** (tabla `IntegrationConfigVersion`, migración `20261023120000_integration_config_version`; falta aplicarla en la base de desarrollo): un contador que sube con cada cambio de una clave de estos
+- [x] **Versión de configuración** (tabla `IntegrationConfigVersion`, migración `20261023120000_integration_config_version`, aplicada en la base de desarrollo el 2026-10-24): un contador que sube con cada cambio de una clave de estos
   grupos o de un interno. Lo devuelven los endpoints y va en el evento.
 - [x] **Evento `config.changed`** (exchange `voicebot.events`, DA3; `BrokerService.publishToExchange`) al guardar o restaurar una clave de estos grupos (contrato §3.3).
   El transporte depende de DA3.
@@ -60,6 +60,11 @@ Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.0**
 - [x] **Tests** (`test/integrations.e2e-spec.ts` BE-INT-01..18, `settings.spec.ts` FE-SET-19, FE-RSP-04 ampliado, plan de pruebas §1.25):
   - e2e del catálogo y de los endpoints de servicio (token válido, inválido o ausente).
   - Actualizar `apps/web/e2e/settings.spec.ts:66` y `responsive.spec.ts:84` con la jerarquía nueva.
+- [x] **Importación de los `.env` actuales** (pedido del usuario vía coordinador, 2026-10-24;
+  `src/scripts/import-integration-env.ts`, `modules/integrations/env-import*.ts`, BE-INT-19..22):
+  script de una sola vez que corre el usuario. Mapea cada variable con `envNames`, reporta los
+  conflictos entre los dos `.env` sin elegir, ignora las del host y las ajenas al catálogo, guarda
+  por `SettingsService` y publica un solo `config.changed`. Dry-run por default, solo nombres.
   - Casos nuevos en `docs/plan-de-pruebas.md`.
 
 ## H2 — Internos

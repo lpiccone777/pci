@@ -77,29 +77,42 @@ export class IntegrationsConfigService {
    * publicación no deshace el cambio: los consumidores releen al (re)conectar y cada 5 minutos.
    */
   async onSettingChanged(def: SettingDefinition): Promise<void> {
-    if (!isIntegrationConfigKey(def)) return;
+    await this.notifyChanged([def]);
+  }
+
+  /**
+   * Una sola versión y un solo `config.changed` para varias claves cambiadas juntas (la
+   * importación de los `.env`): `sections` es la unión y `restart.stt` es verdadero si alguna lo
+   * pide. Las claves ajenas a la integración se ignoran; si no queda ninguna, no hace nada.
+   */
+  async notifyChanged(defs: SettingDefinition[]): Promise<void> {
+    const changed = defs.filter(isIntegrationConfigKey);
+    if (changed.length === 0) return;
 
     const { version } = await this.prisma.integrationConfigVersion.update({
       where: { id: VERSION_ID },
       data: { version: { increment: 1 } },
     });
 
-    const section = VOICEBOT_SECTION_IDS[def.group as VoicebotSettingGroup];
+    const sections = [
+      ...new Set(changed.map((d) => VOICEBOT_SECTION_IDS[d.group as VoicebotSettingGroup]).filter(Boolean)),
+    ];
+    const what = changed.length === 1 ? changed[0].key : `${changed.length} claves`;
     try {
       const sent = await this.broker.publishToExchange(VOICEBOT_EVENTS_EXCHANGE, CONFIG_CHANGED_ROUTING_KEY, {
         pattern: 'config.changed',
         data: {
           v: INTEGRATION_CONTRACT_VERSION,
           version,
-          sections: section ? [section] : [],
-          restart: { stt: !!def.restartsStt },
+          sections,
+          restart: { stt: changed.some((d) => !!d.restartsStt) },
         },
         timestamp: new Date().toISOString(),
       });
-      if (!sent) this.logger.warn(`config.changed v${version} (${def.key}) no se publicó: broker no disponible`);
+      if (!sent) this.logger.warn(`config.changed v${version} (${what}) no se publicó: broker no disponible`);
     } catch (err) {
       this.logger.warn(
-        `config.changed v${version} (${def.key}) no se publicó: ${err instanceof Error ? err.message : err}`,
+        `config.changed v${version} (${what}) no se publicó: ${err instanceof Error ? err.message : err}`,
       );
     }
   }
@@ -109,8 +122,11 @@ export class IntegrationsConfigService {
     return row ?? { version: 0, updatedAt: new Date(0) };
   }
 
-  /** Valor efectivo en claro de cada clave de la integración, por clave de pci. */
-  private async resolveValues(): Promise<Map<string, string>> {
+  /**
+   * Valor efectivo en claro de cada clave de la integración, por clave de pci. Lo usa también
+   * la importación de los `.env` para saber qué cambia; nunca se loguea.
+   */
+  async resolveValues(): Promise<Map<string, string>> {
     const rows = await this.prisma.setting.findMany({
       where: { key: { in: INTEGRATION_DEFS.map((d) => d.key) } },
     });
