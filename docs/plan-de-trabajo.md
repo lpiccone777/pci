@@ -1468,13 +1468,16 @@ voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
-- 🔄 **H1 — Subpestaña Voicebot y endpoints de configuración** (2026-10-23): catálogo
+- ✅ **H1 — Subpestaña Voicebot y endpoints de configuración** (2026-10-23 → 2026-10-24): catálogo
   (prefijo `VOICEBOT_`/`STT_` + `envNames`), `GET /integrations/{voicebot,stt}/config` con
   `ServiceTokenGuard`, versión atómica en BD, `config.changed` en `voicebot.events`, UI con
   habilitación condicional. Migración aplicada en la base de desarrollo (2026-10-24).
   Importación de una sola vez de los `.env` actuales del voicebot y del stt
-  (`pnpm --filter api run integrations:import-env`, dry-run por default; 2026-10-24). "Probar
-  conexión" (`health.check`) pasa a H5, cuando exista el consumidor del lado del voicebot.
+  (`pnpm --filter api run integrations:import-env`, dry-run por default; 2026-10-24). Aviso de
+  salientes en uso en *SIP saliente* y *Llamadas salientes* (contrato 1.1). Verificado de punta a
+  punta el 2026-10-24: voicebot y stt leen su config con token real y reaccionan a
+  `config.changed` (el stt se reinicia con código 75). "Probar conexión" (`health.check`) pasa
+  a H5, cuando exista el consumidor del lado del voicebot.
 - ⏳ **H2 — Internos**.
 - ⏳ **H3 — Canal de voz en el motor** (`voice.events`, RPC `voice.turn`).
 - ⏳ **H4 — Flujos de voz** (`Flow.channel`, editor, motor).

@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.1**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ⏳ H2–H5. Contrato vigente: **1.1**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -29,7 +29,12 @@ Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.1**
   - DA1, DA2 y DA3, que tocan reglas de `AGENTS.md`.
   - Anotar objeciones en *Cambios propuestos*. Hecho: C1–C8 y C27–C30, aprobadas y aplicadas en 1.0.
 
-## H1 — Subpestaña Voicebot y endpoints de configuración 🔄
+## H1 — Subpestaña Voicebot y endpoints de configuración ✅ (2026-10-24)
+
+Cerrado de punta a punta (verificado por el coordinador, 2026-10-24): el voicebot y el stt leen sus
+endpoints con token real, la importación de los `.env` corrió con `--apply`, y llegaron
+`config.changed` v4 (`sections: ["conversacion"]`, sin reinicio) y v5 (`["stt"]`,
+`restart.stt: true` → el stt salió con código 75). "Probar conexión" queda en H5.
 
 - [x] **Catálogo** (`settings/voicebot-settings.catalog.ts`; nombres con prefijo `VOICEBOT_`/`STT_` y `envNames` por consumidor, contrato §3.4. `STT_SINK` no se edita: se deriva de `VOICEBOT_SOURCE` + `STT_SINK_CONSOLE` [C39]):
   - Grupos nuevos en `settings.catalog.ts` y `SETTINGS_GROUP_ORDER` con las claves de contrato §3.4.
@@ -152,7 +157,7 @@ Estado (2026-10-23): ✅ H0 · 🔄 H1 · ⏳ H2–H5. Contrato vigente: **1.1**
 
 | A | Qué | Hito |
 |---|---|---|
-| voicebot | `GET /integrations/voicebot/config`, token, `config.changed` | H1 |
-| stt | `GET /integrations/stt/config`, token, `config.changed` | H1 |
+| voicebot | `GET /integrations/voicebot/config`, token, `config.changed` | H1 ✅ |
+| stt | `GET /integrations/stt/config`, token, `config.changed` | H1 ✅ |
 | voicebot | Internos en la config | H2 |
 | voicebot | Consumidor de `voice.events` y RPC `voice.turn` | H3 |
