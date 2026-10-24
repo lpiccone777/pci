@@ -23,6 +23,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { ExtensionsModule } from './modules/extensions/extensions.module';
 import { VoiceModule } from './modules/voice/voice.module';
+import { FeaturesModule } from './modules/features/features.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { SmsModule } from './modules/sms/sms.module';
 import { ContextSourcesModule } from './modules/context-sources/context-sources.module';
@@ -54,6 +55,7 @@ import { ScheduleCalendarModule } from './modules/schedule-calendar/schedule-cal
     IntegrationsModule,
     ExtensionsModule,
     VoiceModule,
+    FeaturesModule,
     WhatsAppModule,
     SmsModule,
     ContextSourcesModule,

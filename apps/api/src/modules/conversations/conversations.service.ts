@@ -18,6 +18,7 @@ import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.
 import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { createHash } from 'crypto';
 import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../settings/voicebot-settings.catalog';
+import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
 
 /**
  * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
@@ -155,10 +156,10 @@ interface NodeExecutionResult {
 }
 
 /**
- * Canal del motor [D10, contrato C47]. `voice` nunca arma `WhatsAppInteractive` (el menú se
+ * Canal del motor [D10, contrato C47]: `voice` nunca arma `WhatsAppInteractive` (el menú se
  * verbaliza) ni llama al LLM de pci para la charla libre: la delega al LLM de voz.
  */
-export type FlowChannel = 'text' | 'voice';
+export type { FlowChannel };
 
 /** Acción de un turno de voz (contrato §5.3/§5.4). `guided` llega en H4 con el modo de habla por nodo. */
 export type VoiceAction =
@@ -175,8 +176,6 @@ export interface VoiceFlowOutput {
   ended: boolean;
 }
 
-/** Nodos que no existen por voz (plan H3/H4): se loguean y el flujo sigue por su arista. */
-const VOICE_UNSUPPORTED_NODES = new Set(['notification', 'ticket_query', 'device_validation', 'delay']);
 
 /** Nodos con efectos fuera de la conversación: el turno que los ejecuta es `committed`. */
 const COMMITTED_NODES = new Set(['ticket_create', 'sms', 'transfer_agent', 'webhook', 'end']);

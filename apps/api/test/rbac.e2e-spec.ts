@@ -334,16 +334,18 @@ describe('1.2 RBAC dinámico (BE-RBAC-*)', () => {
     expect(noneRes.body).toEqual([]);
   });
 
-  it('BE-RBAC-17: GET /roles/catalog devuelve 16 recursos x 4 acciones (64), con "schedule-calendar" como 16º recurso', async () => {
+  it('BE-RBAC-17: GET /roles/catalog devuelve 17 recursos x 4 acciones (68), con "voice_flows" después de "flows" y "schedule-calendar" último', async () => {
     const { tenant, token } = await scenario(['roles:read']);
 
     const res = await withAuth(http(t).get('/roles/catalog'), token, tenant.id);
 
     expect(res.status).toBe(200);
-    expect(res.body.total).toBe(64);
-    expect(res.body.resources).toHaveLength(16);
-    expect(res.body.resources[14].key).toBe('skills');
-    expect(res.body.resources[15].key).toBe('schedule-calendar');
+    expect(res.body.total).toBe(68);
+    expect(res.body.resources).toHaveLength(17);
+    expect(res.body.resources[12].key).toBe('flows');
+    expect(res.body.resources[13]).toEqual({ key: 'voice_flows', label: 'Flujos de voz' });
+    expect(res.body.resources[15].key).toBe('skills');
+    expect(res.body.resources[16].key).toBe('schedule-calendar');
     expect(res.body.actions).toHaveLength(4);
   });
 

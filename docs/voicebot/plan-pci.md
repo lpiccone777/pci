@@ -275,36 +275,41 @@ coordinador por tramo. Las migraciones las pide el coordinador.
 Ya hecho en H3: `Flow.channel`, la resolución por canal, el inicio por canal, el canal `voice` del
 motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
 
-### H4a — Canal en la administración: permiso, menú, listado y editor
+### H4a — Canal en la administración: permiso, menú, listado y editor ✅
 
-- [ ] **Permiso `voice_flows`** [DA6] en `permissions.catalog.ts` ("Flujos de voz", las 4 acciones).
+Hecho el 2026-10-24: `/voice-flows` (`VoiceFlowController`, `voice_flows:*`, `VoicebotEnabledGuard`),
+`GET /features`, canal exigido en cada operación de `FlowService`, nodos y subflujos validados por canal,
+menú *Flujos de voz* y las pantallas compartidas en `components/flows/`. Tests BE-VFLW-01..06,
+FE-VFLW-01..02. FE-FLW-08 y FE-FLW-29 ya fallaban antes de este cambio (verificado sin él).
+
+- [x] **Permiso `voice_flows`** [DA6] en `permissions.catalog.ts` ("Flujos de voz", las 4 acciones).
   No hace falta migración: los permisos son filas libres validadas contra el catálogo, y el
   SuperAdmin lo recibe solo.
-- [ ] **API `voice-flows`**: el controlador hermano de `flows`, con `@RequirePermission('voice_flows', …)`.
+- [x] **API `voice-flows`**: el controlador hermano de `flows`, con `@RequirePermission('voice_flows', …)`.
   - Rutas: listado, `mine`, `all`, detalle, alta, edición, baja, `assign-tenants` y variantes.
   - `FlowService` recibe el canal y lo exige en cada operación por `:id`.
   - `/flows` deja de ver y de tocar flujos de voz, y `/voice-flows` no toca los de texto. Así un
     `flows:update` no edita un flujo de voz, y al revés.
   - Las variantes de feriado y guardia heredan el canal del flujo base.
   - Un subflujo tiene que ser del mismo canal; se valida al guardar.
-- [ ] **Gate "voicebot habilitado"**:
+- [x] **Gate "voicebot habilitado"**:
   - `GET /features` → `{ voicebot: boolean }`, legible por cualquier usuario autenticado de
     tenant, porque `/settings` es solo de sistema;
   - `/voice-flows` responde 404 si `VOICEBOT_ENABLED` no es `true`. El sidebar es solo cosmético.
-- [ ] **Menú y pantallas**:
+- [x] **Menú y pantallas**:
   - *Flujos de voz* va debajo de *Flujos IVR* (`voice_flows:read`), visible si `features.voicebot`.
   - `/dashboard/voice-flows/` y `/dashboard/voice-flows/edit/` reusan los mismos componentes del
     listado y del editor, con `channel="voice"` y la API `/voice-flows`.
   - En la asignación a empresas de un flujo de voz no hay roles, porque la llamada entra sin
     usuario. Queda la marca "de inicio": uno por empresa.
-- [ ] **Paleta y propiedades por canal**:
+- [x] **Paleta y propiedades por canal**:
   - nodos de voz: `start, message, input, menu, condition, variable, llm_query, ticket_create,
     transfer_agent, sms, webhook, subflow, end`, más los nuevos *Transferir a interno* e
     *Identificar por voz*;
   - no aparecen `notification, ticket_query, device_validation, delay`, y el backend los rechaza al
     guardar un flujo de voz;
   - todo campo nuevo de `data` se declara en `FlowNodeDataDto`.
-- [ ] **Tests:** e2e del permiso, del aislamiento por canal, del gate y de la validación de nodos;
+- [x] **Tests:** e2e del permiso, del aislamiento por canal, del gate y de la validación de nodos;
   Playwright del menú, el listado y el editor de voz.
 
 ### H4b — Cómo habla cada nodo, transferencia y menú sin LLM

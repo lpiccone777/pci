@@ -760,3 +760,78 @@ test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de
     await deleteSetting(admin, 'VOICEBOT_ENABLED');
   }
 });
+
+// ===================== FLUJOS DE VOZ (H4a) =====================
+// Viven acá y no en flows.spec.ts porque dependen de `VOICEBOT_ENABLED`, que es global y que
+// este archivo prende y apaga: en otro archivo correrían en paralelo con esos tests y se pisarían.
+
+/** POST /voice-flows como el admin (la API de flujos de voz, contrato C52). */
+async function createVoiceFlow(name: string, nodes: unknown[]) {
+  const res = await fetch(`${API_URL}/voice-flows`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${admin.token}`,
+      'X-Tenant-Id': admin.systemTenantId,
+    },
+    body: JSON.stringify({ name, nodes, edges: [] }),
+  });
+  expect(res.status, 'POST /voice-flows').toBe(201);
+  return (await res.json()) as { id: string; channel: string };
+}
+
+test('FE-VFLW-01: "Flujos de voz" aparece debajo de "Flujos IVR" solo con el voicebot habilitado', async ({ page }) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'false');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/dashboard');
+    const nav = page.locator('aside');
+    await expect(nav.getByRole('link', { name: 'Flujos IVR' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Flujos de voz' })).toHaveCount(0);
+
+    await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+    await page.reload();
+    const links = nav.getByRole('link');
+    await expect(nav.getByRole('link', { name: 'Flujos de voz' })).toBeVisible();
+    const labels = (await links.allTextContents()).map((l) => l.trim());
+    expect(labels.indexOf('Flujos de voz')).toBe(labels.indexOf('Flujos IVR') + 1);
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});
+
+test('FE-VFLW-02: el listado de voz muestra solo flujos de voz, sin "Default", y el editor no ofrece los nodos que no existen por voz', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  try {
+    const name = `Voz ${uniqueSlug('vf')}`;
+    const flow = await createVoiceFlow(name, [
+      { id: 'start_1', type: 'start', data: { text: 'Hola' }, position: { x: 250, y: 50 } },
+    ]);
+    expect(flow.channel).toBe('voice');
+
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/dashboard/voice-flows/');
+    await expect(page.getByRole('heading', { name: 'Flujos de voz' })).toBeVisible();
+    const card = page.locator('div.shadow.border').filter({ hasText: name });
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('button', { name: 'Default' })).toHaveCount(0);
+
+    await card.getByRole('button', { name: 'Editar' }).click();
+    await expect(page).toHaveURL((url) => url.pathname === '/dashboard/voice-flows/edit/' && url.searchParams.get('id') === flow.id);
+    await expect(page.locator('.react-flow')).toBeVisible();
+    for (const label of ['Mensaje', 'Menú', 'Consultar LLM']) await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
+    for (const label of ['Delay', 'Notificación', 'Consultar Ticket', 'Validar Dispositivo']) {
+      await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+    }
+
+    // Asignación a empresas sin roles: por voz la llamada entra sin usuario.
+    await page.getByRole('button', { name: /^Empresas/ }).click();
+    const modal = page.locator('div.fixed.inset-0');
+    await expect(modal.getByRole('heading', { name: 'Empresas', exact: true })).toBeVisible();
+    await expect(modal.getByText(/Por voz no hay roles/)).toBeVisible();
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});

@@ -24,6 +24,8 @@ interface MenuItem {
   action: string;
   /** Solo visible con el tenant de sistema activo (ver SystemTenantGuard en el API). */
   systemTenantOnly?: boolean;
+  /** Solo visible si esa función está prendida (`GET /features`). Cosmético: la API tiene su gate. */
+  feature?: 'voicebot';
 }
 
 const menuDefinition: MenuItem[] = [
@@ -42,6 +44,13 @@ const menuDefinition: MenuItem[] = [
   { label: 'Áreas', href: '/dashboard/areas', resource: 'areas', action: 'read' },
   { label: 'Roles', href: '/dashboard/roles', resource: 'roles', action: 'read' },
   { label: 'Flujos IVR', href: '/dashboard/flows', resource: 'flows', action: 'read' },
+  {
+    label: 'Flujos de voz',
+    href: '/dashboard/voice-flows',
+    resource: 'voice_flows',
+    action: 'read',
+    feature: 'voicebot',
+  },
   {
     label: 'Fuentes de Verdad',
     href: '/dashboard/context-sources',
@@ -68,6 +77,14 @@ export default function Sidebar() {
     useAuth();
   const pathname = usePathname();
   const [allTenants, setAllTenants] = useState<TenantOption[] | null>(null);
+  // Funciones opcionales prendidas (hoy, el voicebot). Si no se pueden leer, quedan apagadas.
+  const [features, setFeatures] = useState<{ voicebot: boolean }>({ voicebot: false });
+  useEffect(() => {
+    if (!user) return;
+    apiFetch('/features')
+      .then((f: { voicebot: boolean }) => setFeatures(f))
+      .catch(() => setFeatures({ voicebot: false }));
+  }, [user]);
 
   const activeSlug = user?.tenants?.find((t) => t.tenantId === activeTenant)?.tenant?.slug;
   const isAllTenants = activeTenant === ALL_TENANTS;
@@ -143,13 +160,13 @@ export default function Sidebar() {
   // lo dejan pasar por su vínculo de sistema), así que ninguna opción debe desaparecerle. Para
   // el resto sigue mandando el permiso del rol, y los ítems solo-sistema exigen contexto de
   // sistema.
-  const visibleMenu = isSuperAdmin
-    ? menuDefinition
-    : menuDefinition.filter(
+  const visibleMenu = (
+    isSuperAdmin ? menuDefinition : menuDefinition.filter(
         (item) =>
           hasPermission(item.resource, item.action) &&
           (!item.systemTenantOnly || isSystemContext),
-      );
+      )
+  ).filter((item) => !item.feature || features[item.feature]);
 
   // Id de la empresa de sistema (de las membresías), para saber si la empresa nueva del
   // selector da "contexto de sistema".
@@ -168,6 +185,7 @@ export default function Sidebar() {
     // FE-FLW-22: en el editor de un flujo, cambiar de empresa saca al listado — el flujo
     // abierto puede ser de otra empresa.
     if (pathname?.startsWith('/dashboard/flows/edit')) return '/dashboard/flows/';
+    if (pathname?.startsWith('/dashboard/voice-flows/edit')) return '/dashboard/voice-flows/';
     // FE-INF-16: parado en una pantalla solo-sistema, pasar a una empresa que no da contexto
     // de sistema deja la pantalla huérfana (fuera del menú) → volver al dashboard. La comparación
     // normaliza la barra final: con `trailingSlash`, `usePathname()` puede traer

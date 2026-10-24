@@ -12,6 +12,7 @@ import { ScheduleCalendarService } from '../schedule-calendar/schedule-calendar.
 import { isValidScheduleEntryType } from '../schedule-calendar/schedule-entry-types.catalog';
 import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { isSystemSuperAdmin } from '../../common/system-superadmin';
+import { FLOW_RESOURCE, FlowChannel, VOICE_UNSUPPORTED_NODES } from './flow-channel';
 
 /** Mismo nodo `start` por defecto que el editor arma para un flujo nuevo (ver `isNew` en apps/web/.../flows/edit/page.tsx). */
 const BLANK_VARIANT_NODES = [
@@ -39,9 +40,11 @@ export class FlowService {
     userId?: string,
     activeTenantId?: string,
     userTenant?: CallerUserTenant,
+    channel: FlowChannel = 'text',
   ) {
     const { assignments, isStart, ...flowData } = data;
     const isSuperAdmin = await this.isSuperAdmin(userTenant);
+    await this.assertNodesFitChannel(flowData.nodes, channel);
 
     // Autoridad sobre las empresas destino: solo se puede asignar el flujo a empresas propias
     // (el SuperAdmin, a cualquiera). Se valida ANTES de crear el flujo, para no dejar un flujo
@@ -69,6 +72,7 @@ export class FlowService {
         nodes: JSON.parse(JSON.stringify(flowData.nodes)),
         edges: JSON.parse(JSON.stringify(flowData.edges)),
         createdBy: userId,
+        channel,
       },
     });
 
@@ -104,14 +108,16 @@ export class FlowService {
     flowId: string,
     userTenant: CallerUserTenant,
     isSuperAdmin: boolean,
+    channel: FlowChannel = 'text',
   ): Promise<void> {
-    if (isSuperAdmin) return;
-
     const flow = await this.prisma.flow.findUnique({
       where: { id: flowId },
-      select: { createdBy: true, tenantFlows: { select: { tenantId: true } } },
+      select: { channel: true, createdBy: true, tenantFlows: { select: { tenantId: true } } },
     });
-    if (!flow) throw new NotFoundException('Flujo no encontrado');
+    // Un flujo de otro canal no existe para esta API [DA6]: ni el SuperAdmin edita un flujo de voz
+    // por `/flows` ni uno de texto por `/voice-flows` (cada uno con su permiso).
+    if (!flow || flow.channel !== channel) throw new NotFoundException('Flujo no encontrado');
+    if (isSuperAdmin) return;
 
     const userId = userTenant?.userId;
 
@@ -126,7 +132,7 @@ export class FlowService {
     // Flujo asignado: accesible si alguna de sus empresas es una donde el usuario puede ver
     // flujos (`flows:read`) — exactamente el conjunto que la vista "Todas mis empresas" muestra.
     if (userId) {
-      const readable = new Set(await resolveReadableTenantIds(this.prisma, userId, 'flows'));
+      const readable = new Set(await resolveReadableTenantIds(this.prisma, userId, FLOW_RESOURCE[channel]));
       if (flow.tenantFlows.some((tf) => readable.has(tf.tenantId))) return;
     }
     throw new NotFoundException('Flujo no encontrado');
@@ -328,13 +334,46 @@ export class FlowService {
     }
   }
 
-  async findAll(tenantId?: string) {
+  /**
+   * Los nodos tienen que existir en el canal del flujo: por voz no hay `notification`,
+   * `ticket_query`, `device_validation` ni `delay`. Y un subflujo tiene que ser del mismo canal:
+   * un flujo de voz no salta a uno de texto (armaría botones de WhatsApp en una llamada) ni al revés.
+   */
+  private async assertNodesFitChannel(nodes: unknown, channel: FlowChannel): Promise<void> {
+    if (!Array.isArray(nodes)) return;
+    if (channel === 'voice') {
+      const unsupported = [...new Set(nodes.map((n: any) => n?.type).filter((t) => VOICE_UNSUPPORTED_NODES.has(t)))];
+      if (unsupported.length) {
+        throw new BadRequestException(`Estos nodos no existen en un flujo de voz: ${unsupported.join(', ')}`);
+      }
+    }
+    const subflowIds = [
+      ...new Set(
+        nodes
+          .filter((n: any) => n?.type === 'subflow' && typeof n?.data?.flowId === 'string' && n.data.flowId)
+          .map((n: any) => n.data.flowId as string),
+      ),
+    ];
+    if (!subflowIds.length) return;
+    const other = await this.prisma.flow.findMany({
+      where: { id: { in: subflowIds }, channel: { not: channel } },
+      select: { name: true },
+    });
+    if (other.length) {
+      throw new BadRequestException(
+        `Un subflujo tiene que ser del mismo canal (${channel === 'voice' ? 'voz' : 'texto'}): ${other.map((f) => f.name).join(', ')}`,
+      );
+    }
+  }
+
+  async findAll(tenantId?: string, channel: FlowChannel = 'text') {
     // `variantOf: null` excluye las filas Flow que son variante (Feriado/Guardia) de otro
     // flow — nunca deben aparecer en listados/dropdowns generales (nodo subflow, asignación
     // de tenants, etc.), solo se acceden vía FlowService.listAlternatives/findById. Ver
     // FlowAlternative en schema.prisma.
     const where = {
       variantOf: null,
+      channel,
       ...(tenantId
         ? {
             tenantFlows: {
@@ -381,13 +420,14 @@ export class FlowService {
    * usuario tiene en ella. No trae los flujos sin ninguna empresa asignada (administración
    * global del sistema): un usuario común no debe verlos.
    */
-  async findMine(userId: string) {
-    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, 'flows');
+  async findMine(userId: string, channel: FlowChannel = 'text') {
+    const readableTenantIds = await resolveReadableTenantIds(this.prisma, userId, FLOW_RESOURCE[channel]);
 
     if (readableTenantIds.length === 0) return [];
 
     return this.prisma.flow.findMany({
       where: {
+        channel,
         tenantFlows: { some: { tenantId: { in: readableTenantIds } } },
       },
       include: {
@@ -445,9 +485,9 @@ export class FlowService {
    * `assertFlowAccessible`. Se separa de `findById` porque este último lo reusan las lecturas
    * internas post-escritura, que no llevan corte.
    */
-  async findByIdScoped(id: string, userTenant?: CallerUserTenant) {
+  async findByIdScoped(id: string, userTenant?: CallerUserTenant, channel: FlowChannel = 'text') {
     const isSuperAdmin = await this.isSuperAdmin(userTenant);
-    await this.assertFlowAccessible(id, userTenant, isSuperAdmin);
+    await this.assertFlowAccessible(id, userTenant, isSuperAdmin, channel);
     return this.findById(id);
   }
 
@@ -456,12 +496,14 @@ export class FlowService {
     data: UpdateFlowDto,
     activeTenantId?: string,
     userTenant?: CallerUserTenant,
+    channel: FlowChannel = 'text',
   ) {
     const { nodes, edges, ...rest } = data;
     const isSuperAdmin = await this.isSuperAdmin(userTenant);
 
     // Corte de pertenencia: no se edita un flujo de una empresa ajena (el SuperAdmin, cualquiera).
-    await this.assertFlowAccessible(id, userTenant, isSuperAdmin);
+    await this.assertFlowAccessible(id, userTenant, isSuperAdmin, channel);
+    if (nodes) await this.assertNodesFitChannel(nodes, channel);
 
     // Mismo saneo multitenant que en `create`: aunque el editor solo ofrezca recursos
     // válidos, un PATCH directo podría mandar ids de otra empresa. El conjunto válido
@@ -499,10 +541,10 @@ export class FlowService {
     return this.findById(flow.id);
   }
 
-  async delete(id: string, userTenant?: CallerUserTenant) {
+  async delete(id: string, userTenant?: CallerUserTenant, channel: FlowChannel = 'text') {
     const isSuperAdmin = await this.isSuperAdmin(userTenant);
     // Corte de pertenencia: no se borra un flujo de una empresa ajena (el SuperAdmin, cualquiera).
-    await this.assertFlowAccessible(id, userTenant, isSuperAdmin);
+    await this.assertFlowAccessible(id, userTenant, isSuperAdmin, channel);
     // Borrado total: si el flujo está compartido con otras empresas, se elimina para TODAS
     // (decisión explícita "compartido = compartido", misma limitación conocida que la edición
     // de un flujo compartido). Alcanza con que el flujo sea de una empresa del usuario.
@@ -515,13 +557,14 @@ export class FlowService {
     assignments: TenantAssignmentDto[],
     isStart = false,
     userTenant?: CallerUserTenant,
+    channel: FlowChannel = 'text',
   ) {
     const isSuperAdmin = await this.isSuperAdmin(userTenant);
 
     // Corte de pertenencia sobre el flujo de ORIGEN: no se reasigna un flujo de una empresa ajena
     // (antes se validaba solo el destino, no que tuvieras relación con el flujo — el propio
     // código lo dejaba como pendiente). El SuperAdmin administra todos.
-    await this.assertFlowAccessible(flowId, userTenant, isSuperAdmin);
+    await this.assertFlowAccessible(flowId, userTenant, isSuperAdmin, channel);
 
     // Autoridad sobre las empresas DESTINO: solo empresas propias (el SuperAdmin, a cualquiera).
     // Sin esto, cualquiera con `flows:update` podía enganchar el flujo a una empresa ajena
@@ -554,6 +597,10 @@ export class FlowService {
     // el índice único (flowId, tenantId) y abortaría todo el guardado. Colapsamos las
     // repeticiones en una sola asignación por empresa, uniendo sus roles, para
     // conservar ese comportamiento tolerante sin perder ningún rol marcado.
+    // Un flujo de voz no tiene recepción por rol: la llamada entra sin usuario [DA5].
+    const { channel } = await this.prisma.flow.findUniqueOrThrow({ where: { id: flowId }, select: { channel: true } });
+    if (channel === 'voice') assignments = assignments.map((a) => ({ ...a, roleIds: [] }));
+
     const rolesByTenant = new Map<string, Set<string>>();
     for (const { tenantId, roleIds } of assignments) {
       const roles = rolesByTenant.get(tenantId) ?? new Set<string>();
@@ -594,7 +641,6 @@ export class FlowService {
 
       // La invariante del inicio es POR CANAL [D10, contrato C47]: un flujo de voz de inicio
       // no destrona al de texto ni al revés.
-      const { channel } = await tx.flow.findUniqueOrThrow({ where: { id: flowId }, select: { channel: true } });
       if (isStart && channel === 'voice') {
         // Voz no tiene rol (la llamada entra sin usuario, DA5): un solo flujo de voz de inicio
         // por empresa, sin importar los roles marcados.
@@ -736,8 +782,8 @@ export class FlowService {
    * (`findByIdScoped`/`update`/`delete`/`assignTenants`): sin esto, `flows:read` en la propia
    * empresa alcanzaba para consultar las variantes de un flujo ajeno.
    */
-  async listAlternatives(baseFlowId: string, userTenant?: CallerUserTenant) {
-    await this.assertFlowAccessible(baseFlowId, userTenant, await this.isSuperAdmin(userTenant));
+  async listAlternatives(baseFlowId: string, userTenant?: CallerUserTenant, channel: FlowChannel = 'text') {
+    await this.assertFlowAccessible(baseFlowId, userTenant, await this.isSuperAdmin(userTenant), channel);
     return this.prisma.flowAlternative.findMany({
       where: { baseFlowId },
       select: { type: true, variantFlowId: true },
@@ -760,6 +806,7 @@ export class FlowService {
     type: string,
     opts?: { blank?: boolean; sourceFlowId?: string },
     userTenant?: CallerUserTenant,
+    channel: FlowChannel = 'text',
   ) {
     if (!isValidScheduleEntryType(type)) {
       throw new BadRequestException(`Tipo de variante desconocido: "${type}"`);
@@ -768,9 +815,10 @@ export class FlowService {
     // en la empresa propia alcanzaba para crear una variante a partir de un flujo de otra
     // empresa, y la respuesta devolvía sus `nodes`/`edges` copiados enteros.
     const isSuperAdmin = await this.isSuperAdmin(userTenant);
-    await this.assertFlowAccessible(baseFlowId, userTenant, isSuperAdmin);
+    // El de origen tiene que ser del mismo canal: una variante hereda el canal del base.
+    await this.assertFlowAccessible(baseFlowId, userTenant, isSuperAdmin, channel);
     if (opts?.sourceFlowId) {
-      await this.assertFlowAccessible(opts.sourceFlowId, userTenant, isSuperAdmin);
+      await this.assertFlowAccessible(opts.sourceFlowId, userTenant, isSuperAdmin, channel);
     }
     const base = await this.findById(baseFlowId);
 
@@ -819,6 +867,7 @@ export class FlowService {
         skillId: graphSource.skillId,
         isActive: true,
         isDefault: false,
+        channel,
       },
     });
     await this.prisma.flowAlternative.create({ data: { baseFlowId, type, variantFlowId: variant.id } });
@@ -826,8 +875,13 @@ export class FlowService {
   }
 
   /** Borra la variante de `type` para `baseFlowId` (y con ella la fila Flow variante, por cascade). */
-  async deleteVariant(baseFlowId: string, type: string, userTenant?: CallerUserTenant) {
-    await this.assertFlowAccessible(baseFlowId, userTenant, await this.isSuperAdmin(userTenant));
+  async deleteVariant(
+    baseFlowId: string,
+    type: string,
+    userTenant?: CallerUserTenant,
+    channel: FlowChannel = 'text',
+  ) {
+    await this.assertFlowAccessible(baseFlowId, userTenant, await this.isSuperAdmin(userTenant), channel);
     const alternative = await this.prisma.flowAlternative.findUnique({
       where: { baseFlowId_type: { baseFlowId, type } },
     });
@@ -838,6 +892,10 @@ export class FlowService {
   }
 
   async setDefault(id: string) {
+    // `isDefault` es el fallback global de TEXTO: un flujo de voz nunca lo es (DA8).
+    const target = await this.prisma.flow.findUnique({ where: { id }, select: { channel: true } });
+    if (!target || target.channel !== 'text') throw new NotFoundException('Flujo no encontrado');
+
     // Unset any existing default
     await this.prisma.flow.updateMany({
       where: { isDefault: true },
