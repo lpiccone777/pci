@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · 🔄 H2 · ⏳ H3–H5. Contrato vigente: **1.5**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ⏳ H3–H5. Contrato vigente: **1.5**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -75,10 +75,13 @@ endpoints con token real, la importación de los `.env` corrió con `--apply`, y
   por `SettingsService` y publica un solo `config.changed`. Dry-run por default, solo nombres.
   - Casos nuevos en `docs/plan-de-pruebas.md`.
 
-## H2 — Internos
+## H2 — Internos ✅
+
+Desplegado el 2026-10-24: migración aplicada en la base de desarrollo, API reconstruida y
+levantada; los internos 201 y 202 llegan al voicebot en la config v7.
 
 - [x] **Modelo Prisma** de internos (`Extension`, contrato §3.5; migración
-  `20261024120000_voicebot_extensions`, **falta aplicarla** en la base de desarrollo con autorización del usuario).
+  `20261024120000_voicebot_extensions`, aplicada en la base de desarrollo).
   - `number` único.
   - ⏭️ `flowId` queda nullable y la API no lo acepta todavía: la validación "flujo `voice` asignado
     a ese tenant" llega con `Flow.channel` (H4) y depende de DA8/DA15, abiertas. En la UI, deshabilitado.

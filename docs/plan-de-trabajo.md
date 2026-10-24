@@ -1478,8 +1478,8 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   punta el 2026-10-24: voicebot y stt leen su config con token real y reaccionan a
   `config.changed` (el stt se reinicia con código 75). "Probar conexión" (`health.check`) pasa
   a H5, cuando exista el consumidor del lado del voicebot.
-- 🔄 **H2 — Internos** (2026-10-24): modelo `Extension` con migración (pendiente de aplicar en la
-  base de desarrollo), ABM `/voicebot/extensions` con `SystemTenantGuard`, UI *Voicebot → Internos*,
+- ✅ **H2 — Internos** (2026-10-24): modelo `Extension` con migración (aplicada en la base de
+  desarrollo; 201 y 202 llegan al voicebot en la config v7), ABM `/voicebot/extensions` con `SystemTenantGuard`, UI *Voicebot → Internos*,
   validación cruzada con `User.internalPhone` en los dos sentidos [C5], internos en la config del
   voicebot con `config.changed` `["internos"]`. `flowId` sin uso hasta H4 (DA8/DA15).
 - ⏳ **H3 — Canal de voz en el motor** (`voice.events`, RPC `voice.turn`).
