@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · 🔄 H4 (plan) · ⏳ H5. Contrato vigente: **1.12**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · 🔄 H4 (plan) · ⏳ H5. Contrato vigente: **1.13**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -360,18 +360,28 @@ motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
   - Determinístico: sin LLM de pci.
 - [ ] **Tests:** e2e reconocido / no reconocido / segundo intento / documento de otro tenant.
 
-### H4d — LLM de voz por proveedor [DA10]
+### H4d — LLM de voz por proveedor [DA10, C53]
 
-- [ ] **Catálogo, grupo *Voicebot → LLM de voz*:**
-  - `VOICEBOT_LLM_PROVIDER`: enum de los proveedores con streaming (`openai`, `gemini`, `claude`,
-    `openrouter`, `minimax`). `opencodego` queda fuera: trabaja por sesiones, sin streaming.
-  - `VOICEBOT_LLM_MODEL`, con la lista de modelos del proveedor (`LlmModelsService`).
-  - Reemplazan a `VOICEBOT_MINIMAX_LLM_MODEL`. `VOICEBOT_MINIMAX_LLM_API` queda solo para minimax.
-- [ ] **Config del voicebot:** `LLM_API_KEY` (secret) y `LLM_BASE_URL` se **derivan** de las
-  credenciales que pci ya tiene para el proveedor elegido (como `STT_SINK` [C39]): un solo valor
-  por dato.
-  - Los nombres y el formato los acuerda el coordinador con el voicebot.
-- [ ] **Tests:** e2e de la config derivada por proveedor y de que `opencodego` se rechaza.
+- [ ] Claves nuevas en *Voicebot → LLM de voz*. Viajan con su mismo nombre en
+  `/integrations/voicebot/config` y aplican en caliente:
+
+  | Clave | Valores | Default |
+  |---|---|---|
+  | `VOICEBOT_LLM_PROVIDER` | `openai`, `gemini`, `claude`, `openrouter`, `minimax` | `minimax` |
+  | `VOICEBOT_LLM_MODEL` | lista de modelos de `LlmModelsService` para ese proveedor | — |
+  | `VOICEBOT_LLM_BASE_URL` | URL | vacío = API oficial |
+  | `VOICEBOT_LLM_API` | `anthropic` o `openai`; solo aplica a minimax | — |
+  | `VOICEBOT_LLM_MAX_TOKENS` | número | 150 |
+
+  - `opencodego` no aparece en la lista de proveedores: trabaja por sesiones y no tiene streaming.
+- [ ] `VOICEBOT_LLM_API_KEY` 🔒 **no se carga en ninguna pantalla**. pci la arma al servir la config
+  con la key que ya tiene del proveedor elegido (`OPENAI_API_KEY`, `GEMINI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, y para minimax ver la pregunta abierta). Es el mismo
+  criterio que `STT_SINK` [C39]: un solo valor por dato.
+- [ ] Mientras `VOICEBOT_LLM_PROVIDER` no esté guardado, el voicebot sigue con `MINIMAX_LLM_*`. Las
+  claves `VOICEBOT_MINIMAX_LLM_*` quedan por compatibilidad.
+- [ ] **Tests:** e2e de la key derivada para cada proveedor, de que viaja enmascarada en
+  `/settings`, de que `opencodego` se rechaza y de la versión con `config.changed`.
 
 ### Fuera de H4 (anotado)
 
