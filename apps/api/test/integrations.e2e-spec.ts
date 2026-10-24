@@ -160,6 +160,16 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect((await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings.VOICEBOT_MAX_CALLS).toBe('5');
     });
 
+    it('BE-INT-26: pci no disponible [C47]: mensaje y fallas seguidas con sus defaults; fallback alineado al voicebot', async () => {
+      const settings = (await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings;
+      expect(settings.VOICEBOT_PCI_DOWN_TEXT).toBe(
+        'En este momento no podemos atenderte. Por favor, volvé a llamar en unos minutos.',
+      );
+      expect(settings.VOICEBOT_MAX_TURN_FAILURES).toBe('2');
+      expect(settings.VOICEBOT_FALLBACK_TEXT).toBe('Perdón, no te entendí bien. ¿Me lo repetís?');
+      for (const bad of ['0', '1.5']) await patchSetting('VOICEBOT_MAX_TURN_FAILURES', bad).expect(400);
+    });
+
     it('BE-INT-08: los secrets viajan en claro acá (y solo acá: /settings sigue enmascarando)', async () => {
       await patchSetting('VOICEBOT_LIVEKIT_API_SECRET', 'livekit-secret-e2e-abcdef').expect(200);
       const res = await voicebotConfig(VOICEBOT_TOKEN).expect(200);

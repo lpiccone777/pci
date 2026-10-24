@@ -149,7 +149,45 @@ interface NodeExecutionResult {
   /** Botones o lista de WhatsApp para un `menu`, en vez del texto numerado. */
   interactive?: WhatsAppInteractive;
   flowState?: any;
+  /** Solo por voz: charla libre a cargo del LLM de voz (contrato §5.4, `delegate`). */
+  delegate?: { systemPrompt: string };
 }
+
+/**
+ * Canal del motor [D10, contrato C47]. `voice` nunca arma `WhatsAppInteractive` (el menú se
+ * verbaliza) ni llama al LLM de pci para la charla libre: la delega al LLM de voz.
+ */
+export type FlowChannel = 'text' | 'voice';
+
+/** Acción de un turno de voz (contrato §5.3/§5.4). `guided` llega en H4 con el modo de habla por nodo. */
+export type VoiceAction =
+  | { type: 'say'; mode: 'literal'; text: string }
+  | { type: 'say'; mode: 'delegate'; systemPrompt: string }
+  | { type: 'hangup' };
+
+/** Lo que junta `executeFlow` en un tramo de voz, en el orden en que se ejecutó. */
+export interface VoiceFlowOutput {
+  actions: VoiceAction[];
+  /** El tramo ejecutó un nodo con efectos fuera de la conversación [DA1, C31]. */
+  committed: boolean;
+  /** Llegó a un nodo `end`: la llamada se corta. */
+  ended: boolean;
+}
+
+/** Nodos que no existen por voz (plan H3/H4): se loguean y el flujo sigue por su arista. */
+const VOICE_UNSUPPORTED_NODES = new Set(['notification', 'ticket_query', 'device_validation', 'delay']);
+
+/** Nodos con efectos fuera de la conversación: el turno que los ejecuta es `committed`. */
+const COMMITTED_NODES = new Set(['ticket_create', 'sms', 'transfer_agent', 'webhook', 'end']);
+
+/**
+ * Nodos que necesitan a la persona identificada (el ticket va a su nombre). Por voz la llamada
+ * entra sin usuario [DA5] hasta que exista el nodo de identificación por voz (H4): se avisa
+ * con un texto legible y la llamada sigue.
+ */
+const NEEDS_IDENTITY_NODES = new Set(['ticket_create', 'transfer_agent']);
+const VOICE_NEEDS_IDENTITY_TEXT =
+  'Para hacer ese trámite primero tengo que identificarte, y por teléfono todavía no puedo hacerlo.';
 
 /** Un menú apilado en `flowState.__menuStack` — ver `navigateMenuBack`. */
 interface MenuStackEntry {
@@ -263,6 +301,40 @@ export class ConversationsService implements OnModuleInit {
     if (interactive.type === 'cta_url') return `${interactive.buttonText}: ${interactive.url}`;
     const items = interactive.type === 'button' ? interactive.buttons : interactive.rows;
     return items.map((item, i) => `${i + 1}. ${item.title}`).join('\n');
+  }
+
+  /**
+   * Corre un tramo de flujo por voz (contrato §5.3) sobre la posición actual de `conversation`.
+   * El flujo de arranque (resuelto por el interno, DA8) lo pasa `VoiceTurnsService` en
+   * `startFlow` cuando la conversación no está parada en ninguno. Devuelve `null` si la conversación no está parada en ningún flujo: quien llama
+   * decide la charla libre. La llamada no tiene usuario [DA5]: el nodo `start` sale por
+   * `unknown`, con el número que llama en `userPhone` (pista, no identifica a nadie).
+   */
+  async runVoiceFlow(
+    conversation: { id: string; currentFlowId: string | null; currentNodeId: string | null; flowState: unknown },
+    tenantId: string,
+    body: string,
+    callerNumber: string | null,
+    startFlow?: { id: string; nodes: unknown },
+  ): Promise<VoiceFlowOutput | null> {
+    if (startFlow) {
+      // Arranque (o rearranque tras el fin de un flujo a mitad de llamada): desde `start`.
+      const startNodeId = this.findStartNodeId(startFlow.nodes as any[]);
+      if (!startNodeId) return null;
+      conversation = { ...conversation, currentFlowId: startFlow.id, currentNodeId: startNodeId, flowState: {} };
+    }
+    const voice: VoiceFlowOutput = { actions: [], committed: false, ended: false };
+    const identity = { isKnown: false, roleId: null, roleName: null };
+    const ran = await this.executeFlow(conversation, null, body, tenantId, callerNumber ?? '', identity, {
+      channel: 'voice',
+      voice,
+    });
+    return ran ? voice : null;
+  }
+
+  /** Prompt de la charla libre por voz sin flujo: el global de pci (transitorio, C47 (a)). */
+  voiceFreeChatPrompt(): Promise<string> {
+    return this.buildBasePrompt(null);
   }
 
   /** Devuelve el texto con el que respondió el bot, para que `simulate` pueda mostrarlo. */
@@ -655,6 +727,7 @@ export class ConversationsService implements OnModuleInit {
     tenantId: string,
     from: string,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
+    run: { channel: FlowChannel; voice?: VoiceFlowOutput } = { channel: 'text' },
   ): Promise<{ text: string; interactive?: WhatsAppInteractive } | null> {
     // Buscar flujo activo. `null` de acá en adelante significa EXCLUSIVAMENTE "no hay flujo
     // activo para este tenant/rol" — las dos salidas de esta sección son las únicas; una vez
@@ -664,6 +737,9 @@ export class ConversationsService implements OnModuleInit {
     let currentNodeId = conversation.currentNodeId;
 
     if (!flowId) {
+      // Por voz el flujo lo resuelve `VoiceTurnsService` por el interno (DA8) antes de llamar:
+      // sin posición no hay flujo, y nunca se cae a la resolución de texto (`isDefault` global).
+      if (run.channel === 'voice') return null;
       // El flujo de inicio se elige por (empresa + rol del usuario): `identity.roleId`
       // ya viene resuelto desde handleMessage contra el registro real de usuarios.
       // `new Date()` habilita la resolución de feriado/guardia (ver
@@ -705,26 +781,48 @@ export class ConversationsService implements OnModuleInit {
         return this.toFlowResult(responses, interactive);
       }
 
-      const result = await this.executeNode(
-        node,
-        body,
-        conversation,
-        user,
-        tenantId,
-        from,
-        edges,
-        flowState,
-        identity,
-        flowId,
-        flow.contextSourceId,
-        (flow as any).skill?.promptText ?? null,
-      );
+      let result: NodeExecutionResult;
+      if (run.channel === 'voice' && VOICE_UNSUPPORTED_NODES.has(node.type)) {
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo '${node.id}' (${node.type}) no está disponible por voz; se sigue por su arista.`,
+        );
+        result = {};
+      } else if (run.channel === 'voice' && !user && NEEDS_IDENTITY_NODES.has(node.type)) {
+        this.logger.warn(
+          `Flujo ${flowId}: el nodo '${node.id}' (${node.type}) necesita a la persona identificada; ` +
+            'por voz todavía no hay identificación (D13). Se avisa y se sigue por su arista.',
+        );
+        result = { responseText: VOICE_NEEDS_IDENTITY_TEXT };
+      } else {
+        result = await this.executeNode(
+          node,
+          body,
+          conversation,
+          user,
+          tenantId,
+          from,
+          edges,
+          flowState,
+          identity,
+          flowId,
+          flow.contextSourceId,
+          (flow as any).skill?.promptText ?? null,
+          run.channel,
+        );
+        if (run.voice && COMMITTED_NODES.has(node.type)) run.voice.committed = true;
+      }
 
       // Actualizar flowState ANTES de interpolar: si este mismo nodo acaba de
       // setear una variable (ej. `start` con userName), el mensaje que devuelve
       // ya tiene que poder usarla.
       if (result.flowState) flowState = result.flowState;
       if (result.responseText) responses.push(this.interpolate(result.responseText, flowState));
+      if (run.voice) {
+        if (result.responseText) {
+          run.voice.actions.push({ type: 'say', mode: 'literal', text: this.interpolate(result.responseText, flowState) });
+        }
+        if (result.delegate) run.voice.actions.push({ type: 'say', mode: 'delegate', ...result.delegate });
+      }
       if (result.interactive) {
         interactive = this.interpolateInteractive(result.interactive, flowState);
         // WhatsApp solo admite un texto junto a los botones/lista: si antes de
@@ -738,6 +836,10 @@ export class ConversationsService implements OnModuleInit {
       // ventana de `CONVERSATION_RESUME_WINDOW_HOURS` (ver búsqueda de conversación en
       // `handleMessage`).
       if (result.endConversation) {
+        if (run.voice) {
+          run.voice.ended = true;
+          run.voice.actions.push({ type: 'hangup' });
+        }
         await this.closeConversation(conversation.id);
         return this.toFlowResult(responses, interactive);
       }
@@ -1939,6 +2041,7 @@ export class ConversationsService implements OnModuleInit {
     flowId: string,
     contextSourceId: string | null,
     skillPromptText: string | null,
+    channel: FlowChannel = 'text',
   ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
@@ -2042,6 +2145,9 @@ export class ConversationsService implements OnModuleInit {
             delete flowState.__llmFallback;
             flowState.__awaiting = node.id;
           } else {
+            if (channel === 'voice') {
+              return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText) }, waitForInput: true, flowState };
+            }
             const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
             return { responseText, waitForInput: true, flowState };
           }
@@ -2051,7 +2157,8 @@ export class ConversationsService implements OnModuleInit {
         // encadenar nodos el menú consumiría el mensaje que lo activó.
         if (flowState.__awaiting !== node.id) {
           flowState.__awaiting = node.id;
-          const interactive = this.buildMenuInteractive(data.text, displayOptions);
+          // Por voz no hay botones: las opciones van numeradas en el texto que se dice.
+          const interactive = channel === 'voice' ? undefined : this.buildMenuInteractive(data.text, displayOptions);
           // Si hay interactivo, `responseText` tiene que ser SOLO el header (sin
           // la lista numerada): las opciones ya se ven en los botones/lista, y
           // ese mismo texto es el que `executeFlow` termina mandando como body
@@ -2119,6 +2226,9 @@ export class ConversationsService implements OnModuleInit {
         // de `__llmFallback` al principio del case).
         delete flowState.__awaiting;
         flowState.__llmFallback = node.id;
+        if (channel === 'voice') {
+          return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText) }, waitForInput: true, flowState };
+        }
         const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
         return { responseText: fallbackResponse, waitForInput: true, flowState };
       }
@@ -2479,6 +2589,12 @@ export class ConversationsService implements OnModuleInit {
         return this.executeSmsNode(data, flowState, tenantId);
 
       case 'llm_query': {
+        // Por voz, la charla libre la responde el LLM de voz (`delegate`, contrato §5.4): pci no
+        // llama a su LLM en el camino del turno. La fuente de verdad (`context`) se suma en H4.
+        // El modo extracción sigue por acá (usa el LLM de pci, fuera del presupuesto de 300 ms).
+        if (channel === 'voice' && !data.extractVariables?.length) {
+          return { delegate: { systemPrompt: await this.llmQuerySystemPrompt(data, flowState, skillPromptText) } };
+        }
         // `sessionStartedAt` acota el historial a la sesión actual — mismo criterio
         // que `orchestratorLlm` (ver ese comentario): si la charla se cerró y se
         // reanudó (mismo Conversation.id), los mensajes de antes del cierre no son
@@ -2528,12 +2644,7 @@ export class ConversationsService implements OnModuleInit {
         // escribir `{{descripcion}}` en ese campo igual que en cualquier otro texto, pero
         // hasta ahora era el único que viajaba crudo al modelo — quien lo escribía creía
         // estar pasándole el dato y le estaba pasando la cadena literal "{{descripcion}}".
-        const basePrompt = await this.buildBasePrompt(skillPromptText);
-        const nodePrompt = data.systemPrompt ? this.interpolate(data.systemPrompt, flowState) : '';
-        const systemPrompt =
-          nodePrompt && data.systemPromptMode === 'append'
-            ? [basePrompt, nodePrompt].filter(Boolean).join('\n\n')
-            : nodePrompt || basePrompt;
+        const systemPrompt = await this.llmQuerySystemPrompt(data, flowState, skillPromptText);
 
         // Modo extracción: en vez de mandarle al usuario lo que diga el modelo, lo usamos
         // para resolver una o más variables (ej. "sede") y ramificar — así el nodo puede
@@ -3020,6 +3131,19 @@ export class ConversationsService implements OnModuleInit {
    * si tiene uno vinculado (`Flow.skillId`). Es el punto único donde se combinan
    * ambos — tanto el nodo `llm_query` como `orchestratorLlm` parten de acá.
    */
+  /** System prompt de un `llm_query`: base + Skill, reemplazado o ampliado por el del nodo. */
+  private async llmQuerySystemPrompt(
+    data: any,
+    flowState: Record<string, any>,
+    skillPromptText: string | null,
+  ): Promise<string> {
+    const basePrompt = await this.buildBasePrompt(skillPromptText);
+    const nodePrompt = data.systemPrompt ? this.interpolate(data.systemPrompt, flowState) : '';
+    return nodePrompt && data.systemPromptMode === 'append'
+      ? [basePrompt, nodePrompt].filter(Boolean).join('\n\n')
+      : nodePrompt || basePrompt;
+  }
+
   private async buildBasePrompt(skillPromptText: string | null): Promise<string> {
     const settingsPrompt = await this.appConfig.get('LLM_SYSTEM_PROMPT', DEFAULT_SYSTEM_PROMPT);
     return [settingsPrompt, skillPromptText]

@@ -80,6 +80,7 @@ const GROUP_PATH: Record<string, string[]> = {
   'Mensajería: Voicebot (LLM de voz)': ['Mensajería', 'Voicebot', 'LLM de voz'],
   'Mensajería: Voicebot (Conversación)': ['Mensajería', 'Voicebot', 'Conversación'],
   'Mensajería: Voicebot (Capacidad)': ['Mensajería', 'Voicebot', 'Capacidad'],
+  'Mensajería: Voicebot (pci no disponible)': ['Mensajería', 'Voicebot', 'pci no disponible'],
   'Mensajería: Voicebot (SIP entrante)': ['Mensajería', 'Voicebot', 'SIP entrante'],
   'Mensajería: Voicebot (SIP saliente)': ['Mensajería', 'Voicebot', 'SIP saliente'],
   'Mensajería: Voicebot (Llamadas salientes)': ['Mensajería', 'Voicebot', 'Llamadas salientes'],

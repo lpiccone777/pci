@@ -25,5 +25,6 @@ import { MediaModule } from '../../common/media.module';
   ],
   providers: [ConversationsService, UnknownSenderLogService, InboundTenantRoutingService],
   controllers: [ConversationsController],
+  exports: [ConversationsService],
 })
 export class ConversationsModule {}

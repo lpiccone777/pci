@@ -79,6 +79,7 @@ model Tenant {
   skills                  Skill[]
   scheduleCalendarEntries ScheduleCalendarEntry[]
   extensions              Extension[]
+  voiceCalls              VoiceCall[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -203,8 +204,13 @@ model PendingTenantSelection {
 
 model Conversation {
   id               String    @id @default(cuid())
-  userId           String
-  user             User      @relation(fields: [userId], references: [id])
+  // Nullable SOLO para `channel: "voice"` [contrato C47, DA5+DA14]: una llamada entra sin
+  // usuario (el tenant sale del interno) y se completa cuando la identifica un nodo de voz.
+  // Texto (WhatsApp/SMS) siempre tiene usuario: "no hablamos con desconocidos". Prisma no
+  // tiene CHECK, así que la regla la sostiene el código (`VoiceTurnsService` es el único que
+  // crea conversaciones sin usuario).
+  userId           String?
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Restrict)
   tenantId         String
   tenant           Tenant    @relation(fields: [tenantId], references: [id])
   channel          String
@@ -218,8 +224,9 @@ model Conversation {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  messages Message[]
-  metrics  Metric[]
+  messages  Message[]
+  metrics   Metric[]
+  voiceCall VoiceCall?
 
   @@index([userId, tenantId])
   @@index([status])
@@ -292,7 +299,63 @@ model Extension {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  voiceCalls VoiceCall[]
+
   @@index([tenantId])
+}
+
+// Una llamada del voicebot (contrato de integración §5.2/§5.3). El id ES el `callId` del
+// voicebot, así `call.started` y `voice.turn kind:"start"` abren la misma fila sin depender
+// del orden. Guarda lo que no es de la conversación en sí: el interno, el número que llamó
+// (`callerNumber`: pista para identificar, no identifica a nadie por sí solo [DA14]) y el
+// lease que serializa los turnos de la llamada entre instancias de pci [C4].
+model VoiceCall {
+  id              String       @id
+  conversationId  String       @unique
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenantId        String
+  tenant          Tenant       @relation(fields: [tenantId], references: [id])
+  extensionId     String?
+  extension       Extension?   @relation(fields: [extensionId], references: [id], onDelete: SetNull)
+  extensionNumber String
+  calledNumber    String?
+  callerNumber    String?
+  direction       String       @default("inbound") // "inbound" | "outbound"
+  startedAt       DateTime     @default(now())
+  endedAt         DateTime?
+  endReason       String? // "hangup" | "bot_hangup" | "transfer" | "error"
+  lastSpoken      Json? // { turnId, heardText, interrupted } de call.ended
+  // Lease del turno en curso: lo toma un UPDATE atómico condicionado a que esté vencido.
+  turnLockToken   String?
+  turnLockUntil   DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  turns VoiceTurn[]
+
+  @@index([tenantId])
+}
+
+// Un turno `voice.turn` ya procesado (id = `turnId`). Sostiene la idempotencia (un turnId
+// repetido devuelve `response` sin volver a correr el flujo [C27]), `supersedes` (el
+// `snapshot` de posición y flowState de ANTES del turno [DA1]) y `previous` (el Message del
+// bot que hay que reemplazar por lo que se oyó).
+model VoiceTurn {
+  id            String    @id
+  callId        String
+  call          VoiceCall @relation(fields: [callId], references: [id], onDelete: Cascade)
+  kind          String // "start" | "user" | "continue"
+  text          String?
+  response      Json?
+  committed     Boolean   @default(false)
+  superseded    Boolean   @default(false)
+  snapshot      Json? // { currentFlowId, currentNodeId, flowState }
+  userMessageId String?
+  botMessageId  String?
+  durationMs    Int?
+  createdAt     DateTime  @default(now())
+
+  @@index([callId, createdAt])
 }
 
 model Setting {
@@ -384,8 +447,13 @@ model Flow {
   baseAlternatives FlowAlternative[]    @relation("FlowAlternativeBase")
   variantOf        FlowAlternative?     @relation("FlowAlternativeVariant")
   extensions       Extension[]
+  // Canal del flujo [D10, contrato C47]: "text" (WhatsApp/SMS) | "voice". Los de voz solo se
+  // eligen para llamadas (interno → flujo de voz de inicio del tenant) y nunca caen al
+  // `isDefault` global, que es solo de texto. El editor por canal llega en H4.
+  channel          String               @default("text")
 
   @@index([isActive])
+  @@index([channel])
   @@index([isDefault])
   @@index([context])
   @@index([contextSourceId])

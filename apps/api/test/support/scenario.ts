@@ -167,6 +167,8 @@ export async function createFlow(
      *  `FlowService.assertFlowAccessible`) — un fixture sin `assign` que después se va a
      *  operar por API necesita esto para no dar 404. */
     createdBy?: string | null;
+    /** `text` (default) | `voice`: los de voz solo los toman las llamadas (contrato C47). */
+    channel?: 'text' | 'voice';
     assign?: FlowAssignment[];
   },
 ) {
@@ -182,6 +184,7 @@ export async function createFlow(
       contextSourceId: opts.contextSourceId ?? null,
       skillId: opts.skillId ?? null,
       createdBy: opts.createdBy ?? null,
+      channel: opts.channel ?? 'text',
     },
   });
   for (const a of opts.assign ?? []) {

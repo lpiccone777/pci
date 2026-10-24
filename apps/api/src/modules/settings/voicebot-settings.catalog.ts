@@ -34,6 +34,7 @@ export const VOICEBOT_SETTING_GROUPS = [
   'Mensajería: Voicebot (LLM de voz)',
   'Mensajería: Voicebot (Conversación)',
   'Mensajería: Voicebot (Capacidad)',
+  'Mensajería: Voicebot (pci no disponible)',
   'Mensajería: Voicebot (SIP entrante)',
   'Mensajería: Voicebot (SIP saliente)',
   'Mensajería: Voicebot (Llamadas salientes)',
@@ -54,6 +55,7 @@ export const VOICEBOT_SECTION_IDS: Record<VoicebotSettingGroup, string> = {
   'Mensajería: Voicebot (LLM de voz)': 'llm',
   'Mensajería: Voicebot (Conversación)': 'conversacion',
   'Mensajería: Voicebot (Capacidad)': 'capacidad',
+  'Mensajería: Voicebot (pci no disponible)': 'pci-no-disponible',
   'Mensajería: Voicebot (SIP entrante)': 'sip-entrante',
   'Mensajería: Voicebot (SIP saliente)': 'sip-saliente',
   'Mensajería: Voicebot (Llamadas salientes)': 'llamadas-salientes',
@@ -571,7 +573,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       ['VOICEBOT_TURN_TIMEOUT_MS', 'Timeout de respuesta de pci (ms)', '5000', 500, 60000,
         'Si pci no responde un turno en este tiempo, el voicebot dice el texto de fallback.'],
       ['VOICEBOT_FILLER_AFTER_MS', 'Relleno a los (ms)', '1500', 0, 60000,
-        'Si para entonces no hay nada para decir, el voicebot dice el texto de relleno (una vez por turno).'],
+        'Si para entonces no hay nada para decir, el voicebot dice el texto de relleno (una vez por turno). 0 = sin relleno.'],
     ] as const
   ).map(([key, label, defaultValue, min, max, description]) =>
     voicebot(key, {
@@ -598,7 +600,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     type: 'string',
     group: 'Mensajería: Voicebot (Conversación)',
     label: 'Texto de fallback',
-    defaultValue: 'Perdón, se me complicó. ¿Me lo repetís?',
+    defaultValue: 'Perdón, no te entendí bien. ¿Me lo repetís?',
     description: 'Lo dice el voicebot (literal) si pci no responde a tiempo o responde con error.',
   }),
   voicebot('VOICEBOT_FILLER_TEXT', {
@@ -607,7 +609,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     group: 'Mensajería: Voicebot (Conversación)',
     label: 'Texto de relleno',
     defaultValue: 'Un momento…',
-    description: 'Vacío = sin relleno.',
+    description: 'Vacío vuelve al texto por defecto. Para no decir relleno, poné 0 en "Relleno a los (ms)".',
   }),
 
   // --- Capacidad [C46] --- (caliente: aplica a las llamadas que entran después)
@@ -630,6 +632,30 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     label: 'Mensaje de ocupado',
     defaultValue: 'En este momento todas las líneas están ocupadas. Por favor, volvé a llamar en unos minutos.',
     description: 'Lo dice el voicebot (literal) a la llamada que supera el tope, antes de cortar.',
+  }),
+
+  // --- pci no disponible [C47, DA11] --- (caliente)
+  voicebot('VOICEBOT_PCI_DOWN_TEXT', {
+    key: 'VOICEBOT_PCI_DOWN_TEXT',
+    type: 'string',
+    group: 'Mensajería: Voicebot (pci no disponible)',
+    label: 'Mensaje de pci no disponible',
+    defaultValue: 'En este momento no podemos atenderte. Por favor, volvé a llamar en unos minutos.',
+    description:
+      'Lo dice el voicebot (literal) y corta: al entrar la llamada si pci no responde el primer turno, ' +
+      'o a mitad de llamada tras las fallas seguidas de abajo. No hay charla de respaldo.',
+  }),
+  voicebot('VOICEBOT_MAX_TURN_FAILURES', {
+    key: 'VOICEBOT_MAX_TURN_FAILURES',
+    type: 'number',
+    group: 'Mensajería: Voicebot (pci no disponible)',
+    label: 'Fallas seguidas antes de cortar',
+    defaultValue: '2',
+    min: 1,
+    integer: true,
+    description:
+      'Turnos seguidos sin respuesta de pci (o con error) a mitad de llamada. Cada uno dice el texto de ' +
+      'fallback; al llegar a este número dice el mensaje de arriba y corta. Un turno bueno vuelve a 0.',
   }),
 
   // --- SIP entrante --- (caliente: re-provisiona trunk y rules sin cortar llamadas)

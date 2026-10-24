@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **661 casos** · Backend 367 · Chatbot 152 · Frontend 142 · de los cuales **345 son `P0`**
-(317 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **679 casos** · Backend 385 · Chatbot 152 · Frontend 142 · de los cuales **363 son `P0`**
+(335 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **367** |
+| **Backend (§1)** | | **385** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -147,8 +147,9 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
 | 1.22 Integración InvGate | 🟠 P1 | 17 |
 | 1.23 Skills | 🟠 P1 | 10 |
-| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 25 |
+| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 26 |
 | 1.26 Integración voicebot: internos | 🔴 P0 | 9 |
+| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 17 |
 | **Chatbot (§2)** | | **152** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
 | 2.2 Arranque de flujo | 🔴 P0 | 5 |
@@ -176,7 +177,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.10 Flujos (editor) | 🟠 P1 | 29 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **661** |
+| **TOTAL** | | **679** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -840,6 +841,7 @@ devolver secrets en claro" (DA2). Spec: `apps/api/test/integrations.e2e-spec.ts`
 | BE-INT-23 | Capacidad [C46] sin nada guardado | La config del voicebot trae `VOICEBOT_MAX_CALLS=3` y el `VOICEBOT_BUSY_TEXT` por defecto; la del stt no trae ninguna de las dos |
 | BE-INT-24 | `VOICEBOT_MAX_CALLS` inválido (`0`, `-1`, `2.5`, `tres`) | 400 en cada uno; un entero ≥ 1 se guarda y viaja en la config |
 | BE-INT-25 | Cambiar `VOICEBOT_MAX_CALLS` | `config.changed` con `sections: ["capacidad"]` y `restart.stt: false` (aplica en caliente) |
+| BE-INT-26 | pci no disponible [C47] sin nada guardado | `VOICEBOT_PCI_DOWN_TEXT` y `VOICEBOT_MAX_TURN_FAILURES=2` por defecto; `VOICEBOT_FALLBACK_TEXT` = el del voicebot; `0` y `1.5` en las fallas → 400 |
 
 ## 1.26 Integración voicebot: internos (`ExtensionsController`)
 
@@ -872,6 +874,35 @@ el flujo activo encadenando nodos hasta toparse con una espera, un cierre o el f
 **Precondición general:** hay un tenant con un flujo de inicio asignado a un rol, y usuarios
 conocidos (con membresía) y desconocidos (sin membresía). Todos los casos se ejecutan con
 `POST /conversations/simulate` (o el chat por consola).
+
+## 1.27 Integración voicebot: canal de voz (`VoiceTurnsService`)
+
+**Precondición:** contrato de integración 1.7–1.8 §5 y C47. El voicebot publica en `voice.events`
+(`call.started`, `call.ended`) y hace RPC por `voice.turn` con respuesta en su cola exclusiva
+(`voice.turn.reply`, mismo `correlationId`). La llamada entra sin usuario [DA5], con el tenant del
+interno; el flujo sale del interno [DA8]. El LLM de pci es falso y por voz no se llama en estos
+caminos. Vía: broker real (vhost efímero), el test hace de voicebot. Spec:
+`apps/api/test/voice.e2e-spec.ts`.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-VOZ-01 | `kind: "start"` sin `call.started` | Abre `VoiceCall` + `Conversation` (`channel: voice`, `userId: null`, `externalId: callId`, tenant del interno) y devuelve el saludo y la primera pregunta como `say literal`, `awaitInput: true`, sin LLM |
+| BE-VOZ-02 | `call.started` después del `start` | No abre otra conversación; `startedAt` pasa a la entrada real del evento [C48] |
+| BE-VOZ-03 | `call.started` antes del `start` | El `start` usa la misma llamada: una sola conversación |
+| BE-VOZ-04 | Interno inexistente o deshabilitado; turno de una llamada que pci no vio | `error: unknown_extension` / `unknown_call`, `actions: []`, `awaitInput: true`, `committed: false` |
+| BE-VOZ-05 | Flujo literal hasta `end` | Textos interpolados, `hangup` al final, `committed: true`, `awaitInput: false` |
+| BE-VOZ-06 | `turnId` repetido | Misma respuesta; no corre el flujo ni guarda mensajes de nuevo [C27] |
+| BE-VOZ-07 | `previous` y `call.ended` con `lastSpoken` | El mensaje del bot de ese turno pasa a ser lo oído; `call.ended` guarda motivo y fin y cierra la conversación |
+| BE-VOZ-08 | `supersedes` de un turno sin efectos | Restaura el snapshot, borra sus mensajes, lo marca `superseded` y procesa el texto completo: `superseded: true` [DA1] |
+| BE-VOZ-09 | `supersedes` de un turno `committed` | Se ignora: `superseded: false` |
+| BE-VOZ-10 | Dos turnos concurrentes de la misma llamada | Se procesan de a uno (cola en memoria + lease en `VoiceCall`) [C4] |
+| BE-VOZ-11 | `Extension.flowId` de voz y del tenant | Gana sobre el flujo de voz de inicio |
+| BE-VOZ-12 | `Extension.flowId` de otro tenant o de texto | Se ignora: cae al flujo de voz de inicio del tenant |
+| BE-VOZ-13 | Tenant sin flujo de voz (con `isDefault` global y flujo de texto de inicio) | `say delegate` con el prompt global en cada turno; nunca el `isDefault` ni el de texto; sin LLM de pci |
+| BE-VOZ-14 | Menú y `llm_query` en modo charla por voz | El menú se verbaliza (opciones numeradas en el texto); `llm_query` devuelve `delegate` con el prompt del nodo, sin LLM de pci |
+| BE-VOZ-15 | `ticket_create` sin usuario identificado | Texto legible ("primero tengo que identificarte"), la llamada sigue por la arista, sin `committed` ni ticket |
+| BE-VOZ-16 | Flujos por canal | El texto nunca toma un flujo de voz; un solo flujo de voz de inicio por tenant, sin destronar al de texto |
+| BE-VOZ-17 | Presupuesto [§5.5] | p95 < 300 ms en 30 turnos literales, medido desde que se manda `voice.turn` |
 
 ## 2.1 Pipeline de un mensaje (`handleMessage`)
 

@@ -592,7 +592,22 @@ export class FlowService {
       await tx.tenantFlow.deleteMany({ where: { flowId } });
       if (!uniqueAssignments.length) return;
 
-      if (isStart) {
+      // La invariante del inicio es POR CANAL [D10, contrato C47]: un flujo de voz de inicio
+      // no destrona al de texto ni al revés.
+      const { channel } = await tx.flow.findUniqueOrThrow({ where: { id: flowId }, select: { channel: true } });
+      if (isStart && channel === 'voice') {
+        // Voz no tiene rol (la llamada entra sin usuario, DA5): un solo flujo de voz de inicio
+        // por empresa, sin importar los roles marcados.
+        await tx.tenantFlow.updateMany({
+          where: {
+            tenantId: { in: uniqueAssignments.map((a) => a.tenantId) },
+            isStart: true,
+            flowId: { not: flowId },
+            flow: { channel: 'voice' },
+          },
+          data: { isStart: false },
+        });
+      } else if (isStart) {
         // Destronar el inicio de cada rol reclamado: si otro flujo era el inicio de
         // ese (empresa + rol), se le quita esa habilitación de rol. Eso también le
         // saca la recepción de ese rol, que es justo el traspaso del inicio deseado.
@@ -601,7 +616,7 @@ export class FlowService {
           await tx.tenantFlowRole.deleteMany({
             where: {
               roleId: { in: roleIds },
-              tenantFlow: { tenantId, isStart: true, flowId: { not: flowId } },
+              tenantFlow: { tenantId, isStart: true, flowId: { not: flowId }, flow: { channel: 'text' } },
             },
           });
         }
@@ -637,6 +652,7 @@ export class FlowService {
           tenantId,
           isStart: true,
           roles: { some: { roleId } },
+          flow: { channel: 'text' },
         },
         include: { flow: true },
       });
@@ -650,8 +666,45 @@ export class FlowService {
     // rol → default global (`Flow.isDefault`). Si tampoco hay default, null y la
     // conversación cae al orquestador LLM (comportamiento actual).
     return this.prisma.flow.findFirst({
-      where: { isDefault: true, isActive: true },
+      where: { isDefault: true, isActive: true, channel: 'text' },
     });
+  }
+
+  /**
+   * Flujo de una llamada [contrato C47, DA8+DA15], en este orden:
+   * 1. `Extension.flowId`, si es un flujo de voz activo asignado al tenant del interno;
+   * 2. el flujo de voz de inicio del tenant (`TenantFlow.isStart`, sin rol: la llamada entra
+   *    sin usuario);
+   * 3. `null` → charla libre (`delegate`), la decide quien llama.
+   * **Nunca** el `isDefault` global (es de texto) ni un flujo de otro tenant. Feriado y guardia
+   * se resuelven a nivel tenant (sin rol), igual que en texto.
+   */
+  async findVoiceFlowForExtension(
+    extension: { tenantId: string; flowId: string | null },
+    atDate: Date = new Date(),
+  ) {
+    const { tenantId } = extension;
+    const ofTenant = { channel: 'voice', isActive: true, tenantFlows: { some: { tenantId } } };
+
+    let principal = extension.flowId
+      ? await this.prisma.flow.findFirst({ where: { id: extension.flowId, ...ofTenant } })
+      : null;
+    if (!principal) {
+      const tenantFlow = await this.prisma.tenantFlow.findFirst({
+        where: { tenantId, isStart: true, flow: { channel: 'voice', isActive: true } },
+        include: { flow: true },
+      });
+      principal = tenantFlow?.flow ?? null;
+    }
+    if (!principal) return null;
+
+    const status = await this.scheduleCalendarService.resolveStatus(tenantId, null, atDate);
+    if (!status) return principal;
+    const alternative = await this.prisma.flowAlternative.findUnique({
+      where: { baseFlowId_type: { baseFlowId: principal.id, type: status } },
+      include: { variantFlow: true },
+    });
+    return alternative?.variantFlow?.isActive ? alternative.variantFlow : principal;
   }
 
   /**

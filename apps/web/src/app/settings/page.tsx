@@ -164,6 +164,7 @@ const GROUP_HIERARCHY: HierarchyNode[] = [
           { key: 'llm', label: 'LLM de voz', group: 'Mensajería: Voicebot (LLM de voz)' },
           { key: 'conversacion', label: 'Conversación', group: 'Mensajería: Voicebot (Conversación)' },
           { key: 'capacidad', label: 'Capacidad', group: 'Mensajería: Voicebot (Capacidad)' },
+          { key: 'pci-no-disponible', label: 'pci no disponible', group: 'Mensajería: Voicebot (pci no disponible)' },
           { key: 'sip-entrante', label: 'SIP entrante', group: 'Mensajería: Voicebot (SIP entrante)' },
           {
             key: 'sip-saliente',
