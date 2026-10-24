@@ -1464,7 +1464,7 @@ Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de ve
 configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
 voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 [`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
-**contrato de integración** (vigente: 1.5, 2026-10-24) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+**contrato de integración** (vigente: 1.6, 2026-10-24) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
@@ -1481,7 +1481,8 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 - ✅ **H2 — Internos** (2026-10-24): modelo `Extension` con migración (aplicada en la base de
   desarrollo; 201 y 202 llegan al voicebot en la config v7), ABM `/voicebot/extensions` con `SystemTenantGuard`, UI *Voicebot → Internos*,
   validación cruzada con `User.internalPhone` en los dos sentidos [C5], internos en la config del
-  voicebot con `config.changed` `["internos"]`. `flowId` sin uso hasta H4 (DA8/DA15).
+  voicebot con `config.changed` `["internos"]`. `flowId` sin uso hasta H4 (DA8/DA15). Con el
+  contrato 1.6 (C46) suma *Voicebot → Capacidad*: `VOICEBOT_MAX_CALLS` y `VOICEBOT_BUSY_TEXT`.
 - ⏳ **H3 — Canal de voz en el motor** (`voice.events`, RPC `voice.turn`).
 - ⏳ **H4 — Flujos de voz** (`Flow.channel`, editor, motor).
 - ⏳ **H5 — Salientes y "probar conexión"**.

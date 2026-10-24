@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ⏳ H3–H5. Contrato vigente: **1.5**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ⏳ H3–H5. Contrato vigente: **1.6**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -99,6 +99,10 @@ levantada; los internos 201 y 202 llegan al voicebot en la config v7.
 - Contrato 1.5 (C45, reemplaza a C44): solo se atienden llamadas a internos cargados y habilitados;
   el resto lo rechaza LiveKit (los números del trunk son los internos habilitados). DA17 cerrada sin
   objeto. No cambia el modelo; sí el texto de la pantalla de internos.
+- [x] Contrato 1.6 (C46): grupo *Voicebot → Capacidad* en el catálogo, consumidor voicebot, en
+  caliente (`sections: ["capacidad"]`): `VOICEBOT_MAX_CALLS` (entero ≥ 1, default 3, ≤
+  `STT_WORKER_MAX_JOBS` del stt) y `VOICEBOT_BUSY_TEXT`. Sin migración ni valores cargados: con
+  los defaults alcanza. Tests BE-INT-23..25 y FE-SET-22.
 
 ## H3 — Canal de voz en el motor
 

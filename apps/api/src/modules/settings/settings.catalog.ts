@@ -70,6 +70,8 @@ export interface SettingDefinition {
   /** Solo para type 'number'. */
   min?: number;
   max?: number;
+  /** Solo para type 'number': rechaza decimales. */
+  integer?: boolean;
   /** Render como textarea en la UI. */
   multiline?: boolean;
   /**
@@ -893,6 +895,9 @@ export function validateSettingValue(
       const parsed = Number(value);
       if (value.trim() === '' || Number.isNaN(parsed)) {
         return `${def.key} debe ser numérico`;
+      }
+      if (def.integer && !Number.isInteger(parsed)) {
+        return `${def.key} debe ser un número entero`;
       }
       if (def.min !== undefined && parsed < def.min) {
         return `${def.key} debe ser >= ${def.min}`;

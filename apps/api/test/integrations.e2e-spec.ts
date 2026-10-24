@@ -41,6 +41,7 @@ const TOUCHED_KEYS = [
   'STT_SINK_CONSOLE',
   'STT_MODEL',
   'OTP_TTL_SECONDS',
+  'VOICEBOT_MAX_CALLS',
 ];
 
 describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)', () => {
@@ -140,6 +141,23 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect(settings.VOICEBOT_SERVICE_TOKEN).toBeUndefined();
       // La tolerancia del JWT es solo del voicebot [C38].
       expect(settings.STT_HTTP_JWT_LEEWAY_S).toBe('10');
+    });
+
+    it('BE-INT-23: capacidad [C46]: tope y mensaje de ocupado con sus defaults, solo para el voicebot', async () => {
+      const voicebot = (await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings;
+      expect(voicebot.VOICEBOT_MAX_CALLS).toBe('3');
+      expect(voicebot.VOICEBOT_BUSY_TEXT).toBe(
+        'En este momento todas las líneas están ocupadas. Por favor, volvé a llamar en unos minutos.',
+      );
+      const stt = (await sttConfig(STT_TOKEN).expect(200)).body.env;
+      expect(stt.VOICEBOT_MAX_CALLS).toBeUndefined();
+      expect(stt.VOICEBOT_BUSY_TEXT).toBeUndefined();
+    });
+
+    it('BE-INT-24: VOICEBOT_MAX_CALLS es un entero >= 1', async () => {
+      for (const bad of ['0', '-1', '2.5', 'tres']) await patchSetting('VOICEBOT_MAX_CALLS', bad).expect(400);
+      await patchSetting('VOICEBOT_MAX_CALLS', '5').expect(200);
+      expect((await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings.VOICEBOT_MAX_CALLS).toBe('5');
     });
 
     it('BE-INT-08: los secrets viajan en claro acá (y solo acá: /settings sigue enmascarando)', async () => {
@@ -285,6 +303,12 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect(await version()).toBe(before);
       await new Promise((r) => setTimeout(r, 300));
       expect(received.length).toBe(eventsBefore);
+    });
+
+    it('BE-INT-25: la capacidad aplica en caliente: section "capacidad", sin reiniciar el stt', async () => {
+      await patchSetting('VOICEBOT_MAX_CALLS', '4').expect(200);
+      const event = await waitForEvent(await version());
+      expect(event.data).toMatchObject({ sections: ['capacidad'], restart: { stt: false } });
     });
 
     it('BE-INT-18: los tokens de servicio no son configuración servida: no suben la versión', async () => {

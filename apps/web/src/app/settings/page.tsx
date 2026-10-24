@@ -163,6 +163,7 @@ const GROUP_HIERARCHY: HierarchyNode[] = [
           { key: 'tts', label: 'TTS', group: 'Mensajería: Voicebot (TTS)' },
           { key: 'llm', label: 'LLM de voz', group: 'Mensajería: Voicebot (LLM de voz)' },
           { key: 'conversacion', label: 'Conversación', group: 'Mensajería: Voicebot (Conversación)' },
+          { key: 'capacidad', label: 'Capacidad', group: 'Mensajería: Voicebot (Capacidad)' },
           { key: 'sip-entrante', label: 'SIP entrante', group: 'Mensajería: Voicebot (SIP entrante)' },
           {
             key: 'sip-saliente',

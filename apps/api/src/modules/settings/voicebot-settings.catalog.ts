@@ -33,6 +33,7 @@ export const VOICEBOT_SETTING_GROUPS = [
   'Mensajería: Voicebot (TTS)',
   'Mensajería: Voicebot (LLM de voz)',
   'Mensajería: Voicebot (Conversación)',
+  'Mensajería: Voicebot (Capacidad)',
   'Mensajería: Voicebot (SIP entrante)',
   'Mensajería: Voicebot (SIP saliente)',
   'Mensajería: Voicebot (Llamadas salientes)',
@@ -52,6 +53,7 @@ export const VOICEBOT_SECTION_IDS: Record<VoicebotSettingGroup, string> = {
   'Mensajería: Voicebot (TTS)': 'tts',
   'Mensajería: Voicebot (LLM de voz)': 'llm',
   'Mensajería: Voicebot (Conversación)': 'conversacion',
+  'Mensajería: Voicebot (Capacidad)': 'capacidad',
   'Mensajería: Voicebot (SIP entrante)': 'sip-entrante',
   'Mensajería: Voicebot (SIP saliente)': 'sip-saliente',
   'Mensajería: Voicebot (Llamadas salientes)': 'llamadas-salientes',
@@ -606,6 +608,28 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     label: 'Texto de relleno',
     defaultValue: 'Un momento…',
     description: 'Vacío = sin relleno.',
+  }),
+
+  // --- Capacidad [C46] --- (caliente: aplica a las llamadas que entran después)
+  voicebot('VOICEBOT_MAX_CALLS', {
+    key: 'VOICEBOT_MAX_CALLS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (Capacidad)',
+    label: 'Llamadas simultáneas',
+    defaultValue: '3',
+    min: 1,
+    integer: true,
+    description:
+      'Llamadas simultáneas. Tiene que ser ≤ la capacidad de los workers del stt ' +
+      '(STT_WORKER_MAX_JOBS, hoy 3). La que supera el tope oye el mensaje de ocupado y se corta.',
+  }),
+  voicebot('VOICEBOT_BUSY_TEXT', {
+    key: 'VOICEBOT_BUSY_TEXT',
+    type: 'string',
+    group: 'Mensajería: Voicebot (Capacidad)',
+    label: 'Mensaje de ocupado',
+    defaultValue: 'En este momento todas las líneas están ocupadas. Por favor, volvé a llamar en unos minutos.',
+    description: 'Lo dice el voicebot (literal) a la llamada que supera el tope, antes de cortar.',
   }),
 
   // --- SIP entrante --- (caliente: re-provisiona trunk y rules sin cortar llamadas)

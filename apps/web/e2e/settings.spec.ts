@@ -79,6 +79,7 @@ const GROUP_PATH: Record<string, string[]> = {
   'Mensajería: Voicebot (TTS)': ['Mensajería', 'Voicebot', 'TTS'],
   'Mensajería: Voicebot (LLM de voz)': ['Mensajería', 'Voicebot', 'LLM de voz'],
   'Mensajería: Voicebot (Conversación)': ['Mensajería', 'Voicebot', 'Conversación'],
+  'Mensajería: Voicebot (Capacidad)': ['Mensajería', 'Voicebot', 'Capacidad'],
   'Mensajería: Voicebot (SIP entrante)': ['Mensajería', 'Voicebot', 'SIP entrante'],
   'Mensajería: Voicebot (SIP saliente)': ['Mensajería', 'Voicebot', 'SIP saliente'],
   'Mensajería: Voicebot (Llamadas salientes)': ['Mensajería', 'Voicebot', 'Llamadas salientes'],
@@ -637,6 +638,24 @@ test('FE-SET-20: Voicebot — SIP saliente y Llamadas salientes avisan que está
     // Los demás grupos no lo muestran.
     await leafTabs.getByRole('tab', { name: 'SIP entrante', exact: true }).click();
     await expect(notice).toHaveCount(0);
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});
+
+test('FE-SET-22: Voicebot → Capacidad — tope de llamadas y mensaje de ocupado, con la ayuda del tope del stt [C46]', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/settings');
+    await openTab(page, 'Mensajería: Voicebot (Capacidad)');
+
+    await expect(page.locator('#VOICEBOT_MAX_CALLS')).toBeEnabled();
+    await expect(page.locator('#VOICEBOT_MAX_CALLS')).toHaveValue('3');
+    await expect(settingCard(page, 'VOICEBOT_MAX_CALLS').getByText(/STT_WORKER_MAX_JOBS, hoy 3/)).toBeVisible();
+    await expect(page.locator('#VOICEBOT_BUSY_TEXT')).toHaveValue(/todas las líneas están ocupadas/);
   } finally {
     await deleteSetting(admin, 'VOICEBOT_ENABLED');
   }
