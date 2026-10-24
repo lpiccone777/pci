@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · 🔄 H4 (plan) · ⏳ H5. Contrato vigente: **1.13**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · 🔄 H4 (plan) · ⏳ H5. Contrato vigente: **1.14**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -329,8 +329,9 @@ motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
     fuera del presupuesto de 300 ms.
 - [ ] **`context` del `delegate`** (§5.4):
   - la fuente de verdad del flujo se consulta con el texto del usuario y va recortada a
-    `VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS` (default 4000), con un tope de tiempo
-    `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS` (default 1500);
+    `VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS` (default 16000, máximo 32000: medido por el voicebot con
+    M3, hasta 32k suma ~0,1 s [C54]), con un tope de tiempo `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS`
+    (default 1500);
   - si se vence el tiempo, va sin `context` y se loguea;
   - las dos claves son de pci, en *Voicebot → LLM de voz*;
   - se mide tamaño y latencia, y con eso se fijan los defaults.
@@ -360,9 +361,14 @@ motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
   - Determinístico: sin LLM de pci.
 - [ ] **Tests:** e2e reconocido / no reconocido / segundo intento / documento de otro tenant.
 
-### H4d — LLM de voz por proveedor [DA10, C53]
+### H4d — LLM de voz por proveedor [DA10, C53] ✅
 
-- [ ] Claves nuevas en *Voicebot → LLM de voz*. Viajan con su mismo nombre en
+Hecho el 2026-10-24. Decisiones del coordinador: minimax usa `VOICEBOT_MINIMAX_API_KEY` (DA13); una
+`VOICEBOT_LLM_BASE_URL` vacía manda la base URL que pci tiene de ese proveedor (minimax: la de voz).
+Cambiar una credencial de origen publica `config.changed` con `sections: ["llm"]`. El modelo usa la
+lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
+
+- [x] Claves nuevas en *Voicebot → LLM de voz*. Viajan con su mismo nombre en
   `/integrations/voicebot/config` y aplican en caliente:
 
   | Clave | Valores | Default |
@@ -374,13 +380,13 @@ motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
   | `VOICEBOT_LLM_MAX_TOKENS` | número | 150 |
 
   - `opencodego` no aparece en la lista de proveedores: trabaja por sesiones y no tiene streaming.
-- [ ] `VOICEBOT_LLM_API_KEY` 🔒 **no se carga en ninguna pantalla**. pci la arma al servir la config
+- [x] `VOICEBOT_LLM_API_KEY` 🔒 **no se carga en ninguna pantalla**. pci la arma al servir la config
   con la key que ya tiene del proveedor elegido (`OPENAI_API_KEY`, `GEMINI_API_KEY`,
   `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, y para minimax ver la pregunta abierta). Es el mismo
   criterio que `STT_SINK` [C39]: un solo valor por dato.
-- [ ] Mientras `VOICEBOT_LLM_PROVIDER` no esté guardado, el voicebot sigue con `MINIMAX_LLM_*`. Las
+- [x] Mientras `VOICEBOT_LLM_PROVIDER` no esté guardado, el voicebot sigue con `MINIMAX_LLM_*`. Las
   claves `VOICEBOT_MINIMAX_LLM_*` quedan por compatibilidad.
-- [ ] **Tests:** e2e de la key derivada para cada proveedor, de que viaja enmascarada en
+- [x] **Tests:** e2e de la key derivada para cada proveedor, de que viaja enmascarada en
   `/settings`, de que `opencodego` se rechaza y de la versión con `config.changed`.
 
 ### Fuera de H4 (anotado)

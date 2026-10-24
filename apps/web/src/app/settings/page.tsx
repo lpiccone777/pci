@@ -68,9 +68,22 @@ interface InvgateCategoryRefresh {
  */
 const INVGATE_CATEGORY_PARENT_KEY = 'INVGATE_CATEGORY_PARENT_ID';
 
+/**
+ * Modelo del LLM de voz [C53]: su proveedor no es fijo, es el que esté GUARDADO en
+ * `VOICEBOT_LLM_PROVIDER` (los nombres coinciden con los de `/settings/providers/:p/models`).
+ */
+const VOICE_LLM_MODEL_KEY = 'VOICEBOT_LLM_MODEL';
+const VOICE_LLM_PROVIDER_KEY = 'VOICEBOT_LLM_PROVIDER';
+
+/** Proveedor cuya lista de modelos alimenta el dropdown de `s` (o `undefined` si no es una clave de modelo). */
+function modelProviderOf(s: Setting, settings: Setting[]): string | undefined {
+  if (s.key === VOICE_LLM_MODEL_KEY) return settings.find((x) => x.key === VOICE_LLM_PROVIDER_KEY)?.value || undefined;
+  return s.provider && s.key.endsWith('_MODEL') ? s.provider : undefined;
+}
+
 /** Las claves de modelo son las únicas que se renderizan como dropdown. */
-function isModelKey(s: Setting): boolean {
-  return !!s.provider && s.key.endsWith('_MODEL');
+function isModelKey(s: Setting, settings: Setting[]): boolean {
+  return !!modelProviderOf(s, settings);
 }
 
 const CUSTOM_OPTION = '__custom__';
@@ -346,7 +359,10 @@ export default function SettingsPage() {
     // un campo de texto plano hasta el click manual, y de un vistazo parecía que
     // el dropdown "solo funcionaba" en el proveedor activo.
     if (!activeGroup) return;
-    const provider = settings.find((s) => s.group === activeGroup && s.provider)?.provider;
+    const groupSettings = settings.filter((s) => s.group === activeGroup);
+    const provider =
+      groupSettings.find((s) => s.provider)?.provider ??
+      groupSettings.map((s) => modelProviderOf(s, settings)).find(Boolean);
     if (provider && !models[provider]) {
       loadModels(provider);
     }
@@ -392,6 +408,10 @@ export default function SettingsPage() {
       // Si cambió el proveedor activo, traemos sus modelos.
       if (s.key === 'LLM_PROVIDER' && st?.active) {
         await loadModels(updated.value || st.active);
+      }
+      // Proveedor del LLM de voz: el dropdown de su modelo pasa a la lista del nuevo.
+      if (s.key === VOICE_LLM_PROVIDER_KEY && updated.value) {
+        await loadModels(updated.value);
       }
     } catch (err: any) {
       setError(err.message);
@@ -843,7 +863,8 @@ export default function SettingsPage() {
                 // La habilitación condicional deshabilita inputs y botones igual que un guardado en curso.
                 const gatedOff = !isSettingEnabled(s);
                 const busy = busyKey === s.key || gatedOff;
-                const modelList = s.provider ? models[s.provider] : undefined;
+                const modelProvider = modelProviderOf(s, settings);
+                const modelList = modelProvider ? models[modelProvider] : undefined;
 
                 return (
                   <div key={s.key} className="bg-white p-4 rounded shadow">
@@ -951,7 +972,7 @@ export default function SettingsPage() {
                             </div>
                           )}
                         </div>
-                      ) : isModelKey(s) && modelList?.models.length && !customModel[s.key] ? (
+                      ) : isModelKey(s, settings) && modelList?.models.length && !customModel[s.key] ? (
                         <select
                           id={s.key}
                           value={draft}
@@ -1021,12 +1042,12 @@ export default function SettingsPage() {
                         </button>
                       )}
 
-                      {isModelKey(s) && s.provider && (
+                      {modelProvider && (
                         <button
                           type="button"
                           onClick={() => {
                             setCustomModel({ ...customModel, [s.key]: false });
-                            loadModels(s.provider!, !!modelList);
+                            loadModels(modelProvider, !!modelList);
                           }}
                           disabled={modelList?.loading}
                           className="text-sm text-blue-600 hover:text-blue-800 px-2"
@@ -1071,7 +1092,7 @@ export default function SettingsPage() {
                       )}
                     </div>
 
-                    {isModelKey(s) && modelList && !modelList.loading && (
+                    {isModelKey(s, settings) && modelList && !modelList.loading && (
                       <p className="text-xs mt-2">
                         {modelList.source === 'api' ? (
                           <span className="text-green-600">

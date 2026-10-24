@@ -64,6 +64,31 @@ export const VOICEBOT_SECTION_IDS: Record<VoicebotSettingGroup, string> = {
 const ENABLED_BY = 'VOICEBOT_ENABLED';
 
 /**
+ * Proveedores del LLM de voz [DA10, C53]: los de pci con streaming. `opencodego` no entra:
+ * trabaja por sesiones, sin streaming.
+ */
+export const VOICE_LLM_PROVIDERS = ['openai', 'gemini', 'claude', 'openrouter', 'minimax'] as const;
+export type VoiceLlmProvider = (typeof VOICE_LLM_PROVIDERS)[number];
+
+/**
+ * De dónde salen la key y la base URL del LLM de voz según el proveedor [C53]: las que pci ya
+ * tiene de ese proveedor (un solo valor por dato, como `STT_SINK` [C39]). Minimax usa las de voz
+ * (`VOICEBOT_MINIMAX_*`, DA13), no las del chat. Sin `baseUrlKey` = la API oficial.
+ */
+export const VOICE_LLM_CREDENTIALS: Record<VoiceLlmProvider, { apiKeyKey: string; baseUrlKey?: string }> = {
+  openai: { apiKeyKey: 'OPENAI_API_KEY', baseUrlKey: 'OPENAI_BASE_URL' },
+  gemini: { apiKeyKey: 'GEMINI_API_KEY' },
+  claude: { apiKeyKey: 'ANTHROPIC_API_KEY' },
+  openrouter: { apiKeyKey: 'OPENROUTER_API_KEY', baseUrlKey: 'OPENROUTER_BASE_URL' },
+  minimax: { apiKeyKey: 'VOICEBOT_MINIMAX_API_KEY', baseUrlKey: 'VOICEBOT_MINIMAX_BASE_URL' },
+};
+
+/** Claves de pci de las que se deriva la config del LLM de voz: cambiarlas avisa al voicebot. */
+export const VOICE_LLM_SOURCE_KEYS = new Set(
+  Object.values(VOICE_LLM_CREDENTIALS).flatMap((c) => [c.apiKeyKey, ...(c.baseUrlKey ? [c.baseUrlKey] : [])]),
+);
+
+/**
  * Prompt de voz por defecto del voicebot: lo usa cuando `VOICEBOT_SYSTEM_PROMPT` está vacío.
  * Copia LITERAL de `DEFAULT_SYSTEM_PROMPT` en el repo voicebot
  * (`apps/api/src/voicebot/minimax-llm.service.ts`), solo para mostrarlo en la UI: si cambia allá,
@@ -543,7 +568,56 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       'corte breve del audio.',
   }),
 
-  // --- LLM de voz ---
+  // --- LLM de voz --- [DA10, C53]: proveedor y modelo propios, credenciales del proveedor.
+  // `VOICEBOT_LLM_API_KEY` no es una clave: la arma `IntegrationsConfigService` al servir la config.
+  voicebot('VOICEBOT_LLM_PROVIDER', {
+    key: 'VOICEBOT_LLM_PROVIDER',
+    type: 'enum',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Proveedor del LLM de voz',
+    defaultValue: 'minimax',
+    allowedValues: [...VOICE_LLM_PROVIDERS],
+    description:
+      'Aparte del chat. La key es la que pci ya tiene de ese proveedor (pestaña LLM); para minimax, la ' +
+      'de voz (Voicebot → TTS). OpenCode Go no está: no tiene streaming.',
+  }),
+  voicebot('VOICEBOT_LLM_MODEL', {
+    key: 'VOICEBOT_LLM_MODEL',
+    type: 'string',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Modelo del LLM de voz',
+    defaultValue: 'MiniMax-M3',
+    description: 'Del proveedor elegido arriba. No es el del chat.',
+  }),
+  voicebot('VOICEBOT_LLM_BASE_URL', {
+    key: 'VOICEBOT_LLM_BASE_URL',
+    type: 'string',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Base URL del LLM de voz',
+    defaultValue: '',
+    description:
+      'Vacío = la que pci ya tiene para ese proveedor (minimax: la de Voicebot → TTS), o la API oficial.',
+  }),
+  voicebot('VOICEBOT_LLM_API', {
+    key: 'VOICEBOT_LLM_API',
+    type: 'enum',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Interfaz (solo minimax)',
+    defaultValue: 'anthropic',
+    allowedValues: ['anthropic', 'openai'],
+    description: 'Con MiniMax-M3, la interfaz anthropic no razona y responde rápido; por openai sí razona (2-4 s).',
+  }),
+  voicebot('VOICEBOT_LLM_MAX_TOKENS', {
+    key: 'VOICEBOT_LLM_MAX_TOKENS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Máximo de tokens del LLM de voz',
+    defaultValue: '150',
+    min: 16,
+    max: 4000,
+    integer: true,
+    description: 'Tope de seguridad: el largo lo marca el prompt. Con un modelo que razona, subirlo.',
+  }),
   voicebot('MINIMAX_LLM_API', {
     key: 'VOICEBOT_MINIMAX_LLM_API',
     type: 'enum',

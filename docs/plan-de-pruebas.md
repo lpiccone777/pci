@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **683 casos** · Backend 388 · Chatbot 152 · Frontend 143 · de los cuales **366 son `P0`**
-(338 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **688 casos** · Backend 392 · Chatbot 152 · Frontend 144 · de los cuales **370 son `P0`**
+(342 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **388** |
+| **Backend (§1)** | | **392** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -147,7 +147,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
 | 1.22 Integración InvGate | 🟠 P1 | 17 |
 | 1.23 Skills | 🟠 P1 | 10 |
-| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 27 |
+| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 31 |
 | 1.26 Integración voicebot: internos | 🔴 P0 | 9 |
 | 1.27 Integración voicebot: canal de voz | 🔴 P0 | 19 |
 | **Chatbot (§2)** | | **152** |
@@ -164,7 +164,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 2.11 Cierre por inactividad | 🟠 P1 | 4 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **143** |
+| **Frontend (§3)** | | **144** |
 | 3.1 Infraestructura | 🔴 P0 | 19 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
@@ -172,12 +172,12 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.5 Roles | 🟠 P1 | 10 |
 | 3.6 Tenants | 🟠 P1 | 7 |
 | 3.7 Áreas | 🟠 P1 | 5 |
-| 3.8 Configuración | 🟠 P1 | 22 |
+| 3.8 Configuración | 🟠 P1 | 23 |
 | 3.9 Fuentes de verdad | 🟠 P1 | 12 |
 | 3.10 Flujos (editor) | 🟠 P1 | 29 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **683** |
+| **TOTAL** | | **688** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -841,8 +841,12 @@ devolver secrets en claro" (DA2). Spec: `apps/api/test/integrations.e2e-spec.ts`
 | BE-INT-23 | Capacidad [C46] sin nada guardado | La config del voicebot trae `VOICEBOT_MAX_CALLS=3` y el `VOICEBOT_BUSY_TEXT` por defecto; la del stt no trae ninguna de las dos |
 | BE-INT-24 | `VOICEBOT_MAX_CALLS` inválido (`0`, `-1`, `2.5`, `tres`) | 400 en cada uno; un entero ≥ 1 se guarda y viaja en la config |
 | BE-INT-25 | Cambiar `VOICEBOT_MAX_CALLS` | `config.changed` con `sections: ["capacidad"]` y `restart.stt: false` (aplica en caliente) |
+| BE-INT-31 | Cambiar `OPENAI_API_KEY` (credencial de la que sale el LLM de voz) | Sube la versión y publica `config.changed` con `sections: ["llm"]`, sin reiniciar el stt |
 | BE-INT-26 | pci no disponible [C47] sin nada guardado | `VOICEBOT_PCI_DOWN_TEXT` y `VOICEBOT_MAX_TURN_FAILURES=2` por defecto; `VOICEBOT_FALLBACK_TEXT` = el del voicebot; `0` y `1.5` en las fallas → 400 |
 | BE-INT-27 | Prompts de voz vacíos | `GET /settings` expone `fallbackText` (el prompt por defecto del voicebot; el de la charla por voz) y la ayuda dice que un valor propio lo REEMPLAZA; `VOICEBOT_SYSTEM_PROMPT` sigue con default vacío y viaja vacío |
+| BE-INT-28 | LLM de voz por defecto [C53] | `minimax`, `MiniMax-M3`, `anthropic`, 150 tokens; `VOICEBOT_LLM_API_KEY`/`_BASE_URL` = las de voz (`VOICEBOT_MINIMAX_*`), no las del chat [DA13] |
+| BE-INT-29 | Otro proveedor (openai, claude) | Key y base URL derivadas de las de ese proveedor en pci; una `VOICEBOT_LLM_BASE_URL` propia gana; sin base URL en pci = vacío (API oficial) |
+| BE-INT-30 | `opencodego` como proveedor de voz; `GET /settings/VOICEBOT_LLM_API_KEY` | 400 (no apto, sin streaming); la key derivada no es una clave del catálogo |
 
 ## 1.26 Integración voicebot: internos (`ExtensionsController`)
 
@@ -1373,6 +1377,7 @@ y el común `/users/mine`; las acciones por fila mandan el `X-Tenant-Id` de esa 
 | FE-SET-21 | *Mensajería → Voicebot → Internos* | Deshabilitada con `VOICEBOT_ENABLED` en falso; habilitada, se da de alta un interno desde la UI (número, nombre, empresa) y aparece en la tabla como habilitado. El selector de flujo de voz está deshabilitado hasta H4 |
 | FE-SET-22 | *Mensajería → Voicebot → Capacidad* [C46] | Con el voicebot habilitado, muestra el tope de llamadas simultáneas (3 por defecto) con la ayuda que lo ata a `STT_WORKER_MAX_JOBS`, y el mensaje de ocupado por defecto |
 | FE-SET-23 | *Mensajería → Voicebot → LLM de voz* con `VOICEBOT_SYSTEM_PROMPT` vacío | Nota "Vacío: se usa este por defecto" con el prompt por defecto del voicebot; desaparece al tipear un valor propio |
+| FE-SET-24 | *Mensajería → Voicebot → LLM de voz* [C53] | Proveedor de voz (default minimax) sin OpenCode Go, modelo del proveedor elegido y ningún campo para la key (sale de la del proveedor) |
 
 ## 3.9 Fuentes de verdad (`/dashboard/context-sources`)
 

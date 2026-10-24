@@ -7,13 +7,20 @@ import {
   IntegrationConsumer,
   SETTINGS_CATALOG,
   SettingDefinition,
+  findSettingDefinition,
   isIntegrationConfigKey,
 } from '../settings/settings.catalog';
 import {
   VOICEBOT_SECTION_IDS,
+  VOICE_LLM_CREDENTIALS,
+  VOICE_LLM_SOURCE_KEYS,
+  VoiceLlmProvider,
   VoicebotSettingGroup,
   deriveSttSink,
 } from '../settings/voicebot-settings.catalog';
+
+/** Sección de `config.changed` cuando cambia una credencial de la que sale el LLM de voz. */
+const VOICE_LLM_SECTION_ID = VOICEBOT_SECTION_IDS['Mensajería: Voicebot (LLM de voz)'];
 
 /** Versión mayor del contrato de integración voicebot ↔ pci ↔ stt. */
 export const INTEGRATION_CONTRACT_VERSION = 1;
@@ -61,11 +68,13 @@ export class IntegrationsConfigService {
         include: { tenant: { select: { deletedAt: true } } },
       }),
     ]);
+    const settings = this.mapFor('voicebot', values);
+    Object.assign(settings, await this.deriveVoiceLlm(values));
     return {
       v: INTEGRATION_CONTRACT_VERSION,
       version: version.version,
       updatedAt: version.updatedAt.toISOString(),
-      settings: this.mapFor('voicebot', values),
+      settings,
       // Una empresa dada de baja no atiende: sus internos viajan deshabilitados.
       extensions: extensions.map((e) => ({
         id: e.id,
@@ -104,11 +113,18 @@ export class IntegrationsConfigService {
    * pide. Las claves ajenas a la integración se ignoran; si no queda ninguna, no hace nada.
    */
   async notifyChanged(defs: SettingDefinition[]): Promise<void> {
-    const changed = defs.filter(isIntegrationConfigKey);
+    // Las credenciales de pci de las que sale el LLM de voz [C53] también avisan al voicebot.
+    const changed = defs.filter((d) => isIntegrationConfigKey(d) || VOICE_LLM_SOURCE_KEYS.has(d.key));
     if (changed.length === 0) return;
 
     const sections = [
-      ...new Set(changed.map((d) => VOICEBOT_SECTION_IDS[d.group as VoicebotSettingGroup]).filter(Boolean)),
+      ...new Set(
+        changed
+          .map((d) =>
+            isIntegrationConfigKey(d) ? VOICEBOT_SECTION_IDS[d.group as VoicebotSettingGroup] : VOICE_LLM_SECTION_ID,
+          )
+          .filter(Boolean),
+      ),
     ];
     const what = changed.length === 1 ? changed[0].key : `${changed.length} claves`;
     await this.publishChange(sections, changed.some((d) => !!d.restartsStt), what);
@@ -176,6 +192,40 @@ export class IntegrationsConfigService {
       }
     }
     return values;
+  }
+
+  /**
+   * `VOICEBOT_LLM_API_KEY` (y la base URL si quedó vacía) del proveedor de voz elegido [C53]:
+   * salen de las credenciales que pci ya tiene de ese proveedor, no se cargan aparte.
+   */
+  private async deriveVoiceLlm(values: Map<string, string>): Promise<Record<string, string>> {
+    const provider = values.get('VOICEBOT_LLM_PROVIDER') as VoiceLlmProvider | undefined;
+    const source = provider ? VOICE_LLM_CREDENTIALS[provider] : undefined;
+    if (!source) return {};
+    const [apiKey, baseUrl] = await Promise.all([
+      this.resolveKey(source.apiKeyKey, values),
+      source.baseUrlKey ? this.resolveKey(source.baseUrlKey, values) : Promise.resolve(''),
+    ]);
+    return {
+      VOICEBOT_LLM_API_KEY: apiKey,
+      VOICEBOT_LLM_BASE_URL: values.get('VOICEBOT_LLM_BASE_URL') || baseUrl,
+    };
+  }
+
+  /** Valor efectivo en claro de una clave del catálogo (BD → env → default), aunque no sea de la integración. */
+  private async resolveKey(key: string, known: Map<string, string>): Promise<string> {
+    if (known.has(key)) return known.get(key)!;
+    const def = findSettingDefinition(key);
+    if (!def) return '';
+    const row = await this.prisma.setting.findUnique({ where: { key } });
+    const envValue = this.config.get<string>(key);
+    const raw = row ? row.value : envValue !== undefined && envValue !== '' ? envValue : def.defaultValue;
+    try {
+      return this.cipher.decrypt(raw);
+    } catch {
+      this.logger.error(`No se pudo descifrar ${key} para la configuración de integración`);
+      throw new InternalServerErrorException('No se pudo armar la configuración');
+    }
   }
 
   private mapFor(consumer: IntegrationConsumer, values: Map<string, string>): Record<string, string> {

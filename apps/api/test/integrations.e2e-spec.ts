@@ -42,6 +42,12 @@ const TOUCHED_KEYS = [
   'STT_MODEL',
   'OTP_TTL_SECONDS',
   'VOICEBOT_MAX_CALLS',
+  'VOICEBOT_LLM_PROVIDER',
+  'VOICEBOT_LLM_BASE_URL',
+  'VOICEBOT_MINIMAX_BASE_URL',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'ANTHROPIC_API_KEY',
 ];
 
 describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)', () => {
@@ -206,6 +212,49 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
     });
   });
 
+  describe('LLM de voz por proveedor [DA10, C53]', () => {
+    const llmSettings = async () => (await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings as Record<string, string>;
+
+    it('BE-INT-28: por defecto minimax, con la key y la base URL de voz (no las del chat) [DA13]', async () => {
+      await patchSetting('VOICEBOT_MINIMAX_API_KEY', 'voice-llm-key-e2e-333333').expect(200);
+      await patchSetting('VOICEBOT_MINIMAX_BASE_URL', 'https://voz.minimax.e2e/v1').expect(200);
+      await patchSetting('MINIMAX_API_KEY', 'chat-key-e2e-444444').expect(200);
+      const settings = await llmSettings();
+      expect(settings).toMatchObject({
+        VOICEBOT_LLM_PROVIDER: 'minimax',
+        VOICEBOT_LLM_MODEL: 'MiniMax-M3',
+        VOICEBOT_LLM_API: 'anthropic',
+        VOICEBOT_LLM_MAX_TOKENS: '150',
+        VOICEBOT_LLM_API_KEY: 'voice-llm-key-e2e-333333',
+        VOICEBOT_LLM_BASE_URL: 'https://voz.minimax.e2e/v1',
+      });
+    });
+
+    it('BE-INT-29: con otro proveedor, la key y la base URL salen de las suyas en pci; una base URL propia gana', async () => {
+      await patchSetting('OPENAI_API_KEY', 'sk-openai-e2e-555555').expect(200);
+      await patchSetting('OPENAI_BASE_URL', 'https://openai.e2e/v1').expect(200);
+      await patchSetting('VOICEBOT_LLM_PROVIDER', 'openai').expect(200);
+      expect(await llmSettings()).toMatchObject({
+        VOICEBOT_LLM_API_KEY: 'sk-openai-e2e-555555',
+        VOICEBOT_LLM_BASE_URL: 'https://openai.e2e/v1',
+      });
+
+      await patchSetting('VOICEBOT_LLM_BASE_URL', 'https://propia.e2e/v1').expect(200);
+      expect((await llmSettings()).VOICEBOT_LLM_BASE_URL).toBe('https://propia.e2e/v1');
+
+      // Claude no tiene base URL en pci: vacío = la API oficial.
+      await withAuth(http(t).delete('/settings/VOICEBOT_LLM_BASE_URL'), adminToken, systemTenantId).expect(200);
+      await patchSetting('ANTHROPIC_API_KEY', 'sk-ant-e2e-666666').expect(200);
+      await patchSetting('VOICEBOT_LLM_PROVIDER', 'claude').expect(200);
+      expect(await llmSettings()).toMatchObject({ VOICEBOT_LLM_API_KEY: 'sk-ant-e2e-666666', VOICEBOT_LLM_BASE_URL: '' });
+    });
+
+    it('BE-INT-30: opencodego no es apto para voz; la key derivada no es una clave de /settings', async () => {
+      await patchSetting('VOICEBOT_LLM_PROVIDER', 'opencodego').expect(400);
+      await withAuth(http(t).get('/settings/VOICEBOT_LLM_API_KEY'), adminToken, systemTenantId).expect(400);
+    });
+  });
+
   describe('GET /integrations/stt/config (contrato §3.2)', () => {
     it('BE-INT-10: nombres del stt; un mismo valor compartido sale con el nombre de cada consumidor', async () => {
       await patchSetting('VOICEBOT_LIVEKIT_URL', 'ws://10.0.0.2:7880').expect(200);
@@ -333,6 +382,12 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       await patchSetting('VOICEBOT_MAX_CALLS', '4').expect(200);
       const event = await waitForEvent(await version());
       expect(event.data).toMatchObject({ sections: ['capacidad'], restart: { stt: false } });
+    });
+
+    it('BE-INT-31: cambiar la credencial de la que sale el LLM de voz avisa con section "llm"', async () => {
+      await patchSetting('OPENAI_API_KEY', 'sk-openai-e2e-777777').expect(200);
+      const event = await waitForEvent(await version());
+      expect(event.data).toMatchObject({ sections: ['llm'], restart: { stt: false } });
     });
 
     it('BE-INT-18: los tokens de servicio no son configuración servida: no suben la versión', async () => {

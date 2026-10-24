@@ -1464,7 +1464,7 @@ Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de ve
 configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
 voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 [`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
-**contrato de integración** (vigente: 1.13, 2026-10-24) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+**contrato de integración** (vigente: 1.14, 2026-10-24) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
@@ -1493,7 +1493,8 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   (`VOICEBOT_FREE_CHAT_PROMPT`, solo conversación, sin trámites), no el del chat.
 - 🔄 **H4 — Flujos de voz** (plan 2026-10-24, C52): permiso `voice_flows`, menú y editor de voz,
   modo de habla por nodo, transferir a interno, identificación por voz (DNI/legajo), LLM de voz por
-  proveedor. Cuatro tramos (H4a–H4d), ver `docs/voicebot/plan-pci.md`.
+  proveedor. Cuatro tramos (H4a–H4d), ver `docs/voicebot/plan-pci.md`. H4d (LLM de voz por
+  proveedor) ✅.
 - ⏳ **H5 — Salientes y "probar conexión"**.
 
 ---

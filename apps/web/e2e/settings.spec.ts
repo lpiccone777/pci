@@ -685,6 +685,28 @@ test('FE-SET-23: Voicebot → LLM de voz — con el prompt de voz vacío se ve e
   }
 });
 
+test('FE-SET-24: Voicebot → LLM de voz — proveedor propio sin OpenCode Go, y la key no se carga acá [C53]', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/settings');
+    await openTab(page, 'Mensajería: Voicebot (LLM de voz)');
+
+    const provider = page.locator('#VOICEBOT_LLM_PROVIDER');
+    await expect(provider).toHaveValue('minimax');
+    const options = await provider.locator('option').allTextContents();
+    expect(options.map((o) => o.trim())).toEqual(expect.arrayContaining(['openai', 'gemini', 'claude', 'openrouter', 'minimax']));
+    expect(options.join(' ')).not.toContain('opencodego');
+    await expect(page.locator('#VOICEBOT_LLM_MODEL')).toBeVisible();
+    await expect(page.locator('#VOICEBOT_LLM_API_KEY')).toHaveCount(0);
+    await expect(settingCard(page, 'VOICEBOT_LLM_PROVIDER').getByText(/La key es la que pci ya tiene de ese proveedor/)).toBeVisible();
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});
+
 test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de un interno desde la UI, con el flujo de voz deshabilitado', async ({
   page,
 }) => {
