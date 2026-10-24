@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · 🔄 H3 · ⏳ H4–H5. Contrato vigente: **1.11**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · 🔄 H4 (plan) · ⏳ H5. Contrato vigente: **1.12**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -104,7 +104,7 @@ levantada; los internos 201 y 202 llegan al voicebot en la config v7.
   `STT_WORKER_MAX_JOBS` del stt) y `VOICEBOT_BUSY_TEXT`. Sin migración ni valores cargados: con
   los defaults alcanza. Tests BE-INT-23..25 y FE-SET-22.
 
-## H3 — Canal de voz en el motor
+## H3 — Canal de voz en el motor ✅
 
 Contrato 1.7 (C47): DA5+DA14, DA8+DA15 y DA11 decididas. Plan aprobado por el coordinador el
 2026-10-24 y **implementado**: migración `20261024180000_voice_channel` (aplicada por el usuario),
@@ -261,32 +261,122 @@ suma ahí:
 
 ## H4 — Flujos de voz
 
-- [ ] **`Flow.channel`** (`text` | `voice`, default `text`, D10): el schema y la resolución se
-  adelantan a H3 (DA8); acá queda la UI para elegir el canal y marcar el flujo de voz de inicio.
-  - `findActiveFlowForTenant` y `TenantFlow.isStart` filtran por canal: un tenant tiene un flujo de
-    inicio por canal. Revisar la invariante en `FlowService.applyTenantAssignment`.
-  - Las variantes feriado/guardia heredan el canal del flujo base.
-- [ ] **Menú**:
-  - Ítem *Flujos de voz* debajo de *Flujos IVR* en `components/sidebar.tsx`.
-  - Visible solo con el voicebot habilitado. Hace falta un endpoint de features legible por
-    usuarios de tenant (p. ej. `GET /features` → `{voicebot: true}`), porque `/settings` es solo de sistema.
-  - Aplicar el mismo gate en la página y en el backend: el sidebar es solo cosmético.
-  - Permiso según DA6.
-- [ ] **Editor** (`dashboard/flows/edit/page.tsx`): la paleta y `NodeProperties` filtran por canal.
-  - Nodos de voz: `start, message, input, menu (verbalizado), condition, variable, llm_query,
-    ticket_create, transfer_agent, sms, webhook, subflow, end`.
-  - No disponibles por voz: `notification, ticket_query, device_validation, delay`.
-  - Nodos nuevos: *transferir a interno* y *colgar*. *Identificación verbal* (D13) queda para después.
-  - Todo campo nuevo de `data` se declara en `FlowNodeDataDto`: la whitelist rechaza lo no declarado.
-- [ ] **Modo de habla por nodo** (contrato §5.3): cada nodo que habla elige `literal` o `guided`
-  (texto exacto vs. instrucción al LLM de voz). `llm_query` sin extracción → `delegate`.
-- [ ] **Motor**: `executeFlow` arma `actions` en lugar de `body`/`interactive` cuando el canal es
-  `voice`.
-  - `menu`: opciones verbalizadas; el match por `interpretMenuChoice` ya acepta lenguaje natural.
-  - `end`: `hangup`.
-  - Medir cuántas llamadas a `LlmService` sin streaming quedan en el camino del turno: cada una suma latencia.
-- [ ] **Subflujos**: un flujo `voice` solo puede llamar a subflujos `voice`. Validarlo al guardar.
-- [ ] e2e de motor por voz: publicar en `voice.turn` y verificar `actions`, como los `chat-nodes-*.e2e-spec.ts`.
+Contrato 1.12 (C52). Decisiones del usuario:
+- **DA6:** permiso propio `voice_flows`.
+- **DA10:** el LLM de voz puede ser cualquiera de los `LLM_PROVIDERS` que tenga streaming, elegido
+  aparte del chat y con las credenciales de cada proveedor.
+- **DA12:** solo texto, sin audio.
+- **Nodo de identificación por voz:** legajo o DNI, más nombre y apellido aproximados, con 2
+  intentos.
+
+Plan del 2026-10-24, **antes de codear**. Se hace en cuatro tramos, con un commit y un aviso al
+coordinador por tramo. Las migraciones las pide el coordinador.
+
+Ya hecho en H3: `Flow.channel`, la resolución por canal, el inicio por canal, el canal `voice` del
+motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
+
+### H4a — Canal en la administración: permiso, menú, listado y editor
+
+- [ ] **Permiso `voice_flows`** [DA6] en `permissions.catalog.ts` ("Flujos de voz", las 4 acciones).
+  No hace falta migración: los permisos son filas libres validadas contra el catálogo, y el
+  SuperAdmin lo recibe solo.
+- [ ] **API `voice-flows`**: el controlador hermano de `flows`, con `@RequirePermission('voice_flows', …)`.
+  - Rutas: listado, `mine`, `all`, detalle, alta, edición, baja, `assign-tenants` y variantes.
+  - `FlowService` recibe el canal y lo exige en cada operación por `:id`.
+  - `/flows` deja de ver y de tocar flujos de voz, y `/voice-flows` no toca los de texto. Así un
+    `flows:update` no edita un flujo de voz, y al revés.
+  - Las variantes de feriado y guardia heredan el canal del flujo base.
+  - Un subflujo tiene que ser del mismo canal; se valida al guardar.
+- [ ] **Gate "voicebot habilitado"**:
+  - `GET /features` → `{ voicebot: boolean }`, legible por cualquier usuario autenticado de
+    tenant, porque `/settings` es solo de sistema;
+  - `/voice-flows` responde 404 si `VOICEBOT_ENABLED` no es `true`. El sidebar es solo cosmético.
+- [ ] **Menú y pantallas**:
+  - *Flujos de voz* va debajo de *Flujos IVR* (`voice_flows:read`), visible si `features.voicebot`.
+  - `/dashboard/voice-flows/` y `/dashboard/voice-flows/edit/` reusan los mismos componentes del
+    listado y del editor, con `channel="voice"` y la API `/voice-flows`.
+  - En la asignación a empresas de un flujo de voz no hay roles, porque la llamada entra sin
+    usuario. Queda la marca "de inicio": uno por empresa.
+- [ ] **Paleta y propiedades por canal**:
+  - nodos de voz: `start, message, input, menu, condition, variable, llm_query, ticket_create,
+    transfer_agent, sms, webhook, subflow, end`, más los nuevos *Transferir a interno* e
+    *Identificar por voz*;
+  - no aparecen `notification, ticket_query, device_validation, delay`, y el backend los rechaza al
+    guardar un flujo de voz;
+  - todo campo nuevo de `data` se declara en `FlowNodeDataDto`.
+- [ ] **Tests:** e2e del permiso, del aislamiento por canal, del gate y de la validación de nodos;
+  Playwright del menú, el listado y el editor de voz.
+
+### H4b — Cómo habla cada nodo, transferencia y menú sin LLM
+
+- [ ] **Modo de habla por nodo** (contrato §5.4):
+  - cada nodo que habla (`start`, `message`, `menu`, `input`, `end` y el texto de `ticket_create`)
+    elige `literal` (default, el texto exacto) o `guided`;
+  - en `guided`, el texto del nodo es la `instruction` y `facts` lleva las variables `{{x}}` que
+    usa, ya resueltas;
+  - el editor muestra el selector solo en los flujos de voz, y recuerda que con `guided` en el
+    `start` el voicebot agrega "(Atendiste la llamada.)" [C48].
+- [ ] **Menú por voz sin LLM de pci:**
+  - match determinístico por número ("1", "uno", "la primera"), por etiqueta y por similitud;
+  - si no matchea, un `guided` que repite las opciones; a la segunda falla, `delegate` (como el
+    fallback de hoy);
+  - por voz no se llama a `interpretMenuChoice`, y la detección de cancelación de `input` (LLM)
+    no corre por voz.
+- [ ] **`llm_query` en modo extracción por voz:**
+  - la pregunta por un dato faltante sale como `guided` ("Pedile el dato X"), sin
+    `generateLlmQueryQuestion`;
+  - la extracción sigue usando el LLM de pci (no hay otra forma). Se mide y se loguea, y queda
+    fuera del presupuesto de 300 ms.
+- [ ] **`context` del `delegate`** (§5.4):
+  - la fuente de verdad del flujo se consulta con el texto del usuario y va recortada a
+    `VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS` (default 4000), con un tope de tiempo
+    `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS` (default 1500);
+  - si se vence el tiempo, va sin `context` y se loguea;
+  - las dos claves son de pci, en *Voicebot → LLM de voz*;
+  - se mide tamaño y latencia, y con eso se fijan los defaults.
+- [ ] **Nodo *Transferir a interno*** (`transfer_extension`):
+  - toma un número fijo o una persona (su `User.internalPhone`, resuelto por pci [C5]);
+  - responde `{type: "transfer", extension}`, `committed: true` y `awaitInput: false`;
+  - llega al voicebot como `Refer-To tel:<extension>` [C48];
+  - `end` sigue siendo "colgar" (`hangup`).
+- [ ] **Tests:** e2e por `voice.turn` de cada modo y nodo, sin LLM real (FakeLlm).
+
+### H4c — Identificación por voz
+
+- [ ] **Datos (migración):** hoy pci no tiene DNI ni legajo.
+  - `User.dni String? @unique`: se libera en la baja, como `phone`.
+  - `UserTenant.legajo String?` con `@@unique([tenantId, legajo])`: el legajo es por empresa.
+  - Se cargan en el alta y edición de usuarios y en la carga masiva.
+- [ ] **Nodo *Identificar por voz*** (`voice_identify`), configurable con `idField: dni | legajo` e
+  `intentos` (default 2):
+  1. pide el documento: se sacan los dígitos del texto (o el alfanumérico, si es legajo) y se
+     busca en el tenant del interno;
+  2. pide nombre y apellido: comparación aproximada sin tildes ni mayúsculas, por similitud, con un
+     umbral, porque el STT se equivoca en letras.
+  - Salidas: `reconocido` / `no reconocido`, como `start` con `known`/`unknown`.
+  - Al reconocer: completa `Conversation.userId`, carga la identidad (rol de la membresía) y las
+    variables de usuario de `flowState`, igual que `start` con un conocido.
+  - Desde ahí `ticket_create` y `transfer_agent` funcionan, porque ya hay usuario.
+  - Determinístico: sin LLM de pci.
+- [ ] **Tests:** e2e reconocido / no reconocido / segundo intento / documento de otro tenant.
+
+### H4d — LLM de voz por proveedor [DA10]
+
+- [ ] **Catálogo, grupo *Voicebot → LLM de voz*:**
+  - `VOICEBOT_LLM_PROVIDER`: enum de los proveedores con streaming (`openai`, `gemini`, `claude`,
+    `openrouter`, `minimax`). `opencodego` queda fuera: trabaja por sesiones, sin streaming.
+  - `VOICEBOT_LLM_MODEL`, con la lista de modelos del proveedor (`LlmModelsService`).
+  - Reemplazan a `VOICEBOT_MINIMAX_LLM_MODEL`. `VOICEBOT_MINIMAX_LLM_API` queda solo para minimax.
+- [ ] **Config del voicebot:** `LLM_API_KEY` (secret) y `LLM_BASE_URL` se **derivan** de las
+  credenciales que pci ya tiene para el proveedor elegido (como `STT_SINK` [C39]): un solo valor
+  por dato.
+  - Los nombres y el formato los acuerda el coordinador con el voicebot.
+- [ ] **Tests:** e2e de la config derivada por proveedor y de que `opencodego` se rechaza.
+
+### Fuera de H4 (anotado)
+
+- **Grabación (DA12):** solo texto, sin audio.
+- **Salientes y "Probar conexión":** H5.
 
 ## H5 — Salientes
 

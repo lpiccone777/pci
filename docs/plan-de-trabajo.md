@@ -1464,7 +1464,7 @@ Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de ve
 configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
 voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 [`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
-**contrato de integración** (vigente: 1.11, 2026-10-24) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+**contrato de integración** (vigente: 1.12, 2026-10-24) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
@@ -1483,7 +1483,7 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   validación cruzada con `User.internalPhone` en los dos sentidos [C5], internos en la config del
   voicebot con `config.changed` `["internos"]`. `flowId` sin uso hasta H4 (DA8/DA15). Con el
   contrato 1.6 (C46) suma *Voicebot → Capacidad*: `VOICEBOT_MAX_CALLS` y `VOICEBOT_BUSY_TEXT`.
-- 🔄 **H3 — Canal de voz en el motor** (2026-10-24, contrato C47): módulo `modules/voice/`
+- ✅ **H3 — Canal de voz en el motor** (2026-10-24, contrato C47): módulo `modules/voice/`
   (`VoiceTurnsService`) que consume `voice.events` y el RPC `voice.turn`; una conversación por
   llamada sin usuario (`Conversation.userId` nullable solo para voz), `VoiceCall`/`VoiceTurn`
   (idempotencia por `turnId`, snapshot para `supersedes`, lease por llamada), `Flow.channel` y el
@@ -1491,7 +1491,9 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   `voice`: menú verbalizado, `llm_query` en charla → `delegate`. Grupo *Voicebot → pci no
   disponible*. 17 e2e, p95 ≈ 100 ms. C50: la charla por voz usa su propio prompt
   (`VOICEBOT_FREE_CHAT_PROMPT`, solo conversación, sin trámites), no el del chat.
-- ⏳ **H4 — Flujos de voz** (`Flow.channel`, editor, motor).
+- 🔄 **H4 — Flujos de voz** (plan 2026-10-24, C52): permiso `voice_flows`, menú y editor de voz,
+  modo de habla por nodo, transferir a interno, identificación por voz (DNI/legajo), LLM de voz por
+  proveedor. Cuatro tramos (H4a–H4d), ver `docs/voicebot/plan-pci.md`.
 - ⏳ **H5 — Salientes y "probar conexión"**.
 
 ---
