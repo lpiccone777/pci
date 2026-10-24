@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · 🔄 H3 · ⏳ H4–H5. Contrato vigente: **1.8**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · 🔄 H3 · ⏳ H4–H5. Contrato vigente: **1.9**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -115,7 +115,8 @@ Del contrato 1.8 (C48) para pci: `call.started` llega ≈2 s después del `start
 (`startedAt` se toma de ahí); con `guided`/`delegate` en `start`/`continue` el voicebot agrega un
 turno de usuario de marca ("(Atendiste la llamada.)", "(Seguí.)"), a tener en cuenta al escribir la
 `instruction` del nodo de inicio en H4; relleno: `VOICEBOT_FILLER_AFTER_MS=0` = sin relleno (un
-texto vacío vuelve al default), corregido en el catálogo; `transfer` llega como `Refer-To
+texto vacío vuelve al default), corregido en el catálogo, y desde 1.9 (C49) cuenta solo la
+espera de la respuesta de pci al `voice.turn`; `transfer` llega como `Refer-To
 tel:<extension>`.
 
 Módulo nuevo `modules/voice/`. `ConversationsService` ya tiene 3100 líneas, así que la voz no se

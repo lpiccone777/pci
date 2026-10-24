@@ -573,7 +573,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       ['VOICEBOT_TURN_TIMEOUT_MS', 'Timeout de respuesta de pci (ms)', '5000', 500, 60000,
         'Si pci no responde un turno en este tiempo, el voicebot dice el texto de fallback.'],
       ['VOICEBOT_FILLER_AFTER_MS', 'Relleno a los (ms)', '1500', 0, 60000,
-        'Si para entonces no hay nada para decir, el voicebot dice el texto de relleno (una vez por turno). 0 = sin relleno.'],
+        'Si pci tarda más que esto en responder un turno, el bot dice el relleno. 0 = sin relleno.'],
     ] as const
   ).map(([key, label, defaultValue, min, max, description]) =>
     voicebot(key, {
