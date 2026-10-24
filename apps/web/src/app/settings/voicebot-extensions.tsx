@@ -24,8 +24,13 @@ interface TenantOption {
   name: string;
 }
 
-type Draft = { number: string; name: string; tenantId: string; enabled: boolean };
-const EMPTY_DRAFT: Draft = { number: '', name: '', tenantId: '', enabled: true };
+type Draft = { number: string; name: string; tenantId: string; flowId: string; enabled: boolean };
+const EMPTY_DRAFT: Draft = { number: '', name: '', tenantId: '', flowId: '', enabled: true };
+
+interface FlowOption {
+  id: string;
+  name: string;
+}
 
 const CHANGE_NOTICE = 'El voicebot toma el cambio al recibir el aviso de configuración.';
 
@@ -38,6 +43,22 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
   const [busy, setBusy] = useState(false);
   /** null = sin formulario · { id: null } = alta · { id } = edición. */
   const [editing, setEditing] = useState<{ id: string | null; draft: Draft } | null>(null);
+  /** Flujos de voz de la empresa elegida en el formulario (DA8: solo los de esa empresa). */
+  const [flowOptions, setFlowOptions] = useState<FlowOption[]>([]);
+  const [flowNames, setFlowNames] = useState<Record<string, string>>({});
+  const formTenant = editing?.draft.tenantId ?? '';
+  useEffect(() => {
+    if (!formTenant) {
+      setFlowOptions([]);
+      return;
+    }
+    apiFetch(`/voicebot/extensions/flow-options?tenantId=${encodeURIComponent(formTenant)}`)
+      .then((opts: FlowOption[]) => {
+        setFlowOptions(opts);
+        setFlowNames((prev) => ({ ...prev, ...Object.fromEntries(opts.map((o) => [o.id, o.name])) }));
+      })
+      .catch(() => setFlowOptions([]));
+  }, [formTenant]);
 
   async function load() {
     try {
@@ -47,6 +68,14 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
       ]);
       setExtensions(exts);
       setTenants(ts.map((t) => ({ id: t.id, name: t.name })));
+      // Nombres de los flujos asignados, para la tabla (una consulta por empresa con internos).
+      const withFlow = [...new Set(exts.filter((e) => e.flowId).map((e) => e.tenantId))];
+      const lists: FlowOption[][] = await Promise.all(
+        withFlow.map((tenantId) =>
+          apiFetch(`/voicebot/extensions/flow-options?tenantId=${encodeURIComponent(tenantId)}`).catch(() => []),
+        ),
+      );
+      setFlowNames(Object.fromEntries(lists.flat().map((o) => [o.id, o.name])));
       setError('');
     } catch (err: any) {
       setError(err.message);
@@ -78,7 +107,12 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
   function save() {
     if (!editing) return;
     const { id, draft } = editing;
-    const body = JSON.stringify({ ...draft, number: draft.number.trim(), name: draft.name.trim() });
+    const body = JSON.stringify({
+      ...draft,
+      number: draft.number.trim(),
+      name: draft.name.trim(),
+      flowId: draft.flowId || null,
+    });
     run(
       () =>
         id
@@ -115,6 +149,8 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
       <p className="text-sm text-gray-600">
         Números que atiende el voicebot y la empresa que atiende cada uno. Solo se atienden las llamadas
         a internos habilitados: el resto se rechaza. El número no puede ser el interno de una persona.
+        Cada interno puede tener su flujo de voz; sin flujo propio usa el de inicio de su empresa, y sin
+        ninguno, charla libre.
       </p>
       {error && (
         <p role="alert" className="text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2 text-sm">
@@ -134,6 +170,7 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
               <th className="px-4 py-2">Número</th>
               <th className="px-4 py-2">Nombre</th>
               <th className="px-4 py-2">Empresa</th>
+              <th className="px-4 py-2">Flujo de voz</th>
               <th className="px-4 py-2">Estado</th>
               <th className="px-4 py-2 text-right">Acciones</th>
             </tr>
@@ -141,7 +178,7 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
           <tbody>
             {extensions.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-gray-500">
+                <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
                   Todavía no hay internos.
                 </td>
               </tr>
@@ -153,6 +190,17 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
                 <td className="px-4 py-2">
                   {ext.tenant.name}
                   {ext.tenant.deletedAt && <span className="ml-1 text-xs text-red-600">(dada de baja)</span>}
+                </td>
+                <td className="px-4 py-2">
+                  {ext.flowId ? (
+                    (flowNames[ext.flowId] ?? (
+                      <span className="text-xs text-amber-700" title="El flujo ya no es de voz, no está activo o no está asignado a la empresa: se usa el de inicio">
+                        no disponible
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-gray-400">el de inicio de la empresa</span>
+                  )}
                 </td>
                 <td className="px-4 py-2">
                   <span
@@ -180,7 +228,13 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
                         onClick={() =>
                           setEditing({
                             id: ext.id,
-                            draft: { number: ext.number, name: ext.name, tenantId: ext.tenantId, enabled: ext.enabled },
+                            draft: {
+                              number: ext.number,
+                              name: ext.name,
+                              tenantId: ext.tenantId,
+                              flowId: ext.flowId ?? '',
+                              enabled: ext.enabled,
+                            },
                           })
                         }
                         className="text-blue-600 hover:underline disabled:text-gray-400"
@@ -255,7 +309,8 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
             <select
               id="extension-tenant"
               value={draft.tenantId}
-              onChange={(e) => setDraft({ tenantId: e.target.value })}
+              // El flujo propio es de la empresa: al cambiarla se limpia.
+              onChange={(e) => setDraft({ tenantId: e.target.value, flowId: '' })}
               required
               className="border px-3 py-2 rounded w-full"
             >
@@ -271,9 +326,23 @@ export function VoicebotExtensions({ canUpdate, canDelete }: { canUpdate: boolea
           </label>
           <label className="text-sm">
             <span className="block font-medium text-gray-800 mb-1">Flujo de voz</span>
-            <select id="extension-flow" disabled className="border px-3 py-2 rounded w-full disabled:bg-gray-100">
-              <option>Se habilita con los flujos de voz</option>
+            <select
+              id="extension-flow"
+              value={draft.flowId}
+              disabled={!draft.tenantId}
+              onChange={(e) => setDraft({ flowId: e.target.value })}
+              className="border px-3 py-2 rounded w-full disabled:bg-gray-100"
+            >
+              <option value="">El de inicio de la empresa</option>
+              {flowOptions.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
             </select>
+            <span className="block text-xs text-gray-500 mt-1">
+              Solo flujos de voz activos asignados a esta empresa (Flujos de voz → Empresas).
+            </span>
           </label>
           <label className="text-sm flex items-center gap-2 md:col-span-2">
             <input

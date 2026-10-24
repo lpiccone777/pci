@@ -424,6 +424,18 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
 - [x] **Tests:** e2e de la key derivada para cada proveedor, de que viaja enmascarada en
   `/settings`, de que `opencodego` se rechaza y de la versión con `config.changed`.
 
+### Después de la prueba en vivo de H4 (2026-10-24)
+
+- La primera prueba cayó en charla libre: el único flujo de voz estaba asignado como inicio a otra
+  empresa que la de los internos 201 y 202 (DA8 nunca toma un flujo de otra empresa). Se arregla
+  asignándolo a la empresa del interno. Desde 82edcac cada llamada loguea por qué paso resolvió su
+  flujo (el del interno, el de inicio de la empresa o charla libre) y si se ignoró el del interno.
+- [x] **Flujo propio por interno** (DA8, paso 1; aprobado por el coordinador): el selector de
+  *Voicebot → Internos* quedó habilitado y la API acepta `flowId`, solo flujos de voz activos
+  asignados a la empresa del interno (`GET /voicebot/extensions/flow-options?tenantId=`). Si
+  después se desasigna, el motor lo ignora y cae al de inicio (lo marca el log y la tabla dice
+  "no disponible"). Tests BE-EXT-10 y FE-SET-21.
+
 ### Fuera de H4 (anotado)
 
 - **Grabación (DA12):** solo texto, sin audio.

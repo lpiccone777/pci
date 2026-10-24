@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../rbac/guards/roles.guard';
 import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
@@ -22,6 +22,14 @@ export class ExtensionsController {
   @RequirePermission('settings', 'read')
   findAll() {
     return this.extensions.findAll();
+  }
+
+  /** Flujos de voz elegibles para un interno de esa empresa (selector de la pantalla de Internos). */
+  @Get('flow-options')
+  @RequirePermission('settings', 'read')
+  flowOptions(@Query('tenantId') tenantId?: string) {
+    if (!tenantId) throw new BadRequestException('Falta tenantId');
+    return this.extensions.flowOptions(tenantId);
   }
 
   @Post()

@@ -707,7 +707,7 @@ test('FE-SET-24: Voicebot → LLM de voz — proveedor propio sin OpenCode Go, y
   }
 });
 
-test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de un interno desde la UI, con el flujo de voz deshabilitado', async ({
+test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de un interno desde la UI, con el selector de flujo de voz de su empresa', async ({
   page,
 }) => {
   const tenant = await createTenant(admin);
@@ -743,8 +743,11 @@ test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de
     await form.locator('#extension-number').fill(number);
     await form.locator('#extension-name').fill('Mesa de ayuda e2e');
     await form.locator('#extension-tenant').selectOption(tenant.id);
-    // Hasta H4 no hay flujos de voz: el selector está deshabilitado.
-    await expect(form.locator('#extension-flow')).toBeDisabled();
+    // Flujo de voz propio (DA8): habilitado con la empresa elegida; sin flujos de voz de esa empresa
+    // queda solo "el de inicio de la empresa".
+    await expect(form.locator('#extension-flow')).toBeEnabled();
+    await expect(form.locator('#extension-flow')).toHaveValue('');
+    await expect(form.locator('#extension-flow option').first()).toHaveText('El de inicio de la empresa');
     await form.getByRole('button', { name: 'Guardar' }).click();
 
     await expect(page.getByRole('status')).toContainText(`Interno ${number} creado.`);
@@ -752,6 +755,7 @@ test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de
     await expect(row).toContainText('Mesa de ayuda e2e');
     await expect(row).toContainText(tenant.name);
     await expect(row).toContainText('habilitado');
+    await expect(row).toContainText('el de inicio de la empresa');
   } finally {
     const list: Array<{ id: string; number: string }> = await (await api('/voicebot/extensions')).json();
     for (const e of list.filter((x) => x.number === number)) {

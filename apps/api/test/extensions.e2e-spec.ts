@@ -17,6 +17,7 @@ import {
   http,
   getSystemContext,
   createTenant,
+  createFlow,
   createRole,
   createUser,
   uniqueEmail,
@@ -111,14 +112,14 @@ describe('Integración voicebot: internos (BE-EXT-*)', () => {
     expect(evt.data).toEqual({ v: 1, version: before + 1, sections: ['internos'], restart: { stt: false } });
   });
 
-  it('BE-EXT-03: validaciones: número duplicado → 409; con espacios → 400; flowId → 400; empresa inexistente o dada de baja → 400', async () => {
+  it('BE-EXT-03: validaciones: número duplicado → 409; con espacios → 400; flowId inexistente → 400; empresa inexistente o dada de baja → 400', async () => {
     const number = extNumber();
     await createExt({ number, name: 'A', tenantId }).expect(201);
     const before = await version();
 
     expect((await createExt({ number, name: 'B', tenantId })).status).toBe(409);
     expect((await createExt({ number: '20 1', name: 'B', tenantId })).status).toBe(400);
-    // Hasta H4 no hay flujos de voz (DA8/DA15): la API no acepta flowId.
+    // Un flowId que no es un flujo de voz de la empresa (acá, ni existe) → 400 (ver BE-EXT-10).
     expect((await createExt({ number: extNumber(), name: 'B', tenantId, flowId: 'x' })).status).toBe(400);
     expect((await createExt({ number: extNumber(), name: 'B', tenantId: 'no-existe' })).status).toBe(400);
     const gone = await createTenant(t.prisma, { slug: uniqueSlug('ext03'), deletedAt: new Date() });
@@ -238,6 +239,38 @@ describe('Integración voicebot: internos (BE-EXT-*)', () => {
     expect((await patch({ number: a.number })).status).toBe(409);
     const free = extNumber();
     expect((await patch({ number: free })).body.number).toBe(free);
+  });
+
+  it('BE-EXT-10: flujo propio del interno [DA8]: solo de voz, activo y de su empresa; viaja en la config y se puede sacar', async () => {
+    const other = (await createTenant(t.prisma, { slug: uniqueSlug('ext10') })).id;
+    const mk = (name: string, opts: { channel?: 'text' | 'voice'; isActive?: boolean; tenant?: string }) =>
+      createFlow(t.prisma, {
+        name,
+        channel: opts.channel ?? 'voice',
+        isActive: opts.isActive ?? true,
+        nodes: [{ id: 'start', type: 'start', data: {}, position: { x: 0, y: 0 } }],
+        assign: [{ tenantId: opts.tenant ?? tenantId }],
+      });
+    const good = await mk('voz ok', {});
+    const text = await mk('texto', { channel: 'text' });
+    const inactive = await mk('voz apagada', { isActive: false });
+    const foreign = await mk('voz ajena', { tenant: other });
+
+    const options = (await asAdmin(http(t).get(`/voicebot/extensions/flow-options?tenantId=${tenantId}`)).expect(200)).body;
+    expect(options).toEqual([{ id: good.id, name: 'voz ok' }]);
+
+    for (const bad of [text.id, inactive.id, foreign.id]) {
+      expect((await createExt({ number: extNumber(), name: 'mal', tenantId, flowId: bad })).status).toBe(400);
+    }
+    const created = await createExt({ number: extNumber(), name: 'con flujo', tenantId, flowId: good.id }).expect(201);
+    expect(created.body.flowId).toBe(good.id);
+    const inConfig = (await voicebotConfig()).body.extensions.find((e: { id: string }) => e.id === created.body.id);
+    expect(inConfig.flowId).toBe(good.id);
+
+    // Cambiar de empresa con el flujo de la anterior → 400; sacarle el flujo → null.
+    await asAdmin(http(t).patch(`/voicebot/extensions/${created.body.id}`)).send({ tenantId: other }).expect(400);
+    const cleared = await asAdmin(http(t).patch(`/voicebot/extensions/${created.body.id}`)).send({ flowId: null }).expect(200);
+    expect(cleared.body.flowId).toBeNull();
   });
 
   it('BE-EXT-09: sin settings:update no se puede dar de alta (403)', async () => {

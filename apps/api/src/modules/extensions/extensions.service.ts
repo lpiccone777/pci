@@ -44,14 +44,25 @@ export class ExtensionsService {
     return this.prisma.extension.findMany({ select: EXTENSION_SELECT, orderBy: { number: 'asc' } });
   }
 
+  /** Flujos que puede tener un interno de `tenantId`: de voz, activos y asignados a esa empresa [DA8]. */
+  flowOptions(tenantId: string) {
+    return this.prisma.flow.findMany({
+      where: { channel: 'voice', isActive: true, variantOf: null, tenantFlows: { some: { tenantId } } },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   async create(dto: CreateExtensionDto) {
     const number = dto.number.trim();
     await this.assertNumberAvailable(number);
     await this.assertTenantActive(dto.tenantId);
+    const flowId = dto.flowId || null;
+    await this.assertFlowFits(flowId, dto.tenantId);
 
     const ext = await this.withUniqueNumber(number, () =>
       this.prisma.extension.create({
-        data: { number, name: dto.name.trim(), tenantId: dto.tenantId, enabled: dto.enabled ?? true },
+        data: { number, name: dto.name.trim(), tenantId: dto.tenantId, flowId, enabled: dto.enabled ?? true },
         select: EXTENSION_SELECT,
       }),
     );
@@ -67,6 +78,11 @@ export class ExtensionsService {
     if (dto.tenantId !== undefined && dto.tenantId !== current.tenantId) {
       await this.assertTenantActive(dto.tenantId);
     }
+    // El flujo propio tiene que ser de la empresa que queda: se valida si cambia cualquiera de los dos.
+    const flowId = dto.flowId === undefined ? current.flowId : dto.flowId || null;
+    if (dto.flowId !== undefined || dto.tenantId !== undefined) {
+      await this.assertFlowFits(flowId, dto.tenantId ?? current.tenantId);
+    }
 
     const ext = await this.withUniqueNumber(number ?? current.number, () =>
       this.prisma.extension.update({
@@ -75,6 +91,7 @@ export class ExtensionsService {
           ...(number !== undefined && { number }),
           ...(dto.name !== undefined && { name: dto.name.trim() }),
           ...(dto.tenantId !== undefined && { tenantId: dto.tenantId }),
+          ...(dto.flowId !== undefined && { flowId }),
           ...(dto.enabled !== undefined && { enabled: dto.enabled }),
         },
         select: EXTENSION_SELECT,
@@ -112,6 +129,21 @@ export class ExtensionsService {
       throw new ConflictException({
         message: 'Ese número es el interno de una persona (usuario): la central comparte la numeración',
         field: 'number',
+      });
+    }
+  }
+
+  /** Flujo propio del interno [DA8, paso 1]: de voz, activo y asignado a la empresa del interno. */
+  private async assertFlowFits(flowId: string | null, tenantId: string) {
+    if (!flowId) return;
+    const flow = await this.prisma.flow.findFirst({
+      where: { id: flowId, channel: 'voice', isActive: true, tenantFlows: { some: { tenantId } } },
+      select: { id: true },
+    });
+    if (!flow) {
+      throw new BadRequestException({
+        message: 'El flujo del interno tiene que ser un flujo de voz activo asignado a la empresa del interno',
+        field: 'flowId',
       });
     }
   }
