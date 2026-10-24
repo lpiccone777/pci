@@ -342,24 +342,61 @@ motor (menú verbalizado, `delegate`) y el prompt de voz (C50).
   - `end` sigue siendo "colgar" (`hangup`).
 - [ ] **Tests:** e2e por `voice.turn` de cada modo y nodo, sin LLM real (FakeLlm).
 
-### H4c — Identificación por voz
+### H4c — Identificación por voz (replanteado, 2026-10-24) — EN ESPERA de un dato
 
-- [ ] **Datos (migración):** hoy pci no tiene DNI ni legajo.
-  - `User.dni String? @unique`: se libera en la baja, como `phone`.
-  - `UserTenant.legajo String?` con `@@unique([tenantId, legajo])`: el legajo es por empresa.
-  - Se cargan en el alta y edición de usuarios y en la carga masiva.
-- [ ] **Nodo *Identificar por voz*** (`voice_identify`), configurable con `idField: dni | legajo` e
-  `intentos` (default 2):
-  1. pide el documento: se sacan los dígitos del texto (o el alfanumérico, si es legajo) y se
-     busca en el tenant del interno;
-  2. pide nombre y apellido: comparación aproximada sin tildes ni mayúsculas, por similitud, con un
-     umbral, porque el STT se equivoca en letras.
-  - Salidas: `reconocido` / `no reconocido`, como `start` con `known`/`unknown`.
-  - Al reconocer: completa `Conversation.userId`, carga la identidad (rol de la membresía) y las
-    variables de usuario de `flowState`, igual que `start` con un conocido.
-  - Desde ahí `ticket_create` y `transfer_agent` funcionan, porque ya hay usuario.
-  - Determinístico: sin LLM de pci.
-- [ ] **Tests:** e2e reconocido / no reconocido / segundo intento / documento de otro tenant.
+El usuario decidió que el DNI y el legajo **no se cargan en pci**: salen de InvGate, que ya trae
+el dato en el usuario, o de la fuente de verdad de la empresa (MCP/n8n). Por eso H4c no lleva
+migración ni toca el ABM de usuarios.
+
+**Qué hay hoy en el código.** `InvgateService` busca usuarios con `users.by` por `phones`,
+`username` o `email`, y con `user?id=`. `InvgateUser` solo tipa `id`, `username` y `email`; el
+resto llega como `[key: string]: unknown`. En ningún lugar del repo figura el nombre del campo del
+DNI o del legajo, ni si `users.by` puede filtrar por él. Hace falta **una consulta de solo lectura
+a la instancia**, que autoriza el usuario y que se describe abajo.
+
+**Diseño del nodo `voice_identify`.** Es determinístico: no usa el LLM de pci.
+
+- [ ] **Configuración del nodo:**
+  - `origen`: `invgate` | `fuente de verdad`;
+  - `campo`: el campo de InvGate que tiene el documento (con InvGate);
+  - `pregunta`: texto en modo literal o guided;
+  - `intentos`: 2 por defecto.
+- [ ] **Paso 1, documento:** se normaliza lo que dijo la persona, dejando solo los dígitos (o el
+  alfanumérico en mayúsculas si es legajo), y se busca.
+  - **InvGate:** si `users.by` filtra por ese campo, una sola llamada por intento.
+  - **Si no filtra:** índice en memoria `documento → usuario de InvGate`, armado con el listado
+    paginado de usuarios y refrescado cada N minutos (clave nueva, 15 por defecto). Así la llamada
+    no paga la latencia del listado. Se mide el costo del refresco.
+  - **Fuente de verdad:** un RPC por broker hacia la fuente de la empresa. El contrato propuesto
+    es `context-source.identify`: `{documento}` → `{nombre, apellido, email}` o `null`. Para MCP es
+    una tool configurada en la fuente; para n8n, un webhook. Se hace después del caso InvGate.
+- [ ] **Paso 2, nombre y apellido:**
+  - se comparan con los del usuario encontrado, sin tildes ni mayúsculas y por similitud, con un
+    umbral, porque el STT se equivoca en letras;
+  - un error de documento o de nombre gasta un intento, y la segunda falla sale por
+    `no reconocido`.
+- [ ] **Cruce con pci:**
+  - por **email**: el `User` activo de pci con ese email y membresía en el tenant del interno;
+  - si existe, sale por `reconocido`: completa `Conversation.userId` y la identidad del turno (rol
+    de la membresía) y carga las variables de usuario, como `start` con un conocido.
+- [ ] **Está en InvGate pero no en pci** (para decidir):
+  - **(a) Recomendada:** sale por `no reconocido` con
+    `flowState.identifiedExternal = {nombre, apellido, email, invgateId}`. Respeta "no hablamos
+    con desconocidos" y no crea un `User` fantasma. Si hace falta, en otra etapa `ticket_create`
+    puede usar ese `invgateId` como cliente de InvGate sin un usuario de pci.
+  - **(b)** Una tercera salida, `solo en InvGate`, para que el flujo decida qué hacer.
+  - **(c)** Crear el `User` en pci. No se recomienda: es exactamente lo que se eliminó con "no
+    hablamos con desconocidos".
+- [ ] **Tests:** InvGate falso (mock del `fetch` del servicio, como `invgate.e2e-spec.ts`) con
+  reconocido, documento mal, nombre aproximado, segundo intento, existe solo en InvGate y persona de
+  otro tenant.
+
+**Consulta de solo lectura que hace falta, a autorizar:** traer **un** usuario conocido y
+mirar **solo los nombres de los campos**, no los valores. Por ejemplo, el usuario técnico
+(`INVGATE_API_USER`), que ya se consulta en cada ticket:
+`GET {INVGATE_URL}/users.by?username=<INVGATE_API_USER>&exact_match=true`, con la misma auth del
+servicio. Sirve para saber cómo se llama el campo del DNI o del legajo. Para saber si `users.by`
+filtra por él, una segunda consulta con ese campo y un valor conocido que dé el usuario.
 
 ### H4d — LLM de voz por proveedor [DA10, C53] ✅
 
