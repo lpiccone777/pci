@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ⏳ H3–H5. Contrato vigente: **1.6**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · 🔄 H3 (plan) · ⏳ H4–H5. Contrato vigente: **1.7**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -106,30 +106,137 @@ levantada; los internos 201 y 202 llegan al voicebot en la config v7.
 
 ## H3 — Canal de voz en el motor
 
-- [ ] **Consumir `voice.events`** (contrato §5.1):
-  - `call.started` abre una `Conversation` con `channel: "voice"` y `externalId: callId`, y resuelve
-    tenant y flujo por el interno. Desde C45, `call.started` y `voice.turn` siempre traen `extension`
-    (nunca `null`): no hay camino "sin interno".
-  - `call.ended` la cierra.
-  - `turn.spoken` guarda como mensaje del bot **lo que se oyó**, no lo generado.
-- [ ] **RPC `voice.turn`** (contrato §5.2):
-  - Mismo patrón que `whatsapp.simulate.incoming`: responder por `replyTo` con `correlationId`.
-  - `kind: "start"` corre desde el nodo `start`.
-- [ ] **Identidad** (DA5, D13 sin profundizar):
-  - Hoy `handleMessage` rechaza a quien no tiene membresía por teléfono.
-  - Para voz hace falta un camino que no dependa del teléfono: la llamada pertenece al tenant del
-    interno y el usuario se identifica después.
-  - **No implementar hasta resolver DA5**; dejar el punto de extensión.
-- [ ] **Capacidades del canal**: introducir la noción de canal en el motor para que `voice` nunca
-  arme `WhatsAppInteractive`. `formatInteractiveAsText` es el precedente.
-- [ ] **Snapshot por turno** para `supersedes`, según DA1.
-- [ ] Sin flujo de voz asignado, responder con `delegate` (charla libre con la fuente de verdad),
-  sin llamar a `LlmService` en el camino del turno.
+Contrato 1.7 (C47): DA5+DA14, DA8+DA15 y DA11 decididas. Plan revisado el 2026-10-24, **antes de
+codear**. La migración la aplica el usuario (el pedido pasa por el coordinador).
+
+Módulo nuevo `modules/voice/`. `ConversationsService` ya tiene 3100 líneas, así que la voz no se
+suma ahí:
+- `VoiceTurnsService` maneja el broker de voz, el lock por llamada, la idempotencia, los snapshots y
+  el armado de `actions`.
+- El motor (`executeFlow`/`executeNode`) se reusa con un parámetro de **canal**. No se duplica.
+
+### Modelo (una migración)
+
+- [ ] `Conversation.userId` nullable [DA5+DA14]. La regla "sin usuario solo en `voice`" vive en el
+  código, porque Prisma no tiene CHECK. Hay que auditar las lecturas de `conversation.user`.
+- [ ] `Flow.channel` (`text` | `voice`, default `text`) [D10, DA8]. De H4 se adelantan el schema y
+  la resolución; el editor sigue en H4. Los flujos existentes quedan `text`.
+- [ ] `VoiceCall` (una fila por llamada, id = `callId`):
+  - `conversationId`, `extensionId`, `tenantId`;
+  - `callerNumber`, la pista de DA14, sin identificar a nadie;
+  - `calledNumber`, `direction`, `startedAt`, `endedAt`, `endReason`, `lastSpoken`;
+  - el lease del turno: `turnLockToken`, `turnLockUntil`.
+- [ ] `VoiceTurn` (una fila por `turnId`, único):
+  - `callId`, `kind`, `text`;
+  - la respuesta enviada (Json), `committed`, `superseded`;
+  - el snapshot previo: `currentFlowId`, `currentNodeId`, `flowState`;
+  - los ids de los `Message` del usuario y del bot.
+  - De esta tabla salen la idempotencia, `supersedes` y `previous`.
+
+### Resolución del flujo [DA8+DA15]
+
+- [ ] Orden:
+  1. `Extension.flowId`, si el flujo está activo, es `voice` y está asignado al tenant del interno.
+  2. Si no, el flujo de voz de inicio del tenant (`TenantFlow.isStart` y `channel = voice`). Sin
+     filtro de rol, porque todavía no hay usuario.
+  3. Si no hay ninguno, charla libre (`delegate`).
+- [ ] **Nunca** el `isDefault` global ni un flujo de otro tenant. Texto sigue como hoy: `isDefault`
+  queda solo para texto.
+- [ ] Feriado y guardia, como en texto: `resolveStatus(tenantId, null, ahora)` más `FlowAlternative`.
+- [ ] La invariante "un flujo de inicio por tenant" pasa a ser **por canal**
+  (`applyTenantAssignment`).
+
+### `voice.events` [§5.2]
+
+- [ ] `call.started` abre `VoiceCall` y `Conversation` (`channel: voice`, `externalId: callId`,
+  `userId: null`). Es idempotente por `callId` y no depende del orden con `kind: start`.
+- [ ] `call.ended`:
+  - cierra la conversación;
+  - guarda `endedAt`, `reason` y `lastSpoken`;
+  - reemplaza el mensaje del bot de ese turno por `heardText`.
+- [ ] Una conversación de voz no se retoma: cada llamada abre una nueva.
+
+### RPC `voice.turn` [§5.3]
+
+- [ ] Responde por `replyTo` (`assert: false`) con `pattern: "voice.turn.reply"` y el mismo
+  `correlationId`.
+- [ ] **Siempre responde.** Ante una falla devuelve
+  `{error: "<código>", actions: [], awaitInput: true, committed: false}` [C7, C28].
+- [ ] **Serialización por `callId`** [C4]:
+  - dentro del proceso, una cola en memoria por llamada;
+  - entre instancias, un lease en `VoiceCall`: `UPDATE … WHERE turnLockUntil < now()` atómico, con
+    reintento corto y vencimiento por si el proceso se cae;
+  - no alcanza con `prisma.$transaction`, porque el motor escribe la misma fila por fuera.
+- [ ] **Idempotencia** [C27]: un `turnId` ya procesado devuelve la respuesta guardada sin volver a
+  correr el flujo.
+- [ ] `previous` reemplaza el texto del mensaje del bot de ese turno por lo que se oyó.
+- [ ] `supersedes` [DA1]:
+  - si el turno abortado no fue `committed`: restaura su snapshot, borra sus mensajes, lo marca
+    `superseded` y responde con `superseded: true`;
+  - si fue `committed`: ignora el `supersedes` (`superseded: false`).
+- [ ] `kind`:
+  - `start`: corre desde `start` hasta el primer `waitForInput`;
+  - `user`: guarda el texto y sigue;
+  - `continue`: sigue sin texto.
+- [ ] Armado de `actions`:
+  - el texto de cada nodo, `say literal`;
+  - el nodo `end`, `hangup`;
+  - `llm_query` en modo charla, o la falta de flujo: `say delegate` con
+    `systemPrompt = buildBasePrompt(skill del flujo)`.
+  - `guided` llega en H4, con el modo de habla por nodo.
+- [ ] `committed` es `true` si el tramo ejecutó `ticket_create`, `sms`, `transfer_agent`, `webhook`
+  o `end`/`hangup`.
+
+### Capacidades del canal en el motor
+
+- [ ] Por `voice` nunca se arma `WhatsAppInteractive`. El `menu` se verbaliza: las opciones van en
+  el texto, como en `formatInteractiveAsText`.
+- [ ] El nodo `start` corre sin usuario: `isKnownUser = false`, sale por `unknown` y deja
+  `callerNumber` en `flowState`.
+- [ ] Por `voice`, `llm_query` en modo charla **no llama a `LlmService`**: devuelve `delegate`.
+- [ ] Por voz no corre el clasificador por LLM de "¿quiere cerrar la charla?": para eso está colgar.
+- [ ] Nodos no disponibles por voz: `notification`, `ticket_query`, `device_validation` y `delay`.
+  Si un flujo llega a uno, se loguea y se sigue por su arista. En H4 el editor no los ofrece.
+
+### Catálogo [C47]
+
+- [ ] Grupo nuevo *Voicebot → pci no disponible* (`sections: ["pci-no-disponible"]`), consumidor
+  voicebot, en caliente:
+  - `VOICEBOT_PCI_DOWN_TEXT`, con el default del contrato;
+  - `VOICEBOT_MAX_TURN_FAILURES`, entero ≥ 1, default 2.
+- [ ] Alinear el default de `VOICEBOT_FALLBACK_TEXT` a "Perdón, no te entendí bien. ¿Me lo
+  repetís?".
+
+### Presupuesto y tests [§5.5]
+
+- [ ] Medir y loguear la duración de cada turno. Un e2e corre N turnos de un flujo literal y
+  verifica **p95 < 300 ms**.
+- [ ] e2e por broker real:
+  - `start` y `call.started` en los dos órdenes;
+  - idempotencia por `turnId`;
+  - `previous` y `call.ended` con `heardText`;
+  - `supersedes` con y sin `committed`;
+  - los tres casos de DA8, incluido que nunca use el `isDefault` global ni un flujo de otro tenant;
+  - error con un interno inexistente o deshabilitado;
+  - serialización de dos turnos concurrentes de la misma llamada.
+
+### Fuera de H3 (anotado)
+
+- **Identificación por voz (D13):** H4 o después. Hasta entonces, `ticket_create` sin usuario no
+  puede resolver el cliente de InvGate: responde con un error de flujo legible y no rompe la
+  llamada.
+- **Fuera del presupuesto de 300 ms**, porque usan el LLM de pci: `llm_query` en modo extracción, el
+  desempate por LLM de `menu` y la detección de cancelación de `input`. Se miden; por voz pasan a
+  `guided`/`delegate` en H4.
+- **Fuente de verdad del flujo en `delegate` (`context`):** H4, cuando se fije el tope de tamaño.
+- **Prompt "del tenant" (DA8, caso 3):** hoy no existe un prompt por tenant. `LLM_SYSTEM_PROMPT` es
+  global y los Skills cuelgan de un flujo. Sin flujo, `delegate` usa el prompt global. Un prompt
+  de voz por tenant, si hace falta, se decide aparte.
 
 ## H4 — Flujos de voz
 
-- [ ] **`Flow.channel`** (`text` | `voice`, default `text`, D10) con migración; los flujos
-  existentes quedan `text`.
+- [ ] **`Flow.channel`** (`text` | `voice`, default `text`, D10): el schema y la resolución se
+  adelantan a H3 (DA8); acá queda la UI para elegir el canal y marcar el flujo de voz de inicio.
   - `findActiveFlowForTenant` y `TenantFlow.isStart` filtran por canal: un tenant tiene un flujo de
     inicio por canal. Revisar la invariante en `FlowService.applyTenantAssignment`.
   - Las variantes feriado/guardia heredan el canal del flujo base.
