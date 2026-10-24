@@ -63,6 +63,23 @@ export const VOICEBOT_SECTION_IDS: Record<VoicebotSettingGroup, string> = {
 
 const ENABLED_BY = 'VOICEBOT_ENABLED';
 
+/**
+ * Prompt base de pci para la charla por voz [C50]: el `systemPrompt` de cada `say delegate`
+ * (charla libre sin flujo y `llm_query` de los flujos de voz) parte de acá en vez de
+ * `LLM_SYSTEM_PROMPT`, que es del chat (menú, "cerrar la conversación"). `{{empresa}}` = nombre
+ * del tenant del interno. Lo exporta para el motor (`ConversationsService`) como fallback.
+ */
+export const VOICEBOT_FREE_CHAT_PROMPT_DEFAULT = [
+  'Estás atendiendo por teléfono a una persona que llamó a {{empresa}}. Por ahora esta línea es solo ' +
+    'para conversar: podés escuchar, orientar y responder dudas generales con lo que sabés.',
+  'No podés registrar reclamos, crear ni consultar tickets, transferir la llamada ni hacer ningún ' +
+    'trámite o gestión. Nunca digas que registraste, hiciste o vas a hacer algo de eso. Si la persona ' +
+    'lo pide, decile con claridad que por ahora ese trámite no se puede hacer por teléfono.',
+  'No hay menú ni opciones para elegir, y no ofrezcas "cerrar la conversación" ni "volver al menú": ' +
+    'la llamada termina cuando la persona corta.',
+  'Si no sabés algo, decilo. No inventes datos, números de ticket ni plazos.',
+].join('\n');
+
 /** Toda clave del voicebot salvo el interruptor general y los tokens depende del interruptor. */
 function gated(def: SettingDefinition): SettingDefinition {
   return { enabledBy: ENABLED_BY, ...def };
@@ -546,6 +563,20 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     description:
       'Cómo hablar (corto, sin formato). Vacío = el prompt por defecto del voicebot. El prompt de ' +
       'pci (de qué hablar) se le suma en los turnos delegados.',
+  }),
+
+  // Sin `envNames`: no es config del voicebot, viaja dentro de cada `say delegate` [C50].
+  gated({
+    key: 'VOICEBOT_FREE_CHAT_PROMPT',
+    type: 'string',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Prompt de pci para la charla por voz',
+    defaultValue: VOICEBOT_FREE_CHAT_PROMPT_DEFAULT,
+    multiline: true,
+    description:
+      'De qué hablar por teléfono: reemplaza al prompt del chat (LLM_SYSTEM_PROMPT) en la charla libre ' +
+      'y en los llm_query de los flujos de voz; el Skill y el prompt del nodo se suman. {{empresa}} = ' +
+      'la empresa del interno. Vacío = este texto por defecto. El chat no cambia.',
   }),
 
   // --- Conversación ---

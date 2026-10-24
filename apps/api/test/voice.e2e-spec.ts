@@ -31,11 +31,15 @@ import {
   llmQueryNode,
   ticketCreateNode,
   edge,
+  createSkill,
+  setSetting,
+  deleteSetting,
 } from './support';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
 import { LlmService } from '../src/modules/llm/llm.service';
 import { FlowService } from '../src/modules/flow/flow.service';
-import { ConversationsService } from '../src/modules/conversations/conversations.service';
+import { IntegrationsConfigService } from '../src/modules/integrations/integrations-config.service';
+import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../src/modules/settings/voicebot-settings.catalog';
 
 type Reply = {
   v: number;
@@ -354,8 +358,11 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
 
       const callId = uid();
       const r = await start(callId, ext);
-      const prompt = await t.moduleRef.get(ConversationsService).voiceFreeChatPrompt();
+      // Prompt de voz de pci con la empresa [C50]: nunca el del chat (menú, "cerrar la conversación").
+      const prompt = VOICEBOT_FREE_CHAT_PROMPT_DEFAULT.replaceAll('{{empresa}}', lonely.name);
       expect(r.actions).toEqual([{ type: 'say', mode: 'delegate', systemPrompt: prompt }]);
+      expect(prompt).toContain(`llamó a ${lonely.name}.`);
+      expect(prompt).toContain('No podés registrar reclamos');
       expect(r).toMatchObject({ awaitInput: true, committed: false, error: null });
 
       const next = await turn({ callId, turnId: uid(), kind: 'user', text: 'tengo un problema', call: callInfo(ext) });
@@ -413,6 +420,59 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(literals(r)[1]).toBe('¿Algo más?');
       expect(r).toMatchObject({ committed: false, awaitInput: true, error: null });
       expect(await t.prisma.ticket.count({ where: { tenantId: tenant.id } })).toBe(0);
+    });
+  });
+
+  describe('Prompt de la charla por voz [C50]', () => {
+    it('BE-VOZ-18: llm_query de un flujo de voz parte del prompt de voz (+ Skill + nodo en append), no del del chat', async () => {
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-prompt') });
+      const skill = await createSkill(t.prisma, { tenantId: tenant.id, name: 'impresoras', promptText: 'Glosario de impresoras.' });
+      await createFlow(t.prisma, {
+        name: 'voz charla',
+        channel: 'voice',
+        skillId: skill.id,
+        nodes: [
+          startNode('start', { noGreeting: true }),
+          llmQueryNode('charla', { systemPrompt: 'Hablá de impresoras.', systemPromptMode: 'append' }),
+        ],
+        edges: [edge('start', 'charla')],
+        assign: [{ tenantId: tenant.id, isStart: true }],
+      });
+      const ext = extNumber();
+      await t.prisma.extension.create({ data: { number: ext, name: 'prompt', tenantId: tenant.id } });
+
+      const r = await start(uid(), ext);
+      expect(r.actions).toEqual([
+        {
+          type: 'say',
+          mode: 'delegate',
+          systemPrompt: [
+            VOICEBOT_FREE_CHAT_PROMPT_DEFAULT.replaceAll('{{empresa}}', tenant.name),
+            'Glosario de impresoras.',
+            'Hablá de impresoras.',
+          ].join('\n\n'),
+        },
+      ]);
+      expect(llm.calls).toHaveLength(0);
+    });
+
+    it('BE-VOZ-19: VOICEBOT_FREE_CHAT_PROMPT configurado reemplaza al default, con {{empresa}}; no viaja en la config del voicebot', async () => {
+      await setSetting(t.prisma, 'VOICEBOT_FREE_CHAT_PROMPT', 'Sos la línea de {{empresa}}. Solo conversás.');
+      try {
+        const tenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-config') });
+        const ext = extNumber();
+        await t.prisma.extension.create({ data: { number: ext, name: 'config', tenantId: tenant.id } });
+        const r = await start(uid(), ext);
+        expect(r.actions).toEqual([
+          { type: 'say', mode: 'delegate', systemPrompt: `Sos la línea de ${tenant.name}. Solo conversás.` },
+        ]);
+
+        const config = await t.moduleRef.get(IntegrationsConfigService).voicebotConfig();
+        expect(Object.keys(config.settings)).not.toContain('VOICEBOT_FREE_CHAT_PROMPT');
+        expect(Object.keys(config.settings)).not.toContain('FREE_CHAT_PROMPT');
+      } finally {
+        await deleteSetting(t.prisma, 'VOICEBOT_FREE_CHAT_PROMPT');
+      }
     });
   });
 

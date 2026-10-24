@@ -239,9 +239,14 @@ suma ahí:
   desempate por LLM de `menu` y la detección de cancelación de `input`. Se miden; por voz pasan a
   `guided`/`delegate` en H4.
 - **Fuente de verdad del flujo en `delegate` (`context`):** H4, cuando se fije el tope de tamaño.
-- **Prompt "del tenant" (DA8, caso 3):** hoy no existe un prompt por tenant. `LLM_SYSTEM_PROMPT` es
-  global y los Skills cuelgan de un flujo. Decidido (coordinador, 2026-10-24): en H3 el `delegate`
-  sin flujo usa el prompt global de pci (+ Skill si hay flujo), sumado al de voz. Transitorio.
+- **Prompt de la charla por voz (C50, 2026-10-24, aprobado por el usuario):** en la prueba en vivo
+  el `delegate` sin flujo usaba `LLM_SYSTEM_PROMPT`, que es del chat ("volvé al menú", "cerrar la
+  conversación"), y el LLM prometía gestiones que no pasaban ("el reclamo quedó registrado"). Ahora
+  por voz la base es `VOICEBOT_FREE_CHAT_PROMPT` (global, *Voicebot → LLM de voz*, sin `envNames`:
+  viaja solo dentro del `delegate`), con `{{empresa}}` = tenant del interno: solo conversación, sin
+  trámites, y ante un pedido "por ahora no se puede por teléfono". Aplica a la charla libre y a los
+  `llm_query` de los flujos de voz (Skill y prompt del nodo se suman). El chat no cambia. Tests
+  BE-VOZ-13, 18 y 19.
 - **Para H4:** el usuario definió un nodo de identificación por voz (nombre, apellido, legajo/DNI)
   con salidas "reconocido" / "no reconocido", como el `start` de hoy. El motor ya corre sin usuario
   y `start` sale por `unknown`: ese nodo completa `Conversation.userId` y la `identity` del turno.

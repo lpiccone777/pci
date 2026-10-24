@@ -17,6 +17,7 @@ import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
 import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { createHash } from 'crypto';
+import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../settings/voicebot-settings.catalog';
 
 /**
  * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
@@ -332,9 +333,9 @@ export class ConversationsService implements OnModuleInit {
     return ran ? voice : null;
   }
 
-  /** Prompt de la charla libre por voz sin flujo: el global de pci (transitorio, C47 (a)). */
-  voiceFreeChatPrompt(): Promise<string> {
-    return this.buildBasePrompt(null);
+  /** Prompt de la charla libre por voz sin flujo: el de voz de pci con la empresa [C50]. */
+  voiceFreeChatPrompt(tenantId: string): Promise<string> {
+    return this.buildBasePrompt(null, tenantId);
   }
 
   /** Devuelve el texto con el que respondió el bot, para que `simulate` pueda mostrarlo. */
@@ -2146,7 +2147,7 @@ export class ConversationsService implements OnModuleInit {
             flowState.__awaiting = node.id;
           } else {
             if (channel === 'voice') {
-              return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText) }, waitForInput: true, flowState };
+              return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText, tenantId) }, waitForInput: true, flowState };
             }
             const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
             return { responseText, waitForInput: true, flowState };
@@ -2227,7 +2228,7 @@ export class ConversationsService implements OnModuleInit {
         delete flowState.__awaiting;
         flowState.__llmFallback = node.id;
         if (channel === 'voice') {
-          return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText) }, waitForInput: true, flowState };
+          return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText, tenantId) }, waitForInput: true, flowState };
         }
         const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
         return { responseText: fallbackResponse, waitForInput: true, flowState };
@@ -2593,7 +2594,7 @@ export class ConversationsService implements OnModuleInit {
         // llama a su LLM en el camino del turno. La fuente de verdad (`context`) se suma en H4.
         // El modo extracción sigue por acá (usa el LLM de pci, fuera del presupuesto de 300 ms).
         if (channel === 'voice' && !data.extractVariables?.length) {
-          return { delegate: { systemPrompt: await this.llmQuerySystemPrompt(data, flowState, skillPromptText) } };
+          return { delegate: { systemPrompt: await this.llmQuerySystemPrompt(data, flowState, skillPromptText, tenantId) } };
         }
         // `sessionStartedAt` acota el historial a la sesión actual — mismo criterio
         // que `orchestratorLlm` (ver ese comentario): si la charla se cerró y se
@@ -3136,20 +3137,34 @@ export class ConversationsService implements OnModuleInit {
     data: any,
     flowState: Record<string, any>,
     skillPromptText: string | null,
+    voiceTenantId?: string,
   ): Promise<string> {
-    const basePrompt = await this.buildBasePrompt(skillPromptText);
+    const basePrompt = await this.buildBasePrompt(skillPromptText, voiceTenantId);
     const nodePrompt = data.systemPrompt ? this.interpolate(data.systemPrompt, flowState) : '';
     return nodePrompt && data.systemPromptMode === 'append'
       ? [basePrompt, nodePrompt].filter(Boolean).join('\n\n')
       : nodePrompt || basePrompt;
   }
 
-  private async buildBasePrompt(skillPromptText: string | null): Promise<string> {
-    const settingsPrompt = await this.appConfig.get('LLM_SYSTEM_PROMPT', DEFAULT_SYSTEM_PROMPT);
+  /**
+   * Con `voiceTenantId` (canal voz, C50) la base es `VOICEBOT_FREE_CHAT_PROMPT` con `{{empresa}}`
+   * resuelto, no `LLM_SYSTEM_PROMPT`: ese es del chat y trae instrucciones que por teléfono no
+   * existen (menú, "cerrar la conversación"). El Skill se suma igual en los dos canales.
+   */
+  private async buildBasePrompt(skillPromptText: string | null, voiceTenantId?: string): Promise<string> {
+    const settingsPrompt = voiceTenantId
+      ? await this.voiceBasePrompt(voiceTenantId)
+      : await this.appConfig.get('LLM_SYSTEM_PROMPT', DEFAULT_SYSTEM_PROMPT);
     return [settingsPrompt, skillPromptText]
       .map((s) => s?.trim())
       .filter((s): s is string => !!s)
       .join('\n\n');
+  }
+
+  private async voiceBasePrompt(tenantId: string): Promise<string> {
+    const configured = (await this.appConfig.get('VOICEBOT_FREE_CHAT_PROMPT'))?.trim();
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
+    return (configured || VOICEBOT_FREE_CHAT_PROMPT_DEFAULT).replaceAll('{{empresa}}', tenant?.name ?? 'la empresa');
   }
 
   /**

@@ -1489,7 +1489,8 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   (idempotencia por `turnId`, snapshot para `supersedes`, lease por llamada), `Flow.channel` y el
   flujo de la llamada por interno (DA8, nunca el `isDefault` global). El motor corre con canal
   `voice`: menú verbalizado, `llm_query` en charla → `delegate`. Grupo *Voicebot → pci no
-  disponible*. 17 e2e, p95 ≈ 100 ms. Falta la prueba integrada con el voicebot.
+  disponible*. 17 e2e, p95 ≈ 100 ms. C50: la charla por voz usa su propio prompt
+  (`VOICEBOT_FREE_CHAT_PROMPT`, solo conversación, sin trámites), no el del chat.
 - ⏳ **H4 — Flujos de voz** (`Flow.channel`, editor, motor).
 - ⏳ **H5 — Salientes y "probar conexión"**.
 

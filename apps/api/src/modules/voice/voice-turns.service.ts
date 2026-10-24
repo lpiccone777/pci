@@ -164,7 +164,7 @@ export class VoiceTurnsService implements OnModuleInit {
         startFlow ?? undefined,
       );
       const flowOutput = output ?? {
-        actions: [{ type: 'say' as const, mode: 'delegate' as const, systemPrompt: await this.conversations.voiceFreeChatPrompt() }],
+        actions: [{ type: 'say' as const, mode: 'delegate' as const, systemPrompt: await this.conversations.voiceFreeChatPrompt(call.tenantId) }],
         committed: false,
         ended: false,
       };
