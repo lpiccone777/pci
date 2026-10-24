@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · 🔄 H3 · ⏳ H4–H5. Contrato vigente: **1.9**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · 🔄 H3 · ⏳ H4–H5. Contrato vigente: **1.11**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -111,7 +111,9 @@ Contrato 1.7 (C47): DA5+DA14, DA8+DA15 y DA11 decididas. Plan aprobado por el co
 `modules/voice/`, canal `voice` en el motor y 17 e2e (BE-VOZ-01..17, p95 ≈ 100 ms). Falta la prueba
 integrada con el voicebot real, que coordina el coordinador (hay que compilar las dos APIs).
 
-Del contrato 1.8 (C48) para pci: `call.started` llega ≈2 s después del `start` con la entrada real
+Del contrato 1.8 (C48) para pci: `call.started` llegaba ≈2 s después del `start` (desde 1.11, C51,
+los dos llegan al atender; `SIP_INBOUND_GREET_DELAY_MS` pasa a ser el mínimo entre atender y el
+primer audio), con la entrada real
 (`startedAt` se toma de ahí); con `guided`/`delegate` en `start`/`continue` el voicebot agrega un
 turno de usuario de marca ("(Atendiste la llamada.)", "(Seguí.)"), a tener en cuenta al escribir la
 `instruction` del nodo de inicio en H4; relleno: `VOICEBOT_FILLER_AFTER_MS=0` = sin relleno (un

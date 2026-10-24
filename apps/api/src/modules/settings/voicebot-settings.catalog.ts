@@ -759,11 +759,13 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     key: 'VOICEBOT_SIP_INBOUND_GREET_DELAY_MS',
     type: 'number',
     group: 'Mensajería: Voicebot (SIP entrante)',
-    label: 'Espera antes del saludo (ms)',
+    label: 'Mínimo antes del primer audio (ms)',
     defaultValue: '2000',
     min: 0,
     max: 10000,
-    description: 'Para que no se pierda el principio mientras se arma el audio.',
+    description:
+      'Mínimo, en ms, entre atender la llamada y el primer audio del bot. Con pci, el pedido del saludo ' +
+      'sale al atender; sin pci, es la espera antes del saludo local.',
   }),
 
   // --- SIP saliente --- (caliente: actualiza el trunk existente)
