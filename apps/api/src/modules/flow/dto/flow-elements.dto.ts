@@ -202,6 +202,29 @@ export class FlowNodeDataDto {
   @IsOptional()
   maxAttempts?: number;
 
+  /**
+   * Flujos de voz: cómo se dice el texto del nodo (contrato §5.4). `literal` (default) = texto
+   * exacto; `guided` = el texto es la instrucción para el LLM de voz, con sus `{{variables}}`.
+   */
+  @IsString()
+  @IsOptional()
+  speechMode?: string;
+
+  /** Nodo `transfer_extension`: interno fijo al que transferir (admite `{{variable}}`). */
+  @IsString()
+  @IsOptional()
+  extension?: string;
+
+  /** Nodo `transfer_extension`: persona a cuyo interno (`User.internalPhone`) transferir. */
+  @IsString()
+  @IsOptional()
+  targetUserId?: string;
+
+  /** Nodo `transfer_extension`: qué se dice si no hay interno válido (el flujo sigue). */
+  @IsString()
+  @IsOptional()
+  failText?: string;
+
   /** Nodo `voice_identify`: qué se le pide a la persona, `documento` (default) o `legajo`. */
   @IsString()
   @IsOptional()

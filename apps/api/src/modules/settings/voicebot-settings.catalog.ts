@@ -660,6 +660,32 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       'hablar) se le suma en los turnos delegados.',
   }),
 
+  // Tope del `context` de cada `delegate` [C54]: lo aplica pci al armarlo, no viaja al voicebot.
+  gated({
+    key: 'VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Tope del contexto de la charla (caracteres)',
+    defaultValue: '16000',
+    min: 0,
+    max: 32000,
+    integer: true,
+    description:
+      'Cuánto de la fuente de verdad del flujo se le pasa al LLM de voz en la charla libre. Medido con ' +
+      'MiniMax-M3: hasta 32.000 suma ~0,1 s. Lo que sobra se recorta (y se loguea).',
+  }),
+  gated({
+    key: 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (LLM de voz)',
+    label: 'Espera de la fuente de verdad (ms)',
+    defaultValue: '1500',
+    min: 100,
+    max: 10000,
+    integer: true,
+    description: 'Si la fuente no responde en este tiempo, la charla sigue sin contexto: el turno no espera más.',
+  }),
+
   // Sin `envNames`: no es config del voicebot, viaja dentro de cada `say delegate` [C50].
   gated({
     key: 'VOICEBOT_FREE_CHAT_PROMPT',

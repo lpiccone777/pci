@@ -20,7 +20,13 @@ import {
 import '@xyflow/react/dist/style.css';
 import { apiFetch } from '@/lib/api';
 import { SYSTEM_TENANT_ID_KEY } from '@/lib/system-tenant';
-import { FLOW_CHANNELS, FlowChannel, TEXT_UNSUPPORTED_NODES, VOICE_UNSUPPORTED_NODES } from '@/lib/flow-channel';
+import {
+  FLOW_CHANNELS,
+  FlowChannel,
+  SPEECH_MODE_NODES,
+  TEXT_UNSUPPORTED_NODES,
+  VOICE_UNSUPPORTED_NODES,
+} from '@/lib/flow-channel';
 import {
   StartNode,
   MessageNode,
@@ -40,6 +46,7 @@ import {
   DeviceValidationNode,
   NotificationNode,
   VoiceIdentifyNode,
+  TransferExtensionNode,
 } from '@/components/flow-nodes';
 import { DeletableEdge } from '@/components/flow-edges';
 
@@ -126,6 +133,7 @@ const customNodeTypes = {
   device_validation: DeviceValidationNode,
   notification: NotificationNode,
   voice_identify: VoiceIdentifyNode,
+  transfer_extension: TransferExtensionNode,
 };
 
 const customEdgeTypes = {
@@ -151,6 +159,7 @@ const nodeTypeList = [
   { type: 'device_validation', label: 'Validar Dispositivo', color: '#0ea5e9' },
   { type: 'notification', label: 'Notificación', color: '#eab308' },
   { type: 'voice_identify', label: 'Identificar por voz', color: '#0d9488' },
+  { type: 'transfer_extension', label: 'Transferir a interno', color: '#7c3aed' },
 ];
 
 function FlowEditorInner({ channel }: { channel: FlowChannel }) {
@@ -718,6 +727,8 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
         return { text: 'Ingrese su respuesta:', variableName: '' };
       case 'voice_identify':
         return { idLabel: 'documento', idField: 'employee_number', maxAttempts: 2 };
+      case 'transfer_extension':
+        return { extension: '' };
       case 'condition':
         return { compareVariable: '', compareOperator: 'equals', compareValue: '' };
       case 'ticket_create':
@@ -1106,6 +1117,7 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
               invgatePriorities={invgatePriorities}
               invgateTypes={invgateTypes}
               invgateConfigured={invgateConfigured}
+              channel={channel}
             />
             <button
               onClick={() => {
@@ -1540,6 +1552,7 @@ function NodeProperties({
   invgatePriorities,
   invgateTypes,
   invgateConfigured,
+  channel,
 }: {
   node: Node;
   onUpdate: (key: string, value: any) => void;
@@ -1550,12 +1563,39 @@ function NodeProperties({
   invgateTypes: InvgateCatalogOption[];
   /** `GET /features`: si InvGate tiene URL, usuario y key efectivos (para el aviso del nodo de identificación). */
   invgateConfigured: boolean;
+  channel: FlowChannel;
 }) {
   const { type } = node;
   const data = (node.data || {}) as Record<string, any>;
 
   return (
     <div className="space-y-4">
+      {/* Modo de habla (solo flujos de voz, contrato §5.4): literal = el texto tal cual por TTS;
+          guided = el texto es la instrucción para el LLM de voz, que lo dice natural. */}
+      {channel === 'voice' && SPEECH_MODE_NODES.has(type ?? '') && (
+        <div>
+          <label className="block text-sm font-medium mb-1" htmlFor="speech-mode">
+            Cómo se dice
+          </label>
+          <select
+            id="speech-mode"
+            value={data.speechMode === 'guided' ? 'guided' : 'literal'}
+            onChange={(e) => onUpdate('speechMode', e.target.value)}
+            className="w-full border rounded p-2 text-sm"
+          >
+            <option value="literal">Literal: el texto exacto</option>
+            <option value="guided">Guiado: el texto es una instrucción para el LLM de voz</option>
+          </select>
+          {data.speechMode === 'guided' && (
+            <p className="text-xs text-gray-400 mt-1">
+              Escribí qué tiene que comunicar (p. ej. “Pedile que describa el problema en una frase”). Las{' '}
+              <code>{'{{variables}}'}</code> que uses viajan como datos.
+              {type === 'start' && ' En el inicio, el voicebot le avisa al LLM que acaba de atender la llamada.'}
+            </p>
+          )}
+        </div>
+      )}
+
       {type === 'start' && (
         <>
           <div>
@@ -1748,6 +1788,62 @@ function NodeProperties({
                 </p>
               )}
             </div>
+          </div>
+        </>
+      )}
+
+      {type === 'transfer_extension' && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1" htmlFor="transfer-extension">
+              Interno
+            </label>
+            <input
+              id="transfer-extension"
+              value={data.extension || ''}
+              onChange={(e) => onUpdate('extension', e.target.value)}
+              placeholder="305"
+              className="w-full border rounded p-2 text-sm font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1" htmlFor="transfer-user">
+              …o el interno de una persona
+            </label>
+            <select
+              id="transfer-user"
+              value={data.targetUserId || ''}
+              onChange={(e) => onUpdate('targetUserId', e.target.value || undefined)}
+              className="w-full border rounded p-2 text-sm"
+            >
+              <option value="">(ninguna)</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {userLabel(u)}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-400 mt-1">Si hay un interno fijo, gana ese. El de la persona es su interno en Usuarios.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Antes de transferir dice</label>
+            <textarea
+              value={data.text || ''}
+              onChange={(e) => onUpdate('text', e.target.value)}
+              placeholder="Te paso con la mesa de ayuda."
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Si no hay interno válido</label>
+            <textarea
+              value={data.failText || ''}
+              onChange={(e) => onUpdate('failText', e.target.value)}
+              placeholder="No pude transferirte en este momento."
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+            />
           </div>
         </>
       )}

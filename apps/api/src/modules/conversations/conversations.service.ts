@@ -20,6 +20,7 @@ import { createHash } from 'crypto';
 import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../settings/voicebot-settings.catalog';
 import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
 import { nameMatches, normalizeDocument } from '../voice/voice-identify.util';
+import { matchMenuOption } from '../voice/voice-menu.util';
 
 /**
  * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
@@ -153,7 +154,11 @@ interface NodeExecutionResult {
   interactive?: WhatsAppInteractive;
   flowState?: any;
   /** Solo por voz: charla libre a cargo del LLM de voz (contrato §5.4, `delegate`). */
-  delegate?: { systemPrompt: string };
+  delegate?: { systemPrompt: string; context?: string };
+  /** Solo por voz: lo que hay que comunicar, dicho por el LLM de voz (contrato §5.4, `guided`). */
+  guided?: { instruction: string; facts?: Record<string, string> };
+  /** Solo por voz: nodo *Transferir a interno* — el voicebot transfiere y la llamada termina para el bot. */
+  transferExtension?: string;
   /**
    * Nodo `voice_identify` reconoció a la persona: desde acá el tramo (y la conversación) sigue
    * con ese usuario y su rol en la empresa, como un `start` con un conocido.
@@ -174,8 +179,10 @@ export type { FlowChannel };
 /** Acción de un turno de voz (contrato §5.3/§5.4). `guided` llega en H4 con el modo de habla por nodo. */
 export type VoiceAction =
   | { type: 'say'; mode: 'literal'; text: string }
-  | { type: 'say'; mode: 'delegate'; systemPrompt: string }
-  | { type: 'hangup' };
+  | { type: 'say'; mode: 'guided'; instruction: string; facts: Record<string, string> }
+  | { type: 'say'; mode: 'delegate'; systemPrompt: string; context?: string }
+  | { type: 'hangup' }
+  | { type: 'transfer'; extension: string };
 
 /** Lo que junta `executeFlow` en un tramo de voz, en el orden en que se ejecutó. */
 export interface VoiceFlowOutput {
@@ -188,7 +195,20 @@ export interface VoiceFlowOutput {
 
 
 /** Nodos con efectos fuera de la conversación: el turno que los ejecuta es `committed`. */
-const COMMITTED_NODES = new Set(['ticket_create', 'sms', 'transfer_agent', 'webhook', 'end']);
+const COMMITTED_NODES = new Set(['ticket_create', 'sms', 'transfer_agent', 'webhook', 'end', 'transfer_extension']);
+
+/** Nodos que hablan y pueden elegir modo `literal` (default) o `guided` (`data.speechMode`, plan H4b). */
+const SPEECH_MODE_NODES = new Set(['start', 'message', 'menu', 'input', 'end', 'ticket_create', 'voice_identify']);
+
+/** Variables `{{x}}` que usa un texto, resueltas contra `flowState`: los `facts` de un `guided`. */
+function referencedFacts(text: string, flowState: Record<string, any>): Record<string, string> {
+  const facts: Record<string, string> = {};
+  for (const [, raw] of text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)) {
+    const value = flowState[raw];
+    if (value !== undefined && value !== null && value !== '') facts[raw] = String(value);
+  }
+  return facts;
+}
 
 /**
  * Nodos que necesitan a la persona identificada (el ticket va a su nombre). Por voz la llamada
@@ -850,9 +870,25 @@ export class ConversationsService implements OnModuleInit {
       if (result.responseText) responses.push(this.interpolate(result.responseText, flowState));
       if (run.voice) {
         if (result.responseText) {
-          run.voice.actions.push({ type: 'say', mode: 'literal', text: this.interpolate(result.responseText, flowState) });
+          const text = this.interpolate(result.responseText, flowState);
+          // Modo de habla por nodo (contrato §5.4): `guided` = el texto es la instrucción para el
+          // LLM de voz, con las variables que usa como `facts`; `literal` (default) = texto exacto.
+          if (node.data?.speechMode === 'guided' && SPEECH_MODE_NODES.has(node.type)) {
+            run.voice.actions.push({
+              type: 'say',
+              mode: 'guided',
+              instruction: text,
+              facts: referencedFacts(result.responseText, flowState),
+            });
+          } else {
+            run.voice.actions.push({ type: 'say', mode: 'literal', text });
+          }
+        }
+        if (result.guided) {
+          run.voice.actions.push({ type: 'say', mode: 'guided', instruction: result.guided.instruction, facts: result.guided.facts ?? {} });
         }
         if (result.delegate) run.voice.actions.push({ type: 'say', mode: 'delegate', ...result.delegate });
+        if (result.transferExtension) run.voice.actions.push({ type: 'transfer', extension: result.transferExtension });
       }
       if (result.interactive) {
         interactive = this.interpolateInteractive(result.interactive, flowState);
@@ -869,7 +905,8 @@ export class ConversationsService implements OnModuleInit {
       if (result.endConversation) {
         if (run.voice) {
           run.voice.ended = true;
-          run.voice.actions.push({ type: 'hangup' });
+          // Una transferencia ya termina la llamada para el bot: no se le suma un `hangup`.
+          if (!result.transferExtension) run.voice.actions.push({ type: 'hangup' });
         }
         await this.closeConversation(conversation.id);
         return this.toFlowResult(responses, interactive);
@@ -2133,6 +2170,9 @@ export class ConversationsService implements OnModuleInit {
       case 'voice_identify':
         return this.executeVoiceIdentifyNode(node, data, body, conversation, tenantId, flowState);
 
+      case 'transfer_extension':
+        return this.executeTransferExtensionNode(node, data, tenantId, flowState);
+
       case 'message': {
         // Avanzar automáticamente al siguiente nodo
         return { responseText: data.text };
@@ -2180,7 +2220,11 @@ export class ConversationsService implements OnModuleInit {
             flowState.__awaiting = node.id;
           } else {
             if (channel === 'voice') {
-              return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText, tenantId) }, waitForInput: true, flowState };
+              return {
+                delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body),
+                waitForInput: true,
+                flowState,
+              };
             }
             const responseText = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
             return { responseText, waitForInput: true, flowState };
@@ -2232,6 +2276,44 @@ export class ConversationsService implements OnModuleInit {
         // querer cancelar la gestión ("dejalo", "mejor no"). Se interpreta con
         // el LLM antes de asumir que es una opción inválida — solo se gasta esta
         // llamada acá, nunca en el camino feliz de un match literal.
+        // Por voz no hay LLM de pci en el camino del menú (plan H4b): match determinístico por
+        // número o etiqueta; si no entiende, lo repite una vez guiado y a la segunda delega.
+        if (channel === 'voice') {
+          const idx = matchMenuOption(body, displayOptions.map((o: any) => String(o.label ?? '')));
+          const voiced = idx === null ? undefined : displayOptions[idx];
+          if (voiced) {
+            delete flowState.__awaiting;
+            if (flowState.__menuRetries) delete flowState.__menuRetries[node.id];
+            if (voiced.value === BACK_OPTION_VALUE) return this.navigateMenuBack(flowState, menuStack, flowId);
+            flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
+            const edge = edges.find((e: any) => e.source === node.id && e.sourceHandle === String(voiced.value));
+            return { nextNodeId: edge?.target || voiced.targetNodeId, flowState };
+          }
+          const retries = { ...(flowState.__menuRetries || {}) };
+          retries[node.id] = (retries[node.id] || 0) + 1;
+          flowState.__menuRetries = retries;
+          if (retries[node.id] < 2) {
+            const labels = displayOptions.map((o: any, i: number) => `${i + 1}. ${o.label}`).join('; ');
+            return {
+              guided: {
+                instruction:
+                  'La persona no eligió ninguna opción del menú. Decile en una frase que no entendiste y ' +
+                  `repetile las opciones: ${labels}.`,
+              },
+              waitForInput: true,
+              flowState,
+            };
+          }
+          delete flowState.__awaiting;
+          delete retries[node.id];
+          flowState.__llmFallback = node.id;
+          return {
+            delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body),
+            waitForInput: true,
+            flowState,
+          };
+        }
+
         const interpretation = await this.interpretMenuChoice(body, displayOptions);
 
         if (interpretation.cancel) {
@@ -2260,9 +2342,6 @@ export class ConversationsService implements OnModuleInit {
         // de `__llmFallback` al principio del case).
         delete flowState.__awaiting;
         flowState.__llmFallback = node.id;
-        if (channel === 'voice') {
-          return { delegate: { systemPrompt: await this.buildBasePrompt(skillPromptText, tenantId) }, waitForInput: true, flowState };
-        }
         const fallbackResponse = await this.orchestratorLlm(conversation, body, tenantId, contextSourceId, skillPromptText);
         return { responseText: fallbackResponse, waitForInput: true, flowState };
       }
@@ -2285,7 +2364,9 @@ export class ConversationsService implements OnModuleInit {
         // dispara la llamada al LLM (que sí entiende matices) cuando hay una
         // sospecha real — así una respuesta normal (email, nombre, etc.) no
         // paga ese costo.
-        if (this.looksLikeCancelAttempt(body)) {
+        // Por voz no corre (sería una llamada al LLM de pci en el camino del turno): para cancelar
+        // está colgar.
+        if (channel !== 'voice' && this.looksLikeCancelAttempt(body)) {
           const wantsToCancel = await this.confirmCancelIntent(body, data.text);
           if (wantsToCancel) {
             return this.cancelInteraction(flowState);
@@ -2627,7 +2708,14 @@ export class ConversationsService implements OnModuleInit {
         // llama a su LLM en el camino del turno. La fuente de verdad (`context`) se suma en H4.
         // El modo extracción sigue por acá (usa el LLM de pci, fuera del presupuesto de 300 ms).
         if (channel === 'voice' && !data.extractVariables?.length) {
-          return { delegate: { systemPrompt: await this.llmQuerySystemPrompt(data, flowState, skillPromptText, tenantId) } };
+          return {
+            delegate: await this.voiceDelegate(
+              await this.llmQuerySystemPrompt(data, flowState, skillPromptText, tenantId),
+              tenantId,
+              contextSourceId,
+              body,
+            ),
+          };
         }
         // `sessionStartedAt` acota el historial a la sesión actual — mismo criterio
         // que `orchestratorLlm` (ver ese comentario): si la charla se cerró y se
@@ -2729,6 +2817,7 @@ export class ConversationsService implements OnModuleInit {
             flowState,
             body,
             data.temperature,
+            channel,
           );
         }
 
@@ -2851,6 +2940,7 @@ export class ConversationsService implements OnModuleInit {
     flowState: Record<string, any>,
     body: string,
     temperature?: number,
+    channel: FlowChannel = 'text',
   ): Promise<NodeExecutionResult> {
     const maxAttempts =
       typeof data.maxAttempts === 'number' && data.maxAttempts > 0
@@ -2907,7 +2997,18 @@ export class ConversationsService implements OnModuleInit {
       }
 
       if (stillMissing.length) {
-        const question = await this.generateLlmQueryQuestion(questionPrompt, llmMessages, stillMissing, temperature);
+        // Por voz la pregunta la redacta el LLM de voz (`guided`, plan H4b): se ahorra la llamada
+        // a `generateLlmQueryQuestion`. La extracción de arriba sí sigue usando el LLM de pci.
+        const voiceInstruction =
+          channel === 'voice'
+            ? 'Pedile a la persona, en una sola pregunta corta, los datos que faltan: ' +
+              stillMissing
+                .map((v) => (v.allowedValues?.length ? `${v.label || v.variable} (${v.allowedValues.join(', ')})` : v.label || v.variable))
+                .join('; ') +
+              '.'
+            : null;
+        const question =
+          voiceInstruction ?? (await this.generateLlmQueryQuestion(questionPrompt, llmMessages, stillMissing, temperature));
         flowState.__awaiting = node.id;
         flowState.__llmQueryAttempts = anyParsed ? attemptsSoFar + 1 : attemptsSoFar;
         flowState.__llmQueryTurns = turnsSoFar + 1;
@@ -2916,6 +3017,7 @@ export class ConversationsService implements OnModuleInit {
         // llegue en el próximo turno — sin esto, un "Vicente Lopez" pelado le llega al
         // extractor sin nada que indique de qué dato se trata.
         flowState.__llmQueryLastQuestion = question;
+        if (voiceInstruction) return { guided: { instruction: voiceInstruction }, waitForInput: true, flowState };
         return { responseText: question, waitForInput: true, flowState };
       }
     }
@@ -3278,6 +3380,78 @@ export class ConversationsService implements OnModuleInit {
     flowState.userRoleId = role.id;
     const result = exit(true);
     return { ...result, identified: { user, identity: { isKnown: true, roleId: role.id, roleName: role.name } } };
+  }
+
+  /**
+   * `delegate` por voz con la fuente de verdad del flujo como `context` (contrato §5.4, C54):
+   * se consulta con lo que dijo la persona, con un tope de tiempo
+   * (`VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS`) y de tamaño (`VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS`).
+   * Si vence o falla, va sin `context`: el turno no espera más de eso. Recortar se loguea.
+   */
+  private async voiceDelegate(
+    systemPrompt: string,
+    tenantId: string,
+    contextSourceId: string | null,
+    body: string,
+  ): Promise<{ systemPrompt: string; context?: string }> {
+    if (!contextSourceId || !body.trim()) return { systemPrompt };
+    const [maxChars, timeoutMs] = await Promise.all([
+      this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS', 16000),
+      this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 1500),
+    ]);
+    const started = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    const knowledge = await Promise.race([
+      this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body).catch(() => null),
+      timeout,
+    ]);
+    clearTimeout(timer);
+    const elapsed = Date.now() - started;
+    if (!knowledge) {
+      this.logger.warn(`[${tenantId}] delegate por voz sin context: la fuente ${contextSourceId} no respondió en ${timeoutMs} ms.`);
+      return { systemPrompt };
+    }
+    if (!knowledge.ok || !knowledge.answer) {
+      this.logger.warn(`[${tenantId}] delegate por voz sin context: fuente ${contextSourceId} sin respuesta útil (${knowledge.message}).`);
+      return { systemPrompt };
+    }
+    let context = knowledge.answer;
+    if (context.length > maxChars) {
+      this.logger.warn(`[${tenantId}] context del delegate recortado de ${context.length} a ${maxChars} caracteres.`);
+      context = context.slice(0, maxChars);
+    }
+    this.logger.log(`[${tenantId}] context del delegate: ${context.length} caracteres en ${elapsed} ms.`);
+    return { systemPrompt, context };
+  }
+
+  /**
+   * Nodo *Transferir a interno* (`transfer_extension`, solo voz, plan H4b): un número fijo
+   * (`data.extension`) o el interno de una persona (`data.targetUserId` → `User.internalPhone`,
+   * resuelto por pci [C5]). El voicebot lo hace como `Refer-To tel:<extension>` [C48] y la llamada
+   * termina para el bot. Sin número válido, avisa y el flujo sigue por su arista.
+   */
+  private async executeTransferExtensionNode(
+    node: any,
+    data: any,
+    tenantId: string,
+    flowState: Record<string, any>,
+  ): Promise<NodeExecutionResult> {
+    let extension = typeof data.extension === 'string' ? this.interpolate(data.extension, flowState).trim() : '';
+    if (!extension && data.targetUserId) {
+      const person = await this.prisma.user.findFirst({
+        where: { id: data.targetUserId, deletedAt: null, tenants: { some: { tenantId } } },
+        select: { internalPhone: true },
+      });
+      extension = person?.internalPhone?.trim() ?? '';
+    }
+    if (!/^[0-9A-Za-z+*#]{1,32}$/.test(extension)) {
+      this.logger.warn(`[${tenantId}] transfer_extension '${node.id}': sin interno válido para transferir; el flujo sigue.`);
+      return { responseText: data.failText?.trim() || 'No pude transferirte en este momento.' };
+    }
+    return { responseText: data.text?.trim() || undefined, transferExtension: extension, endConversation: true };
   }
 
   /** System prompt de un `llm_query`: base + Skill, reemplazado o ampliado por el del nodo. */

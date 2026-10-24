@@ -170,7 +170,7 @@ export class VoiceTurnsService implements OnModuleInit {
       };
 
       const literal = flowOutput.actions.flatMap((a) => (a.type === 'say' && a.mode === 'literal' ? [a.text] : []));
-      const delegated = flowOutput.actions.some((a) => a.type === 'say' && a.mode === 'delegate');
+      const delegated = flowOutput.actions.some((a) => a.type === 'say' && a.mode !== 'literal');
       const botContent = literal.join('\n\n') || (delegated ? DELEGATED_PLACEHOLDER : '');
       const botMessage = botContent
         ? await this.prisma.message.create({

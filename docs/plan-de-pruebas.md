@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **701 casos** · Backend 402 · Chatbot 152 · Frontend 147 · de los cuales **380 son `P0`**
-(352 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **707 casos** · Backend 407 · Chatbot 152 · Frontend 148 · de los cuales **385 son `P0`**
+(357 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **402** |
+| **Backend (§1)** | | **407** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -149,7 +149,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.23 Skills | 🟠 P1 | 10 |
 | 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 31 |
 | 1.26 Integración voicebot: internos | 🔴 P0 | 9 |
-| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 23 |
+| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 28 |
 | 1.28 Integración voicebot: flujos de voz | 🔴 P0 | 6 |
 | **Chatbot (§2)** | | **152** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
@@ -165,7 +165,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 2.11 Cierre por inactividad | 🟠 P1 | 4 |
 | 2.12 Concurrencia y carga | 🟠 P1 | 4 |
 | 2.13 Placeholders | 🚧 | 4 |
-| **Frontend (§3)** | | **147** |
+| **Frontend (§3)** | | **148** |
 | 3.1 Infraestructura | 🔴 P0 | 19 |
 | 3.2 Login y OTP | 🔴 P0 | 7 |
 | 3.3 Dashboard | 🟠 P1 | 2 |
@@ -175,10 +175,10 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.7 Áreas | 🟠 P1 | 5 |
 | 3.8 Configuración | 🟠 P1 | 23 |
 | 3.9 Fuentes de verdad | 🟠 P1 | 12 |
-| 3.10 Flujos (editor) | 🟠 P1 | 32 |
+| 3.10 Flujos (editor) | 🟠 P1 | 33 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **701** |
+| **TOTAL** | | **707** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -915,6 +915,11 @@ caminos. Vía: broker real (vhost efímero), el test hace de voicebot. Spec:
 | BE-VOZ-21 | Dos intentos fallidos (documento inexistente, después nombre que no coincide) | Vuelve a pedir el documento tras el primero; al segundo sale por `no reconocido`, sin usuario |
 | BE-VOZ-22 | Está en InvGate pero no en pci | `no reconocido` con `flowState.identifiedExternal` (nombre, apellido, email, invgateId); no se crea un `User` |
 | BE-VOZ-23 | InvGate sin configurar | `no reconocido` de una, sin preguntar nada ni llamar a InvGate |
+| BE-VOZ-24 | Nodo en modo `guided` | `say guided` con el texto interpolado como `instruction` y sus `{{variables}}` como `facts`; los demás siguen literales |
+| BE-VOZ-25 | Menú por voz | Elige por etiqueta aproximada ("bentas" → Ventas) sin LLM; si no entiende, un `guided` repite las opciones; a la segunda, `delegate` |
+| BE-VOZ-26 | `llm_query` en extracción por voz | La pregunta por el dato faltante va `guided` (con sus valores posibles), sin `generateLlmQueryQuestion`: el LLM de pci solo extrae |
+| BE-VOZ-27 | `delegate` con fuente de verdad [C54] | `context` = respuesta de la fuente con el texto del usuario, recortada a `VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS` (16000); si tarda más que `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS`, sin `context` |
+| BE-VOZ-28 | *Transferir a interno* | Fijo o de una persona (`internalPhone`) → `transfer {extension}`, `committed`, sin `hangup`, `awaitInput: false`; sin interno válido, avisa y sigue por la arista |
 
 ## 1.28 Integración voicebot: flujos de voz (`VoiceFlowController`)
 
@@ -1457,6 +1462,7 @@ puede listar todas las empresas.
 | FE-VFLW-01 | Menú con el voicebot apagado / prendido | *Flujos de voz* aparece solo prendido, justo debajo de *Flujos IVR* |
 | FE-VFLW-02 | Listado y editor de voz | Solo flujos de voz, sin botón "Default"; la paleta no ofrece Delay, Notificación, Consultar Ticket ni Validar Dispositivo; el modal es "Empresas" y avisa que por voz no hay roles |
 | FE-VFLW-03 | Nodo *Identificar por voz* | Solo en la paleta de voz; dibuja "Pide legajo" con salidas reconocido / no reconocido; con InvGate sin configurar, sus propiedades lo avisan |
+| FE-VFLW-04 | Modo de habla y transferencia en el editor | Por voz, cada nodo que habla tiene "Cómo se dice" (literal / guiado); en texto no aparece. "Transferir a interno" solo en la paleta de voz |
 
 ## 3.11 Responsive
 

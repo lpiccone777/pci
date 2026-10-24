@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · 🔄 H4 (plan) · ⏳ H5. Contrato vigente: **1.14**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.14**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -312,27 +312,33 @@ FE-VFLW-01..02. FE-FLW-08 y FE-FLW-29 ya fallaban antes de este cambio (verifica
 - [x] **Tests:** e2e del permiso, del aislamiento por canal, del gate y de la validación de nodos;
   Playwright del menú, el listado y el editor de voz.
 
-### H4b — Cómo habla cada nodo, transferencia y menú sin LLM
+### H4b — Cómo habla cada nodo, transferencia y menú sin LLM ✅
 
-- [ ] **Modo de habla por nodo** (contrato §5.4):
+Hecho el 2026-10-24. Modo de habla por nodo (`data.speechMode`), menú por voz sin LLM
+(`voice-menu.util.ts`: número, palabra u ordinal, o etiqueta aproximada; la etiqueta gana sobre el
+número, porque "hablar con una persona" no es la opción 1), pregunta de extracción `guided`,
+`context` del `delegate` con tope (16000, máximo 32000 [C54]) y espera (1500 ms), y nodo
+*Transferir a interno*. Tests BE-VOZ-24..28 y FE-VFLW-04.
+
+- [x] **Modo de habla por nodo** (contrato §5.4):
   - cada nodo que habla (`start`, `message`, `menu`, `input`, `end` y el texto de `ticket_create`)
     elige `literal` (default, el texto exacto) o `guided`;
   - en `guided`, el texto del nodo es la `instruction` y `facts` lleva las variables `{{x}}` que
     usa, ya resueltas;
   - el editor muestra el selector solo en los flujos de voz, y recuerda que con `guided` en el
     `start` el voicebot agrega "(Atendiste la llamada.)" [C48].
-- [ ] **Menú por voz sin LLM de pci:**
+- [x] **Menú por voz sin LLM de pci:**
   - match determinístico por número ("1", "uno", "la primera"), por etiqueta y por similitud;
   - si no matchea, un `guided` que repite las opciones; a la segunda falla, `delegate` (como el
     fallback de hoy);
   - por voz no se llama a `interpretMenuChoice`, y la detección de cancelación de `input` (LLM)
     no corre por voz.
-- [ ] **`llm_query` en modo extracción por voz:**
+- [x] **`llm_query` en modo extracción por voz:**
   - la pregunta por un dato faltante sale como `guided` ("Pedile el dato X"), sin
     `generateLlmQueryQuestion`;
   - la extracción sigue usando el LLM de pci (no hay otra forma). Se mide y se loguea, y queda
     fuera del presupuesto de 300 ms.
-- [ ] **`context` del `delegate`** (§5.4):
+- [x] **`context` del `delegate`** (§5.4):
   - la fuente de verdad del flujo se consulta con el texto del usuario y va recortada a
     `VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS` (default 16000, máximo 32000: medido por el voicebot con
     M3, hasta 32k suma ~0,1 s [C54]), con un tope de tiempo `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS`
@@ -340,12 +346,12 @@ FE-VFLW-01..02. FE-FLW-08 y FE-FLW-29 ya fallaban antes de este cambio (verifica
   - si se vence el tiempo, va sin `context` y se loguea;
   - las dos claves son de pci, en *Voicebot → LLM de voz*;
   - se mide tamaño y latencia, y con eso se fijan los defaults.
-- [ ] **Nodo *Transferir a interno*** (`transfer_extension`):
+- [x] **Nodo *Transferir a interno*** (`transfer_extension`):
   - toma un número fijo o una persona (su `User.internalPhone`, resuelto por pci [C5]);
   - responde `{type: "transfer", extension}`, `committed: true` y `awaitInput: false`;
   - llega al voicebot como `Refer-To tel:<extension>` [C48];
   - `end` sigue siendo "colgar" (`hangup`).
-- [ ] **Tests:** e2e por `voice.turn` de cada modo y nodo, sin LLM real (FakeLlm).
+- [x] **Tests:** e2e por `voice.turn` de cada modo y nodo, sin LLM real (FakeLlm).
 
 ### H4c — Identificación por voz ✅
 

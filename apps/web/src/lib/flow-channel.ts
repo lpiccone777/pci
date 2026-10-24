@@ -28,7 +28,18 @@ export const FLOW_CHANNELS: Record<FlowChannel, FlowChannelConfig> = {
 };
 
 /** Nodos que solo existen por voz: la paleta de texto no los ofrece. */
-export const TEXT_UNSUPPORTED_NODES: ReadonlySet<string> = new Set(['voice_identify']);
+export const TEXT_UNSUPPORTED_NODES: ReadonlySet<string> = new Set(['voice_identify', 'transfer_extension']);
+
+/** Nodos que hablan: en un flujo de voz eligen modo literal o guided (`data.speechMode`, contrato §5.4). */
+export const SPEECH_MODE_NODES: ReadonlySet<string> = new Set([
+  'start',
+  'message',
+  'menu',
+  'input',
+  'end',
+  'ticket_create',
+  'voice_identify',
+]);
 
 /** Nodos que no existen por voz: la paleta del editor de voz no los ofrece (el backend los rechaza). */
 export const VOICE_UNSUPPORTED_NODES: ReadonlySet<string> = new Set([

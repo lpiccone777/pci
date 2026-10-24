@@ -39,17 +39,28 @@ import {
   uniqueEmail,
   installFetchMock,
   node,
+  createContextSource,
 } from './support';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
 import { LlmService } from '../src/modules/llm/llm.service';
 import { FlowService } from '../src/modules/flow/flow.service';
 import { IntegrationsConfigService } from '../src/modules/integrations/integrations-config.service';
+import { ContextSourcesService } from '../src/modules/context-sources/context-sources.service';
 import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../src/modules/settings/voicebot-settings.catalog';
 
 type Reply = {
   v: number;
   turnId: string;
-  actions: Array<{ type: string; mode?: string; text?: string; systemPrompt?: string }>;
+  actions: Array<{
+    type: string;
+    mode?: string;
+    text?: string;
+    systemPrompt?: string;
+    instruction?: string;
+    facts?: Record<string, string>;
+    context?: string;
+    extension?: string;
+  }>;
   awaitInput: boolean;
   committed: boolean;
   superseded: boolean;
@@ -592,6 +603,162 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       const r = await start(uid(), identExt);
       expect(literals(r)).toEqual(['No te pude identificar.', '¿Te ayudo igual?']);
       expect(fetchMock.requests.length).toBe(before);
+    });
+  });
+
+  describe('Cómo habla cada nodo (H4b)', () => {
+    /** Tenant + interno + flujo de voz de inicio con `nodes`/`edges`; devuelve el interno. */
+    const voiceSetup = async (label: string, nodes: unknown[], edges: unknown[]) => {
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug(label) });
+      await createFlow(t.prisma, { name: label, channel: 'voice', nodes, edges, assign: [{ tenantId: tenant.id, isStart: true }] });
+      const ext = extNumber();
+      await t.prisma.extension.create({ data: { number: ext, name: label, tenantId: tenant.id } });
+      return { tenant, ext };
+    };
+    const sayOn = (callId: string, ext: string, text: string) => turn({ callId, turnId: uid(), kind: 'user', text, call: callInfo(ext) });
+
+    it('BE-VOZ-24: un nodo en modo guided manda la instrucción y sus {{variables}} como facts', async () => {
+      const { ext } = await voiceSetup(
+        'voz-guided',
+        [
+          startNode('start', { noGreeting: true }),
+          inputNode('nombre', { text: '¿Cómo te llamás?', variableName: 'nombre' }),
+          node('m', 'message', { text: 'Saludá a {{nombre}} y contale que la línea es de soporte.', speechMode: 'guided' }),
+          inputNode('pedido', { text: '¿Qué necesitás?', variableName: 'pedido' }),
+        ],
+        [edge('start', 'nombre'), edge('nombre', 'm'), edge('m', 'pedido')],
+      );
+      const callId = uid();
+      await start(callId, ext);
+      const r = await sayOn(callId, ext, 'Ana');
+      expect(r.actions).toEqual([
+        { type: 'say', mode: 'guided', instruction: 'Saludá a Ana y contale que la línea es de soporte.', facts: { nombre: 'Ana' } },
+        { type: 'say', mode: 'literal', text: '¿Qué necesitás?' },
+      ]);
+      expect(llm.calls).toHaveLength(0);
+    });
+
+    it('BE-VOZ-25: menú por voz sin LLM: elige por etiqueta, repite guiado si no entiende y a la segunda delega', async () => {
+      const { ext } = await voiceSetup(
+        'voz-menu2',
+        [
+          startNode('start', { noGreeting: true }),
+          menuNode('menu', { text: '¿Con qué área?', options: [{ value: 's', label: 'Soporte técnico' }, { value: 'v', label: 'Ventas' }] }),
+          messageNode('ventas', 'Te paso con ventas.'),
+          inputNode('fin', { text: '¿Algo más?', variableName: 'x' }),
+        ],
+        [edge('start', 'menu'), edge('menu', 'ventas', 'v'), edge('ventas', 'fin')],
+      );
+      const callId = uid();
+      await start(callId, ext);
+      expect(literals(await sayOn(callId, ext, 'quiero bentas'))).toEqual(['Te paso con ventas.', '¿Algo más?']);
+
+      const other = uid();
+      await start(other, ext);
+      const again = await sayOn(other, ext, 'no sé qué decirte');
+      expect(again.actions).toHaveLength(1);
+      expect(again.actions[0]).toMatchObject({ type: 'say', mode: 'guided' });
+      expect(again.actions[0].instruction).toContain('1. Soporte técnico; 2. Ventas');
+      const delegated = await sayOn(other, ext, 'tampoco');
+      expect(delegated.actions[0]).toMatchObject({ type: 'say', mode: 'delegate' });
+      expect(llm.calls).toHaveLength(0);
+    });
+
+    it('BE-VOZ-26: llm_query en extracción por voz: la pregunta va guided (sin generarla con el LLM de pci); solo extrae', async () => {
+      llm.setReply('sede: NONE');
+      try {
+        const { ext } = await voiceSetup(
+          'voz-extract',
+          [
+            startNode('start', { noGreeting: true }),
+            llmQueryNode('datos', { extractVariables: [{ variable: 'sede', label: 'Sede', allowedValues: ['Centro', 'Norte'] }] }),
+          ],
+          [edge('start', 'datos')],
+        );
+        const r = await start(uid(), ext);
+        expect(r.actions).toHaveLength(1);
+        expect(r.actions[0]).toMatchObject({ type: 'say', mode: 'guided' });
+        expect(r.actions[0].instruction).toContain('Sede (Centro, Norte)');
+        expect(llm.calls).toHaveLength(1); // solo el extractor
+      } finally {
+        llm.setReply('respuesta simulada del modelo');
+      }
+    });
+
+    it('BE-VOZ-27: delegate con context de la fuente de verdad: recortado al tope; si la fuente tarda más que la espera, va sin context', async () => {
+      const contexts = t.moduleRef.get(ContextSourcesService);
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-ctx') });
+      const source = await createContextSource(t.prisma, { tenantId: tenant.id, name: 'kb', type: 'broker' });
+      await createFlow(t.prisma, {
+        name: 'voz ctx',
+        channel: 'voice',
+        contextSourceId: source.id,
+        nodes: [startNode('start', { noGreeting: true }), inputNode('q', { text: 'Contame.', variableName: 'q' }), llmQueryNode('charla', { systemPrompt: 'Soporte.' })],
+        edges: [edge('start', 'q'), edge('q', 'charla')],
+        assign: [{ tenantId: tenant.id, isStart: true }],
+      });
+      const ext = extNumber();
+      await t.prisma.extension.create({ data: { number: ext, name: 'ctx', tenantId: tenant.id } });
+
+      const spy = jest.spyOn(contexts, 'queryKnowledge').mockResolvedValue({ ok: true, answer: 'x'.repeat(20000) } as never);
+      try {
+        const callId = uid();
+        await start(callId, ext);
+        const r = await turn({ callId, turnId: uid(), kind: 'user', text: 'se rompió la impresora', call: callInfo(ext) });
+        expect(r.actions[0]).toMatchObject({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
+        expect(r.actions[0].context).toHaveLength(16000);
+        expect(spy).toHaveBeenCalledWith(tenant.id, source.id, 'se rompió la impresora');
+
+        await setSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', '100');
+        spy.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve({ ok: true, answer: 'tarde' } as never), 600)));
+        const slow = uid();
+        await start(slow, ext);
+        const r2 = await turn({ callId: slow, turnId: uid(), kind: 'user', text: 'hola', call: callInfo(ext) });
+        expect(r2.actions[0]).toEqual({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
+      } finally {
+        spy.mockRestore();
+        await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
+      }
+    });
+
+    it('BE-VOZ-28: Transferir a interno: fijo o de una persona → transfer, committed, sin hangup; sin interno válido avisa y sigue', async () => {
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-transfer') });
+      const role = await createRole(t.prisma, { tenantId: tenant.id, name: 'Agente' });
+      const agent = await createUser(t.prisma, {
+        email: uniqueEmail('agente'),
+        internalPhone: `5${Date.now() % 100000}`,
+        memberships: [{ tenantId: tenant.id, roleId: role.id }],
+      });
+      const mk = async (name: string, data: Record<string, unknown>) => {
+        const flow = await createFlow(t.prisma, {
+          name,
+          channel: 'voice',
+          nodes: [
+            startNode('start', { noGreeting: true }),
+            node('tr', 'transfer_extension', data),
+            inputNode('sigue', { text: '¿Te ayudo en otra cosa?', variableName: 'x' }),
+          ],
+          edges: [edge('start', 'tr'), edge('tr', 'sigue')],
+          assign: [{ tenantId: tenant.id }],
+        });
+        const ext = extNumber();
+        await t.prisma.extension.create({ data: { number: ext, name, tenantId: tenant.id, flowId: flow.id } });
+        return ext;
+      };
+
+      const fixed = await start(uid(), await mk('fijo', { extension: '305', text: 'Te paso con la mesa.' }));
+      expect(fixed.actions).toEqual([
+        { type: 'say', mode: 'literal', text: 'Te paso con la mesa.' },
+        { type: 'transfer', extension: '305' },
+      ]);
+      expect(fixed).toMatchObject({ committed: true, awaitInput: false });
+
+      const person = await start(uid(), await mk('persona', { targetUserId: agent.id }));
+      expect(person.actions).toEqual([{ type: 'transfer', extension: agent.internalPhone }]);
+
+      const broken = await start(uid(), await mk('roto', { extension: '' }));
+      expect(literals(broken)).toEqual(['No pude transferirte en este momento.', '¿Te ayudo en otra cosa?']);
+      expect(broken).toMatchObject({ awaitInput: true });
     });
   });
 

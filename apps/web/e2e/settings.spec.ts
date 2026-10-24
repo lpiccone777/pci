@@ -866,3 +866,33 @@ test('FE-VFLW-03: "Identificar por voz" solo en la paleta de voz; sus propiedade
     await deleteSetting(admin, 'VOICEBOT_ENABLED');
   }
 });
+
+test('FE-VFLW-04: en un flujo de voz cada nodo que habla elige literal o guiado, y "Transferir a interno" solo está en la paleta de voz', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  try {
+    const flow = await createVoiceFlow(`Voz modo ${uniqueSlug('vm')}`, [
+      { id: 'start_1', type: 'start', data: { noGreeting: true }, position: { x: 250, y: 50 } },
+      { id: 'msg_1', type: 'message', data: { text: 'Hola' }, position: { x: 250, y: 200 } },
+    ]);
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+
+    await page.goto('/dashboard/flows/edit/?id=new');
+    await expect(page.locator('.react-flow')).toBeVisible();
+    await expect(page.getByText('Transferir a interno', { exact: true })).toHaveCount(0);
+    await page.locator('.react-flow__node-start').click();
+    await expect(page.locator('#speech-mode')).toHaveCount(0);
+
+    await page.goto(`/dashboard/voice-flows/edit/?id=${flow.id}`);
+    await expect(page.locator('.react-flow')).toBeVisible();
+    await expect(page.getByText('Transferir a interno', { exact: true })).toBeVisible();
+    await page.locator('.react-flow__node-message').click();
+    const mode = page.locator('#speech-mode');
+    await expect(mode).toHaveValue('literal');
+    await mode.selectOption('guided');
+    await expect(page.getByText(/Escribí qué tiene que comunicar/)).toBeVisible();
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});

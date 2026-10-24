@@ -21,6 +21,7 @@ const nodeColors: Record<string, string> = {
   sms: '#22c55e',
   notification: '#eab308',
   voice_identify: '#0d9488',
+  transfer_extension: '#7c3aed',
 };
 
 const nodeLabels: Record<string, string> = {
@@ -199,6 +200,28 @@ export const VoiceIdentifyNode = memo(({ data }: any) => {
           no reconocido
         </div>
       </div>
+    </div>
+  );
+});
+
+/** Transferir a interno (solo voz): el voicebot transfiere la llamada y termina para el bot. */
+export const TransferExtensionNode = memo(({ data }: any) => {
+  const color = nodeColors.transfer_extension;
+  return (
+    <div className="rounded-lg shadow-md border-2 bg-white" style={{ borderColor: color, minWidth: 180, maxWidth: 240 }}>
+      <div
+        className="text-white text-xs font-semibold px-2 py-1 rounded-t-md flex items-center gap-1"
+        style={{ backgroundColor: color }}
+      >
+        <div className="w-2 h-2 rounded-full bg-white/80" />
+        Transferir a interno
+      </div>
+      <div className="p-2 text-xs text-gray-600">
+        {data?.extension ? `Interno ${data.extension}` : data?.targetUserId ? 'Interno de una persona' : 'Sin interno elegido'}
+        <div className="mt-1 text-[10px] text-gray-400">La salida solo se usa si no hay interno válido</div>
+      </div>
+      <Handle type="target" position={Position.Top} style={{ background: color }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: color }} />
     </div>
   );
 });

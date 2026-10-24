@@ -16,7 +16,7 @@ export const FLOW_RESOURCE: Record<FlowChannel, string> = {
  * Si un flujo de voz viejo llega a uno, el motor lo saltea con un log (ver `ConversationsService`).
  */
 /** Nodos que solo existen por voz: un flujo de texto no los admite. */
-export const TEXT_UNSUPPORTED_NODES: ReadonlySet<string> = new Set(['voice_identify']);
+export const TEXT_UNSUPPORTED_NODES: ReadonlySet<string> = new Set(['voice_identify', 'transfer_extension']);
 
 export const VOICE_UNSUPPORTED_NODES: ReadonlySet<string> = new Set([
   'notification',

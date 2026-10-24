@@ -1495,7 +1495,8 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   modo de habla por nodo, transferir a interno, identificación por voz (DNI/legajo), LLM de voz por
   proveedor. Cuatro tramos (H4a–H4d), ver `docs/voicebot/plan-pci.md`. H4d (LLM de voz por
   proveedor) ✅. H4a (permiso, menú, listado y editor de voz) ✅. H4c (identificación por voz contra
-  InvGate, `employee_number`) ✅.
+  InvGate, `employee_number`) ✅. H4b (modo de habla por nodo, menú sin LLM, `context` con tope,
+  transferir a interno) ✅. Falta la prueba integrada en vivo.
 - ⏳ **H5 — Salientes y "probar conexión"**.
 
 ---
