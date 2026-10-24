@@ -64,6 +64,25 @@ export const VOICEBOT_SECTION_IDS: Record<VoicebotSettingGroup, string> = {
 const ENABLED_BY = 'VOICEBOT_ENABLED';
 
 /**
+ * Prompt de voz por defecto del voicebot: lo usa cuando `VOICEBOT_SYSTEM_PROMPT` está vacío.
+ * Copia LITERAL de `DEFAULT_SYSTEM_PROMPT` en el repo voicebot
+ * (`apps/api/src/voicebot/minimax-llm.service.ts`), solo para mostrarlo en la UI: si cambia allá,
+ * hay que copiarlo de nuevo. No es el default de la clave (vacío sigue significando "el del voicebot").
+ */
+export const VOICEBOT_DEFAULT_VOICE_PROMPT =
+  'Sos un asistente de voz que atiende una llamada telefónica. Respondé siempre en español ' +
+  'rioplatense, en una o dos oraciones cortas y naturales, de no más de 35 palabras en total. ' +
+  'Si la respuesta tiene varios pasos, decí solo el primero y preguntá si quiere seguir. Hacé ' +
+  'como mucho una pregunta por respuesta. No uses markdown, listas, emojis, símbolos ni palabras ' +
+  'en otros idiomas: tu respuesta se va a leer en voz alta. Si no entendiste lo que te dijeron, ' +
+  'pedí que lo repitan. No tenés acceso a internet ni a información en tiempo real: si te piden ' +
+  'datos que cambian, como resultados, fechas de partidos, quién ocupa un cargo, precios o ' +
+  'noticias, decí que no tenés esa información actualizada en vez de inventarla. No ofrezcas ' +
+  'buscar, consultar ni hacer cosas que no podés hacer. Hablá solo en castellano rioplatense: ' +
+  'nunca uses palabras en inglés ni en otro idioma, ni siquiera sueltas; si no te sale una palabra ' +
+  'en castellano, decilo de otra forma.';
+
+/**
  * Prompt base de pci para la charla por voz [C50]: el `systemPrompt` de cada `say delegate`
  * (charla libre sin flujo y `llm_query` de los flujos de voz) parte de acá en vez de
  * `LLM_SYSTEM_PROMPT`, que es del chat (menú, "cerrar la conversación"). `{{empresa}}` = nombre
@@ -560,9 +579,11 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     label: 'Prompt de voz',
     defaultValue: '',
     multiline: true,
+    fallbackText: VOICEBOT_DEFAULT_VOICE_PROMPT,
     description:
-      'Cómo hablar (corto, sin formato). Vacío = el prompt por defecto del voicebot. El prompt de ' +
-      'pci (de qué hablar) se le suma en los turnos delegados.',
+      'Cómo hablar (corto, sin formato). Un valor propio REEMPLAZA el prompt por defecto completo, no se ' +
+      'le suma. Vacío = el prompt por defecto del voicebot (se muestra abajo). El prompt de pci (de qué ' +
+      'hablar) se le suma en los turnos delegados.',
   }),
 
   // Sin `envNames`: no es config del voicebot, viaja dentro de cada `say delegate` [C50].
@@ -573,10 +594,12 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     label: 'Prompt de pci para la charla por voz',
     defaultValue: VOICEBOT_FREE_CHAT_PROMPT_DEFAULT,
     multiline: true,
+    fallbackText: VOICEBOT_FREE_CHAT_PROMPT_DEFAULT,
     description:
       'De qué hablar por teléfono: reemplaza al prompt del chat (LLM_SYSTEM_PROMPT) en la charla libre ' +
       'y en los llm_query de los flujos de voz; el Skill y el prompt del nodo se suman. {{empresa}} = ' +
-      'la empresa del interno. Vacío = este texto por defecto. El chat no cambia.',
+      'la empresa del interno. Un valor propio REEMPLAZA este texto completo, no se le suma. Vacío = ' +
+      'el texto por defecto (se muestra abajo). El chat no cambia.',
   }),
 
   // --- Conversación ---

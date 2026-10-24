@@ -84,6 +84,11 @@ export interface SettingDefinition {
   /** Texto de ayuda extra para la UI (ej. formato esperado de una URL). */
   placeholder?: string;
   /**
+   * Lo que usa el consumidor cuando la clave queda vacía, para mostrarlo en la UI. Es solo
+   * informativo: no entra en la cascada BD → env → default (el default sigue siendo `defaultValue`).
+   */
+  fallbackText?: string;
+  /**
    * Default calculado en runtime, para claves cuyo valor por defecto depende del
    * entorno. Si está, le gana a `defaultValue` al resolver el valor efectivo.
    */

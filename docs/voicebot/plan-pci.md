@@ -247,6 +247,12 @@ suma ahí:
   trámites, y ante un pedido "por ahora no se puede por teléfono". Aplica a la charla libre y a los
   `llm_query` de los flujos de voz (Skill y prompt del nodo se suman). El chat no cambia. Tests
   BE-VOZ-13, 18 y 19.
+- **Prompts por defecto a la vista (2026-10-24, aprobado por el usuario):** con `VOICEBOT_SYSTEM_PROMPT`
+  vacío, *LLM de voz* muestra el prompt por defecto del voicebot (copia literal de
+  `DEFAULT_SYSTEM_PROMPT`, repo voicebot `apps/api/src/voicebot/minimax-llm.service.ts`; si cambia
+  allá, hay que copiarlo de nuevo) y la ayuda aclara que un valor propio lo REEMPLAZA completo.
+  Mismo criterio para `VOICEBOT_FREE_CHAT_PROMPT`. Es `fallbackText` en el catálogo: solo de
+  presentación, no cambia la cascada. Tests BE-INT-27 y FE-SET-23.
 - **Para H4:** el usuario definió un nodo de identificación por voz (nombre, apellido, legajo/DNI)
   con salidas "reconocido" / "no reconocido", como el `start` de hoy. El motor ya corre sin usuario
   y `start` sale por `unknown`: ese nodo completa `Conversation.userId` y la `identity` del turno.

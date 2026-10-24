@@ -19,6 +19,8 @@ interface Setting {
   secret?: boolean;
   provider?: string;
   placeholder?: string;
+  /** Lo que usa el consumidor si la clave queda vacía (solo para mostrar). */
+  fallbackText?: string;
   /** Integración voicebot/stt: nombre con el que cada servicio recibe la clave. */
   envNames?: { voicebot?: string; stt?: string };
   /** Cambiarla hace que el voicebot reconecte (puede cortar llamadas). */
@@ -928,14 +930,27 @@ export default function SettingsPage() {
                           ))}
                         </select>
                       ) : s.multiline ? (
-                        <textarea
-                          id={s.key}
-                          value={draft}
-                          rows={3}
-                          disabled={!canUpdate || busy}
-                          onChange={(e) => setDrafts({ ...drafts, [s.key]: e.target.value })}
-                          className="border px-3 py-2 rounded w-full disabled:bg-gray-100"
-                        />
+                        <div className="w-full">
+                          <textarea
+                            id={s.key}
+                            value={draft}
+                            rows={3}
+                            placeholder={s.fallbackText}
+                            disabled={!canUpdate || busy}
+                            onChange={(e) => setDrafts({ ...drafts, [s.key]: e.target.value })}
+                            className="border px-3 py-2 rounded w-full disabled:bg-gray-100"
+                          />
+                          {s.fallbackText && !draft.trim() && (
+                            <div
+                              role="note"
+                              aria-label={`Texto por defecto de ${s.key}`}
+                              className="mt-1 text-xs text-gray-600 bg-gray-50 border rounded px-3 py-2"
+                            >
+                              <p className="font-medium text-gray-700 mb-1">Vacío: se usa este por defecto</p>
+                              <p className="whitespace-pre-wrap">{s.fallbackText}</p>
+                            </div>
+                          )}
+                        </div>
                       ) : isModelKey(s) && modelList?.models.length && !customModel[s.key] ? (
                         <select
                           id={s.key}

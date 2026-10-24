@@ -662,6 +662,29 @@ test('FE-SET-22: Voicebot → Capacidad — tope de llamadas y mensaje de ocupad
   }
 });
 
+test('FE-SET-23: Voicebot → LLM de voz — con el prompt de voz vacío se ve el que usa el voicebot por defecto', async ({
+  page,
+}) => {
+  await setSetting(admin, 'VOICEBOT_ENABLED', 'true');
+  try {
+    await injectSession(page, { token: admin.token, activeTenant: admin.systemTenantId });
+    await page.goto('/settings');
+    await openTab(page, 'Mensajería: Voicebot (LLM de voz)');
+
+    const card = settingCard(page, 'VOICEBOT_SYSTEM_PROMPT');
+    await expect(card.getByText(/REEMPLAZA el prompt por defecto completo/)).toBeVisible();
+    const fallback = page.getByRole('note', { name: 'Texto por defecto de VOICEBOT_SYSTEM_PROMPT' });
+    await expect(fallback).toContainText('Vacío: se usa este por defecto');
+    await expect(fallback).toContainText('Sos un asistente de voz que atiende una llamada telefónica');
+
+    // Con un valor propio tipeado, deja de mostrarse (el propio reemplaza al por defecto).
+    await page.locator('#VOICEBOT_SYSTEM_PROMPT').fill('Hablá corto.');
+    await expect(fallback).toHaveCount(0);
+  } finally {
+    await deleteSetting(admin, 'VOICEBOT_ENABLED');
+  }
+});
+
 test('FE-SET-21: Voicebot → Internos — gateado por VOICEBOT_ENABLED; alta de un interno desde la UI, con el flujo de voz deshabilitado', async ({
   page,
 }) => {

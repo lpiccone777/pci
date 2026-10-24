@@ -207,6 +207,7 @@ export class SettingsService {
       secret: def.secret,
       provider: def.provider,
       placeholder: def.placeholder,
+      fallbackText: def.fallbackText,
       envNames: def.envNames,
       reconnects: def.reconnects,
       restartsStt: def.restartsStt,

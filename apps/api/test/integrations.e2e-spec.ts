@@ -170,6 +170,20 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       for (const bad of ['0', '1.5']) await patchSetting('VOICEBOT_MAX_TURN_FAILURES', bad).expect(400);
     });
 
+    it('BE-INT-27: los prompts de voz exponen el texto que se usa si quedan vacíos, sin cambiar la cascada', async () => {
+      const get = (key: string) => withAuth(http(t).get(`/settings/${key}`), adminToken, systemTenantId).expect(200);
+      const voice = (await get('VOICEBOT_SYSTEM_PROMPT')).body;
+      expect(voice.defaultValue).toBe('');
+      expect(voice.fallbackText).toMatch(/^Sos un asistente de voz que atiende una llamada telefónica\./);
+      expect(voice.description).toContain('REEMPLAZA');
+      // Vacío sigue viajando vacío: el voicebot decide su propio default.
+      expect((await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings.VOICEBOT_SYSTEM_PROMPT).toBe('');
+
+      const free = (await get('VOICEBOT_FREE_CHAT_PROMPT')).body;
+      expect(free.fallbackText).toBe(free.defaultValue);
+      expect(free.fallbackText).toContain('{{empresa}}');
+    });
+
     it('BE-INT-08: los secrets viajan en claro acá (y solo acá: /settings sigue enmascarando)', async () => {
       await patchSetting('VOICEBOT_LIVEKIT_API_SECRET', 'livekit-secret-e2e-abcdef').expect(200);
       const res = await voicebotConfig(VOICEBOT_TOKEN).expect(200);
