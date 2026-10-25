@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · ⏳ H5 (no arranca hasta coordinarlo). Contrato vigente: **1.22**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · 🔄 H5 (código de pci listo, falta la prueba en vivo). Contrato vigente: **1.24**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -616,7 +616,25 @@ con estos ajustes:
 - **Grabación (DA12):** solo texto, sin audio.
 - **Salientes y "Probar conexión":** H5.
 
-## H5 — Salientes (PLAN, contrato 1.23; sin código hasta que se apruebe)
+## H5 — Salientes 🔄 (contrato 1.24, C63)
+
+**Estado (2026-10-25):** plan aprobado por el usuario e implementado en pci, en seis partes
+(cea3425, 633c7b8 + ab99029, 9d91334, 4ebd77d, 30a62b8 y la de descripciones y docs). La migración
+`20261025180000_voice_outbound` está aplicada en la BD real (autorizado por el usuario). Falta el
+build, el reinicio coordinado y la prueba en vivo contra un número real por el trunk de siempre: el
+usuario no aprobó la línea a MicroSIP, así que la protección es la lista de prefijos.
+
+Decisiones del usuario (2026-10-25), que ajustan el plan de abajo:
+- Disparo: pantalla `/dashboard/voice-calls` y API `POST /voice/outbound-calls`. El nodo "Llamar" y
+  las campañas, más adelante.
+- **Sin tope propio de salientes:** cuentan para `VOICEBOT_MAX_CALLS` del voicebot; si se pasa,
+  llega `busy` y pci reintenta sin contar ronda. No existe `VOICE_OUTBOUND_MAX_CONCURRENT`.
+- Lista de prefijos permitidos: `VOICEBOT_OUTBOUND_ALLOWED_PREFIXES` (vacía = cerrado). La espera
+  entre intentos es `VOICEBOT_OUTBOUND_RETRY_DELAY_MS` (default 60000). Llevan el prefijo
+  `VOICEBOT_` por la convención del catálogo (BE-INT-12).
+- Audio + dígito solo por la API; la saliente arranca sin usuario (DA5).
+
+### Plan aprobado (texto original)
 
 Alcance (usuario, 2026-10-25): salientes desde pci (§6) + sink HTTP multi-llamada (§4). DA9 (sacar
 las páginas de prueba) es del voicebot. Lo marcado **[decide el usuario]** son opciones, no

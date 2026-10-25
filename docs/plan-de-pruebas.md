@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **721 casos** · Backend 417 · Chatbot 156 · Frontend 148 · de los cuales **396 son `P0`**
-(368 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **730 casos** · Backend 426 · Chatbot 156 · Frontend 148 · de los cuales **405 son `P0`**
+(377 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **417** |
+| **Backend (§1)** | | **426** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -151,6 +151,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.26 Integración voicebot: internos | 🔴 P0 | 10 |
 | 1.27 Integración voicebot: canal de voz | 🔴 P0 | 34 |
 | 1.28 Integración voicebot: flujos de voz | 🔴 P0 | 6 |
+| 1.29 Integración voicebot: salientes | 🔴 P0 | 9 |
 | **Chatbot (§2)** | | **156** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
 | 2.2 Arranque de flujo | 🔴 P0 | 5 |
@@ -946,6 +947,23 @@ menú si mostrarla. Spec: `apps/api/test/voice-flows.e2e-spec.ts`.
 | BE-VFLW-04 | Nodos y subflujos por canal | Un flujo de voz con `delay` (o `notification`, `ticket_query`, `device_validation`) → 400; uno de texto con `voice_identify` → 400; un subflujo de otro canal → 400 en los dos sentidos |
 | BE-VFLW-05 | Asignar empresas a un flujo de voz | No guarda roles; el flujo de voz de inicio es uno por empresa |
 | BE-VFLW-06 | Variantes de un flujo de voz | Heredan `channel: voice`; un origen de otro canal → 404 |
+
+## 1.29 Integración voicebot: salientes (`VoiceOutboundService`, H5, C63)
+
+Vía: el broker real de la app; el test hace de voicebot (consume `voicebot.commands`, responde por
+`replyTo` y publica `call.outbound.result` en `voice.events`). `test/voice-outbound.e2e-spec.ts`.
+
+| ID | Escenario | Resultado esperado |
+|----|-----------|--------------------|
+| BE-OUT-01 | Seguridad de las salientes | `VOICEBOT_OUTBOUND_ALLOWED_PREFIXES` vacía → 403 ("cerradas"); un número fuera de los prefijos → 403; número inválido o sin flujo ni audio → 400; sin `voice_outbound:create` → 403; con el voicebot apagado → 404. Nunca se publica nada |
+| BE-OUT-02 | Saliente con flujo | `call.outbound` con `callId` `out-<uuid>` generado por pci, `rotationKey` = id de la saliente y `resetRotation` en el primer intento; un flujo de otra empresa → 400; listado, detalle y `flow-options` solo de la empresa activa |
+| BE-OUT-03 | Rotación [C34] | `no-answer` agenda el reintento a `VOICEBOT_OUTBOUND_RETRY_DELAY_MS`; el barrido publica el siguiente intento con otro `callId` y `resetRotation: false`; `answered` termina (`done`) |
+| BE-OUT-04 | Outcomes | `busy` reintenta sin contar ronda; sin flujo, `digit` termina; `no-answer` en `lastAttempt` → `failed`; `exhausted` → `failed` |
+| BE-OUT-05 | Cancelar y rechazo | Cancelar con un intento en curso manda `call.hangup {v, callId, resetRotation: true}` y no reintenta; un voicebot que rechaza el comando → intento `error` y reintento |
+| BE-OUT-06 | `start` de una saliente | Abre `VoiceCall` en la empresa de la saliente (`direction outbound`, `extension` null, `calledNumber` = el marcado) y corre su flujo; un `out-*` que pci no lanzó → `unknown_call` |
+| BE-OUT-07 | Flujo de la saliente que dejó de ser de la empresa | Charla libre (`delegate`), nunca el flujo de inicio |
+| BE-OUT-08 | "Probar conexión" y "Re-provisionar SIP" | `health.check` y `sip.provision` por `voicebot.commands`; informa si la `configVersion` del voicebot está al día; un admin de empresa (no sistema) → 403 |
+| BE-OUT-09 | Voicebot caído | "Probar conexión" responde `ok: false` con el motivo a los 5 s, sin tirar |
 
 ## 2.1 Pipeline de un mensaje (`handleMessage`)
 

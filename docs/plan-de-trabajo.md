@@ -1472,7 +1472,7 @@ Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de ve
 configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
 voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 [`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
-**contrato de integración** (vigente: 1.22, 2026-10-25) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+**contrato de integración** (vigente: 1.24, 2026-10-25) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
@@ -1506,7 +1506,10 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   InvGate, `employee_number`) ✅. H4b (modo de habla por nodo, menú sin LLM, `context` con tope,
   transferir a interno) ✅. Prueba integrada en vivo aprobada; pendiente que no bloquea: el
   transfer a interno no se probó en vivo con MicroSIP.
-- ⏳ **H5 — Salientes y "probar conexión"**. No arranca hasta que lo coordine el coordinador.
+- 🔄 **H5 — Salientes y "probar conexión"** (C63, 2026-10-25): salientes desde pci (pantalla
+  `/dashboard/voice-calls` + API, rotación y reintentos, permiso `voice_outbound`, prefijos
+  permitidos) y "Probar conexión" / "Re-provisionar SIP" en `/settings`. Código de pci listo;
+  falta la prueba en vivo. Ver `docs/voicebot/plan-pci.md`.
 
 ---
 

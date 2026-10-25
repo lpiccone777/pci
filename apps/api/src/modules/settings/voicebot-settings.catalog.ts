@@ -301,7 +301,8 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     restartsStt: true,
     description:
       'amqp: el stt publica en RabbitMQ. http: el stt le hace POST al voicebot (exige el secreto ' +
-      'JWT). Define también por dónde publica el stt (STT_SINK), así que cambiarlo reinicia el stt.',
+      'JWT), con varias llamadas a la vez. Define también por dónde publica el stt (STT_SINK), así que ' +
+      'cambiarlo reinicia el stt.',
   }),
   gated({
     key: 'STT_HTTP_JWT_SECRET',
@@ -481,7 +482,9 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     label: 'URL del POST del stt',
     defaultValue: '',
     placeholder: 'http://<voicebot>:3001/stt/transcripts',
-    description: 'Solo con entrada http: adónde el stt le hace POST al voicebot.',
+    description:
+      'Solo con entrada http: adónde el stt le hace POST al voicebot. Es la base: el stt agrega ' +
+      '?room=<llamada> en cada una, así una sola URL sirve para varias llamadas a la vez (§4).',
   }),
   stt({
     key: 'STT_HTTP_TIMEOUT',
