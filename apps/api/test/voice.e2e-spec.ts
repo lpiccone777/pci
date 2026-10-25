@@ -245,6 +245,19 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect((await callOf(callId))!.conversation.currentNodeId).toBe('apellido');
     });
 
+    it('BE-VOZ-32: un start repetido de la misma llamada no es entrada del usuario: responde lo mismo que el primero [C59]', async () => {
+      const callId = uid();
+      const first = await start(callId);
+      // Parada en el input del nombre: un segundo start no tiene que tomarse como respuesta.
+      const again = await start(callId);
+      expect(again.actions).toEqual(first.actions);
+      expect(again.turnId).not.toBe(first.turnId);
+      const conv = (await callOf(callId))!.conversation;
+      expect(conv.currentNodeId).toBe('nombre');
+      expect((conv.flowState as Record<string, unknown>).nombre).toBeUndefined();
+      expect(literals(await say(callId, 'Ana'))).toEqual(['¿Y tu apellido?']);
+    });
+
     it('BE-VOZ-07: previous y call.ended guardan lo que se oyó; call.ended cierra la conversación', async () => {
       const callId = uid();
       const startTurn = uid();

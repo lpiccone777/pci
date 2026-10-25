@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.18**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.19**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -451,6 +451,12 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   con texto. El menú la usa primero para elegir la opción por número; en los demás nodos se suma
   al texto como si se hubiera dicho el dígito. El mensaje del usuario queda "[tecla N]". Test
   BE-VOZ-31.
+
+- [x] **Start repetido (C59, contrato 1.19):** un voicebot reiniciado a mitad de llamada reatendió
+  el mismo room y mandó un segundo `start` con el mismo callId; pci lo tomó como respuesta al menú.
+  Ahora un `start` de una llamada que ya tuvo start se ignora, se responde lo mismo que al primero
+  y se loguea. (El voicebot, por su lado, ya no reatiende llamadas en curso tras un reinicio.)
+  Test BE-VOZ-32.
 
 ### Fuera de H4 (anotado)
 

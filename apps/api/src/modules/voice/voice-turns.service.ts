@@ -126,6 +126,33 @@ export class VoiceTurnsService implements OnModuleInit {
       const done = await this.prisma.voiceTurn.findUnique({ where: { id: req.turnId } });
       if (done?.response) return done.response as unknown as VoiceTurnReply;
 
+      // Un `start` repetido para una llamada que ya tuvo start [C59] no es entrada del usuario:
+      // se ignora, se responde lo mismo que al primero (con el turnId nuevo) y se loguea. Pasó con
+      // un voicebot reiniciado a mitad de llamada que reatendió el mismo room.
+      if (req.kind === 'start') {
+        const first = await this.prisma.voiceTurn.findFirst({
+          where: { callId: call.id, kind: 'start', superseded: false },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (first?.response) {
+          this.logger.warn(
+            `[voz] llamada ${call.id}: start repetido (turno ${req.turnId}, el primero fue ${first.id}); se ignora y se repite la respuesta del primero.`,
+          );
+          const reply = { ...(first.response as unknown as VoiceTurnReply), turnId: req.turnId, superseded: false };
+          await this.prisma.voiceTurn.create({
+            data: {
+              id: req.turnId,
+              callId: call.id,
+              kind: 'start',
+              response: reply as unknown as Prisma.InputJsonValue,
+              committed: false,
+              durationMs: Date.now() - startedAt,
+            },
+          });
+          return reply;
+        }
+      }
+
       if (req.previous?.turnId) await this.applyHeard(req.previous);
 
       let superseded = false;
