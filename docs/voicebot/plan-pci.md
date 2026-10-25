@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.21**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.22**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -508,6 +508,18 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   cayó en ese primer reintento y la persona cortó antes de llegar a la fuente. Solo voz: por
   WhatsApp el menú de texto no tiene reintento (el clasificador con LLM manda directo a la charla
   libre en el primer no-match). Test BE-VOZ-25.
+
+- [x] **Primer audio con la llamada atendida (C62, contrato 1.22):** clave nueva
+  `VOICEBOT_ANSWER_MARGIN_MS` (SIP entrante, default 500): margen desde que la llamada pasa a
+  `active`. `VOICEBOT_SIP_INBOUND_GREET_DELAY_MS` cambia de sentido: es el tope desde que entra el
+  participante, por si `active` nunca llega (default 8000; antes era el mínimo, 2000). Solo
+  catálogo: lo aplica el voicebot.
+
+- [x] **Log de las tools por voz (2026-10-25, prueba en vivo de las 11:26):** cuando vence el tiempo
+  el log decía "0 vueltas"; ahora cuenta las vueltas igual y suma la duración de cada paso del LLM
+  y el mensaje de error de una tool que falla. En esa llamada todos los delegate llegaron al tope
+  de 7 s: con MiniMax-M3.1-Flash razonando, cada paso del LLM tarda ~2,5–3 s y la cadena geocoding
+  → forecast no entra.
 
 ### Tool calling en el LLM de voz — DESCARTADO por el usuario (2026-10-25)
 

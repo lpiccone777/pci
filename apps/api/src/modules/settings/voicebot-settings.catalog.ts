@@ -884,17 +884,32 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     secret: true,
     description: 'Se guarda cifrada.',
   }),
+  // Primer audio [C62]: espera a que la llamada esté atendida de verdad (`sip.callStatus=active`)
+  // más el margen; `SIP_INBOUND_GREET_DELAY_MS` es solo el tope por si `active` nunca llega.
+  voicebot('VOICEBOT_ANSWER_MARGIN_MS', {
+    key: 'VOICEBOT_ANSWER_MARGIN_MS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (SIP entrante)',
+    label: 'Margen después de atender (ms)',
+    defaultValue: '500',
+    min: 0,
+    max: 10000,
+    integer: true,
+    description:
+      'Cuánto espera el bot, desde que la llamada pasa a atendida, antes del primer audio. Así el ' +
+      'principio del saludo no se pierde mientras el teléfono termina de conectar.',
+  }),
   voicebot('SIP_INBOUND_GREET_DELAY_MS', {
     key: 'VOICEBOT_SIP_INBOUND_GREET_DELAY_MS',
     type: 'number',
     group: 'Mensajería: Voicebot (SIP entrante)',
-    label: 'Mínimo antes del primer audio (ms)',
-    defaultValue: '2000',
+    label: 'Tope antes del primer audio (ms)',
+    defaultValue: '8000',
     min: 0,
     max: 10000,
     description:
-      'Mínimo, en ms, entre atender la llamada y el primer audio del bot. Con pci, el pedido del saludo ' +
-      'sale al atender; sin pci, es la espera antes del saludo local.',
+      'Máximo, en ms, desde que entra la llamada hasta el primer audio del bot, por si nunca llega la ' +
+      'señal de atendida. Normalmente el audio sale antes: al atender, más el margen de arriba.',
   }),
 
   // --- SIP saliente --- (caliente: actualiza el trunk existente)
