@@ -678,7 +678,7 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(llm.calls).toHaveLength(0);
     });
 
-    it('BE-VOZ-25: menú por voz sin LLM: elige por etiqueta, repite guiado si no entiende y a la segunda delega', async () => {
+    it('BE-VOZ-25: menú por voz sin LLM: elige por etiqueta, repite guiado (ofreciendo hacer una consulta) si no entiende y a la segunda delega', async () => {
       const { ext } = await voiceSetup(
         'voz-menu2',
         [
@@ -699,6 +699,7 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(again.actions).toHaveLength(1);
       expect(again.actions[0]).toMatchObject({ type: 'say', mode: 'guided' });
       expect(again.actions[0].instruction).toContain('1. Soporte técnico; 2. Ventas');
+      expect(again.actions[0].instruction).toContain('preguntale si prefiere hacer una consulta');
       const delegated = await sayOn(other, ext, 'tampoco');
       expect(delegated.actions[0]).toMatchObject({ type: 'say', mode: 'delegate' });
       expect(llm.calls).toHaveLength(0);

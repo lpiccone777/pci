@@ -2311,7 +2311,9 @@ export class ConversationsService implements OnModuleInit {
         // el LLM antes de asumir que es una opción inválida — solo se gasta esta
         // llamada acá, nunca en el camino feliz de un match literal.
         // Por voz no hay LLM de pci en el camino del menú (plan H4b): match determinístico por
-        // número o etiqueta; si no entiende, lo repite una vez guiado y a la segunda delega.
+        // número o etiqueta; si no entiende, lo repite una vez guiado y a la segunda delega. Al
+        // repetirlo ofrece también hacer una consulta (usuario, 2026-10-25): esa consulta es la
+        // que va a la charla libre con la fuente de verdad en el turno siguiente.
         if (channel === 'voice') {
           const idx = matchMenuOption(body, displayOptions.map((o: any) => String(o.label ?? '')));
           const voiced = idx === null ? undefined : displayOptions[idx];
@@ -2327,8 +2329,8 @@ export class ConversationsService implements OnModuleInit {
             return {
               guided: {
                 instruction:
-                  'La persona no eligió ninguna opción del menú. Decile en una frase que no entendiste y ' +
-                  `repetile las opciones: ${labels}.`,
+                  'La persona no eligió ninguna opción del menú. Decile en una frase que no entendiste, ' +
+                  `repetile las opciones (${labels}) y preguntale si prefiere hacer una consulta.`,
               },
               waitForInput: true,
               flowState,

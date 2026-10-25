@@ -501,6 +501,14 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   - Tests: SRC-TOOLS-01..03, BE-VOZ-34 (MCP falso con `geocoding` y `weather_forecast`) y
     unitarios del loop y de la traducción por proveedor.
 
+- [x] **Menú por voz: el reintento ofrece hacer una consulta (usuario, 2026-10-25, sin cambio de
+  contrato):** se mantiene la regla de dos intentos. En el primer no-match, el `guided` que repite
+  las opciones pregunta también si prefiere hacer una consulta; el segundo no-match sigue yendo a
+  `delegate` con la fuente (C61). Motivo: en la prueba en vivo de las 11:06 la pregunta del clima
+  cayó en ese primer reintento y la persona cortó antes de llegar a la fuente. Solo voz: por
+  WhatsApp el menú de texto no tiene reintento (el clasificador con LLM manda directo a la charla
+  libre en el primer no-match). Test BE-VOZ-25.
+
 ### Tool calling en el LLM de voz — DESCARTADO por el usuario (2026-10-25)
 
 Queda como registro de lo que se propuso; no se implementa.
