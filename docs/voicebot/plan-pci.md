@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.19**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.20**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -457,6 +457,15 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   Ahora un `start` de una llamada que ya tuvo start se ignora, se responde lo mismo que al primero
   y se loguea. (El voicebot, por su lado, ya no reatiende llamadas en curso tras un reinicio.)
   Test BE-VOZ-32.
+
+- [x] **voiceLiterals (C60, contrato 1.20):** `GET /integrations/voicebot/config` trae
+  `voiceLiterals`: los `say literal` fijos de los flujos de voz activos, para que el voicebot los
+  sintetice de antemano. Incluye textos de nodos en literal, el menú con y sin "Volver", el aviso de
+  opción no disponible y las preguntas y reintentos de identificación. No incluye los guided ni los
+  que tienen `{{variables}}`, y no repite. El motor arma esos textos con las mismas funciones
+  (`voice/voice-literals.ts`), así la lista no se desfasa. Guardar, borrar o reasignar un flujo de
+  voz sube la versión y publica `["flujos-voz"]`. Con el flujo de hoy son 18 textos (~1 KB). Tests
+  BE-INT-34 y unitarios.
 
 ### Fuera de H4 (anotado)
 

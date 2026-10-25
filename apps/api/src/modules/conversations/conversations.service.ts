@@ -21,6 +21,13 @@ import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../settings/voicebot-settings
 import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
 import { nameMatches, normalizeDocument } from '../voice/voice-identify.util';
 import { matchMenuOption } from '../voice/voice-menu.util';
+import {
+  VOICE_TEXTS,
+  identifyAskDocument,
+  identifyRetryDocument,
+  menuUnavailableNotice,
+  spokenMenuText,
+} from '../voice/voice-literals';
 
 /**
  * Cola propia para /conversations/simulate, separada de `whatsapp.incoming`. El
@@ -216,8 +223,7 @@ function referencedFacts(text: string, flowState: Record<string, any>): Record<s
  * con un texto legible y la llamada sigue.
  */
 const NEEDS_IDENTITY_NODES = new Set(['ticket_create', 'transfer_agent']);
-const VOICE_NEEDS_IDENTITY_TEXT =
-  'Para hacer ese trámite primero tengo que identificarte, y por teléfono todavía no puedo hacerlo.';
+const VOICE_NEEDS_IDENTITY_TEXT = VOICE_TEXTS.needsIdentity;
 
 /** Un menú apilado en `flowState.__menuStack` — ver `navigateMenuBack`. */
 interface MenuStackEntry {
@@ -2157,7 +2163,7 @@ export class ConversationsService implements OnModuleInit {
           : (configuredGreeting ??
             (identity.isKnown
               ? `¡Hola ${user?.firstName || ''}! Bienvenido de nuevo.`
-              : '¡Hola! Bienvenido. ¿En qué puedo ayudarte?'));
+              : VOICE_TEXTS.unknownGreeting));
 
         // Dos salidas: conocido / desconocido. El editor visual las dibuja como
         // aristas desde los handles `known` / `unknown`, así que se enruta por ahí;
@@ -2246,11 +2252,7 @@ export class ConversationsService implements OnModuleInit {
           // del mensaje interactivo real — listarlas dos veces sería redundante.
           const menuText = interactive
             ? (data.text ?? '').trim() || 'Elegí una opción:'
-            : (
-                (data.text ?? '') +
-                '\n' +
-                displayOptions.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
-              ).trim();
+            : spokenMenuText(data.text, displayOptions);
           return { responseText: notice ? `${notice}\n\n${menuText}` : menuText, interactive, waitForInput: true, flowState };
         };
 
@@ -2271,7 +2273,7 @@ export class ConversationsService implements OnModuleInit {
             this.logger.warn(
               `Flujo ${flowId}: la opción "${opt.label}" del menú '${node.id}' no tiene salida conectada; se repite el menú.`,
             );
-            return renderMenu(`La opción "${opt.label}" no está disponible.`);
+            return renderMenu(menuUnavailableNotice(opt.label));
           }
           delete flowState.__awaiting;
           flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
@@ -2367,7 +2369,7 @@ export class ConversationsService implements OnModuleInit {
         if (flowState.__awaiting !== node.id) {
           flowState.__awaiting = node.id;
           return {
-            responseText: data.text || 'Por favor, ingresá el dato solicitado.',
+            responseText: data.text || VOICE_TEXTS.inputDefault,
             waitForInput: true,
             flowState,
           };
@@ -3309,9 +3311,9 @@ export class ConversationsService implements OnModuleInit {
     const label = data.idLabel === 'legajo' ? 'legajo' : 'documento';
     const field = VOICE_IDENTIFY_FIELDS.includes(data.idField) ? data.idField : 'employee_number';
     const maxAttempts = Number(data.maxAttempts) > 0 ? Number(data.maxAttempts) : VOICE_IDENTIFY_DEFAULT_ATTEMPTS;
-    const askDocument = data.text?.trim() || `Para identificarte, decime tu número de ${label}.`;
-    const askName = data.namePrompt?.trim() || 'Gracias. Ahora decime tu nombre y apellido.';
-    const retry = data.retryText?.trim() || `No pude encontrarte con esos datos. Probemos de nuevo: decime tu número de ${label}.`;
+    const askDocument = data.text?.trim() || identifyAskDocument(label);
+    const askName = data.namePrompt?.trim() || VOICE_TEXTS.identifyAskName;
+    const retry = data.retryText?.trim() || identifyRetryDocument(label);
 
     const exit = (recognized: boolean): NodeExecutionResult => {
       delete flowState.__awaiting;
@@ -3319,8 +3321,8 @@ export class ConversationsService implements OnModuleInit {
       return { sourceHandle: recognized ? 'recognized' : 'unrecognized', flowState };
     };
 
-    const askNameOnly = data.namePrompt?.trim() || 'Para identificarte, decime tu nombre y apellido.';
-    const retryNameOnly = 'No te encontré con ese nombre. Decime de nuevo tu nombre y apellido, por favor.';
+    const askNameOnly = data.namePrompt?.trim() || VOICE_TEXTS.identifyAskNameOnly;
+    const retryNameOnly = VOICE_TEXTS.identifyRetryNameOnly;
 
     // Primera llegada: pedir el documento (con InvGate) o directamente el nombre (C55).
     if (flowState.__awaiting !== node.id) {
@@ -3495,7 +3497,7 @@ export class ConversationsService implements OnModuleInit {
     }
     if (!/^[0-9A-Za-z+*#]{1,32}$/.test(extension)) {
       this.logger.warn(`[${tenantId}] transfer_extension '${node.id}': sin interno válido para transferir; el flujo sigue.`);
-      return { responseText: data.failText?.trim() || 'No pude transferirte en este momento.' };
+      return { responseText: data.failText?.trim() || VOICE_TEXTS.transferFail };
     }
     return { responseText: data.text?.trim() || undefined, transferExtension: extension, endConversation: true };
   }

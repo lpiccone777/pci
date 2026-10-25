@@ -413,6 +413,36 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect(event.data).toMatchObject({ sections: ['llm'], restart: { stt: false } });
     });
 
+    it('BE-INT-34: voiceLiterals [C60]: los literales de los flujos de voz activos viajan en la config; guardar un flujo de voz sube la versión y publica ["flujos-voz"]', async () => {
+      await patchSetting('VOICEBOT_ENABLED', 'true').expect(200);
+      const nodes = [
+        { id: 's', type: 'start', data: { text: 'Hola, soporte e2e.' }, position: { x: 0, y: 0 } },
+        { id: 'm', type: 'message', data: { text: 'Mensaje fijo e2e.' }, position: { x: 0, y: 0 } },
+      ];
+      const created = await withAuth(http(t).post('/voice-flows'), adminToken, systemTenantId)
+        .send({ name: `voz literales ${Date.now()}`, nodes, edges: [] })
+        .expect(201);
+      const afterCreate = await version();
+      const literals = (await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.voiceLiterals as string[];
+      expect(literals).toEqual(expect.arrayContaining(['Hola, soporte e2e.', 'Mensaje fijo e2e.']));
+
+      await withAuth(http(t).patch(`/voice-flows/${created.body.id}`), adminToken, systemTenantId)
+        .send({ nodes: [nodes[0], { ...nodes[1], data: { text: 'Mensaje cambiado e2e.' } }] })
+        .expect(200);
+      const after = await version();
+      expect(after).toBe(afterCreate + 1);
+      const event = await waitForEvent(after);
+      expect(event.data).toMatchObject({ sections: ['flujos-voz'], restart: { stt: false } });
+      const updated = (await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.voiceLiterals as string[];
+      expect(updated).toContain('Mensaje cambiado e2e.');
+      expect(updated).not.toContain('Mensaje fijo e2e.');
+
+      // Un flujo inactivo no aporta literales.
+      await withAuth(http(t).patch(`/voice-flows/${created.body.id}`), adminToken, systemTenantId).send({ isActive: false }).expect(200);
+      expect((await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.voiceLiterals).not.toContain('Mensaje cambiado e2e.');
+      await t.prisma.flow.delete({ where: { id: created.body.id } });
+    });
+
     it('BE-INT-18: los tokens de servicio no son configuración servida: no suben la versión', async () => {
       const before = await version();
       await patchSetting('STT_SERVICE_TOKEN', STT_TOKEN).expect(200);

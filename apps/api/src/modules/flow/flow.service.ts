@@ -1,6 +1,8 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -13,6 +15,7 @@ import { isValidScheduleEntryType } from '../schedule-calendar/schedule-entry-ty
 import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
 import { isSystemSuperAdmin } from '../../common/system-superadmin';
 import { FLOW_RESOURCE, FlowChannel, TEXT_UNSUPPORTED_NODES, VOICE_UNSUPPORTED_NODES } from './flow-channel';
+import { IntegrationsConfigService } from '../integrations/integrations-config.service';
 
 /** Mismo nodo `start` por defecto que el editor arma para un flujo nuevo (ver `isNew` en apps/web/.../flows/edit/page.tsx). */
 const BLANK_VARIANT_NODES = [
@@ -29,11 +32,28 @@ type CallerUserTenant = { userId?: string; tenantId: string; roleId: string } | 
 
 @Injectable()
 export class FlowService {
+  private readonly logger = new Logger(FlowService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly scheduleCalendarService: ScheduleCalendarService,
     private readonly config: ConfigService,
+    // Opcional para los tests unitarios que arman el servicio a mano.
+    @Optional() private readonly integrations?: IntegrationsConfigService,
   ) {}
+
+  /**
+   * Un flujo de voz cambió: sube la versión de la config del voicebot y publica `config.changed`
+   * (`voiceLiterals`, C60). Que falle el aviso no deshace el guardado.
+   */
+  private async notifyVoiceFlows(channel: FlowChannel, what: string): Promise<void> {
+    if (channel !== 'voice' || !this.integrations) return;
+    try {
+      await this.integrations.notifyVoiceFlowsChanged(what);
+    } catch (err) {
+      this.logger.warn(`No se pudo avisar el cambio del flujo de voz (${what}): ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   async create(
     data: CreateFlowDto,
@@ -79,6 +99,7 @@ export class FlowService {
     if (assignments?.length) {
       await this.applyTenantAssignment(flow.id, assignments, !!isStart);
     }
+    await this.notifyVoiceFlows(channel, `flujo ${flow.id}`);
 
     return this.findById(flow.id);
   }
@@ -538,6 +559,7 @@ export class FlowService {
       where: { id },
       data: updateData,
     });
+    await this.notifyVoiceFlows(channel, `flujo ${flow.id}`);
 
     return this.findById(flow.id);
   }
@@ -550,6 +572,7 @@ export class FlowService {
     // (decisión explícita "compartido = compartido", misma limitación conocida que la edición
     // de un flujo compartido). Alcanza con que el flujo sea de una empresa del usuario.
     await this.prisma.flow.delete({ where: { id } });
+    await this.notifyVoiceFlows(channel, `flujo ${id} eliminado`);
     return { message: 'Flujo eliminado' };
   }
 
@@ -573,6 +596,7 @@ export class FlowService {
     await this.assertAssignableTenants(assignments, userTenant?.userId, isSuperAdmin);
 
     await this.applyTenantAssignment(flowId, assignments, isStart);
+    await this.notifyVoiceFlows(channel, `flujo ${flowId} (empresas)`);
     return this.findById(flowId);
   }
 
@@ -872,6 +896,7 @@ export class FlowService {
       },
     });
     await this.prisma.flowAlternative.create({ data: { baseFlowId, type, variantFlowId: variant.id } });
+    await this.notifyVoiceFlows(channel, `variante ${type} de ${baseFlowId}`);
     return this.findById(variant.id);
   }
 
@@ -889,6 +914,7 @@ export class FlowService {
     if (!alternative) throw new NotFoundException('No hay variante de ese tipo para este flujo');
 
     await this.prisma.flow.delete({ where: { id: alternative.variantFlowId } });
+    await this.notifyVoiceFlows(channel, `variante ${type} de ${baseFlowId} eliminada`);
     return { deleted: true };
   }
 

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SecretsCipher } from '../../config/secrets.cipher';
 import { BrokerService } from '../broker/broker.service';
+import { collectVoiceLiterals } from '../voice/voice-literals';
 import {
   IntegrationConsumer,
   SETTINGS_CATALOG,
@@ -32,6 +33,9 @@ export const CONFIG_CHANGED_ROUTING_KEY = 'config.changed';
 /** Id de los internos en `config.changed.sections` (no son un grupo del catálogo). */
 export const EXTENSIONS_SECTION_ID = 'internos';
 
+/** Id de los flujos de voz en `config.changed.sections` (por `voiceLiterals`, C60). */
+export const VOICE_FLOWS_SECTION_ID = 'flujos-voz';
+
 /** Única fila de `IntegrationConfigVersion` (la crea la migración). */
 const VERSION_ID = 'voicebot';
 
@@ -60,12 +64,17 @@ export class IntegrationsConfigService {
 
   /** Contrato §3.1, con los internos de §3.5 en `extensions`. */
   async voicebotConfig() {
-    const [values, version, extensions] = await Promise.all([
+    const [values, version, extensions, voiceFlows] = await Promise.all([
       this.resolveValues(),
       this.currentVersion(),
       this.prisma.extension.findMany({
         orderBy: { number: 'asc' },
         include: { tenant: { select: { deletedAt: true } } },
+      }),
+      this.prisma.flow.findMany({
+        where: { channel: 'voice', isActive: true },
+        orderBy: { createdAt: 'asc' },
+        select: { nodes: true, edges: true },
       }),
     ]);
     const settings = this.mapFor('voicebot', values);
@@ -84,6 +93,9 @@ export class IntegrationsConfigService {
         flowId: e.flowId,
         enabled: e.enabled && !e.tenant.deletedAt,
       })),
+      // Textos que los flujos de voz activos dicen en literal [C60]: el voicebot los sintetiza
+      // de antemano. Cambia con cada flujo de voz guardado (sube `version`).
+      voiceLiterals: collectVoiceLiterals(voiceFlows),
     };
   }
 
@@ -128,6 +140,11 @@ export class IntegrationsConfigService {
     ];
     const what = changed.length === 1 ? changed[0].key : `${changed.length} claves`;
     await this.publishChange(sections, changed.some((d) => !!d.restartsStt), what);
+  }
+
+  /** Lo llama `FlowService` al guardar, borrar o reasignar un flujo de voz (`voiceLiterals`, C60). */
+  async notifyVoiceFlowsChanged(what: string): Promise<void> {
+    await this.publishChange([VOICE_FLOWS_SECTION_ID], false, what);
   }
 
   /** Lo llama `ExtensionsService` después de crear, editar o borrar un interno (contrato §3.5). */
