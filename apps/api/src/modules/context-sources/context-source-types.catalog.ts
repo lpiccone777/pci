@@ -109,10 +109,14 @@ export const CONTEXT_SOURCE_TYPES: ContextSourceTypeDefinition[] = [
         type: 'mcpTools',
         label: 'Tools a invocar',
         helpText:
-          'En cada consulta se invocan TODAS las tools de esta lista, en paralelo, y sus ' +
-          'resultados se le pasan al LLM como contexto. En los argumentos, "{{pregunta}}" se ' +
-          'reemplaza por el mensaje del usuario. Usá "Descubrir tools" para traer las que ' +
-          'expone el servidor.',
+          'El LLM del flujo puede usar las tools de esta lista: elige cuál llamar y con qué ' +
+          'argumentos, y puede encadenarlas (por ejemplo, buscar las coordenadas de una ciudad ' +
+          'y con ellas pedir el pronóstico). Un argumento con valor (un texto, un número ' +
+          'distinto de 0, true o una lista con elementos) queda fijo: el LLM no lo ve y se ' +
+          'manda siempre así. Los que están vacíos, en 0 o con "{{pregunta}}" los completa el ' +
+          'LLM. Si el proveedor LLM no admite tools (OpenCode Go), se invocan todas en paralelo ' +
+          'y "{{pregunta}}" se reemplaza por el mensaje del usuario. Usá "Descubrir tools" ' +
+          'para traer las que expone el servidor.',
       },
     ],
   },
