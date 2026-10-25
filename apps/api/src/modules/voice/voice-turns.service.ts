@@ -19,7 +19,7 @@ import {
 } from './voice.types';
 import { DELEGATED_PLACEHOLDER } from './voice-literals';
 import { VoiceOutboundService } from './voice-outbound.service';
-import { CallOutboundResult } from './voice-outbound.types';
+import { CallOutboundResult, OUTBOUND_CALL_ID_PREFIX } from './voice-outbound.types';
 
 /** Vencimiento del lease del turno: si el proceso que lo tomó se cae, otro lo retoma. */
 const TURN_LEASE_MS = 15_000;
@@ -113,7 +113,8 @@ export class VoiceTurnsService implements OnModuleInit {
       !!req.turnId &&
       ['start', 'user', 'continue'].includes(req.kind);
     if (!ok) throw new VoiceTurnError('invalid_request', 'faltan callId, turnId o un kind válido');
-    if (req.kind === 'start' && !req.call?.extension) {
+    // Una saliente de pci (`out-*`) llega con `extension: null` [C63]: la resuelve su intento.
+    if (req.kind === 'start' && !req.call?.extension && !req.callId.startsWith(OUTBOUND_CALL_ID_PREFIX)) {
       throw new VoiceTurnError('invalid_request', 'kind "start" sin call.extension');
     }
     if (req.dtmf != null && req.dtmf !== '' && !/^[0-9*#]$/.test(req.dtmf)) {
@@ -197,7 +198,8 @@ export class VoiceTurnsService implements OnModuleInit {
         conversation,
         call.tenantId,
         heardInput,
-        call.callerNumber,
+        // El número del otro lado: en una saliente es el marcado [C63].
+        call.direction === 'outbound' ? call.calledNumber : call.callerNumber,
         startFlow ?? undefined,
         dtmf,
       );
@@ -248,7 +250,14 @@ export class VoiceTurnsService implements OnModuleInit {
    * se resolvió (flujo del interno, flujo de voz de inicio de la empresa o charla libre): un flujo
    * asignado a otra empresa que la del interno no se toma nunca, y sin este log no se ve.
    */
-  private async resolveCallFlow(call: { id: string; extensionId: string | null; extensionNumber: string | null; tenantId: string }) {
+  private async resolveCallFlow(call: {
+    id: string;
+    extensionId: string | null;
+    extensionNumber: string | null;
+    tenantId: string;
+    outboundAttemptId?: string | null;
+  }) {
+    if (call.outboundAttemptId) return this.resolveOutboundFlow(call.id, call.tenantId, call.outboundAttemptId);
     const extension = call.extensionId
       ? await this.prisma.extension.findUnique({ where: { id: call.extensionId }, select: { tenantId: true, flowId: true } })
       : null;
@@ -263,6 +272,35 @@ export class VoiceTurnsService implements OnModuleInit {
       const why = extension?.flowId === flow.id ? 'el flujo del interno' : 'el flujo de voz de inicio de la empresa (o su variante)';
       this.logger.log(`${where}: flujo "${flow.name}" (${flow.id}) por ${why}.${ignoredOwn}`);
     }
+    return flow;
+  }
+
+  /**
+   * Saliente de pci [C63]: el flujo de la saliente, si sigue siendo un flujo de voz activo de la
+   * empresa (o su variante por feriado/guardia). Si se borró o se desasignó, charla libre de esa
+   * empresa, como DA8 (3). Nunca el flujo de inicio ni uno de otra empresa.
+   */
+  private async resolveOutboundFlow(callId: string, tenantId: string, attemptId: string) {
+    const attempt = await this.prisma.voiceOutboundAttempt.findUnique({
+      where: { id: attemptId },
+      select: { outbound: { select: { id: true, flowId: true } } },
+    });
+    const flowId = attempt?.outbound.flowId ?? null;
+    const where = `[voz] saliente ${callId} (${attempt?.outbound.id ?? '?'}, empresa ${tenantId})`;
+    if (!flowId) {
+      this.logger.log(`${where}: sin flujo → charla libre (delegate).`);
+      return null;
+    }
+    const flow = await this.flows.findVoiceFlowForExtension({ tenantId, flowId });
+    const ok =
+      !!flow &&
+      (flow.id === flowId ||
+        !!(await this.prisma.flowAlternative.findFirst({ where: { baseFlowId: flowId, variantFlowId: flow.id } })));
+    if (!ok) {
+      this.logger.warn(`${where}: el flujo ${flowId} ya no es un flujo de voz activo de la empresa → charla libre (delegate).`);
+      return null;
+    }
+    this.logger.log(`${where}: flujo "${flow!.name}" (${flow!.id}) de la saliente.`);
     return flow;
   }
 
@@ -386,6 +424,56 @@ export class VoiceTurnsService implements OnModuleInit {
   // --- llamada, serialización y lease ---
 
   /**
+   * Saliente de pci [C63]: `extension` null; la empresa sale de la saliente (la activa de quien la
+   * lanzó), no de un interno. Arranca sin usuario, como una entrante [DA5]. Un `out-*` que pci no
+   * lanzó no abre nada (`unknown_call`): el voicebot corta.
+   */
+  private async openOutboundCall(
+    callId: string,
+    info: VoiceCallInfo | undefined,
+    startedAt?: string,
+  ): Promise<VoiceCallWithConversation> {
+    const attempt = await this.prisma.voiceOutboundAttempt.findUnique({
+      where: { id: callId },
+      include: { outbound: { include: { tenant: { select: { deletedAt: true } } } } },
+    });
+    if (!attempt) throw new VoiceTurnError('unknown_call', `la saliente ${callId} no la lanzó pci`);
+    const { outbound } = attempt;
+    if (outbound.tenant.deletedAt) {
+      throw new VoiceTurnError('tenant_unavailable', `la empresa de la saliente ${callId} está dada de baja`);
+    }
+    const start = startedAt ? new Date(startedAt) : new Date();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const conversation = await tx.conversation.create({
+          data: { userId: null, tenantId: outbound.tenantId, channel: 'voice', externalId: callId, sessionStartedAt: new Date() },
+        });
+        return tx.voiceCall.create({
+          data: {
+            id: callId,
+            conversationId: conversation.id,
+            tenantId: outbound.tenantId,
+            extensionId: null,
+            extensionNumber: null,
+            // En una saliente el remoto es `calledNumber` [C63]; `callerNumber`, el del trunk.
+            calledNumber: info?.calledNumber ?? attempt.to ?? null,
+            callerNumber: info?.callerNumber || null,
+            direction: 'outbound',
+            outboundAttemptId: attempt.id,
+            startedAt: Number.isNaN(start.getTime()) ? new Date() : start,
+          },
+          include: { conversation: true },
+        });
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        return this.prisma.voiceCall.findUniqueOrThrow({ where: { id: callId }, include: { conversation: true } });
+      }
+      throw err;
+    }
+  }
+
+  /**
    * La llamada y su conversación, creadas por lo primero que llegue (`call.started` o el turno
    * `start`), sin depender del orden [§5.2]. El tenant sale del interno [DA5]; sin interno
    * habilitado no hay llamada [C45].
@@ -397,6 +485,7 @@ export class VoiceTurnsService implements OnModuleInit {
   ): Promise<VoiceCallWithConversation> {
     const found = await this.prisma.voiceCall.findUnique({ where: { id: callId }, include: { conversation: true } });
     if (found) return found;
+    if (callId.startsWith(OUTBOUND_CALL_ID_PREFIX)) return this.openOutboundCall(callId, info, startedAt);
     if (!info?.extension) throw new VoiceTurnError('unknown_call', `la llamada ${callId} no se abrió en pci`);
 
     const extension = await this.prisma.extension.findUnique({

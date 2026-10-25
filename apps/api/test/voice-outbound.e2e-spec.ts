@@ -29,6 +29,7 @@ import {
 } from './support';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
 import { VoiceOutboundService } from '../src/modules/voice/voice-outbound.service';
+import { randomUUID } from 'crypto';
 
 type Command = { pattern: string; data: Record<string, any> };
 
@@ -71,10 +72,44 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
   const post = (s: { token: string; tenant: { id: string } }, body: Record<string, unknown>) =>
     withAuth(http(t).post('/voice/outbound-calls'), s.token, s.tenant.id).send(body);
 
+  /** El turno `start` de una saliente, como lo manda el voicebot [§5.3, C63]. */
+  const replyQueue = `voicebot.rpc.reply.out-e2e-${randomUUID()}`;
+  const pending = new Map<string, (r: any) => void>();
+  const startTurn = (callId: string, calledNumber = '201') =>
+    new Promise<any>((resolve, reject) => {
+      const correlationId = `c-${randomUUID()}`;
+      const timer = setTimeout(() => reject(new Error(`sin respuesta a ${correlationId}`)), 10_000);
+      pending.set(correlationId, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      const msg: BrokerMessage = {
+        pattern: 'voice.turn',
+        data: {
+          v: 1,
+          callId,
+          turnId: randomUUID(),
+          kind: 'start',
+          call: { direction: 'outbound', extension: null, calledNumber, callerNumber: '' },
+        },
+        correlationId,
+        replyTo: replyQueue,
+      };
+      channel.sendToQueue('voice.turn', Buffer.from(JSON.stringify(msg)), { persistent: true });
+    });
+
   beforeAll(async () => {
     t = await createTestApp();
     service = t.moduleRef.get(VoiceOutboundService);
     channel = (t.moduleRef.get(BrokerService) as unknown as { channel: amqp.Channel }).channel;
+    await channel.assertQueue(replyQueue, { exclusive: true, autoDelete: true });
+    await channel.consume(replyQueue, (msg) => {
+      if (!msg) return;
+      const body = JSON.parse(msg.content.toString()) as BrokerMessage;
+      channel.ack(msg);
+      pending.get(body.correlationId!)?.(body.data);
+      pending.delete(body.correlationId!);
+    });
     await channel.assertQueue('voicebot.commands', { durable: true });
     await channel.consume('voicebot.commands', (msg) => {
       if (!msg) return;
@@ -225,5 +260,50 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
       return r.nextAttemptAt && r.attempts[0]?.outcome === 'error' ? r : null;
     }, 'rechazo → reintento');
     expect(o).toMatchObject({ status: 'calling', outcome: 'error', busyCount: 1 });
+  });
+
+  it('BE-OUT-06: el start de una saliente abre la llamada en la empresa de la saliente y corre su flujo; un out-* ajeno, unknown_call', async () => {
+    const s = await scenario();
+    const { body } = await post(s, { to: ['201'], flowId: s.flow.id }).expect(201);
+    const cmd = await waitFor(() => commands.find((c) => c.data.rotationKey === body.id), 'intento');
+    result({ callId: cmd.data.callId, outcome: 'answered', answered: true, to: '201', lastAttempt: false });
+
+    const r = await startTurn(cmd.data.callId);
+    expect(r.error).toBeNull();
+    expect(r.actions.filter((a: any) => a.mode === 'literal').map((a: any) => a.text)).toEqual(['Hola, te llamo de soporte.', 'Chau.']);
+    const call = await t.prisma.voiceCall.findUniqueOrThrow({ where: { id: cmd.data.callId }, include: { conversation: true } });
+    expect(call).toMatchObject({
+      tenantId: s.tenant.id,
+      direction: 'outbound',
+      extensionId: null,
+      extensionNumber: null,
+      calledNumber: '201',
+      callerNumber: null,
+      outboundAttemptId: cmd.data.callId,
+    });
+    expect(call.conversation).toMatchObject({ userId: null, channel: 'voice', tenantId: s.tenant.id });
+
+    const unknown = await startTurn(`out-${randomUUID()}`);
+    expect(unknown.error).toBe('unknown_call');
+  });
+
+  it('BE-OUT-07: si el flujo de la saliente dejó de ser de la empresa, charla libre (delegate), nunca el de inicio', async () => {
+    const s = await scenario();
+    // Un flujo de inicio de la empresa que NO se tiene que usar.
+    await createFlow(t.prisma, {
+      name: 'inicio',
+      channel: 'voice',
+      nodes: [startNode('start', { text: 'Soy el de inicio.' })],
+      edges: [],
+      assign: [{ tenantId: s.tenant.id, isStart: true }],
+    });
+    const { body } = await post(s, { to: ['201'], flowId: s.flow.id }).expect(201);
+    const cmd = await waitFor(() => commands.find((c) => c.data.rotationKey === body.id), 'intento');
+    await t.prisma.tenantFlow.deleteMany({ where: { flowId: s.flow.id, tenantId: s.tenant.id } });
+
+    const r = await startTurn(cmd.data.callId);
+    expect(r.error).toBeNull();
+    expect(r.actions).toHaveLength(1);
+    expect(r.actions[0]).toMatchObject({ type: 'say', mode: 'delegate' });
   });
 });

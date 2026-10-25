@@ -13,7 +13,8 @@ export const VOICE_TURN_QUEUE = 'voice.turn';
 export const VOICE_TURN_REPLY_PATTERN = 'voice.turn.reply';
 
 export interface VoiceCallInfo {
-  extension: string;
+  /** `null` en las salientes de pci [C63]. */
+  extension: string | null;
   calledNumber?: string | null;
   callerNumber?: string | null;
   direction?: 'inbound' | 'outbound';
