@@ -1499,13 +1499,14 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   `voice`: menú verbalizado, `llm_query` en charla → `delegate`. Grupo *Voicebot → pci no
   disponible*. 17 e2e, p95 ≈ 100 ms. C50: la charla por voz usa su propio prompt
   (`VOICEBOT_FREE_CHAT_PROMPT`, solo conversación, sin trámites), no el del chat.
-- 🔄 **H4 — Flujos de voz** (plan 2026-10-24, C52): permiso `voice_flows`, menú y editor de voz,
+- ✅ **H4 — Flujos de voz** (plan 2026-10-24, C52; cerrado por el usuario el 2026-10-25): permiso `voice_flows`, menú y editor de voz,
   modo de habla por nodo, transferir a interno, identificación por voz (DNI/legajo), LLM de voz por
   proveedor. Cuatro tramos (H4a–H4d), ver `docs/voicebot/plan-pci.md`. H4d (LLM de voz por
   proveedor) ✅. H4a (permiso, menú, listado y editor de voz) ✅. H4c (identificación por voz contra
   InvGate, `employee_number`) ✅. H4b (modo de habla por nodo, menú sin LLM, `context` con tope,
-  transferir a interno) ✅. Falta la prueba integrada en vivo.
-- ⏳ **H5 — Salientes y "probar conexión"**.
+  transferir a interno) ✅. Prueba integrada en vivo aprobada; pendiente que no bloquea: el
+  transfer a interno no se probó en vivo con MicroSIP.
+- ⏳ **H5 — Salientes y "probar conexión"**. No arranca hasta que lo coordine el coordinador.
 
 ---
 

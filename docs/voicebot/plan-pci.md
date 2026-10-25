@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.22**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · ⏳ H5 (no arranca hasta coordinarlo). Contrato vigente: **1.22**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -259,7 +259,10 @@ suma ahí:
   con salidas "reconocido" / "no reconocido", como el `start` de hoy. El motor ya corre sin usuario
   y `start` sale por `unknown`: ese nodo completa `Conversation.userId` y la `identity` del turno.
 
-## H4 — Flujos de voz
+## H4 — Flujos de voz ✅ (cerrado por el usuario, 2026-10-25)
+
+Aprobado en la prueba en vivo (repo voicebot a440c96, `estado.md`). Único pendiente, que no
+bloquea: el `transfer` (nodo *Transferir a interno*) no se probó en vivo con MicroSIP.
 
 Contrato 1.12 (C52). Decisiones del usuario:
 - **DA6:** permiso propio `voice_flows`.
