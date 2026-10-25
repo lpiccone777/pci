@@ -473,7 +473,11 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   Una tecla sin opción dice en literal "La opción N no existe." y repite el menú; ese aviso entra en
   `voiceLiterals`. Tests unitarios del menú y BE-VOZ-33.
 
-### Tool calling en el LLM de voz — posición de pci (PROPUESTA, sin código hasta que se apruebe)
+### Tool calling en el LLM de voz — DESCARTADO por el usuario (2026-10-25)
+
+Queda como registro de lo que se propuso; no se implementa.
+
+#### Posición de pci (propuesta descartada)
 
 Pedido del usuario (2026-10-25, opción B): el LLM de voz recibe como tools las fuentes de verdad
 del flujo y las pide cuando le hacen falta. La forma la propone el voicebot en su
