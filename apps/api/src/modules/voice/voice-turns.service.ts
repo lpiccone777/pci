@@ -114,6 +114,9 @@ export class VoiceTurnsService implements OnModuleInit {
     if (req.kind === 'start' && !req.call?.extension) {
       throw new VoiceTurnError('invalid_request', 'kind "start" sin call.extension');
     }
+    if (req.dtmf != null && req.dtmf !== '' && !/^[0-9*#]$/.test(req.dtmf)) {
+      throw new VoiceTurnError('invalid_request', 'dtmf tiene que ser una tecla: 0-9, * o #');
+    }
   }
 
   private async processTurn(req: VoiceTurnRequest, startedAt: number): Promise<VoiceTurnReply> {
@@ -147,9 +150,14 @@ export class VoiceTurnsService implements OnModuleInit {
       ) as Prisma.InputJsonValue;
 
       const text = req.kind === 'user' ? (req.text ?? '').trim() : '';
-      const userMessage = text
+      // Tecla [C57]: cuenta como si la persona hubiera dicho ese dígito (se suma al texto) y el
+      // menú la usa antes que el reconocimiento por voz. En la conversación queda legible.
+      const dtmf = req.kind === 'user' && req.dtmf ? req.dtmf : null;
+      const heardInput = [text, dtmf].filter(Boolean).join(' ');
+      const userContent = [text, dtmf ? `[tecla ${dtmf}]` : ''].filter(Boolean).join(' ');
+      const userMessage = userContent
         ? await this.prisma.message.create({
-            data: { conversationId: conversation.id, senderType: 'user', content: text },
+            data: { conversationId: conversation.id, senderType: 'user', content: userContent },
           })
         : null;
 
@@ -159,9 +167,10 @@ export class VoiceTurnsService implements OnModuleInit {
       const output = await this.conversations.runVoiceFlow(
         conversation,
         call.tenantId,
-        text,
+        heardInput,
         call.callerNumber,
         startFlow ?? undefined,
+        dtmf,
       );
       const flowOutput = output ?? {
         actions: [{ type: 'say' as const, mode: 'delegate' as const, systemPrompt: await this.conversations.voiceFreeChatPrompt(call.tenantId) }],
@@ -192,7 +201,7 @@ export class VoiceTurnsService implements OnModuleInit {
           id: req.turnId,
           callId: call.id,
           kind: req.kind,
-          text: text || null,
+          text: userContent || null,
           response: reply as unknown as Prisma.InputJsonValue,
           committed: flowOutput.committed,
           snapshot,

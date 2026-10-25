@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.16**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.17**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -446,6 +446,11 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   tiene salida, se queda en el menú, avisa que no está disponible y lo repite. Antes caía en la
   primera arista del nodo, que era la de otra opción ("Opción 2" decía lo de la opción 1). Tests
   CHAT-N-MENU-14 y BE-VOZ-30.
+
+- [x] **DTMF (C57, contrato 1.17):** `voice.turn` acepta `dtmf` (una tecla: 0–9, `*`, `#`), sola o
+  con texto. El menú la usa primero para elegir la opción por número; en los demás nodos se suma
+  al texto como si se hubiera dicho el dígito. El mensaje del usuario queda "[tecla N]". Test
+  BE-VOZ-31.
 
 ### Fuera de H4 (anotado)
 

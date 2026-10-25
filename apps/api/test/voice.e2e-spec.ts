@@ -706,6 +706,36 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(literals(await sayOn(callId, ext, 'la uno'))).toEqual(['Elegiste la opción 1.', '¿Algo más?']);
     });
 
+    it('BE-VOZ-31: DTMF [C57]: en el menú elige por número antes que el texto; en otro nodo cuenta como el dígito; queda como "[tecla N]"', async () => {
+      const { ext } = await voiceSetup(
+        'voz-dtmf',
+        [
+          startNode('start', { noGreeting: true }),
+          menuNode('menu', { text: 'Elegí:', options: [{ value: 's', label: 'Soporte' }, { value: 'v', label: 'Ventas' }] }),
+          inputNode('nro', { text: 'Marcá tu número de sucursal.', variableName: 'sucursal' }),
+          messageNode('ok', 'Sucursal {{sucursal}} anotada.'),
+          inputNode('fin', { text: '¿Algo más?', variableName: 'x' }),
+        ],
+        [edge('start', 'menu'), edge('menu', 'nro', 'v'), edge('nro', 'ok'), edge('ok', 'fin')],
+      );
+      const callId = uid();
+      await start(callId, ext);
+      // Dice "soporte" pero marca 2: gana la tecla (Ventas).
+      const keyed = await turn({ callId, turnId: uid(), kind: 'user', text: 'quiero soporte', dtmf: '2', call: callInfo(ext) });
+      expect(literals(keyed)).toEqual(['Marcá tu número de sucursal.']);
+
+      const turnId = uid();
+      const onlyKey = await turn({ callId, turnId, kind: 'user', dtmf: '7', call: callInfo(ext) });
+      expect(literals(onlyKey)).toEqual(['Sucursal 7 anotada.', '¿Algo más?']);
+      const row = await t.prisma.voiceTurn.findUniqueOrThrow({ where: { id: turnId } });
+      expect(row.text).toBe('[tecla 7]');
+      expect((await t.prisma.message.findUniqueOrThrow({ where: { id: row.userMessageId! } })).content).toBe('[tecla 7]');
+
+      const bad = await turn({ callId, turnId: uid(), kind: 'user', dtmf: '22', call: callInfo(ext) });
+      expect(bad.error).toBe('invalid_request');
+      expect(llm.calls).toHaveLength(0);
+    });
+
     it('BE-VOZ-26: llm_query en extracción por voz: la pregunta va guided (sin generarla con el LLM de pci); solo extrae', async () => {
       llm.setReply('sede: NONE');
       try {

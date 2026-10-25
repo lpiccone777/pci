@@ -346,6 +346,7 @@ export class ConversationsService implements OnModuleInit {
     body: string,
     callerNumber: string | null,
     startFlow?: { id: string; nodes: unknown },
+    dtmf?: string | null,
   ): Promise<VoiceFlowOutput | null> {
     if (startFlow) {
       // Arranque (o rearranque tras el fin de un flujo a mitad de llamada): desde `start`.
@@ -360,6 +361,7 @@ export class ConversationsService implements OnModuleInit {
     const ran = await this.executeFlow(conversation, known?.user ?? null, body, tenantId, callerNumber ?? '', identity, {
       channel: 'voice',
       voice,
+      dtmf: dtmf ?? undefined,
     });
     return ran ? voice : null;
   }
@@ -774,7 +776,7 @@ export class ConversationsService implements OnModuleInit {
     tenantId: string,
     from: string,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
-    run: { channel: FlowChannel; voice?: VoiceFlowOutput } = { channel: 'text' },
+    run: { channel: FlowChannel; voice?: VoiceFlowOutput; dtmf?: string } = { channel: 'text' },
   ): Promise<{ text: string; interactive?: WhatsAppInteractive } | null> {
     // Buscar flujo activo. `null` de acá en adelante significa EXCLUSIVAMENTE "no hay flujo
     // activo para este tenant/rol" — las dos salidas de esta sección son las únicas; una vez
@@ -855,6 +857,7 @@ export class ConversationsService implements OnModuleInit {
           flow.contextSourceId,
           (flow as any).skill?.promptText ?? null,
           run.channel,
+          run.dtmf,
         );
         if (run.voice && COMMITTED_NODES.has(node.type)) run.voice.committed = true;
       }
@@ -2110,6 +2113,7 @@ export class ConversationsService implements OnModuleInit {
     contextSourceId: string | null,
     skillPromptText: string | null,
     channel: FlowChannel = 'text',
+    dtmf?: string,
   ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
@@ -2277,6 +2281,15 @@ export class ConversationsService implements OnModuleInit {
         // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
         // encadenar nodos el menú consumiría el mensaje que lo activó.
         if (flowState.__awaiting !== node.id) return renderMenu();
+
+        // Tecla marcada [C57]: elige directamente la opción con ese número, antes que el texto.
+        if (dtmf && /^\d$/.test(dtmf)) {
+          const keyed = displayOptions[Number(dtmf) - 1];
+          if (keyed) {
+            if (flowState.__menuRetries) delete flowState.__menuRetries[node.id];
+            return choose(keyed);
+          }
+        }
 
         const selected = displayOptions.find(
           (opt: any) =>

@@ -32,6 +32,8 @@ export interface VoiceTurnRequest {
   turnId: string;
   kind: 'start' | 'user' | 'continue';
   text?: string | null;
+  /** Tecla marcada en el teléfono [C57]: "0"–"9", "*" o "#". Puede venir sola o con `text`. */
+  dtmf?: string | null;
   call?: VoiceCallInfo;
   previous?: VoiceHeard | null;
   supersedes?: string | null;
