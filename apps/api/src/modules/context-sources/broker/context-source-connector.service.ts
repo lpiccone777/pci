@@ -21,6 +21,13 @@ export const CONTEXT_SOURCE_QUERY_QUEUE = 'context-source.query';
  */
 export const CONTEXT_SOURCE_MCP_TOOLS_QUEUE = 'context-source.mcp.list-tools';
 
+/**
+ * Cola RPC de una tool MCP elegida por el LLM del flujo (contrato C61): nombre y argumentos
+ * ya resueltos por `ContextSourcesService.mcpToolsetForLlm` (con los valores fijos de la
+ * configuración inyectados). Una tool por mensaje, con su propio timeout.
+ */
+export const CONTEXT_SOURCE_MCP_CALL_QUEUE = 'context-source.mcp.call-tool';
+
 const TEST_TIMEOUT_MS = 20_000;
 /** Más generoso que TEST_TIMEOUT_MS: acá puede haber un RAG "razonando" de verdad
  *  del otro lado, no solo un chequeo de alcanzabilidad. */
@@ -39,6 +46,14 @@ export interface McpToolsListResult {
   latencyMs: number;
   /** Presente solo si `ok`. */
   tools?: McpToolInfo[];
+}
+
+export interface McpToolCallResult {
+  ok: boolean;
+  /** Resultado de la tool como texto; presente solo si `ok`. */
+  text?: string;
+  message: string;
+  latencyMs: number;
 }
 
 export interface ContextSourceQueryResult {
@@ -82,6 +97,28 @@ export class ContextSourceConnectorService implements OnModuleInit {
     await this.broker.subscribe(CONTEXT_SOURCE_TEST_QUEUE, this.handleTestConnection.bind(this));
     await this.broker.subscribe(CONTEXT_SOURCE_QUERY_QUEUE, this.handleQuery.bind(this));
     await this.broker.subscribe(CONTEXT_SOURCE_MCP_TOOLS_QUEUE, this.handleListMcpTools.bind(this));
+    await this.broker.subscribe(CONTEXT_SOURCE_MCP_CALL_QUEUE, this.handleCallMcpTool.bind(this));
+  }
+
+  private async handleCallMcpTool(msg: BrokerMessage): Promise<void> {
+    const { config, name, arguments: args, timeoutMs } = msg.data as {
+      config: Record<string, unknown>;
+      name: string;
+      arguments: Record<string, unknown>;
+      timeoutMs?: number;
+    };
+    const result = await this.callMcpTool(config, name, args ?? {}, Math.min(timeoutMs || QUERY_TIMEOUT_MS, QUERY_TIMEOUT_MS));
+
+    if (!msg.replyTo) {
+      this.logger.warn('Mensaje de mcp.call-tool sin replyTo: no hay a quién responderle');
+      return;
+    }
+
+    await this.broker.publish(
+      msg.replyTo,
+      { pattern: 'context-source.mcp.call-tool.result', data: result, correlationId: msg.correlationId },
+      { assert: false },
+    );
   }
 
   private async handleListMcpTools(msg: BrokerMessage): Promise<void> {
@@ -219,6 +256,30 @@ export class ContextSourceConnectorService implements OnModuleInit {
       );
       const latencyMs = Date.now() - start;
       return { ok: true, tools, latencyMs, message: `${tools.length} tools encontradas en ${latencyMs}ms` };
+    } catch (err) {
+      return { ok: false, latencyMs: Date.now() - start, message: this.mcpErrorMessage(err) };
+    }
+  }
+
+  /**
+   * Una tool con los argumentos que eligió el LLM (C61). Un error de validación del servidor
+   * (p. ej. "expected one of celsius|fahrenheit") vuelve en `message`: el LLM lo lee y puede
+   * corregir en la vuelta siguiente.
+   */
+  private async callMcpTool(
+    config: Record<string, unknown>,
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<McpToolCallResult> {
+    const start = Date.now();
+    try {
+      // Sin pregunta: los argumentos ya vienen completos, no hay `{{pregunta}}` que reemplazar.
+      const text = await withMcpSession(config, timeoutMs, (client, remaining) =>
+        callMcpTool(client, { name, arguments: args }, '', remaining),
+      );
+      const latencyMs = Date.now() - start;
+      return { ok: true, text, latencyMs, message: `Respondió en ${latencyMs}ms` };
     } catch (err) {
       return { ok: false, latencyMs: Date.now() - start, message: this.mcpErrorMessage(err) };
     }

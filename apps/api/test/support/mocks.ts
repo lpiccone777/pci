@@ -9,7 +9,17 @@ import { EmailService, EmailMessage } from '../../src/modules/auth/email.service
 import type {
   LlmMessage,
   LlmCompletionOptions,
+  LlmProvider,
+  LlmToolDefinition,
+  LlmToolStep,
+  LlmToolTurn,
 } from '../../src/modules/llm/llm-provider.interface';
+import {
+  runToolLoop,
+  type LlmToolChatResult,
+  type LlmToolExecutor,
+  type LlmToolLoopOptions,
+} from '../../src/modules/llm/tool-loop';
 
 /**
  * `EmailService` de test: no manda nada, graba cada mensaje en memoria. Reemplaza al
@@ -75,6 +85,38 @@ export class FakeLlmService {
     return this.responder(messages, options);
   }
 
+  /**
+   * Tool calling (C61). Sin `setToolProvider`, el fake no tiene tools (como OpenCode Go) y el
+   * motor sigue con la pre-consulta de siempre. Con un proveedor guionado, `chatWithTools`
+   * corre el loop REAL (`runToolLoop`) contra él: lo único falso es el modelo.
+   */
+  private toolProvider: Required<Pick<LlmProvider, 'generateWithTools'>> | null = null;
+  public readonly toolChats: { messages: LlmMessage[]; tools: LlmToolDefinition[] }[] = [];
+
+  setToolProvider(provider: Required<Pick<LlmProvider, 'generateWithTools'>> | null): this {
+    this.toolProvider = provider;
+    return this;
+  }
+
+  async supportsTools(): Promise<boolean> {
+    return !!this.toolProvider;
+  }
+
+  async chatWithTools(
+    messages: LlmMessage[],
+    tools: LlmToolDefinition[],
+    execute: LlmToolExecutor,
+    opts: LlmToolLoopOptions & { tenantConfig?: Partial<LlmCompletionOptions> } = {},
+  ): Promise<LlmToolChatResult> {
+    if (!this.toolProvider) return { supported: false, text: '', rounds: 0, calls: [] };
+    const options: LlmCompletionOptions = { temperature: 0.7, maxTokens: 1024, ...opts.tenantConfig };
+    if (options.systemPrompt && messages[0]?.role !== 'system') {
+      messages = [{ role: 'system', content: options.systemPrompt }, ...messages];
+    }
+    this.toolChats.push({ messages, tools });
+    return runToolLoop(this.toolProvider, messages, tools, execute, options, opts);
+  }
+
   /** Respuesta fija para cualquier llamada. */
   setReply(text: string): this {
     this.responder = () => text;
@@ -102,6 +144,8 @@ export class FakeLlmService {
 
   reset(): void {
     this.calls.length = 0;
+    this.toolChats.length = 0;
+    this.toolProvider = null;
     this.failWith = null;
     this.responder = () => 'respuesta simulada del modelo';
   }
@@ -112,6 +156,38 @@ export class FakeLlmService {
     const users = call?.messages.filter((m) => m.role === 'user') ?? [];
     return users[users.length - 1]?.content;
   }
+}
+
+/**
+ * Modelo guionado con tool calling para la fuente de clima del MCP falso (C61): pide
+ * `geocoding` de Merlo, con esas coordenadas pide `weather_forecast` (con una unidad inválida
+ * a propósito, que pci tiene que pisar con la fija de la configuración) y después contesta con
+ * el pronóstico. `steps` guarda qué tools y qué turnos vio en cada vuelta.
+ */
+export function weatherToolScript(opts: { city?: string; finalText?: (forecast: string) => string } = {}) {
+  const steps: { messages: LlmMessage[]; tools: LlmToolDefinition[]; turns: LlmToolTurn[] }[] = [];
+  const provider = {
+    async generateWithTools(messages: LlmMessage[], turns: LlmToolTurn[], tools: LlmToolDefinition[]): Promise<LlmToolStep> {
+      steps.push({ messages, tools, turns: [...turns] });
+      const results = turns.filter((x): x is Extract<LlmToolTurn, { kind: 'result' }> => x.kind === 'result');
+      const geo = results.find((r) => r.name === 'geocoding');
+      const forecast = results.find((r) => r.name === 'weather_forecast');
+      if (!geo && tools.length) {
+        return { text: '', toolCalls: [{ id: 'call-geo', name: 'geocoding', arguments: { name: opts.city ?? 'Merlo' } }] };
+      }
+      if (geo && !forecast && tools.length) {
+        const hit = (JSON.parse(geo.content) as { results: { latitude: number; longitude: number }[] }).results[0];
+        return {
+          text: '',
+          toolCalls: [
+            { id: 'call-fc', name: 'weather_forecast', arguments: { latitude: hit.latitude, longitude: hit.longitude, temperature_unit: 'kelvin' } },
+          ],
+        };
+      }
+      return { text: (opts.finalText ?? ((f) => `Según la fuente: ${f}`))(forecast?.content ?? ''), toolCalls: [] };
+    },
+  };
+  return { provider, steps };
 }
 
 /** Respuesta simulada que devuelve el router de `installFetchMock`. */

@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.20**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.21**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -472,6 +472,34 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   "la" o "el"; los dígitos valen siempre. "Tenés una fuente de verdad…" ya no elige la opción 1.
   Una tecla sin opción dice en literal "La opción N no existe." y repite el menú; ese aviso entra en
   `voiceLiterals`. Tests unitarios del menú y BE-VOZ-33.
+
+- [x] **El LLM del flujo opera la fuente MCP con sus tools (C61, contrato 1.21, usuario
+  2026-10-25, opción A con voz):** con una fuente MCP, el LLM del flujo (`llm_query` en modo charla
+  y el de respaldo) recibe como tools las configuradas en la fuente, elige tool y argumentos y
+  encadena hasta 3 vueltas (p. ej. `geocoding` de la ciudad → `weather_forecast` con esas
+  coordenadas). Sin cambios en los nodos. Detalle:
+  - **Tools:** solo las configuradas; descripción y esquema del `tools/list` del servidor, con caché
+    de 5 min por fuente (se invalida al editarla).
+  - **Fijos:** un argumento de la configuración con valor real (no vacío, sin `{{pregunta}}`,
+    distinto de 0) es fijo: sale del esquema y pci lo inyecta encima de lo que mande el LLM. Lo
+    demás lo completa el LLM.
+  - **Proveedores:** tool calling en OpenAI, OpenRouter, MiniMax (los tres por la API compatible),
+    Claude y Gemini. OpenCode Go no tiene: sigue la pre-consulta de siempre.
+  - **Voz:** se resuelve antes de responder `voice.turn`. El LLM de pci mira la charla, solo trae
+    datos (no contesta) y los resultados van como `context` del `delegate`; la forma de la acción no
+    cambia. Todo dentro de `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS` (default 7000): lo que respondió a
+    esa hora es el `context`. Tope: `VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS` (C54).
+    `VOICEBOT_TURN_TIMEOUT_MS` pasa a default 8000. En la BD no hay valores guardados que los pisen
+    (verificado 2026-10-25).
+  - **Log por turno:** vueltas, cada tool con su duración y si respondió bien, tamaño del `context`
+    y tiempo total. Nunca argumentos ni contenido.
+  - **I/O:** cola RPC nueva `context-source.mcp.call-tool` (connector), además de
+    `context-source.mcp.list-tools`.
+  - **Para que la fuente "clima" encadene:** `geocoding` tiene que estar entre sus tools
+    configuradas (hoy solo está `weather_forecast`, con `temperature_unit: "{{pregunta}}"`). Eso se
+    configura en la fuente; pci no la toca.
+  - Tests: SRC-TOOLS-01..03, BE-VOZ-34 (MCP falso con `geocoding` y `weather_forecast`) y
+    unitarios del loop y de la traducción por proveedor.
 
 ### Tool calling en el LLM de voz — DESCARTADO por el usuario (2026-10-25)
 

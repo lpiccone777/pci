@@ -1337,7 +1337,15 @@ para `broker`, el nombre de una cola sobre la conexión a RabbitMQ que ya usa el
     resultado va bajo `### <tool>`; alcanza con que una responda para `ok:true` (las que
     fallan quedan en `message`, que se loguea). Cada resultado se recorta a 8000 caracteres.
     Invocación determinística, no la decide el LLM — mismo criterio que el resto de las
-    fuentes de verdad
+    fuentes de verdad. **Desde C61 (2026-10-25) es solo el camino de respaldo:** ver el ítem
+    siguiente
+  - **El LLM del flujo opera la fuente con tools (C61, contrato voicebot 1.21):** con una fuente
+    MCP y un proveedor con tool calling (todos salvo OpenCode Go), `llm_query` en modo charla,
+    `orchestratorLlm` y el `delegate` por voz le pasan al LLM las tools configuradas (esquema del
+    `tools/list`, caché 5 min, sin los argumentos fijos de la configuración, que pci inyecta) y el
+    LLM elige y encadena hasta 3 vueltas (`LlmService.chatWithTools` → `runToolLoop`; cada tool por
+    la cola RPC `context-source.mcp.call-tool`). Por voz el resultado va como `context`. Sin tool
+    calling, sigue la pre-consulta de arriba. Detalle en `docs/voicebot/plan-pci.md`
   - "Probar conexión": `initialize` + `tools/list` y verifica que las tools configuradas
     existan en el servidor (si falta alguna, `ok:false` con el nombre)
   - "Descubrir tools" (`POST /context-sources/mcp/tools`, cola RPC nueva
@@ -1464,7 +1472,7 @@ Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de ve
 configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
 voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 [`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
-**contrato de integración** (vigente: 1.20, 2026-10-25) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+**contrato de integración** (vigente: 1.21, 2026-10-25) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.

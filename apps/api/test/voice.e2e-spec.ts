@@ -40,7 +40,10 @@ import {
   installFetchMock,
   node,
   createContextSource,
+  weatherToolScript,
 } from './support';
+import { FAKE_MCP_API_KEY, startFakeMcp } from './support/fake-mcp-server';
+import { SecretsCipher } from '../src/config/secrets.cipher';
 import { BrokerService, BrokerMessage } from '../src/modules/broker/broker.service';
 import { LlmService } from '../src/modules/llm/llm.service';
 import { FlowService } from '../src/modules/flow/flow.service';
@@ -830,6 +833,72 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       } finally {
         spy.mockRestore();
         await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
+      }
+    });
+
+    it('BE-VOZ-34: fuente MCP con tools [C61]: el LLM de pci encadena geocoding → forecast y el resultado va como context; con la espera vencida, sin context', async () => {
+      const fake = await startFakeMcp({ weather: true });
+      const cipher = t.moduleRef.get(SecretsCipher, { strict: false });
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-tools') });
+      const source = await createContextSource(t.prisma, {
+        tenantId: tenant.id,
+        name: 'clima',
+        type: 'mcp',
+        config: {
+          serverUrl: `${fake.baseUrl}/mcp`,
+          transport: 'http',
+          authType: 'bearer',
+          apiKey: cipher.encrypt(FAKE_MCP_API_KEY),
+          tools: [
+            { name: 'geocoding', arguments: { name: '{{pregunta}}', count: 1, language: 'es' } },
+            { name: 'weather_forecast', arguments: { latitude: 0, longitude: 0, temperature_unit: 'celsius', forecast_days: 2 } },
+          ],
+        },
+      });
+      await createFlow(t.prisma, {
+        name: 'voz tools',
+        channel: 'voice',
+        contextSourceId: source.id,
+        nodes: [startNode('start', { noGreeting: true }), inputNode('q', { text: 'Contame.', variableName: 'q' }), llmQueryNode('charla', { systemPrompt: 'Soporte.' })],
+        edges: [edge('start', 'q'), edge('q', 'charla')],
+        assign: [{ tenantId: tenant.id, isStart: true }],
+      });
+      const ext = extNumber();
+      await t.prisma.extension.create({ data: { number: ext, name: 'tools', tenantId: tenant.id } });
+
+      const script = weatherToolScript({ finalText: () => 'LISTO' });
+      llm.setToolProvider(script.provider);
+      try {
+        const callId = uid();
+        await start(callId, ext);
+        const r = await turn({ callId, turnId: uid(), kind: 'user', text: '¿qué tiempo hace mañana en Merlo?', call: callInfo(ext) });
+        expect(r.error).toBeNull();
+        expect(r.actions).toHaveLength(1);
+        expect(r.actions[0]).toMatchObject({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
+        expect(r.actions[0].context).toContain('Resultados de la fuente de verdad "clima"');
+        expect(r.actions[0].context).toContain('### geocoding');
+        expect(r.actions[0].context).toContain('Pronóstico en -34.66536,-58.72744 (celsius, 2 días)');
+        expect(llm.calls).toHaveLength(0);
+        // El LLM de pci vio la charla (el pedido de la persona) y no contestó: solo trajo datos.
+        expect(script.steps).toHaveLength(3);
+        expect(script.steps[0].messages.map((m) => m.content)).toContain('¿qué tiempo hace mañana en Merlo?');
+        expect(script.steps[0].messages[0].content).toContain('Otro asistente le va a contestar');
+
+        await setSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', '150');
+        llm.setToolProvider({
+          generateWithTools: (messages, turns, tools) =>
+            new Promise((resolve) => setTimeout(() => resolve(script.provider.generateWithTools(messages, turns, tools)), 400)),
+        });
+        const slow = uid();
+        await start(slow, ext);
+        const began = Date.now();
+        const r2 = await turn({ callId: slow, turnId: uid(), kind: 'user', text: 'Merlo', call: callInfo(ext) });
+        expect(r2.actions[0]).toEqual({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
+        expect(Date.now() - began).toBeLessThan(1500);
+      } finally {
+        llm.setToolProvider(null);
+        await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
+        await fake.close();
       }
     });
 

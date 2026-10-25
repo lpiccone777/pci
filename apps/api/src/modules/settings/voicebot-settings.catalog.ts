@@ -695,11 +695,14 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     type: 'number',
     group: 'Mensajería: Voicebot (LLM de voz)',
     label: 'Espera de la fuente de verdad (ms)',
-    defaultValue: '1500',
+    defaultValue: '7000',
     min: 100,
     max: 10000,
     integer: true,
-    description: 'Si la fuente no responde en este tiempo, la charla sigue sin contexto: el turno no espera más.',
+    description:
+      'Si la fuente no responde en este tiempo, la charla sigue sin contexto: el turno no espera más. Con una ' +
+      'fuente MCP incluye las vueltas del LLM eligiendo tools (p. ej. geocoding y después el pronóstico). ' +
+      'Tiene que quedar por debajo del timeout de respuesta de pci.',
   }),
 
   // Sin `envNames`: no es config del voicebot, viaja dentro de cada `say delegate` [C50].
@@ -740,7 +743,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
         'Solo si escucha y habla en el mismo room: tras hablar se ignoran transcripciones este tiempo.'],
       ['VOICEBOT_VOICE_IDLE_MS', 'Permanencia en el room sin hablar (ms)', '600000', 0, 3600000,
         'El bot queda conectado al room de habla entre respuestas (ahorra ~0,4 s por respuesta).'],
-      ['VOICEBOT_TURN_TIMEOUT_MS', 'Timeout de respuesta de pci (ms)', '5000', 500, 60000,
+      ['VOICEBOT_TURN_TIMEOUT_MS', 'Timeout de respuesta de pci (ms)', '8000', 500, 60000,
         'Si pci no responde un turno en este tiempo, el voicebot dice el texto de fallback.'],
       ['VOICEBOT_FILLER_AFTER_MS', 'Relleno a los (ms)', '1500', 0, 60000,
         'Si pci tarda más que esto en responder un turno, el bot dice el relleno. 0 = sin relleno.'],

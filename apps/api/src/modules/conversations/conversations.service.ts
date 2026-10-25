@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { LlmService } from '../llm/llm.service';
+import { LlmService, LlmToolTrace } from '../llm/llm.service';
 import { BrokerService, BrokerMessage } from '../broker/broker.service';
 import { UsersService } from '../users/users.service';
 import { FlowService } from '../flow/flow.service';
@@ -10,7 +10,7 @@ import { LlmMessage } from '../llm/llm-provider.interface';
 import { WhatsAppInteractive } from '../whatsapp/whatsapp-interactive.types';
 import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
-import { ContextSourcesService } from '../context-sources/context-sources.service';
+import { ContextSourcesService, McpLlmToolset } from '../context-sources/context-sources.service';
 import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-tenant-routing.service';
 import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
@@ -22,6 +22,7 @@ import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
 import { nameMatches, normalizeDocument } from '../voice/voice-identify.util';
 import { matchMenuOption } from '../voice/voice-menu.util';
 import {
+  DELEGATED_PLACEHOLDER,
   VOICE_TEXTS,
   identifyAskDocument,
   identifyRetryDocument,
@@ -2232,7 +2233,7 @@ export class ConversationsService implements OnModuleInit {
           } else {
             if (channel === 'voice') {
               return {
-                delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body),
+                delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body, conversation),
                 waitForInput: true,
                 flowState,
               };
@@ -2337,7 +2338,7 @@ export class ConversationsService implements OnModuleInit {
           delete retries[node.id];
           flowState.__llmFallback = node.id;
           return {
-            delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body),
+            delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body, conversation),
             waitForInput: true,
             flowState,
           };
@@ -2733,6 +2734,7 @@ export class ConversationsService implements OnModuleInit {
               tenantId,
               contextSourceId,
               body,
+              conversation,
             ),
           };
         }
@@ -2758,11 +2760,15 @@ export class ConversationsService implements OnModuleInit {
           content: m.content,
         }));
 
+        // Fuente MCP con tools y proveedor con tool calling (C61, solo en modo charla): el LLM
+        // del nodo la opera con sus tools en vez de la pre-consulta. Sin eso, lo de siempre.
+        const toolset = data.extractVariables?.length ? null : await this.sourceToolset(tenantId, contextSourceId);
+
         // Fuente de verdad vinculada al flujo: igual que en `orchestratorLlm`, se
         // consulta siempre que esté presente, antes de generar la respuesta —
         // este nodo antes la ignoraba por completo aunque `executeNode` ya la
         // recibía como parámetro.
-        if (contextSourceId) {
+        if (contextSourceId && !toolset) {
           const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
           if (knowledge.ok && knowledge.answer) {
             llmMessages.push({
@@ -2844,6 +2850,18 @@ export class ConversationsService implements OnModuleInit {
         // explícito pisaría el default de LlmService (LLM_TEMPERATURE de /settings) con
         // `undefined` en el merge (`{...defaults, ...tenantConfig}`), perdiendo la cascada
         // BD → env → default y cayendo al 0.7 hardcodeado de cada provider.
+        if (toolset) {
+          const started = Date.now();
+          const result = await this.llmService.chatWithTools(llmMessages, toolset.tools, (call) => toolset.execute(call), {
+            tenantConfig: {
+              systemPrompt: [systemPrompt, sourceToolsInstruction(toolset.sourceName)].filter(Boolean).join('\n\n'),
+              ...(data.temperature !== undefined ? { temperature: data.temperature } : {}),
+            },
+          });
+          this.logSourceTools(tenantId, `llm_query ${node.id}`, result.rounds, result.calls, Date.now() - started);
+          return { responseText: result.text };
+        }
+
         const responseText = await this.llmService.chat(llmMessages, {
           systemPrompt,
           ...(data.temperature !== undefined ? { temperature: data.temperature } : {}),
@@ -3437,19 +3455,34 @@ export class ConversationsService implements OnModuleInit {
    * se consulta con lo que dijo la persona, con un tope de tiempo
    * (`VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS`) y de tamaño (`VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS`).
    * Si vence o falla, va sin `context`: el turno no espera más de eso. Recortar se loguea.
+   *
+   * Con una fuente MCP con tools (C61), el LLM de pci elige las tools y sus argumentos mirando
+   * la charla (p. ej. `geocoding` de la ciudad → `weather_forecast` con esas coordenadas) y
+   * los resultados van como `context`. La forma de la acción no cambia.
    */
   private async voiceDelegate(
     systemPrompt: string,
     tenantId: string,
     contextSourceId: string | null,
     body: string,
+    conversation?: { id: string; sessionStartedAt?: Date | null; createdAt: Date },
   ): Promise<{ systemPrompt: string; context?: string }> {
     if (!contextSourceId || !body.trim()) return { systemPrompt };
     const [maxChars, timeoutMs] = await Promise.all([
       this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS', 16000),
-      this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 1500),
+      this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 7000),
     ]);
     const started = Date.now();
+    const toolset = await this.sourceToolset(tenantId, contextSourceId);
+    if (toolset) {
+      const context = await this.voiceToolContext(toolset, systemPrompt, tenantId, body, conversation, started + timeoutMs);
+      if (!context) return { systemPrompt };
+      const capped = context.length > maxChars ? context.slice(0, maxChars) : context;
+      if (capped.length < context.length) {
+        this.logger.warn(`[${tenantId}] context del delegate recortado de ${context.length} a ${maxChars} caracteres.`);
+      }
+      return { systemPrompt, context: capped };
+    }
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), timeoutMs);
@@ -3475,6 +3508,100 @@ export class ConversationsService implements OnModuleInit {
     }
     this.logger.log(`[${tenantId}] context del delegate: ${context.length} caracteres en ${elapsed} ms.`);
     return { systemPrompt, context };
+  }
+
+  /**
+   * Tools de la fuente vinculada si es MCP y el proveedor tiene tool calling (C61); si no,
+   * `null` y el llamador sigue con la pre-consulta de siempre (`queryKnowledge`).
+   */
+  private async sourceToolset(tenantId: string, contextSourceId: string | null): Promise<McpLlmToolset | null> {
+    if (!contextSourceId) return null;
+    if (!(await this.llmService.supportsTools().catch(() => false))) return null;
+    return this.contextSourcesService.mcpToolsetForLlm(tenantId, contextSourceId);
+  }
+
+  /**
+   * Por voz (C61): el LLM de pci solo elige y encadena tools, no contesta — eso lo hace el LLM
+   * de voz con el `context`. Todo dentro de `deadline`: lo que ya respondió a esa hora es el
+   * `context` (vacío si nada respondió bien).
+   */
+  private async voiceToolContext(
+    toolset: McpLlmToolset,
+    systemPrompt: string,
+    tenantId: string,
+    body: string,
+    conversation: { id: string; sessionStartedAt?: Date | null; createdAt: Date } | undefined,
+    deadline: number,
+  ): Promise<string> {
+    const started = Date.now();
+    const history = conversation
+      ? (
+          await this.prisma.message.findMany({
+            where: {
+              conversationId: conversation.id,
+              createdAt: { gte: conversation.sessionStartedAt ?? conversation.createdAt },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+          })
+        )
+          .reverse()
+          .filter((m) => m.content && m.content !== DELEGATED_PLACEHOLDER)
+          .map((m) => ({ role: (m.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.content }))
+      : [];
+    if (history[history.length - 1]?.content !== body) history.push({ role: 'user', content: body });
+
+    const done: LlmToolTrace[] = [];
+    const execute = async (call: { id: string; name: string; arguments: Record<string, unknown> }) => {
+      const callStarted = Date.now();
+      const r = await toolset.execute(call, Math.max(500, deadline - Date.now()));
+      done.push({ round: 0, name: call.name, arguments: call.arguments, ok: r.ok, content: r.content, ms: Date.now() - callStarted });
+      return r;
+    };
+    let rounds = 0;
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+      this.llmService
+        .chatWithTools(
+          [{ role: 'system', content: [systemPrompt, voiceToolsInstruction(toolset.sourceName)].filter(Boolean).join('\n\n') }, ...history],
+          toolset.tools,
+          execute,
+          { stopAfterTools: true, cancelled: () => Date.now() >= deadline },
+        )
+        .then((r) => {
+          rounds = r.rounds;
+          return false;
+        })
+        .catch((err) => {
+          this.logger.warn(`[${tenantId}] tools de la fuente por voz: el LLM falló — ${err instanceof Error ? err.message : err}`);
+          return false;
+        }),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), Math.max(0, deadline - Date.now()));
+      }),
+    ]);
+    clearTimeout(timer);
+
+    const ok = done.filter((c) => c.ok);
+    const context = ok.length
+      ? [`Resultados de la fuente de verdad "${toolset.sourceName}":`, ...ok.map((c) => `### ${c.name} ${JSON.stringify(c.arguments)}\n${c.content}`)].join('\n\n')
+      : '';
+    this.logSourceTools(tenantId, timedOut ? 'delegate por voz (venció el tiempo)' : 'delegate por voz', rounds, done, Date.now() - started, context.length);
+    return context;
+  }
+
+  /** Log por turno de las tools de la fuente (C61): vueltas, cada tool con su duración, tamaño. */
+  private logSourceTools(
+    tenantId: string,
+    where: string,
+    rounds: number,
+    calls: LlmToolTrace[],
+    elapsedMs: number,
+    contextChars?: number,
+  ): void {
+    const detail = calls.length ? calls.map((c) => `${c.name} ${c.ms} ms ${c.ok ? 'ok' : 'error'}`).join(', ') : 'ninguna';
+    const size = contextChars !== undefined ? `; context ${contextChars} caracteres` : '';
+    this.logger.log(`[${tenantId}] tools de la fuente (${where}): ${rounds} vueltas, tools: ${detail}${size}; ${elapsedMs} ms en total.`);
   }
 
   /**
@@ -3580,7 +3707,9 @@ export class ConversationsService implements OnModuleInit {
     // tal cual, así que la fuente terminaba sin consultarse). `queryKnowledge`
     // nunca tira (atrapa timeout/error internamente y devuelve `ok:false`).
     let knowledgeContext: string | null = null;
-    if (contextSourceId) {
+    // Fuente MCP con tools (C61): el LLM las usa en vez de la pre-consulta.
+    const toolset = await this.sourceToolset(tenantId, contextSourceId);
+    if (contextSourceId && !toolset) {
       const knowledge = await this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body);
       if (knowledge.ok && knowledge.answer) {
         knowledgeContext = knowledge.answer;
@@ -3603,7 +3732,8 @@ export class ConversationsService implements OnModuleInit {
         ? '\n6. Abajo tenés el contexto de la fuente de verdad vinculada a este flujo — ' +
           'es información autoritativa: si contradice lo que ya sabés, priorizala a ella. ' +
           'Si ni con ese contexto podés responder, decilo con honestidad en vez de inventar.'
-        : '');
+        : '') +
+      (toolset ? `\n6. ${sourceToolsInstruction(toolset.sourceName)}` : '');
 
     const llmMessages: LlmMessage[] = [
       {
@@ -3635,6 +3765,14 @@ export class ConversationsService implements OnModuleInit {
     }
 
     try {
+      if (toolset) {
+        const started = Date.now();
+        const result = await this.llmService.chatWithTools(llmMessages, toolset.tools, (call) => toolset.execute(call));
+        this.logSourceTools(tenantId, 'orquestador', result.rounds, result.calls, Date.now() - started);
+        if (result.text.trim()) return result.text;
+        this.logger.warn(`[${tenantId}] orchestratorLlm: el LLM terminó las tools sin texto.`);
+        return 'Perdón, tuve un problema para responderte. ¿Podés reformular tu consulta o intentar de nuevo en un momento?';
+      }
       const responseText = await this.llmService.chat(llmMessages);
       return responseText;
     } catch (err) {
@@ -3647,4 +3785,24 @@ export class ConversationsService implements OnModuleInit {
       return 'Perdón, tuve un problema para responderte. ¿Podés reformular tu consulta o intentar de nuevo en un momento?';
     }
   }
+}
+
+/** Instrucción del LLM del flujo cuando opera la fuente con tools (C61), por chat. */
+function sourceToolsInstruction(sourceName: string): string {
+  return (
+    `Tenés herramientas para consultar la fuente de verdad "${sourceName}" (información autoritativa). ` +
+    'Usalas cuando la consulta lo necesite —podés encadenarlas: el resultado de una sirve como argumento ' +
+    'de otra— y respondé con lo que devuelvan. Si falta un dato para usarlas, pedíselo a la persona. ' +
+    'Si ni con ellas podés responder, decilo con honestidad en vez de inventar.'
+  );
+}
+
+/** Por voz (C61) el LLM de pci solo trae datos: la respuesta la da el LLM de voz. */
+function voiceToolsInstruction(sourceName: string): string {
+  return (
+    `Ahora tu única tarea: traer de la fuente de verdad "${sourceName}" los datos para responder el ` +
+    'último mensaje de la persona. Otro asistente le va a contestar por teléfono con lo que traigas. ' +
+    'Llamá las herramientas que hagan falta; podés encadenarlas (el resultado de una sirve como argumento ' +
+    'de otra). Si no hace falta ninguna, falta un dato o ya tenés lo necesario, respondé solo: LISTO.'
+  );
 }

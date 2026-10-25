@@ -3,8 +3,12 @@ import type {
   LlmProvider,
   LlmMessage,
   LlmCompletionOptions,
+  LlmToolDefinition,
+  LlmToolStep,
+  LlmToolTurn,
   ResolvedProviderConfig,
 } from '../llm-provider.interface';
+import { openAiCompatibleWithTools } from './tool-calling';
 
 // MiniMax expone /v1/chat/completions compatible con el formato de OpenAI
 // (https://platform.minimax.io/docs/api-reference/text-openai-api), así que
@@ -48,5 +52,17 @@ export class MiniMaxProvider implements LlmProvider {
     } as any);
 
     return completion.choices[0]?.message?.content ?? '';
+  }
+
+  generateWithTools(
+    messages: LlmMessage[],
+    turns: LlmToolTurn[],
+    tools: LlmToolDefinition[],
+    options?: LlmCompletionOptions,
+  ): Promise<LlmToolStep> {
+    // Mismo `reasoning_split` que `generateCompletion`: el razonamiento va aparte.
+    return openAiCompatibleWithTools(this.client, this.defaultModel, messages, turns, tools, options, {
+      reasoning_split: true,
+    });
   }
 }

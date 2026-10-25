@@ -185,6 +185,13 @@ consulta la fuente vinculada por la cola RPC `context-source.query`. Responden c
 las tools configuradas en la conexión, ver `broker/mcp-client.ts`); `rag`/`n8n` todavía no
 tienen contrato de consulta. Detalle en `docs/plan-de-trabajo.md`.
 
+**MCP con tool calling (C61):** si la fuente es `mcp` y el proveedor tiene tool calling (todos
+salvo OpenCode Go), esa pre-consulta no corre: el LLM del flujo recibe las tools configuradas y las
+elige y encadena él (`ContextSourcesService.mcpToolsetForLlm` + `LlmService.chatWithTools`). Los
+argumentos con valor real en la configuración son **fijos**: salen del esquema y pci los pisa
+encima de lo que mande el LLM. Los providers implementan `generateWithTools` (opcional en
+`LlmProvider`); uno nuevo sin tools cae solo a la pre-consulta.
+
 ## Resolución del tenant
 
 El JWT identifica **a la persona y nada más**: `{ sub, email }`. El tenant activo viaja

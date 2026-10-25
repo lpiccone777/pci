@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
 import { LlmProviderFactory } from './llm-provider.factory';
-import type { LlmMessage, LlmCompletionOptions } from './llm-provider.interface';
+import type { LlmMessage, LlmCompletionOptions, LlmToolDefinition } from './llm-provider.interface';
+import { LlmToolChatResult, LlmToolExecutor, LlmToolLoopOptions, runToolLoop, stripThinking } from './tool-loop';
+
+export { LLM_TOOL_MAX_ROUNDS } from './tool-loop';
+export type { LlmToolChatResult, LlmToolTrace } from './tool-loop';
 
 @Injectable()
 export class LlmService {
@@ -38,22 +42,42 @@ export class LlmService {
     return this.stripThinking(raw);
   }
 
+  /** Si el proveedor activo tiene tool calling (todos salvo OpenCode Go). */
+  async supportsTools(): Promise<boolean> {
+    const provider = await this.factory.createProvider();
+    return typeof provider.generateWithTools === 'function';
+  }
+
   /**
-   * Saca el bloque de razonamiento (`<think>...</think>`) que algunos modelos devuelven
-   * mezclado con la respuesta final en vez de en un campo separado — confirmado con
-   * MiniMax-M2.x (no se puede apagar el razonamiento en esos modelos, y sin el parámetro
-   * `reasoning_split` de esa API el texto queda embebido en `content`; ver
-   * `MiniMaxProvider`). Va acá y no en cada provider porque cualquier modelo detrás de
-   * cualquier proveedor puede ser "razonador" (ej. DeepSeek R1 vía OpenRouter) — un solo
-   * lugar, provider-agnostic, en vez de repetir la limpieza en cada uno.
+   * Conversación con tools (contrato C61): el LLM elige tool y argumentos, `execute` la corre
+   * (pci, contra la fuente de verdad) y el resultado vuelve al LLM, hasta
+   * `LLM_TOOL_MAX_ROUNDS` vueltas. Agotadas, una pasada final sin tools obliga a contestar con
+   * texto. `execute` nunca tira: un error vuelve al LLM como resultado ("no se pudo…").
+   * Con `stopAfterTools` (voz) no hace la pasada final: alcanza con los resultados.
    */
+  async chatWithTools(
+    messages: LlmMessage[],
+    tools: LlmToolDefinition[],
+    execute: LlmToolExecutor,
+    opts: LlmToolLoopOptions & { tenantConfig?: Partial<LlmCompletionOptions> } = {},
+  ): Promise<LlmToolChatResult> {
+    const provider = await this.factory.createProvider();
+    if (!provider.generateWithTools) return { supported: false, text: '', rounds: 0, calls: [] };
+
+    const merged: LlmCompletionOptions = {
+      temperature: await this.appConfig.getNumber('LLM_TEMPERATURE', 0.7),
+      maxTokens: await this.appConfig.getNumber('LLM_MAX_TOKENS', 1024),
+      systemPrompt: await this.appConfig.get('LLM_SYSTEM_PROMPT'),
+      ...opts.tenantConfig,
+    };
+    if (merged.systemPrompt && messages[0]?.role !== 'system') {
+      messages = [{ role: 'system', content: merged.systemPrompt }, ...messages];
+    }
+    return runToolLoop(provider as Required<typeof provider>, messages, tools, execute, merged, opts);
+  }
+
+  /** Ver `stripThinking` en `tool-loop.ts`. */
   private stripThinking(text: string): string {
-    let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    // Si `max_tokens` se agotó a mitad del razonamiento, no hay tag de cierre y el regex de
-    // arriba no lo agarra — cortar desde el `<think>` abierto es mejor que mostrarle al
-    // usuario el razonamiento interno crudo (aunque la respuesta quede corta o vacía).
-    const openIdx = cleaned.search(/<think>/i);
-    if (openIdx !== -1) cleaned = cleaned.slice(0, openIdx);
-    return cleaned.trim();
+    return stripThinking(text);
   }
 }

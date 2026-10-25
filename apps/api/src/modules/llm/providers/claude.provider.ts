@@ -3,8 +3,12 @@ import type {
   LlmProvider,
   LlmMessage,
   LlmCompletionOptions,
+  LlmToolDefinition,
+  LlmToolStep,
+  LlmToolTurn,
   ResolvedProviderConfig,
 } from '../llm-provider.interface';
+import { anthropicWithTools } from './tool-calling';
 
 // Sin @Injectable(): no lo instancia Nest, lo construye LlmProviderFactory
 // pasándole la config ya resuelta.
@@ -43,5 +47,14 @@ export class ClaudeProvider implements LlmProvider {
 
     const content = response.content[0];
     return content.type === 'text' ? content.text : '';
+  }
+
+  generateWithTools(
+    messages: LlmMessage[],
+    turns: LlmToolTurn[],
+    tools: LlmToolDefinition[],
+    options?: LlmCompletionOptions,
+  ): Promise<LlmToolStep> {
+    return anthropicWithTools(this.client, this.defaultModel, messages, turns, tools, options);
   }
 }

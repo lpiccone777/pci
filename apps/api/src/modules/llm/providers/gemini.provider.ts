@@ -3,8 +3,12 @@ import type {
   LlmProvider,
   LlmMessage,
   LlmCompletionOptions,
+  LlmToolDefinition,
+  LlmToolStep,
+  LlmToolTurn,
   ResolvedProviderConfig,
 } from '../llm-provider.interface';
+import { geminiWithTools } from './tool-calling';
 
 // Sin @Injectable(): no lo instancia Nest, lo construye LlmProviderFactory
 // pasándole la config ya resuelta.
@@ -41,5 +45,14 @@ export class GeminiProvider implements LlmProvider {
     const lastMessage = messages[messages.length - 1];
     const result = await chat.sendMessage(lastMessage.content);
     return result.response.text() ?? '';
+  }
+
+  generateWithTools(
+    messages: LlmMessage[],
+    turns: LlmToolTurn[],
+    tools: LlmToolDefinition[],
+    options?: LlmCompletionOptions,
+  ): Promise<LlmToolStep> {
+    return geminiWithTools(this.client, this.defaultModel, messages, turns, tools, options);
   }
 }

@@ -3,8 +3,12 @@ import type {
   LlmProvider,
   LlmMessage,
   LlmCompletionOptions,
+  LlmToolDefinition,
+  LlmToolStep,
+  LlmToolTurn,
   ResolvedProviderConfig,
 } from '../llm-provider.interface';
+import { openAiCompatibleWithTools } from './tool-calling';
 
 // Sin @Injectable(): no lo instancia Nest, lo construye LlmProviderFactory
 // pasándole la config ya resuelta.
@@ -36,5 +40,14 @@ export class OpenRouterProvider implements LlmProvider {
     });
 
     return completion.choices[0]?.message?.content ?? '';
+  }
+
+  generateWithTools(
+    messages: LlmMessage[],
+    turns: LlmToolTurn[],
+    tools: LlmToolDefinition[],
+    options?: LlmCompletionOptions,
+  ): Promise<LlmToolStep> {
+    return openAiCompatibleWithTools(this.client, this.defaultModel, messages, turns, tools, options);
   }
 }

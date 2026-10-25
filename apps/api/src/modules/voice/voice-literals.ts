@@ -16,6 +16,9 @@ export const VOICE_TEXTS = {
   identifyRetryNameOnly: 'No te encontré con ese nombre. Decime de nuevo tu nombre y apellido, por favor.',
 } as const;
 
+/** Contenido del mensaje del bot cuando respondió el LLM de voz: se reemplaza por lo oído. */
+export const DELEGATED_PLACEHOLDER = '(respuesta libre del voicebot)';
+
 export const identifyAskDocument = (label: string) => `Para identificarte, decime tu número de ${label}.`;
 export const identifyRetryDocument = (label: string) =>
   `No pude encontrarte con esos datos. Probemos de nuevo: decime tu número de ${label}.`;

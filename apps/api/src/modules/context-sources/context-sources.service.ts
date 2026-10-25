@@ -15,11 +15,14 @@ import {
   CONTEXT_SOURCE_TEST_QUEUE,
   CONTEXT_SOURCE_QUERY_QUEUE,
   CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
+  CONTEXT_SOURCE_MCP_CALL_QUEUE,
   ConnectionTestResult,
   ContextSourceQueryResult,
+  McpToolCallResult,
   McpToolsListResult,
 } from './broker/context-source-connector.service';
-import type { McpToolConfig } from './broker/mcp-client';
+import { MCP_QUESTION_PLACEHOLDER, readConfiguredTools, type McpToolConfig, type McpToolInfo } from './broker/mcp-client';
+import type { LlmToolCall, LlmToolDefinition } from '../llm/llm-provider.interface';
 
 // Debe quedar por encima de TEST_TIMEOUT_MS (context-source-connector.service.ts):
 // este timeout envuelve por RPC a ese chequeo interno, así que si vencen a la vez
@@ -32,6 +35,57 @@ const QUERY_TIMEOUT_MS = 32_000;
 
 /** Cada tool configurada es un `tools/call` por mensaje del usuario: acotado a propósito. */
 const MAX_MCP_TOOLS = 10;
+
+/** Caché del `tools/list` de cada fuente para el LLM (C61): no se paga en cada mensaje. */
+const MCP_TOOLS_CACHE_MS = 5 * 60_000;
+/** Timeout del `tools/list` cuando se arma el toolset en medio de una conversación. */
+const MCP_TOOLS_LIST_TIMEOUT_MS = 5_000;
+/** Timeout por defecto de una tool elegida por el LLM. */
+const MCP_TOOL_CALL_TIMEOUT_MS = 15_000;
+
+/**
+ * Tools de una fuente MCP listas para el LLM del flujo (contrato C61). `execute` nunca tira:
+ * un error vuelve como `{ ok: false, content }` para que el LLM lo lea.
+ */
+export interface McpLlmToolset {
+  sourceName: string;
+  tools: LlmToolDefinition[];
+  execute(call: LlmToolCall, timeoutMs?: number): Promise<{ ok: boolean; content: string }>;
+}
+
+/**
+ * Un argumento de la configuración es fijo si tiene un valor real: no vacío, sin
+ * `{{pregunta}}` y distinto de 0 (el formulario pone 0 y "" de relleno en los obligatorios).
+ * Los fijos los inyecta pci y se sacan del esquema; el resto lo completa el LLM.
+ */
+export function isFixedToolArgument(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '' && !value.includes(MCP_QUESTION_PLACEHOLDER);
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return false;
+}
+
+/** Nombre de tool que aceptan todos los proveedores: `^[a-zA-Z0-9_-]{1,64}$`. */
+function llmToolName(name: string, taken: Set<string>): string {
+  const base = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'tool';
+  let out = base;
+  for (let i = 2; taken.has(out); i++) out = `${base}_${i}`;
+  taken.add(out);
+  return out;
+}
+
+/** `inputSchema` del servidor sin las propiedades que fija la configuración. */
+function schemaWithoutFixed(inputSchema: Record<string, unknown> | undefined, fixed: string[]): Record<string, unknown> {
+  const schema = inputSchema && typeof inputSchema === 'object' ? { ...inputSchema } : {};
+  const properties = { ...((schema.properties as Record<string, unknown>) ?? {}) };
+  for (const key of fixed) delete properties[key];
+  const required = Array.isArray(schema.required) ? (schema.required as string[]).filter((k) => !fixed.includes(k)) : [];
+  delete schema.$schema;
+  return { ...schema, type: 'object', properties, ...(required.length ? { required } : { required: undefined }) };
+}
 
 /**
  * Fuentes de verdad (MCP / RAG / n8n) del tenant activo.
@@ -47,6 +101,8 @@ const MAX_MCP_TOOLS = 10;
 @Injectable()
 export class ContextSourcesService {
   private readonly logger = new Logger(ContextSourcesService.name);
+
+  private readonly mcpToolsCache = new Map<string, { at: number; serverUrl: unknown; tools: McpToolInfo[] }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -153,6 +209,7 @@ export class ContextSourcesService {
     }
 
     const source = await this.prisma.contextSource.update({ where: { id }, data });
+    this.mcpToolsCache.delete(id);
     return this.toSafeDto(source);
   }
 
@@ -289,6 +346,95 @@ export class ContextSourcesService {
         message: err instanceof Error ? err.message : 'No se pudieron listar las tools del servidor MCP',
       };
     }
+  }
+
+  /**
+   * Tools de la fuente para que el LLM del flujo la opere (contrato C61): las configuradas en
+   * la conexión, con descripción y esquema del `tools/list` del servidor (caché de 5 min), sin
+   * los argumentos fijos de la configuración — esos los inyecta `execute` y el LLM no los ve ni
+   * los pisa. `null` si la fuente no es MCP, no tiene tools o el servidor no las lista: el
+   * llamador sigue con la consulta de siempre (`queryKnowledge`). Nunca tira.
+   */
+  async mcpToolsetForLlm(tenantId: string, sourceId: string): Promise<McpLlmToolset | null> {
+    try {
+      const { type, name, config } = await this.getResolvedConfig(tenantId, sourceId);
+      if (type !== 'mcp') return null;
+      const configured = readConfiguredTools(config).slice(0, MAX_MCP_TOOLS);
+      if (!configured.length) return null;
+
+      const serverTools = await this.cachedMcpTools(tenantId, sourceId, config);
+      if (!serverTools) return null;
+
+      const taken = new Set<string>();
+      const byLlmName = new Map<string, { mcpName: string; fixed: Record<string, unknown> }>();
+      const tools: LlmToolDefinition[] = [];
+      for (const tool of configured) {
+        const info = serverTools.find((t) => t.name === tool.name);
+        if (!info) {
+          this.logger.warn(`Fuente ${sourceId}: la tool configurada "${tool.name}" no existe en el servidor.`);
+          continue;
+        }
+        const fixed = Object.fromEntries(Object.entries(tool.arguments ?? {}).filter(([, v]) => isFixedToolArgument(v)));
+        const llmName = llmToolName(tool.name, taken);
+        byLlmName.set(llmName, { mcpName: tool.name, fixed });
+        tools.push({
+          name: llmName,
+          description: (info.description ?? '').slice(0, 1000),
+          parameters: schemaWithoutFixed(info.inputSchema, Object.keys(fixed)),
+        });
+      }
+      if (!tools.length) return null;
+
+      return {
+        sourceName: name,
+        tools,
+        execute: async (call, timeoutMs = MCP_TOOL_CALL_TIMEOUT_MS) => {
+          const target = byLlmName.get(call.name);
+          if (!target) return { ok: false, content: `No existe la herramienta "${call.name}".` };
+          // Los fijos van encima: el LLM no puede cambiar lo que fijó la configuración.
+          const args = { ...(call.arguments ?? {}), ...target.fixed };
+          try {
+            const reply = await this.broker.request(
+              CONTEXT_SOURCE_MCP_CALL_QUEUE,
+              { pattern: 'context-source.mcp.call-tool', data: { config, name: target.mcpName, arguments: args, timeoutMs }, tenantId },
+              { timeoutMs: timeoutMs + 2_000 },
+            );
+            const result = reply.data as McpToolCallResult;
+            return result.ok && result.text
+              ? { ok: true, content: result.text }
+              : { ok: false, content: `Error de la herramienta: ${result.message}` };
+          } catch (err) {
+            return { ok: false, content: `No se pudo consultar: ${err instanceof Error ? err.message : err}` };
+          }
+        },
+      };
+    } catch (err) {
+      this.logger.warn(`Fuente ${sourceId}: no se pudieron armar las tools — ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  private async cachedMcpTools(
+    tenantId: string,
+    sourceId: string,
+    config: Record<string, unknown>,
+  ): Promise<McpToolInfo[] | null> {
+    const hit = this.mcpToolsCache.get(sourceId);
+    if (hit && hit.serverUrl === config.serverUrl && Date.now() - hit.at < MCP_TOOLS_CACHE_MS) return hit.tools;
+    const reply = await this.broker
+      .request(
+        CONTEXT_SOURCE_MCP_TOOLS_QUEUE,
+        { pattern: 'context-source.mcp.list-tools', data: { config }, tenantId },
+        { timeoutMs: MCP_TOOLS_LIST_TIMEOUT_MS },
+      )
+      .catch(() => null);
+    const result = reply?.data as McpToolsListResult | undefined;
+    if (!result?.ok || !result.tools) {
+      this.logger.warn(`Fuente ${sourceId}: tools/list falló (${result?.message ?? 'sin respuesta'}).`);
+      return null;
+    }
+    this.mcpToolsCache.set(sourceId, { at: Date.now(), serverUrl: config.serverUrl, tools: result.tools });
+    return result.tools;
   }
 
   // --- helpers ---

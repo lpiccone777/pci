@@ -17,6 +17,7 @@ import {
   VoiceTurnReply,
   VoiceTurnRequest,
 } from './voice.types';
+import { DELEGATED_PLACEHOLDER } from './voice-literals';
 
 /** Vencimiento del lease del turno: si el proceso que lo tomó se cae, otro lo retoma. */
 const TURN_LEASE_MS = 15_000;
@@ -24,8 +25,6 @@ const TURN_LEASE_MS = 15_000;
 const TURN_LEASE_WAIT_MS = 10_000;
 const TURN_LEASE_RETRY_MS = 25;
 
-/** Contenido del mensaje del bot cuando respondió el LLM de voz: se reemplaza por lo oído. */
-const DELEGATED_PLACEHOLDER = '(respuesta libre del voicebot)';
 
 type VoiceCallWithConversation = Prisma.VoiceCallGetPayload<{ include: { conversation: true } }>;
 

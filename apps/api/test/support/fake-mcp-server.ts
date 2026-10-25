@@ -2,7 +2,10 @@
  * Servidor MCP REAL (SDK oficial, `Server` de bajo nivel, sin zod) para tests: expone
  * los dos transportes del catálogo — `/mcp` (Streamable HTTP) y `/sse` + `/messages`
  * (SSE legado) — y exige `Authorization: Bearer <FAKE_MCP_API_KEY>`. Tools:
- * `buscar_kb({query})`, `horarios({sede})` y `rota` (siempre `isError`).
+ * `buscar_kb({query})`, `horarios({sede})` y `rota` (siempre `isError`). Con `{ weather: true }`
+ * suma las dos de Open-Meteo que encadena el LLM del flujo (C61): `geocoding({name, count,
+ * language})` → coordenadas, y `weather_forecast({latitude, longitude, temperature_unit, …})`,
+ * que valida `temperature_unit` como el servidor real ("expected one of celsius|fahrenheit").
  *
  * Lo usan el spec unitario del connector y el e2e de context-sources (BE-CS-16).
  */
@@ -16,7 +19,56 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 
 export const FAKE_MCP_API_KEY = 'secreto-de-prueba';
 
-function buildMcpServer(): Server {
+/** Ciudades que conoce `geocoding`. */
+const FAKE_GEO: Record<string, { latitude: number; longitude: number }> = {
+  merlo: { latitude: -34.66536, longitude: -58.72744 },
+};
+
+const WEATHER_TOOLS = [
+  {
+    name: 'geocoding',
+    description: 'Busca una ciudad por nombre y devuelve sus coordenadas',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' }, count: { type: 'number' }, language: { type: 'string' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'weather_forecast',
+    description: 'Pronóstico del tiempo para unas coordenadas',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        latitude: { type: 'number' },
+        longitude: { type: 'number' },
+        temperature_unit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
+        forecast_days: { type: 'number' },
+      },
+      required: ['latitude', 'longitude'],
+    },
+  },
+];
+
+function weatherTool(name: string, args: Record<string, unknown>) {
+  if (name === 'geocoding') {
+    const hit = FAKE_GEO[String(args.name ?? '').trim().toLowerCase()];
+    return { content: [{ type: 'text', text: JSON.stringify({ results: hit ? [{ name: args.name, ...hit, count: args.count, language: args.language }] : [] }) }] };
+  }
+  if (!['celsius', 'fahrenheit'].includes(String(args.temperature_unit))) {
+    return { isError: true, content: [{ type: 'text', text: 'expected one of celsius|fahrenheit at temperature_unit' }] };
+  }
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `Pronóstico en ${args.latitude},${args.longitude} (${args.temperature_unit}, ${args.forecast_days ?? 7} días): máxima 21, mínima 9`,
+      },
+    ],
+  };
+}
+
+function buildMcpServer(weather = false): Server {
   const server = new Server({ name: 'kb-de-prueba', version: '1.0.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -31,10 +83,12 @@ function buildMcpServer(): Server {
         inputSchema: { type: 'object', properties: { sede: { type: 'string' } } },
       },
       { name: 'rota', description: 'Siempre falla', inputSchema: { type: 'object' } },
+      ...(weather ? WEATHER_TOOLS : []),
     ],
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+    if (weather && WEATHER_TOOLS.some((t) => t.name === req.params.name)) return weatherTool(req.params.name, args);
     switch (req.params.name) {
       case 'buscar_kb':
         return { content: [{ type: 'text', text: `KB: resultado para "${String(args.query)}"` }] };
@@ -60,7 +114,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
  * Servidor HTTP con los dos transportes: `/mcp` (Streamable HTTP, stateful) y
  * `/sse` + `/messages` (SSE legado). Exige `Authorization: Bearer <FAKE_MCP_API_KEY>`.
  */
-export function startFakeMcp(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+export function startFakeMcp(opts: { weather?: boolean } = {}): Promise<{ baseUrl: string; close: () => Promise<void> }> {
   const streamable = new Map<string, StreamableHTTPServerTransport>();
   const sse = new Map<string, SSEServerTransport>();
 
@@ -80,7 +134,7 @@ export function startFakeMcp(): Promise<{ baseUrl: string; close: () => Promise<
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (id) => streamable.set(id, transport!),
         });
-        await buildMcpServer().connect(transport);
+        await buildMcpServer(opts.weather).connect(transport);
       }
       await transport.handleRequest(req, res, body);
       return;
@@ -89,7 +143,7 @@ export function startFakeMcp(): Promise<{ baseUrl: string; close: () => Promise<
       const transport = new SSEServerTransport('/messages', res);
       sse.set(transport.sessionId, transport);
       res.on('close', () => sse.delete(transport.sessionId));
-      await buildMcpServer().connect(transport);
+      await buildMcpServer(opts.weather).connect(transport);
       return;
     }
     if (url.pathname === '/messages' && req.method === 'POST') {
