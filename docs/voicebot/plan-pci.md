@@ -441,6 +441,12 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   después se desasigna, el motor lo ignora y cae al de inicio (lo marca el log y la tabla dice
   "no disponible"). Tests BE-EXT-10 y FE-SET-21.
 
+- [x] **Menú: opción sin salida conectada** (decisión del usuario en la prueba en vivo, 2026-10-24;
+  comportamiento del motor de pci, no va al contrato): en texto y en voz, si la opción elegida no
+  tiene salida, se queda en el menú, avisa que no está disponible y lo repite. Antes caía en la
+  primera arista del nodo, que era la de otra opción ("Opción 2" decía lo de la opción 1). Tests
+  CHAT-N-MENU-14 y BE-VOZ-30.
+
 ### Fuera de H4 (anotado)
 
 - **Grabación (DA12):** solo texto, sin audio.

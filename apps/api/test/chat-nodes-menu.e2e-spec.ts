@@ -243,6 +243,33 @@ describe('2.3 Nodos del motor — menu (CHAT-N-MENU-*)', () => {
 
   // ── CHAT-N-MENU-05: respuesta por label o value exactos ─────────────────────
 
+  it('CHAT-N-MENU-14: una opción sin salida conectada no cae en la de otra opción: avisa y repite el menú', async () => {
+    const { phone, tenant } = await setupMenuFlow(
+      [
+        startNode('s'),
+        menuNode('m', {
+          text: 'Elegí:',
+          options: [
+            { value: '1', label: 'Uno' },
+            { value: '2', label: 'Dos' },
+          ],
+        }),
+        endNode('fin1', 'Elegiste uno.'),
+      ],
+      // Solo la opción 1 tiene salida.
+      [edge('s', 'm', 'known'), edge('m', 'fin1', '1')],
+    );
+    await simulate(phone, tenant.id, 'hola');
+
+    const res = await simulate(phone, tenant.id, '2');
+    expect(res.body.reply).toContain('La opción "Dos" no está disponible.');
+    expect(res.body.reply).not.toContain('Elegiste uno.');
+    expect(res.body.reply).toContain('Elegí:');
+
+    // Sigue parado en el menú: la opción conectada funciona.
+    expect((await simulate(phone, tenant.id, '1')).body.reply).toContain('Elegiste uno.');
+  });
+
   it('CHAT-N-MENU-05: respuesta exacta por label matchea y enruta', async () => {
     const { phone, tenant } = await setupMenuFlow(mainMenuNodes(), mainMenuEdges());
     await simulate(phone, tenant.id, 'hola');

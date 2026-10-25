@@ -688,6 +688,24 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(llm.calls).toHaveLength(0);
     });
 
+    it('BE-VOZ-30: menú por voz, opción sin salida conectada → avisa que no está disponible y repite el menú (no cae en otra)', async () => {
+      const { ext } = await voiceSetup(
+        'voz-menu-sin-salida',
+        [
+          startNode('start', { noGreeting: true }),
+          menuNode('menu', { text: 'Elegí una opción:', options: [{ value: '1', label: 'Opción 1' }, { value: '2', label: 'Opción 2' }] }),
+          messageNode('uno', 'Elegiste la opción 1.'),
+          inputNode('fin', { text: '¿Algo más?', variableName: 'x' }),
+        ],
+        [edge('start', 'menu'), edge('menu', 'uno', '1'), edge('uno', 'fin')],
+      );
+      const callId = uid();
+      await start(callId, ext);
+      const r = await sayOn(callId, ext, '¿Me escuchás? Opción 2.');
+      expect(literals(r)).toEqual(['La opción "Opción 2" no está disponible.\n\nElegí una opción:\n1. Opción 1\n2. Opción 2']);
+      expect(literals(await sayOn(callId, ext, 'la uno'))).toEqual(['Elegiste la opción 1.', '¿Algo más?']);
+    });
+
     it('BE-VOZ-26: llm_query en extracción por voz: la pregunta va guided (sin generarla con el LLM de pci); solo extrae', async () => {
       llm.setReply('sede: NONE');
       try {

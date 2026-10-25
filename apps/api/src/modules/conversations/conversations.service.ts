@@ -2231,9 +2231,8 @@ export class ConversationsService implements OnModuleInit {
           }
         }
 
-        // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
-        // encadenar nodos el menú consumiría el mensaje que lo activó.
-        if (flowState.__awaiting !== node.id) {
+        /** Muestra el menú y espera (con un aviso antes, si viene). */
+        const renderMenu = (notice?: string): NodeExecutionResult => {
           flowState.__awaiting = node.id;
           // Por voz no hay botones: las opciones van numeradas en el texto que se dice.
           const interactive = channel === 'voice' ? undefined : this.buildMenuInteractive(data.text, displayOptions);
@@ -2241,15 +2240,43 @@ export class ConversationsService implements OnModuleInit {
           // la lista numerada): las opciones ya se ven en los botones/lista, y
           // ese mismo texto es el que `executeFlow` termina mandando como body
           // del mensaje interactivo real — listarlas dos veces sería redundante.
-          const responseText = interactive
+          const menuText = interactive
             ? (data.text ?? '').trim() || 'Elegí una opción:'
             : (
                 (data.text ?? '') +
                 '\n' +
                 displayOptions.map((opt: any, idx: number) => `${idx + 1}. ${opt.label}`).join('\n')
               ).trim();
-          return { responseText, interactive, waitForInput: true, flowState };
-        }
+          return { responseText: notice ? `${notice}\n\n${menuText}` : menuText, interactive, waitForInput: true, flowState };
+        };
+
+        /**
+         * Sigue por la salida de la opción elegida. Una opción SIN salida conectada se queda en el
+         * menú, avisa que no está disponible y lo repite (decisión del usuario, 2026-10-24): antes
+         * caía en la primera arista del nodo, que es la de OTRA opción ("Opción 2" terminaba en lo
+         * de la opción 1). Mismo criterio que `condition`: nunca se cruza de rama.
+         */
+        const choose = (opt: any): NodeExecutionResult => {
+          if (opt.value === BACK_OPTION_VALUE) {
+            delete flowState.__awaiting;
+            return this.navigateMenuBack(flowState, menuStack, flowId);
+          }
+          const edge = edges.find((e: any) => e.source === node.id && e.sourceHandle === String(opt.value));
+          const target = edge?.target || opt.targetNodeId;
+          if (!target) {
+            this.logger.warn(
+              `Flujo ${flowId}: la opción "${opt.label}" del menú '${node.id}' no tiene salida conectada; se repite el menú.`,
+            );
+            return renderMenu(`La opción "${opt.label}" no está disponible.`);
+          }
+          delete flowState.__awaiting;
+          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
+          return { nextNodeId: target, flowState };
+        };
+
+        // Primera llegada al menú: mostrar opciones y esperar. Sin esto, al
+        // encadenar nodos el menú consumiría el mensaje que lo activó.
+        if (flowState.__awaiting !== node.id) return renderMenu();
 
         const selected = displayOptions.find(
           (opt: any) =>
@@ -2258,18 +2285,7 @@ export class ConversationsService implements OnModuleInit {
             body.trim() === String(displayOptions.indexOf(opt) + 1),
         );
 
-        if (selected) {
-          delete flowState.__awaiting;
-          if (selected.value === BACK_OPTION_VALUE) {
-            return this.navigateMenuBack(flowState, menuStack, flowId);
-          }
-          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
-          // Arista con sourceHandle = valor de la opción elegida
-          const edge = edges.find(
-            (e: any) => e.source === node.id && e.sourceHandle === String(selected.value),
-          );
-          return { nextNodeId: edge?.target || selected.targetNodeId, flowState };
-        }
+        if (selected) return choose(selected);
 
         // No hubo match literal: el usuario puede haber contestado en lenguaje
         // natural ("se me rompió la impresora" en vez de tocar "2"), o puede
@@ -2282,12 +2298,8 @@ export class ConversationsService implements OnModuleInit {
           const idx = matchMenuOption(body, displayOptions.map((o: any) => String(o.label ?? '')));
           const voiced = idx === null ? undefined : displayOptions[idx];
           if (voiced) {
-            delete flowState.__awaiting;
             if (flowState.__menuRetries) delete flowState.__menuRetries[node.id];
-            if (voiced.value === BACK_OPTION_VALUE) return this.navigateMenuBack(flowState, menuStack, flowId);
-            flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
-            const edge = edges.find((e: any) => e.source === node.id && e.sourceHandle === String(voiced.value));
-            return { nextNodeId: edge?.target || voiced.targetNodeId, flowState };
+            return choose(voiced);
           }
           const retries = { ...(flowState.__menuRetries || {}) };
           retries[node.id] = (retries[node.id] || 0) + 1;
@@ -2324,17 +2336,7 @@ export class ConversationsService implements OnModuleInit {
           ? displayOptions.find((opt: any) => String(opt.value) === interpretation.optionValue)
           : undefined;
 
-        if (matched) {
-          delete flowState.__awaiting;
-          if (matched.value === BACK_OPTION_VALUE) {
-            return this.navigateMenuBack(flowState, menuStack, flowId);
-          }
-          flowState.__menuStack = [...menuStack, { nodeId: node.id, flowId }];
-          const edge = edges.find(
-            (e: any) => e.source === node.id && e.sourceHandle === String(matched.value),
-          );
-          return { nextNodeId: edge?.target || matched.targetNodeId, flowState };
-        }
+        if (matched) return choose(matched);
 
         // Ni opción ni cancelación: en vez de insistir con el menú, el LLM toma
         // la conversación para entender el problema del usuario y recopilar
