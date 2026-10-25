@@ -178,6 +178,8 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
     const list = (await withAuth(http(t).get('/voice/outbound-calls'), s.token, s.tenant.id).expect(200)).body as { id: string }[];
     expect(list.map((o) => o.id)).toEqual([res.body.id]);
     await withAuth(http(t).get(`/voice/outbound-calls/${res.body.id}`), other.token, other.tenant.id).expect(404);
+    const options = (await withAuth(http(t).get('/voice/outbound-calls/flow-options'), s.token, s.tenant.id).expect(200)).body;
+    expect(options).toEqual([{ id: s.flow.id, name: 'saliente' }]);
   });
 
   it('BE-OUT-03: rotación [C34]: no-answer reintenta con resetRotation false; answered termina', async () => {

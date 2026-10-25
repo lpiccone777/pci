@@ -31,6 +31,13 @@ export class VoiceOutboundController {
     return this.outbound.findAll(tenantId);
   }
 
+  /** Flujos de voz activos de la empresa, para el selector de la pantalla (sin pedir `voice_flows`). */
+  @Get('flow-options')
+  @RequirePermission('voice_outbound', 'read')
+  flowOptions(@CurrentTenant() tenantId: string) {
+    return this.outbound.flowOptions(tenantId);
+  }
+
   @Get(':id')
   @RequirePermission('voice_outbound', 'read')
   findOne(@Param('id') id: string, @CurrentTenant() tenantId: string) {

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/hooks/use-auth';
 import { VoicebotExtensions } from './voicebot-extensions';
+import { VoicebotCommands } from './voicebot-commands';
 
 interface Setting {
   key: string;
@@ -851,6 +852,10 @@ export default function SettingsPage() {
           )}
           {activeGroup === VOICEBOT_EXTENSIONS_GROUP && (
             <VoicebotExtensions canUpdate={canUpdate} canDelete={canDelete} />
+          )}
+          {activeGroup === VOICEBOT_GENERAL_GROUP && <VoicebotCommands kind="health" canUpdate={canUpdate} />}
+          {(activeGroup === 'Mensajería: Voicebot (SIP entrante)' || activeGroup === 'Mensajería: Voicebot (SIP saliente)') && (
+            <VoicebotCommands kind="sip" canUpdate={canUpdate} />
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

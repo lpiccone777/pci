@@ -52,6 +52,13 @@ const menuDefinition: MenuItem[] = [
     feature: 'voicebot',
   },
   {
+    label: 'Llamadas salientes',
+    href: '/dashboard/voice-calls',
+    resource: 'voice_outbound',
+    action: 'read',
+    feature: 'voicebot',
+  },
+  {
     label: 'Fuentes de Verdad',
     href: '/dashboard/context-sources',
     resource: 'context-sources',

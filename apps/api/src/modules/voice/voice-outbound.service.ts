@@ -101,6 +101,14 @@ export class VoiceOutboundService {
     });
   }
 
+  flowOptions(tenantId: string) {
+    return this.prisma.flow.findMany({
+      where: { channel: 'voice', isActive: true, tenantFlows: { some: { tenantId } } },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   async findOne(tenantId: string, id: string) {
     const outbound = await this.prisma.voiceOutbound.findFirst({ where: { id, tenantId }, include: OUTBOUND_INCLUDE });
     if (!outbound) throw new NotFoundException('La saliente no existe en esta empresa.');
