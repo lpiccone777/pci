@@ -245,7 +245,7 @@ export class VoiceTurnsService implements OnModuleInit {
    * se resolvió (flujo del interno, flujo de voz de inicio de la empresa o charla libre): un flujo
    * asignado a otra empresa que la del interno no se toma nunca, y sin este log no se ve.
    */
-  private async resolveCallFlow(call: { id: string; extensionId: string | null; extensionNumber: string; tenantId: string }) {
+  private async resolveCallFlow(call: { id: string; extensionId: string | null; extensionNumber: string | null; tenantId: string }) {
     const extension = call.extensionId
       ? await this.prisma.extension.findUnique({ where: { id: call.extensionId }, select: { tenantId: true, flowId: true } })
       : null;

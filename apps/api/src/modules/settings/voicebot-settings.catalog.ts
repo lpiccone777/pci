@@ -976,6 +976,34 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
   }),
 
   // --- Llamadas salientes ---
+  // Sin `envNames` [C63]: son de pci, para las salientes que dispara pci (pantalla y API).
+  gated({
+    key: 'VOICE_OUTBOUND_ALLOWED_PREFIXES',
+    type: 'string',
+    group: 'Mensajería: Voicebot (Llamadas salientes)',
+    label: 'Números permitidos (salientes de pci)',
+    defaultValue: '',
+    pattern: {
+      regex: /^\s*(\+?[0-9*#]+\s*(,\s*\+?[0-9*#]+\s*)*)?$/,
+      message: 'Prefijos separados por coma, solo dígitos (con + inicial opcional), * y #.',
+    },
+    description:
+      'Prefijos a los que pci puede llamar, separados por coma (p. ej. 201,202,+54911). Un número se ' +
+      'acepta si empieza con alguno. Vacío = no se puede llamar a ningún número.',
+  }),
+  gated({
+    key: 'VOICE_OUTBOUND_RETRY_DELAY_MS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (Llamadas salientes)',
+    label: 'Espera entre intentos (ms, salientes de pci)',
+    defaultValue: '60000',
+    min: 5000,
+    max: 3600000,
+    integer: true,
+    description:
+      'Cuánto espera pci entre un intento no atendido y el siguiente número de la lista. Con el ' +
+      'voicebot ocupado (busy) también espera esto, sin contar la vuelta.',
+  }),
   voicebot('CALL_AUDIO_URL', {
     key: 'VOICEBOT_CALL_AUDIO_URL',
     type: 'string',

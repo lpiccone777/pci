@@ -265,8 +265,8 @@ describe('1.1 Autenticación (BE-AUTH-*)', () => {
     expect(res.status).toBe(200);
     const membership = res.body.tenants.find((m: any) => m.tenant.id === tenant.id);
     expect(membership).toBeDefined();
-    // SuperAdmin recibe el catálogo completo (17 recursos × 4 acciones = 68).
-    expect(membership.role.permissions).toHaveLength(68);
+    // SuperAdmin recibe el catálogo completo (18 recursos × 4 acciones = 72).
+    expect(membership.role.permissions).toHaveLength(72);
     expect(JSON.stringify(res.body)).not.toContain('passwordHash');
   });
 

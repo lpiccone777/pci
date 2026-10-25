@@ -48,6 +48,7 @@ model User {
   devices           Device[]
   deviceValidations DeviceValidation[]
   conversations     Conversation[]
+  voiceOutbounds    VoiceOutbound[]
   tickets           Ticket[]           @relation("TicketReporter")
   assignedTickets   Ticket[]           @relation("TicketAssignee")
   metrics           Metric[]
@@ -80,6 +81,7 @@ model Tenant {
   scheduleCalendarEntries ScheduleCalendarEntry[]
   extensions              Extension[]
   voiceCalls              VoiceCall[]
+  voiceOutbounds          VoiceOutbound[]
 }
 
 /// Agrupación de usuarios dentro de una empresa (Soporte, Ventas, Administración...).
@@ -310,26 +312,29 @@ model Extension {
 // (`callerNumber`: pista para identificar, no identifica a nadie por sí solo [DA14]) y el
 // lease que serializa los turnos de la llamada entre instancias de pci [C4].
 model VoiceCall {
-  id              String       @id
-  conversationId  String       @unique
-  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  tenantId        String
-  tenant          Tenant       @relation(fields: [tenantId], references: [id])
-  extensionId     String?
-  extension       Extension?   @relation(fields: [extensionId], references: [id], onDelete: SetNull)
-  extensionNumber String
-  calledNumber    String?
-  callerNumber    String?
-  direction       String       @default("inbound") // "inbound" | "outbound"
-  startedAt       DateTime     @default(now())
-  endedAt         DateTime?
-  endReason       String? // "hangup" | "bot_hangup" | "transfer" | "error"
-  lastSpoken      Json? // { turnId, heardText, interrupted } de call.ended
+  id                String                @id
+  conversationId    String                @unique
+  conversation      Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenantId          String
+  tenant            Tenant                @relation(fields: [tenantId], references: [id])
+  extensionId       String?
+  extension         Extension?            @relation(fields: [extensionId], references: [id], onDelete: SetNull)
+  extensionNumber   String? // null en las salientes [C63]
+  calledNumber      String?
+  callerNumber      String?
+  direction         String                @default("inbound") // "inbound" | "outbound"
+  startedAt         DateTime              @default(now())
+  endedAt           DateTime?
+  endReason         String? // "hangup" | "bot_hangup" | "transfer" | "error"
+  lastSpoken        Json? // { turnId, heardText, interrupted } de call.ended
   // Lease del turno en curso: lo toma un UPDATE atómico condicionado a que esté vencido.
-  turnLockToken   String?
-  turnLockUntil   DateTime?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  turnLockToken     String?
+  turnLockUntil     DateTime?
+  // Saliente [C63]: el intento de pci que la originó (la empresa y el flujo salen de ahí).
+  outboundAttemptId String?               @unique
+  outboundAttempt   VoiceOutboundAttempt? @relation(fields: [outboundAttemptId], references: [id], onDelete: SetNull)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
 
   turns VoiceTurn[]
 
@@ -340,6 +345,57 @@ model VoiceCall {
 // repetido devuelve `response` sin volver a correr el flujo [C27]), `supersedes` (el
 // `snapshot` de posición y flowState de ANTES del turno [DA1]) y `previous` (el Message del
 // bot que hay que reemplazar por lo que se oyó).
+/// Llamada saliente lanzada desde pci (H5, C63): la saliente lógica, con sus números para la
+/// rotación [C34]. Cada `call.outbound` publicado es un `VoiceOutboundAttempt`.
+model VoiceOutbound {
+  id            String    @id @default(uuid())
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  createdById   String?
+  createdBy     User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  mode          String // "flow" | "audio"
+  flowId        String?
+  flow          Flow?     @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  to            String[]
+  audioUrl      String?
+  digits        String?
+  maxRounds     Int
+  retryDelayMs  Int
+  status        String    @default("pending") // "pending" | "calling" | "done" | "failed" | "cancelled"
+  outcome       String? // último outcome de call.outbound.result
+  attemptsCount Int       @default(0)
+  busyCount     Int       @default(0)
+  nextAttemptAt DateTime?
+  // Lo toma un UPDATE condicionado (como el lease de turnos): dos instancias no publican el mismo intento.
+  lockUntil     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  attempts VoiceOutboundAttempt[]
+
+  @@index([tenantId, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+/// Un `call.outbound` publicado. `id` es el `callId` (`out-<uuid>`, lo genera pci [C63]).
+model VoiceOutboundAttempt {
+  id          String        @id
+  outboundId  String
+  outbound    VoiceOutbound @relation(fields: [outboundId], references: [id], onDelete: Cascade)
+  to          String?
+  round       Int?
+  outcome     String? // "answered" | "busy" | "digit" | "no-answer" | "no-digit" | "hangup" | "exhausted" | "error"
+  answered    Boolean       @default(false)
+  digit       String?
+  lastAttempt Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  resultAt    DateTime?
+
+  voiceCall VoiceCall?
+
+  @@index([outboundId, createdAt])
+}
+
 model VoiceTurn {
   id            String    @id
   callId        String
@@ -447,6 +503,7 @@ model Flow {
   baseAlternatives FlowAlternative[]    @relation("FlowAlternativeBase")
   variantOf        FlowAlternative?     @relation("FlowAlternativeVariant")
   extensions       Extension[]
+  voiceOutbounds   VoiceOutbound[]
   // Canal del flujo [D10, contrato C47]: "text" (WhatsApp/SMS) | "voice". Los de voz solo se
   // eligen para llamadas (interno → flujo de voz de inicio del tenant) y nunca caen al
   // `isDefault` global, que es solo de texto. El editor por canal llega en H4.

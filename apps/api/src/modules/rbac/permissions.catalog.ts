@@ -30,10 +30,10 @@ export interface PermissionAction {
 }
 
 /**
- * Los 17 recursos del sistema.
+ * Los 18 recursos del sistema.
  *
  * Hoy solo `users`, `tenants`, `roles`, `permissions`, `areas`, `settings`, `flows`,
- * `voice_flows`, `context-sources`, `skills` y `schedule-calendar` protegen alguna operación con
+ * `voice_flows`, `voice_outbound`, `context-sources`, `skills` y `schedule-calendar` protegen alguna operación con
  * `@RequirePermission`. El resto se declara igual: son los módulos que todavía no se
  * protegieron, y tener el permiso disponible antes evita tener que repartirlo a mano el
  * día que se protejan.
@@ -55,6 +55,7 @@ export const PERMISSION_RESOURCES: readonly PermissionResource[] = [
   { key: 'llm', label: 'Modelos de lenguaje' },
   { key: 'flows', label: 'Flujos IVR' },
   { key: 'voice_flows', label: 'Flujos de voz' },
+  { key: 'voice_outbound', label: 'Llamadas salientes' },
   { key: 'context-sources', label: 'Fuentes de verdad' },
   { key: 'skills', label: 'Skills' },
   { key: 'schedule-calendar', label: 'Calendario de feriados/guardias' },
@@ -68,7 +69,7 @@ export const PERMISSION_ACTIONS: readonly PermissionAction[] = [
   { key: 'delete', label: 'Eliminar' },
 ] as const;
 
-/** Cantidad de permisos asignables: 17 recursos × 4 acciones = 68. */
+/** Cantidad de permisos asignables: 18 recursos × 4 acciones = 72. */
 export const PERMISSION_TOTAL = PERMISSION_RESOURCES.length * PERMISSION_ACTIONS.length;
 
 /** Un par recurso-acción, que es todo lo que hace falta para decidir si algo se permite. */
