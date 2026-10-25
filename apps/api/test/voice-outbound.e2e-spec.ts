@@ -39,7 +39,7 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
   let service: VoiceOutboundService;
   const commands: Command[] = [];
   /** Respuesta del voicebot falso a cada comando (por defecto, acepta el `callId`). */
-  let reply: (cmd: Command) => Record<string, unknown> = (cmd) => ({ v: 1, callId: cmd.data.callId, ok: true });
+  let reply: (cmd: Command) => Record<string, unknown> | null = (cmd) => ({ v: 1, callId: cmd.data.callId, ok: true });
 
   const waitFor = async <T>(fn: () => Promise<T | null | undefined | false> | T | null | undefined | false, label: string): Promise<T> => {
     for (let i = 0; i < 100; i++) {
@@ -117,10 +117,12 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
       channel.ack(msg);
       const cmd = { pattern: body.pattern, data: body.data as Record<string, any> };
       commands.push(cmd);
-      if (body.replyTo) {
+      const data = reply(cmd);
+      // `null` = el voicebot no responde (caído).
+      if (body.replyTo && data) {
         channel.sendToQueue(
           body.replyTo,
-          Buffer.from(JSON.stringify({ pattern: `${body.pattern}.reply`, data: reply(cmd), correlationId: body.correlationId })),
+          Buffer.from(JSON.stringify({ pattern: `${body.pattern}.reply`, data, correlationId: body.correlationId })),
         );
       }
     });
@@ -306,4 +308,41 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
     expect(r.actions).toHaveLength(1);
     expect(r.actions[0]).toMatchObject({ type: 'say', mode: 'delegate' });
   });
+
+  it('BE-OUT-08: "Probar conexión" y "Re-provisionar SIP" por voicebot.commands, solo desde el tenant de sistema', async () => {
+    const admin = await t.prisma.user.findUniqueOrThrow({ where: { email: 'admin@pci.local' } });
+    const system = await t.prisma.tenant.findUniqueOrThrow({ where: { slug: 'system' } });
+    const token = tokenFor(t, admin);
+    const version = (await t.prisma.integrationConfigVersion.findUnique({ where: { id: 'voicebot' } }))?.version ?? 0;
+    reply = (cmd) =>
+      cmd.pattern === 'health.check'
+        ? { v: 1, ok: true, livekit: 'ok', rabbitmq: 'ok', minimax: 'ok', configVersion: version, activeCalls: 1 }
+        : { v: 1, trunks: ['in', 'out'], rules: ['201'] };
+
+    const health = await withAuth(http(t).post('/integrations/voicebot/health'), token, system.id).expect(201);
+    expect(health.body).toMatchObject({ ok: true, livekit: 'ok', activeCalls: 1, pciConfigVersion: version, configUpToDate: true });
+    expect(commands.find((c) => c.pattern === 'health.check')!.data).toEqual({ v: 1 });
+
+    const sip = await withAuth(http(t).post('/integrations/voicebot/sip-provision'), token, system.id).expect(201);
+    expect(sip.body).toMatchObject({ ok: true, trunks: ['in', 'out'], rules: ['201'] });
+
+    reply = (cmd) => (cmd.pattern === 'health.check' ? { v: 1, ok: true, configVersion: version - 1 } : null);
+    expect((await withAuth(http(t).post('/integrations/voicebot/health'), token, system.id).expect(201)).body).toMatchObject({
+      ok: true,
+      configUpToDate: false,
+    });
+
+    // Un admin de empresa no llega, aunque tenga el permiso `settings`.
+    const s = await scenario(['settings:read', 'settings:update']);
+    await withAuth(http(t).post('/integrations/voicebot/health'), s.token, s.tenant.id).expect(403);
+  });
+
+  it('BE-OUT-09: voicebot caído: "Probar conexión" responde ok:false con el motivo a los 5 s, sin tirar', async () => {
+    const admin = await t.prisma.user.findUniqueOrThrow({ where: { email: 'admin@pci.local' } });
+    const system = await t.prisma.tenant.findUniqueOrThrow({ where: { slug: 'system' } });
+    reply = () => null;
+    const res = await withAuth(http(t).post('/integrations/voicebot/health'), tokenFor(t, admin), system.id).expect(201);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatch(/no respondió en 5 s/);
+  }, 15_000);
 });

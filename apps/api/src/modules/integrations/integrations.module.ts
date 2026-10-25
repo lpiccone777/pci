@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BrokerModule } from '../broker/broker.module';
 import { ServiceTokenGuard } from '../../common/guards/service-token.guard';
 import { IntegrationsController } from './integrations.controller';
+import { VoicebotAdminController } from './voicebot-admin.controller';
 import { IntegrationsConfigService } from './integrations-config.service';
 
 // Integración con el voicebot y el stt (repo voicebot: docs/integracion-pci/contrato.md).
@@ -10,7 +11,7 @@ import { IntegrationsConfigService } from './integrations-config.service';
 // avise cada cambio de clave; no importa SettingsModule, así no hay ciclo.
 @Module({
   imports: [BrokerModule],
-  controllers: [IntegrationsController],
+  controllers: [IntegrationsController, VoicebotAdminController],
   providers: [IntegrationsConfigService, ServiceTokenGuard],
   exports: [IntegrationsConfigService],
 })

@@ -19,6 +19,7 @@ import {
   VoicebotSettingGroup,
   deriveSttSink,
 } from '../settings/voicebot-settings.catalog';
+import { VOICEBOT_COMMANDS_QUEUE } from '../voice/voice-outbound.types';
 
 /** Sección de `config.changed` cuando cambia una credencial de la que sale el LLM de voz. */
 const VOICE_LLM_SECTION_ID = VOICEBOT_SECTION_IDS['Mensajería: Voicebot (LLM de voz)'];
@@ -35,6 +36,10 @@ export const EXTENSIONS_SECTION_ID = 'internos';
 
 /** Id de los flujos de voz en `config.changed.sections` (por `voiceLiterals`, C60). */
 export const VOICE_FLOWS_SECTION_ID = 'flujos-voz';
+
+/** Timeouts de los comandos de administración (voicebot-73, H5): health < 1 s, provision más largo. */
+const HEALTH_TIMEOUT_MS = 5_000;
+const SIP_PROVISION_TIMEOUT_MS = 20_000;
 
 /** Única fila de `IntegrationConfigVersion` (la crea la migración). */
 const VERSION_ID = 'voicebot';
@@ -174,6 +179,52 @@ export class IntegrationsConfigService {
       this.logger.warn(
         `config.changed v${version} (${what}) no se publicó: ${err instanceof Error ? err.message : err}`,
       );
+    }
+  }
+
+  /**
+   * "Probar conexión" (§6, `health.check` por RPC): el estado que informa el voicebot más si su
+   * `configVersion` coincide con la de pci (si no, el voicebot no tomó el último cambio). Nunca
+   * tira: sin respuesta es `ok: false` con el motivo.
+   */
+  async voicebotHealth() {
+    const started = Date.now();
+    const [reply, version] = await Promise.all([
+      this.command('health.check', HEALTH_TIMEOUT_MS),
+      this.currentVersion(),
+    ]);
+    const latencyMs = Date.now() - started;
+    if ('error' in reply) return { ok: false, latencyMs, pciConfigVersion: version.version, error: reply.error };
+    const data = reply.data;
+    const configVersion = typeof data.configVersion === 'number' ? data.configVersion : null;
+    return {
+      ...data,
+      ok: data.ok === true,
+      latencyMs,
+      pciConfigVersion: version.version,
+      configUpToDate: configVersion === version.version,
+    };
+  }
+
+  /** "Re-provisionar SIP" (§6, `sip.provision` por RPC): trunks y dispatch rules del voicebot. */
+  async voicebotSipProvision() {
+    const started = Date.now();
+    const reply = await this.command('sip.provision', SIP_PROVISION_TIMEOUT_MS);
+    const latencyMs = Date.now() - started;
+    if ('error' in reply) return { ok: false, latencyMs, error: reply.error };
+    this.logger.log(`sip.provision pedido desde /settings: respondió en ${latencyMs} ms.`);
+    return { ok: !reply.data.error, latencyMs, ...reply.data };
+  }
+
+  /** Un comando RPC a `voicebot.commands` [§6]; el timeout o un error vuelven como `{ error }`. */
+  private async command(pattern: string, timeoutMs: number): Promise<{ data: Record<string, unknown> } | { error: string }> {
+    try {
+      const reply = await this.broker.request(VOICEBOT_COMMANDS_QUEUE, { pattern, data: { v: 1 } }, { timeoutMs });
+      return { data: (reply.data ?? {}) as Record<string, unknown> };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`${pattern} sin respuesta del voicebot: ${reason}`);
+      return { error: `El voicebot no respondió en ${timeoutMs / 1000} s (${reason}).` };
     }
   }
 
