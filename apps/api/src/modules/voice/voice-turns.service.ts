@@ -18,6 +18,8 @@ import {
   VoiceTurnRequest,
 } from './voice.types';
 import { DELEGATED_PLACEHOLDER } from './voice-literals';
+import { VoiceOutboundService } from './voice-outbound.service';
+import { CallOutboundResult } from './voice-outbound.types';
 
 /** Vencimiento del lease del turno: si el proceso que lo tomó se cae, otro lo retoma. */
 const TURN_LEASE_MS = 15_000;
@@ -54,6 +56,7 @@ export class VoiceTurnsService implements OnModuleInit {
     private readonly broker: BrokerService,
     private readonly conversations: ConversationsService,
     private readonly flows: FlowService,
+    private readonly outbound: VoiceOutboundService,
   ) {}
 
   async onModuleInit() {
@@ -319,9 +322,12 @@ export class VoiceTurnsService implements OnModuleInit {
         const event = (msg.data ?? {}) as CallEndedEvent;
         if (!event.callId) throw new VoiceTurnError('invalid_request', 'call.ended sin callId');
         await this.serialize(event.callId, () => this.onCallEnded(event));
+      } else if (msg.pattern === 'call.outbound.result') {
+        const event = (msg.data ?? {}) as CallOutboundResult;
+        if (!event.callId) throw new VoiceTurnError('invalid_request', 'call.outbound.result sin callId');
+        await this.outbound.handleResult(event);
       } else {
-        // `call.outbound.result` (§6) llega con las salientes de pci, en H5.
-        this.logger.debug(`[voz] evento ${msg.pattern} sin consumidor todavía`);
+        this.logger.debug(`[voz] evento ${msg.pattern} sin consumidor`);
       }
     } catch (err) {
       // Un evento que no se puede procesar no se reintenta: se loguea y se descarta.
