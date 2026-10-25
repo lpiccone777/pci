@@ -650,19 +650,36 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
   - `VoiceOutboundAttempt`, cada `call.outbound`: `callId`, `to`, `round`, `outcome`, `answered`,
     `digit`, `lastAttempt`, `startedAt`, `endedAt`.
 - **Publicar:** `call.outbound` en `voicebot.commands` con
-  `{v, to, flowId?, audioUrl?, digits?, maxRounds?, rotationKey: <VoiceOutbound.id>, resetRotation}`.
-  `resetRotation` va en `true` solo en el primer intento. Por el broker, nunca HTTP directo (regla
-  de desacople).
+  `{v, callId, to, flowId?, audioUrl?, digits?, maxRounds?, rotationKey: <VoiceOutbound.id>, resetRotation}`.
+  - `callId` (`out-<uuid>`) lo genera pci y crea el intento antes de publicar. voicebot-73 lo acepta
+    y valida `/^out-[A-Za-z0-9-]{1,64}$/`; si ya está en curso, responde error y no disca.
+  - `resetRotation` va en `true` solo en el primer intento.
+  - Por el broker, nunca HTTP directo (regla de desacople).
+  - Un intento a la vez por saliente: el siguiente `call.outbound` sale recién después del
+    `call.outbound.result` del anterior. El voicebot no frena dos en paralelo con el mismo
+    `rotationKey`.
 - **Resultado:** consumidor de `call.outbound.result` en `voice.events`:
   - actualiza el intento;
   - decide si sigue.
-- **Rotación y reintentos [C34], del lado de pci:**
-  - se reintenta con `no-answer`, `no-digit` o `hangup` sin atender, mientras no sea `lastAttempt`;
-  - se corta con `digit`, con `answered` en modo flujo, con `lastAttempt` o con `exhausted`.
+- **Rotación y reintentos [C34], del lado de pci** (outcomes según voicebot-73):
+  - **Modo flujo:**
+    - `answered` (valor nuevo) sale apenas atienden y corta los reintentos. El cierre llega por
+      `call.ended`, como en una entrante.
+    - Con `no-answer` se reintenta.
+    - Con `busy` (valor nuevo: no se discó por el tope C46) se reintenta sin contar ronda.
+    - Con `exhausted` se termina.
+  - **Modo audio + dígito:** igual que hoy en `CallSessionService`.
+    - `digit` corta.
+    - `no-answer`, `no-digit` y `hangup` reintentan. `hangup` con `answered: true` significa que
+      atendió y cortó sin marcar.
+    - Siempre hasta `lastAttempt` o `exhausted`.
+  - El voicebot no impone una espera mínima entre intentos: la pone pci.
   - La espera entre intentos es una clave nueva de pci, `VOICE_OUTBOUND_RETRY_DELAY_MS` (default
     60000), y se persiste en `nextAttemptAt`. Un barrido cada 10 s publica los vencidos, así un
     reinicio de pci no pierde reintentos.
-  - Cancelar desde la UI: `call.hangup` con `resetRotation` y `status: cancelled`.
+  - Cancelar desde la UI: `call.hangup` con `resetRotation` y `status: cancelled`. Con una llamada
+    en curso, termina con `call.ended`, `endReason: "bot_hangup"` (propuesta de voicebot-73) y
+    `lastSpoken`. Responde `{v, ok}`, con `ok: false` si el `callId` no existe.
 - **Tope de simultáneas:** C46 ya limita en el voicebot. pci no publica más de N intentos
   `calling` a la vez (clave `VOICE_OUTBOUND_MAX_CONCURRENT`, default 2), así no choca con las
   entrantes. **[decide el usuario]** el valor.
@@ -677,13 +694,17 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
   - **"Re-provisionar SIP"** (grupo SIP) → `sip.provision` por RPC (timeout ~20 s). Muestra trunks
     y rules. Es para reparar a mano: los cambios de SIP ya se aplican en caliente con
     `config.changed`.
-- Los dos pasan por `BrokerService.request` a `voicebot.commands`, como el resto del I/O externo.
+- Los dos pasan por `BrokerService.request` a `voicebot.commands`, con `replyTo` y `correlationId`
+  como `voice.turn`, igual que el resto del I/O externo. Timeouts confirmados por voicebot-73:
+  health 5 s (debería tardar menos de 1 s) y provision 20 s.
 
 ### 3. Conversación de una saliente con flujo
 
 - Pci crea el intento antes de publicar.
-- En el `start` (`callId` `out-*`, `call.direction: "outbound"`, `extension: null`),
-  `VoiceTurnsService` no busca interno: busca el `VoiceOutboundAttempt` por `callId`.
+- En el `start` (`callId` `out-*`, `call` = `{direction: "outbound", extension: null,
+  calledNumber: <el número marcado, el remoto>, callerNumber: <SIP_TRUNK_NUMBER, puede ir vacío>}`),
+  `VoiceTurnsService` no busca interno: busca el `VoiceOutboundAttempt` por `callId`. Ojo: en una
+  saliente el remoto es `calledNumber`; en una entrante, `callerNumber`.
   - **Con intento:** abre `VoiceCall` + `Conversation` (`channel voice`, `userId null`) con:
     - la empresa de la saliente, que es la empresa activa de quien la lanzó;
     - `direction outbound`, `extensionId null`;
@@ -710,9 +731,13 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
 
 ### 5. Riesgos y esfuerzo
 
+- **Cambios de contrato que necesita este plan** (propuestos con voicebot-73; los aprueba el
+  coordinador):
+  - `callId?` en `call.outbound`;
+  - outcomes nuevos `answered` y `busy` en modo flujo; `answered` sale al atender, no al terminar;
+  - `call.hangup` de pci → `call.ended` con `endReason: "bot_hangup"`.
 - **Riesgos:**
-  - la carrera `start` contra respuesta RPC, si pci no genera el `callId` (pregunta 1 a
-    voicebot-73);
+  - la carrera `start` contra la respuesta RPC queda resuelta con el `callId` que genera pci;
   - reintentos duplicados con dos instancias de pci: el barrido toma cada saliente con un UPDATE
     condicionado, como el lease de turnos;
   - discar a números reales en pruebas: en desarrollo solo a MicroSIP o a internos de prueba, con
@@ -727,13 +752,8 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
 
 ## Necesito de otros
 
-- **voicebot-73 (H5, pedido 2026-10-25):**
-  - si acepta `callId?` generado por pci en `call.outbound`;
-  - `outcome` y momento de `call.outbound.result` en modo flujo;
-  - campos de `call` en el `start` de una saliente (cuál es el número remoto);
-  - espera mínima entre intentos;
-  - RPC y timeouts de `health.check` y `sip.provision`;
-  - `call.hangup` sobre una saliente con flujo.
+- **voicebot-73 (H5):** respondió el 2026-10-25 (su plan, "Plan de H5", 586c0e4). Lo que cambia
+  el contrato está en "Cambios de contrato que necesita este plan", arriba.
 
 | De | Qué | Para | Estado |
 |---|---|---|---|
