@@ -25,6 +25,7 @@ import {
   VOICE_TEXTS,
   identifyAskDocument,
   identifyRetryDocument,
+  menuMissingKeyNotice,
   menuUnavailableNotice,
   spokenMenuText,
 } from '../voice/voice-literals';
@@ -2284,13 +2285,14 @@ export class ConversationsService implements OnModuleInit {
         // encadenar nodos el menú consumiría el mensaje que lo activó.
         if (flowState.__awaiting !== node.id) return renderMenu();
 
-        // Tecla marcada [C57]: elige directamente la opción con ese número, antes que el texto.
-        if (dtmf && /^\d$/.test(dtmf)) {
-          const keyed = displayOptions[Number(dtmf) - 1];
-          if (keyed) {
-            if (flowState.__menuRetries) delete flowState.__menuRetries[node.id];
-            return choose(keyed);
-          }
+        // Tecla marcada [C57]: elige directamente la opción con ese número, antes que el texto. Una
+        // tecla que no corresponde a ninguna opción avisa y repite el menú, siempre en literal
+        // (decisión del usuario, 2026-10-25): nunca cae al "no entendí" ni a la charla libre.
+        if (dtmf) {
+          const keyed = /^\d$/.test(dtmf) && Number(dtmf) >= 1 ? displayOptions[Number(dtmf) - 1] : undefined;
+          if (flowState.__menuRetries) delete flowState.__menuRetries[node.id];
+          if (keyed) return choose(keyed);
+          return renderMenu(menuMissingKeyNotice(dtmf));
         }
 
         const selected = displayOptions.find(

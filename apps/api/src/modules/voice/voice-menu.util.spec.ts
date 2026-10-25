@@ -21,6 +21,14 @@ describe('voice-menu.util', () => {
     expect(matchMenuOption('quiero hablar con una persona', labels)).toBe(2);
   });
 
+  it('una palabra numérica dentro de una frase larga no elige (salvo después de "opción"/"la"/"el"); los dígitos sí', () => {
+    const opciones = ['Opción 1', 'Opción 2'];
+    expect(matchMenuOption('tenés una fuente de verdad que está funcionando', opciones)).toBeNull();
+    expect(matchMenuOption('quiero la segunda', opciones)).toBe(1);
+    expect(matchMenuOption('mirá, yo quiero la opción dos por favor', opciones)).toBe(1);
+    expect(matchMenuOption('mirá, yo quiero la 2 por favor', opciones)).toBe(1);
+  });
+
   it('sin match, null', () => {
     expect(matchMenuOption('no sé', labels)).toBeNull();
     expect(matchMenuOption('', labels)).toBeNull();

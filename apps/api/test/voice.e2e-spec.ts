@@ -749,6 +749,33 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(llm.calls).toHaveLength(0);
     });
 
+    it('BE-VOZ-33: una tecla que no corresponde a ninguna opción avisa en literal y repite el menú (nunca guided ni delegate)', async () => {
+      const { ext } = await voiceSetup(
+        'voz-tecla-mal',
+        [
+          startNode('start', { noGreeting: true }),
+          menuNode('menu', { text: 'Elegí:', options: [{ value: 'a', label: 'Uno' }, { value: 'b', label: 'Dos' }] }),
+          messageNode('fin', 'Listo.'),
+        ],
+        [edge('start', 'menu'), edge('menu', 'fin', 'a')],
+      );
+      const callId = uid();
+      await start(callId, ext);
+      for (const [key, notice] of [
+        ['3', 'La opción 3 no existe.'],
+        ['#', 'Esa tecla no corresponde a ninguna opción.'],
+      ]) {
+        const r = await turn({ callId, turnId: uid(), kind: 'user', dtmf: key, call: callInfo(ext) });
+        expect(r.actions).toEqual([{ type: 'say', mode: 'literal', text: `${notice}\n\nElegí:\n1. Uno\n2. Dos` }]);
+      }
+      // Sigue en el menú: la tecla 1 elige.
+      expect(literals(await turn({ callId, turnId: uid(), kind: 'user', dtmf: '1', call: callInfo(ext) }))).toEqual(['Listo.']);
+      // Y esos avisos son literales fijos: viajan en voiceLiterals.
+      const lits = (await t.moduleRef.get(IntegrationsConfigService).voicebotConfig()).voiceLiterals;
+      expect(lits).toContain('La opción 3 no existe.\n\nElegí:\n1. Uno\n2. Dos');
+      expect(lits).toContain('Esa tecla no corresponde a ninguna opción.\n\nElegí:\n1. Uno\n2. Dos');
+    });
+
     it('BE-VOZ-26: llm_query en extracción por voz: la pregunta va guided (sin generarla con el LLM de pci); solo extrae', async () => {
       llm.setReply('sede: NONE');
       try {

@@ -27,6 +27,13 @@ export function spokenMenuText(text: string | undefined, options: Array<{ label?
 
 export const menuUnavailableNotice = (label: string) => `La opción "${label}" no está disponible.`;
 
+/** Tecla marcada que no corresponde a ninguna opción del menú [C57]. */
+export const menuMissingKeyNotice = (key: string) =>
+  /^\d$/.test(key) ? `La opción ${key} no existe.` : 'Esa tecla no corresponde a ninguna opción.';
+
+/** Teclas de un teléfono. */
+const PHONE_KEYS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '#'];
+
 /** Opción sintética "Volver" del menú (ver `navigateMenuBack` en el motor). */
 const BACK_LABEL = 'Volver';
 
@@ -74,6 +81,11 @@ export function collectVoiceLiterals(flows: FlowGraph[]): string[] {
               const connected =
                 edges.some((e) => e.source === node.id && e.sourceHandle === String(opt.value)) || !!opt.targetNodeId;
               if (!connected) add(`${menuUnavailableNotice(opt.label)}\n\n${menu}`);
+            }
+            // Una tecla sin opción: el aviso y el menú de nuevo, con cada tecla posible.
+            for (const key of PHONE_KEYS) {
+              if (/^\d$/.test(key) && Number(key) >= 1 && Number(key) <= shown.length) continue;
+              add(`${menuMissingKeyNotice(key)}\n\n${menu}`);
             }
           }
           break;

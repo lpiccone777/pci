@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **716 casos** · Backend 415 · Chatbot 153 · Frontend 148 · de los cuales **394 son `P0`**
-(366 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **717 casos** · Backend 416 · Chatbot 153 · Frontend 148 · de los cuales **395 son `P0`**
+(367 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **415** |
+| **Backend (§1)** | | **416** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -149,7 +149,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.23 Skills | 🟠 P1 | 10 |
 | 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 34 |
 | 1.26 Integración voicebot: internos | 🔴 P0 | 10 |
-| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 32 |
+| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 33 |
 | 1.28 Integración voicebot: flujos de voz | 🔴 P0 | 6 |
 | **Chatbot (§2)** | | **153** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
@@ -178,7 +178,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.10 Flujos (editor) | 🟠 P1 | 33 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **716** |
+| **TOTAL** | | **717** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -923,6 +923,7 @@ caminos. Vía: broker real (vhost efímero), el test hace de voicebot. Spec:
 | BE-VOZ-30 | Menú por voz, opción sin salida conectada | Mismo criterio que CHAT-N-MENU-14: avisa y repite el menú por voz; "la uno" sigue por su salida |
 | BE-VOZ-31 | DTMF en `voice.turn` [C57] | En el menú la tecla elige la opción por número antes que el texto ("soporte" + tecla 2 → Ventas); en un `input` cuenta como el dígito; el mensaje del usuario queda "[tecla N]"; una tecla inválida → `invalid_request`; sin LLM |
 | BE-VOZ-32 | `start` repetido de la misma llamada [C59] | No se toma como entrada del usuario: responde las mismas acciones que el primer `start` (con su turnId), sin mover la posición del flujo, y se loguea |
+| BE-VOZ-33 | Tecla que no corresponde a ninguna opción del menú | Literal "La opción N no existe." (o "Esa tecla no corresponde a ninguna opción." para `*`/`#`) y repite el menú, nunca guided ni delegate; esos avisos viajan en `voiceLiterals` |
 | BE-VOZ-24 | Nodo en modo `guided` | `say guided` con el texto interpolado como `instruction` y sus `{{variables}}` como `facts`; los demás siguen literales |
 | BE-VOZ-25 | Menú por voz | Elige por etiqueta aproximada ("bentas" → Ventas) sin LLM; si no entiende, un `guided` repite las opciones; a la segunda, `delegate` |
 | BE-VOZ-26 | `llm_query` en extracción por voz | La pregunta por el dato faltante va `guided` (con sus valores posibles), sin `generateLlmQueryQuestion`: el LLM de pci solo extrae |

@@ -4,6 +4,10 @@ import { nameTokens, similarity } from './voice-identify.util';
  * Elección de una opción de menú dicha por teléfono, sin LLM (plan H4b): por voz no se llama a
  * `interpretMenuChoice`. Acepta el número ("2", "la dos", "opción tres", "la segunda") o la
  * etiqueta, con tolerancia a errores del STT. Devuelve el índice (0-based) o `null`.
+ *
+ * Una palabra numérica ("una", "dos") solo cuenta en una frase de hasta 3 palabras o justo después
+ * de "opción", "número", "la" o "el" (prueba en vivo, 2026-10-25): en "tenés una fuente de
+ * verdad…" el "una" es un artículo, no la opción 1. Los dígitos valen siempre.
  */
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -22,6 +26,20 @@ const NUMBER_WORDS: Record<string, number> = {
 /** Umbral de similitud para la etiqueta dicha contra la de la opción. */
 export const MENU_LABEL_THRESHOLD = 0.8;
 
+/** Frase corta: ahí una palabra numérica suelta sí es la elección ("la dos", "opción tres"). */
+const SHORT_UTTERANCE_WORDS = 3;
+/** Palabras que anuncian un número ("opción dos", "la segunda"). */
+const NUMBER_LEADS = new Set(['opcion', 'numero', 'nro', 'la', 'el']);
+
+/** Todas las palabras, en minúscula y sin tildes (incluye las de una letra y los dígitos). */
+const allWords = (text: string) =>
+  text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9ñ]+/)
+    .filter(Boolean);
+
 export function matchMenuOption(spoken: string, labels: string[]): number | null {
   const said = nameTokens(spoken);
   if (!said.length && !/\d/.test(spoken)) return null;
@@ -39,7 +57,11 @@ export function matchMenuOption(spoken: string, labels: string[]): number | null
   // 2) Por número: un solo número dicho (en cifras o en palabras) que exista en el menú.
   const numbers = new Set<number>();
   for (const m of spoken.match(/\d+/g) ?? []) numbers.add(Number(m));
-  for (const t of said) if (NUMBER_WORDS[t]) numbers.add(NUMBER_WORDS[t]);
+  const words = allWords(spoken);
+  const short = words.length <= SHORT_UTTERANCE_WORDS;
+  words.forEach((w, i) => {
+    if (NUMBER_WORDS[w] && (short || NUMBER_LEADS.has(words[i - 1]))) numbers.add(NUMBER_WORDS[w]);
+  });
   if (numbers.size === 1) {
     const n = [...numbers][0];
     if (n >= 1 && n <= labels.length) return n - 1;

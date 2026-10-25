@@ -467,6 +467,12 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   voz sube la versión y publica `["flujos-voz"]`. Con el flujo de hoy son 18 textos (~1 KB). Tests
   BE-INT-34 y unitarios.
 
+- [x] **Menú por voz, ajustes de la prueba en vivo (2026-10-25, usuario):** una palabra numérica
+  ("una", "dos") solo elige en una frase de hasta 3 palabras o justo después de "opción", "número",
+  "la" o "el"; los dígitos valen siempre. "Tenés una fuente de verdad…" ya no elige la opción 1.
+  Una tecla sin opción dice en literal "La opción N no existe." y repite el menú; ese aviso entra en
+  `voiceLiterals`. Tests unitarios del menú y BE-VOZ-33.
+
 ### Fuera de H4 (anotado)
 
 - **Grabación (DA12):** solo texto, sin audio.
