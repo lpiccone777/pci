@@ -51,6 +51,34 @@ describe('Flujos de voz: /voice-flows y permiso voice_flows (BE-VFLW-*)', () => 
   });
   beforeEach(() => setSetting(t.prisma, 'VOICEBOT_ENABLED', 'true'));
 
+  it('BE-VFLW-07: al guardar avisa, sin bloquear, de nodos sin salida e opciones de menú sin destino [C64]', async () => {
+    const { tenant, token } = await scenario(['voice_flows:create', 'voice_flows:update', 'voice_flows:read']);
+    const nodes = [
+      startNode('start', { text: 'Hola.' }),
+      { id: 'menu', type: 'menu', data: { text: 'Elegí:', options: [{ value: '1', label: 'Consulta' }, { value: '2', label: 'Reclamo' }] }, position: { x: 0, y: 0 } },
+      { id: 'q', type: 'input', data: { text: 'Decime:', variableName: 'q' }, position: { x: 0, y: 0 } },
+      { id: 'fin', type: 'end', data: { text: 'Chau.' }, position: { x: 0, y: 0 } },
+    ];
+    const created = await withAuth(http(t).post('/voice-flows'), token, tenant.id)
+      .send({ name: 'con huecos', nodes, edges: [edge('start', 'menu'), { id: 'e2', source: 'menu', target: 'q', sourceHandle: '1' }] })
+      .expect(201);
+    expect(created.body.warnings.map((w: { nodeId: string }) => w.nodeId).sort()).toEqual(['menu', 'q']);
+    expect(created.body.warnings.find((w: { nodeId: string }) => w.nodeId === 'menu').message).toContain('"Reclamo"');
+
+    const fixed = await withAuth(http(t).patch(`/voice-flows/${created.body.id}`), token, tenant.id)
+      .send({
+        nodes,
+        edges: [
+          edge('start', 'menu'),
+          { id: 'e2', source: 'menu', target: 'q', sourceHandle: '1' },
+          { id: 'e3', source: 'menu', target: 'fin', sourceHandle: '2' },
+          edge('q', 'fin'),
+        ],
+      })
+      .expect(200);
+    expect(fixed.body.warnings).toEqual([]);
+  });
+
   it('BE-VFLW-01: con el voicebot apagado /voice-flows no existe (404) y /features lo dice; prendido, responde', async () => {
     const { tenant, token } = await scenario(['voice_flows:read']);
     await setSetting(t.prisma, 'VOICEBOT_ENABLED', 'false');

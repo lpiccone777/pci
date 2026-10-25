@@ -355,12 +355,18 @@ export class ConversationsService implements OnModuleInit {
     callerNumber: string | null,
     startFlow?: { id: string; nodes: unknown },
     dtmf?: string | null,
+    opts: { skipGreeting?: boolean } = {},
   ): Promise<VoiceFlowOutput | null> {
     if (startFlow) {
       // Arranque (o rearranque tras el fin de un flujo a mitad de llamada): desde `start`.
       const startNodeId = this.findStartNodeId(startFlow.nodes as any[]);
       if (!startNodeId) return null;
-      conversation = { ...conversation, currentFlowId: startFlow.id, currentNodeId: startNodeId, flowState: {} };
+      conversation = {
+        ...conversation,
+        currentFlowId: startFlow.id,
+        currentNodeId: startNodeId,
+        flowState: opts.skipGreeting ? { __skipGreeting: true } : {},
+      };
     }
     const voice: VoiceFlowOutput = { actions: [], committed: false, ended: false };
     // La llamada entra sin usuario [DA5]; si ya la identificó un `voice_identify`, sigue con él.
@@ -2160,7 +2166,10 @@ export class ConversationsService implements OnModuleInit {
         // (2026-09-01), así que tomar "vacío" como "sin saludo" los habría dejado a todos mudos
         // de golpe al actualizar.
         const configuredGreeting = data.text?.trim() ? this.interpolate(data.text, flowState) : null;
-        const greeting = data.noGreeting
+        // `__skipGreeting`: rearranque del flujo después del "¿Algo más…?" por voz [C64].
+        const skipGreeting = !!flowState.__skipGreeting;
+        delete flowState.__skipGreeting;
+        const greeting = data.noGreeting || skipGreeting
           ? undefined
           : (configuredGreeting ??
             (identity.isKnown

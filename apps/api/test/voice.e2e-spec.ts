@@ -65,6 +65,7 @@ type Reply = {
     extension?: string;
   }>;
   awaitInput: boolean;
+  noInputMs?: number;
   committed: boolean;
   superseded: boolean;
   error: string | null;
@@ -901,6 +902,79 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
         llm.setToolProvider(null);
         await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
         await fake.close();
+      }
+    });
+
+    /** Menú Consulta (input sin salida) / Reclamo (mensaje → end): la rama Consulta deja el flujo sin paso siguiente. */
+    const deadEndFlow = (label: string) =>
+      voiceSetup(
+        label,
+        [
+          startNode('start', { noGreeting: true }),
+          menuNode('menu', { text: 'Elegí:', options: [{ value: '1', label: 'Consulta' }, { value: '2', label: 'Reclamo' }] }),
+          inputNode('consulta', { text: 'Decime:', variableName: 'consulta' }),
+          messageNode('reclamo', 'Te tomo el reclamo.'),
+          endNode('fin', 'Chau.'),
+        ],
+        [edge('start', 'menu'), edge('menu', 'consulta', '1'), edge('menu', 'reclamo', '2'), edge('reclamo', 'fin')],
+      );
+    const ASK = '¿Algo más en lo que te pueda ayudar?';
+    const BYE = 'Gracias por comunicarte. ¡Hasta luego!';
+
+    it('BE-VOZ-35: flujo sin paso siguiente [C64]: "¿Algo más…?" con noInputMs; no_input → despedida y hangup committed', async () => {
+      const { ext } = await deadEndFlow('voz-c64-a');
+      const callId = uid();
+      await start(callId, ext);
+      expect(literals(await sayOn(callId, ext, '1'))).toEqual(['Decime:']);
+
+      const r = await sayOn(callId, ext, 'quería preguntar si mañana trabajamos');
+      expect(r.error).toBeNull();
+      expect(r.actions).toEqual([{ type: 'say', mode: 'literal', text: ASK }]);
+      expect(r).toMatchObject({ awaitInput: true, noInputMs: 8000 });
+
+      const bye = await turn({ callId, turnId: uid(), kind: 'no_input', call: callInfo(ext) });
+      expect(bye.actions).toEqual([{ type: 'say', mode: 'literal', text: BYE }, { type: 'hangup' }]);
+      expect(bye).toMatchObject({ awaitInput: false, committed: true, error: null });
+      expect(bye.noInputMs).toBeUndefined();
+
+      // Los dos textos van pre-sintetizados [C60].
+      const config = await t.moduleRef.get(IntegrationsConfigService).voicebotConfig();
+      expect(config.voiceLiterals).toEqual(expect.arrayContaining([ASK, BYE]));
+    });
+
+    it('BE-VOZ-36: después del "¿Algo más…?", una respuesta va al último menú; una negativa corta despide y corta', async () => {
+      const { ext } = await deadEndFlow('voz-c64-b');
+      const callId = uid();
+      await start(callId, ext);
+      await sayOn(callId, ext, '1');
+      expect(literals(await sayOn(callId, ext, 'una consulta'))).toEqual([ASK]);
+      expect(literals(await sayOn(callId, ext, 'sí, quiero hacer un reclamo'))).toEqual(['Te tomo el reclamo.', 'Chau.']);
+
+      const other = uid();
+      await start(other, ext);
+      await sayOn(other, ext, '1');
+      await sayOn(other, ext, 'otra cosa');
+      const no = await sayOn(other, ext, 'No, gracias.');
+      expect(no.actions).toEqual([{ type: 'say', mode: 'literal', text: BYE }, { type: 'hangup' }]);
+      expect(no.committed).toBe(true);
+    });
+
+    it('BE-VOZ-37: sin menú previo, la respuesta rearranca el flujo sin el saludo; noInputMs se lleva al rango', async () => {
+      const { ext } = await voiceSetup(
+        'voz-c64-c',
+        [startNode('start', { text: 'Hola, soy el bot.' }), inputNode('q', { text: '¿Qué necesitás?', variableName: 'q' })],
+        [edge('start', 'q')],
+      );
+      await setSetting(t.prisma, 'VOICEBOT_END_FALLBACK_NO_INPUT_MS', '50000');
+      try {
+        const callId = uid();
+        expect(literals(await start(callId, ext))).toEqual(['Hola, soy el bot.', '¿Qué necesitás?']);
+        const r = await sayOn(callId, ext, 'algo');
+        expect(literals(r)).toEqual([ASK]);
+        expect(r.noInputMs).toBe(30000);
+        expect(literals(await sayOn(callId, ext, 'sí, otra cosa'))).toEqual(['¿Qué necesitás?']);
+      } finally {
+        await deleteSetting(t.prisma, 'VOICEBOT_END_FALLBACK_NO_INPUT_MS');
       }
     });
 

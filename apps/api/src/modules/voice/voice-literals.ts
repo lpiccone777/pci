@@ -118,3 +118,47 @@ export function collectVoiceLiterals(flows: FlowGraph[]): string[] {
   }
   return out;
 }
+
+/** Aviso del editor de flujos de voz [C64]: un nodo (u opción de menú) que deja el flujo sin paso siguiente. */
+export interface VoiceFlowWarning {
+  nodeId: string;
+  message: string;
+}
+
+/**
+ * Nodos sin salida que no son `end` [C64]: un `input` o un `message` sin arista, o una opción de
+ * menú sin destino. Por voz, ahí el flujo se queda sin nada que decir (pci dice el "¿Algo más…?").
+ * No bloquea el guardado: el flujo se arma de a poco.
+ */
+export function voiceFlowWarnings(flow: FlowGraph): VoiceFlowWarning[] {
+  const nodes = Array.isArray(flow.nodes) ? (flow.nodes as any[]) : [];
+  const edges = Array.isArray(flow.edges) ? (flow.edges as any[]) : [];
+  const hasExit = (id: string, handle?: string) =>
+    edges.some((e) => e.source === id && (handle === undefined || e.sourceHandle === handle));
+  const name = (node: any) => {
+    const text = typeof node?.data?.text === 'string' ? node.data.text.trim() : '';
+    return text ? `"${text.length > 40 ? `${text.slice(0, 40)}…` : text}"` : node.id;
+  };
+  const out: VoiceFlowWarning[] = [];
+  for (const node of nodes) {
+    if (node?.type === 'input' || node?.type === 'message') {
+      if (!hasExit(node.id)) {
+        out.push({
+          nodeId: node.id,
+          message: `El nodo ${name(node)} no tiene paso siguiente: ahí el flujo termina sin Fin y el bot pregunta "¿Algo más…?".`,
+        });
+      }
+    } else if (node?.type === 'menu') {
+      const options: any[] = Array.isArray(node.data?.options) ? node.data.options : [];
+      for (const opt of options) {
+        if (!hasExit(node.id, String(opt.value)) && !opt.targetNodeId) {
+          out.push({
+            nodeId: node.id,
+            message: `La opción "${opt.label}" del menú ${name(node)} no tiene paso siguiente: al elegirla, el bot dice que no está disponible.`,
+          });
+        }
+      }
+    }
+  }
+  return out;
+}

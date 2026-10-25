@@ -1,4 +1,4 @@
-import { matchMenuOption } from './voice-menu.util';
+import { isShortNegative, matchMenuOption } from './voice-menu.util';
 
 describe('voice-menu.util', () => {
   const labels = ['Soporte técnico', 'Ventas', 'Hablar con una persona'];
@@ -32,5 +32,10 @@ describe('voice-menu.util', () => {
   it('sin match, null', () => {
     expect(matchMenuOption('no sé', labels)).toBeNull();
     expect(matchMenuOption('', labels)).toBeNull();
+  });
+
+  it('negativa corta después del "¿Algo más…?" [C64]', () => {
+    for (const t of ['No', 'no, gracias.', 'Nada', 'Eso es todo', '¡Gracias!', 'Chau', 'nada más']) expect(isShortNegative(t)).toBe(true);
+    for (const t of ['no anda la impresora', 'quiero hacer un reclamo', 'sí', '']) expect(isShortNegative(t)).toBe(false);
   });
 });

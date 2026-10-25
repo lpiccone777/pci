@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · 🔄 H5 (código de pci listo, falta la prueba en vivo). Contrato vigente: **1.24**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · 🔄 H5 (código de pci listo, falta la prueba en vivo). Contrato vigente: **1.25**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -537,6 +537,23 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   - **Latencia de MiniMax ese día, muy variable:** 2,9 a 5,4 s por paso con tools, y 10,4 s una
     respuesta de 32 tokens sin tools. Con esos tiempos la cadena no entra en los 7 s: el límite lo
     pone el servidor de MiniMax, no las tools. El log por turno muestra la duración de cada paso.
+
+- [x] **Flujo de voz sin paso siguiente (C64, contrato 1.25, usuario 2026-10-25):** en la prueba
+  en vivo (int-_201_JSWNCFL7eGP7) la rama "Consulta" terminaba en un `input` sin salida. pci
+  respondió sin acciones y el voicebot se quedó 28 s callado. Ahora, con `awaitInput`, siempre hay
+  un `say`:
+  - **Fallback:** un tramo sin `say` agrega VOICEBOT_END_FALLBACK_TEXT ("¿Algo más en lo que te
+    pueda ayudar?") con `noInputMs` = VOICEBOT_END_FALLBACK_NO_INPUT_MS (8000, se lleva a
+    3000–30000) y un warn con el nodo. La conversación queda marcada (`flowState.__endFallback`,
+    con el último menú del `__menuStack` y el estado del flujo).
+  - **`no_input`** (turno nuevo) o una negativa corta (`isShortNegative`): VOICEBOT_END_FALLBACK_
+    GOODBYE_TEXT + `hangup`, `committed: true`.
+  - **Otra respuesta:** se toma contra el último menú mostrado (elige la opción o lo repite). Sin
+    menú, el flujo rearranca desde `start` sin el saludo (`flowState.__skipGreeting`).
+  - Los dos textos van en `voiceLiterals`; cambiarlos avisa como un flujo de voz (`flujos-voz`).
+  - **Editor:** POST/PATCH de `/voice-flows` devuelven `warnings` de nodos sin salida (`input`,
+    `message`, opción de menú), sin bloquear. El editor los muestra al guardar.
+  - Tests: BE-VOZ-35..37, BE-VFLW-07 y unitarios de `isShortNegative`.
 
 ### Tool calling en el LLM de voz — DESCARTADO por el usuario (2026-10-25)
 

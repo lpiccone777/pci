@@ -31,7 +31,8 @@ export interface VoiceTurnRequest {
   v: number;
   callId: string;
   turnId: string;
-  kind: 'start' | 'user' | 'continue';
+  /** `no_input` [C64]: venció el `noInputMs` de la respuesta anterior, sin texto. */
+  kind: 'start' | 'user' | 'continue' | 'no_input';
   text?: string | null;
   /** Tecla marcada en el teléfono [C57]: "0"–"9", "*" o "#". Puede venir sola o con `text`. */
   dtmf?: string | null;
@@ -45,6 +46,8 @@ export interface VoiceTurnReply {
   turnId: string;
   actions: VoiceAction[];
   awaitInput: boolean;
+  /** Solo con `awaitInput` [C64]: sin entrada en este tiempo, el voicebot manda `no_input`. */
+  noInputMs?: number;
   committed: boolean;
   superseded: boolean;
   error: string | null;

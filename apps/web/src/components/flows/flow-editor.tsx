@@ -818,6 +818,10 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
         })),
       };
 
+      // Flujos de voz [C64]: el backend avisa, sin bloquear, de los nodos que quedan sin paso siguiente.
+      const warningsText = (res: { warnings?: { message: string }[] } | undefined) =>
+        res?.warnings?.length ? `\n\nAvisos:\n${res.warnings.map((w) => `• ${w.message}`).join('\n')}` : '';
+
       if (isNew) {
         const created = await apiFetch(cfg.api, {
           method: 'POST',
@@ -829,8 +833,9 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
         });
         setActiveFlowId(created.id);
         router.replace(`${cfg.base}/edit/?id=${created.id}`);
+        if (warningsText(created)) alert(`Flujo creado.${warningsText(created)}`);
       } else {
-        await apiFetch(`${cfg.api}/${activeFlowId}`, {
+        const updated = await apiFetch(`${cfg.api}/${activeFlowId}`, {
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
@@ -843,7 +848,7 @@ function FlowEditorInner({ channel }: { channel: FlowChannel }) {
             body: JSON.stringify({ assignments, isStart: isStartFlow }),
           });
         }
-        alert('Flujo guardado');
+        alert(`Flujo guardado${warningsText(updated)}`);
       }
     } catch (err: any) {
       console.error('Error saving flow:', err);

@@ -83,6 +83,9 @@ export const VOICE_LLM_CREDENTIALS: Record<VoiceLlmProvider, { apiKeyKey: string
   minimax: { apiKeyKey: 'VOICEBOT_MINIMAX_API_KEY', baseUrlKey: 'VOICEBOT_MINIMAX_BASE_URL' },
 };
 
+/** Textos de pci que el voicebot pre-sintetiza (`voiceLiterals`, C60/C64): cambiarlos avisa como un flujo de voz. */
+export const VOICE_LITERAL_SOURCE_KEYS = new Set(['VOICEBOT_END_FALLBACK_TEXT', 'VOICEBOT_END_FALLBACK_GOODBYE_TEXT']);
+
 /** Claves de pci de las que se deriva la config del LLM de voz: cambiarlas avisa al voicebot. */
 export const VOICE_LLM_SOURCE_KEYS = new Set(
   Object.values(VOICE_LLM_CREDENTIALS).flatMap((c) => [c.apiKeyKey, ...(c.baseUrlKey ? [c.baseUrlKey] : [])]),
@@ -763,6 +766,37 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       description,
     }),
   ),
+  // Flujo de voz sin paso siguiente [C64]. Sin `envNames`: pci los manda dentro de la respuesta del
+  // turno. Los dos textos van en `voiceLiterals` (C60): cambiarlos avisa como un flujo de voz.
+  gated({
+    key: 'VOICEBOT_END_FALLBACK_TEXT',
+    type: 'string',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Frase cuando el flujo se queda sin paso siguiente',
+    defaultValue: '¿Algo más en lo que te pueda ayudar?',
+    description:
+      'La dice pci si un flujo de voz termina sin nodo Fin. Si la persona no contesta, se despide y ' +
+      'corta; si dice algo, vuelve al último menú (o al flujo, sin el saludo).',
+  }),
+  gated({
+    key: 'VOICEBOT_END_FALLBACK_GOODBYE_TEXT',
+    type: 'string',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Despedida después de esa frase',
+    defaultValue: 'Gracias por comunicarte. ¡Hasta luego!',
+    description: 'Con silencio o con un "no", "nada", "gracias" o "chau" después de la frase de arriba. Después corta.',
+  }),
+  gated({
+    key: 'VOICEBOT_END_FALLBACK_NO_INPUT_MS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Espera de respuesta a esa frase (ms)',
+    defaultValue: '8000',
+    min: 3000,
+    max: 30000,
+    integer: true,
+    description: 'Silencio desde que termina la frase hasta despedirse y cortar.',
+  }),
   voicebot('VOICEBOT_BARGE_IN', {
     key: 'VOICEBOT_BARGE_IN',
     type: 'boolean',

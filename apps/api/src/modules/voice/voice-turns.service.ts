@@ -20,6 +20,9 @@ import {
 import { DELEGATED_PLACEHOLDER } from './voice-literals';
 import { VoiceOutboundService } from './voice-outbound.service';
 import { CallOutboundResult, OUTBOUND_CALL_ID_PREFIX } from './voice-outbound.types';
+import { isShortNegative } from './voice-menu.util';
+import { AppConfigService } from '../../config/app-config.service';
+import type { VoiceAction } from '../conversations/conversations.service';
 
 /** Vencimiento del lease del turno: si el proceso que lo tomó se cae, otro lo retoma. */
 const TURN_LEASE_MS = 15_000;
@@ -27,6 +30,12 @@ const TURN_LEASE_MS = 15_000;
 const TURN_LEASE_WAIT_MS = 10_000;
 const TURN_LEASE_RETRY_MS = 25;
 
+
+/** Estado de "después del ¿Algo más…?" [C64], en `flowState.__endFallback` con el flujo cerrado. */
+interface EndFallbackState {
+  menu: { flowId: string; nodeId: string } | null;
+  state: Record<string, unknown>;
+}
 
 type VoiceCallWithConversation = Prisma.VoiceCallGetPayload<{ include: { conversation: true } }>;
 
@@ -57,6 +66,7 @@ export class VoiceTurnsService implements OnModuleInit {
     private readonly conversations: ConversationsService,
     private readonly flows: FlowService,
     private readonly outbound: VoiceOutboundService,
+    private readonly appConfig: AppConfigService,
   ) {}
 
   async onModuleInit() {
@@ -111,7 +121,7 @@ export class VoiceTurnsService implements OnModuleInit {
       !!req.callId &&
       typeof req.turnId === 'string' &&
       !!req.turnId &&
-      ['start', 'user', 'continue'].includes(req.kind);
+      ['start', 'user', 'continue', 'no_input'].includes(req.kind);
     if (!ok) throw new VoiceTurnError('invalid_request', 'faltan callId, turnId o un kind válido');
     // Una saliente de pci (`out-*`) llega con `extension: null` [C63]: la resuelve su intento.
     if (req.kind === 'start' && !req.call?.extension && !req.callId.startsWith(OUTBOUND_CALL_ID_PREFIX)) {
@@ -191,9 +201,39 @@ export class VoiceTurnsService implements OnModuleInit {
           })
         : null;
 
+      // Después del "¿Algo más…?" [C64]: silencio o negativa → despedida y corte; otra respuesta →
+      // el último menú mostrado o el flujo de nuevo sin el saludo.
+      const fallback = (conversation.flowState as { __endFallback?: EndFallbackState } | null)?.__endFallback;
+      // Un `no_input` solo llega después del fallback (es el único que manda `noInputMs`); si llegara
+      // otro, se despide igual: no hay nada que responderle.
+      if (req.kind === 'no_input' || (fallback && !conversation.currentFlowId && isShortNegative(heardInput))) {
+        return this.finishTurn(call, req, startedAt, conversation.id, snapshot, userMessage?.id ?? null, superseded, {
+          actions: [{ type: 'say', mode: 'literal', text: await this.fallbackText('goodbye') }, { type: 'hangup' }],
+          committed: true,
+          ended: true,
+        });
+      }
+      let resumeFlow: { id: string; nodes: unknown } | null = null; // rearranque sin saludo [C64]
+      if (fallback && !conversation.currentFlowId && req.kind === 'user') {
+        if (fallback.menu) {
+          conversation = await this.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: {
+              currentFlowId: fallback.menu.flowId,
+              currentNodeId: fallback.menu.nodeId,
+              flowState: { ...(fallback.state ?? {}), __awaiting: fallback.menu.nodeId } as Prisma.InputJsonValue,
+            },
+          });
+        } else {
+          const flow = await this.resolveCallFlow(call);
+          resumeFlow = flow;
+        }
+      }
+
       // Sin posición: flujo de la llamada por el interno [DA8]. Sin flujo → charla libre.
       const startFlow =
-        conversation.currentFlowId || req.kind === 'continue' ? null : await this.resolveCallFlow(call);
+        resumeFlow ??
+        (conversation.currentFlowId || req.kind === 'continue' ? null : await this.resolveCallFlow(call));
       const output = await this.conversations.runVoiceFlow(
         conversation,
         call.tenantId,
@@ -202,12 +242,27 @@ export class VoiceTurnsService implements OnModuleInit {
         call.direction === 'outbound' ? call.calledNumber : call.callerNumber,
         startFlow ?? undefined,
         dtmf,
+        { skipGreeting: !!resumeFlow },
       );
-      const flowOutput = output ?? {
+      let flowOutput: { actions: VoiceAction[]; committed: boolean; ended: boolean } = output ?? {
         actions: [{ type: 'say' as const, mode: 'delegate' as const, systemPrompt: await this.conversations.voiceFreeChatPrompt(call.tenantId) }],
         committed: false,
         ended: false,
       };
+
+      // Siempre algo para decir [C64]: un flujo que terminó sin `end` (o cualquier tramo que no
+      // dejó ningún `say`) no puede dejar al voicebot callado esperando.
+      let noInputMs: number | undefined;
+      if (!flowOutput.ended && !flowOutput.actions.some((a) => a.type === 'say')) {
+        const before = snapshot as { currentFlowId?: string | null; currentNodeId?: string | null; flowState?: Record<string, unknown> | null };
+        this.logger.warn(
+          `[voz] ${call.id}: el tramo quedó sin nada para decir (flujo ${before.currentFlowId ?? '—'}, nodo ` +
+            `${before.currentNodeId ?? '—'}): un nodo sin salida. Va "¿Algo más…?" [C64].`,
+        );
+        flowOutput = { ...flowOutput, actions: [...flowOutput.actions, { type: 'say', mode: 'literal', text: await this.fallbackText('ask') }] };
+        noInputMs = await this.fallbackNoInputMs();
+        await this.markEndFallback(conversation.id, before.flowState ?? null);
+      }
 
       const literal = flowOutput.actions.flatMap((a) => (a.type === 'say' && a.mode === 'literal' ? [a.text] : []));
       const delegated = flowOutput.actions.some((a) => a.type === 'say' && a.mode !== 'literal');
@@ -223,6 +278,7 @@ export class VoiceTurnsService implements OnModuleInit {
         turnId: req.turnId,
         actions: flowOutput.actions,
         awaitInput: !flowOutput.ended,
+        ...(noInputMs && !flowOutput.ended ? { noInputMs } : {}),
         committed: flowOutput.committed,
         superseded,
         error: null,
@@ -243,6 +299,79 @@ export class VoiceTurnsService implements OnModuleInit {
       });
       return reply;
     });
+  }
+
+  /** Responde un turno sin correr el flujo (despedida del fallback, C64): mensaje del bot y fila del turno. */
+  private async finishTurn(
+    call: { id: string },
+    req: VoiceTurnRequest,
+    startedAt: number,
+    conversationId: string,
+    snapshot: Prisma.InputJsonValue,
+    userMessageId: string | null,
+    superseded: boolean,
+    output: { actions: VoiceAction[]; committed: boolean; ended: boolean },
+  ): Promise<VoiceTurnReply> {
+    const text = output.actions.flatMap((a) => (a.type === 'say' && a.mode === 'literal' ? [a.text] : [])).join('\n\n');
+    const botMessage = text
+      ? await this.prisma.message.create({ data: { conversationId, senderType: 'assistant', content: text } })
+      : null;
+    await this.prisma.conversation.update({ where: { id: conversationId }, data: { flowState: Prisma.JsonNull } });
+    const reply: VoiceTurnReply = {
+      v: 1,
+      turnId: req.turnId,
+      actions: output.actions,
+      awaitInput: !output.ended,
+      committed: output.committed,
+      superseded,
+      error: null,
+    };
+    await this.prisma.voiceTurn.create({
+      data: {
+        id: req.turnId,
+        callId: call.id,
+        kind: req.kind,
+        text: req.kind === 'user' ? (req.text ?? '').trim() || null : null,
+        response: reply as unknown as Prisma.InputJsonValue,
+        committed: output.committed,
+        snapshot,
+        userMessageId,
+        botMessageId: botMessage?.id ?? null,
+        durationMs: Date.now() - startedAt,
+      },
+    });
+    this.logger.log(`[voz] ${call.id}: ${req.kind === 'no_input' ? 'sin respuesta' : 'negativa'} al "¿Algo más…?" → despedida y corte [C64].`);
+    return reply;
+  }
+
+  /**
+   * Marca la conversación como "después del ¿Algo más…?" [C64]: guarda el último menú mostrado
+   * (el tope de `__menuStack` antes del tramo) y el estado del flujo, para volver ahí si contesta.
+   */
+  private async markEndFallback(conversationId: string, flowState: Record<string, unknown> | null) {
+    const stack = Array.isArray(flowState?.__menuStack) ? (flowState!.__menuStack as Array<{ flowId: string; nodeId: string }>) : [];
+    const last = stack[stack.length - 1];
+    const state = flowState ? { ...flowState } : {};
+    delete state.__awaiting;
+    if (last) state.__menuStack = stack.slice(0, -1);
+    const fallback: EndFallbackState = { menu: last ? { flowId: last.flowId, nodeId: last.nodeId } : null, state };
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { currentFlowId: null, currentNodeId: null, flowState: { __endFallback: fallback } as unknown as Prisma.InputJsonValue },
+    });
+  }
+
+  private async fallbackText(which: 'ask' | 'goodbye'): Promise<string> {
+    return which === 'ask'
+      ? ((await this.appConfig.get('VOICEBOT_END_FALLBACK_TEXT', '¿Algo más en lo que te pueda ayudar?')) || '¿Algo más en lo que te pueda ayudar?')
+      : ((await this.appConfig.get('VOICEBOT_END_FALLBACK_GOODBYE_TEXT', 'Gracias por comunicarte. ¡Hasta luego!')) ||
+          'Gracias por comunicarte. ¡Hasta luego!');
+  }
+
+  /** 3000–30000 [C64]; fuera de rango, al borde. */
+  private async fallbackNoInputMs(): Promise<number> {
+    const ms = await this.appConfig.getNumber('VOICEBOT_END_FALLBACK_NO_INPUT_MS', 8000);
+    return Math.min(30_000, Math.max(3_000, Number.isFinite(ms) ? ms : 8000));
   }
 
   /**

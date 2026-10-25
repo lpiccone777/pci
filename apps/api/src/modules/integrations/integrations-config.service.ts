@@ -15,6 +15,7 @@ import {
   VOICEBOT_SECTION_IDS,
   VOICE_LLM_CREDENTIALS,
   VOICE_LLM_SOURCE_KEYS,
+  VOICE_LITERAL_SOURCE_KEYS,
   VoiceLlmProvider,
   VoicebotSettingGroup,
   deriveSttSink,
@@ -100,7 +101,13 @@ export class IntegrationsConfigService {
       })),
       // Textos que los flujos de voz activos dicen en literal [C60]: el voicebot los sintetiza
       // de antemano. Cambia con cada flujo de voz guardado (sube `version`).
-      voiceLiterals: collectVoiceLiterals(voiceFlows),
+      voiceLiterals: [
+        ...new Set([
+          ...collectVoiceLiterals(voiceFlows),
+          // Fallback del flujo sin paso siguiente [C64].
+          ...(await Promise.all([...VOICE_LITERAL_SOURCE_KEYS].map((key) => this.resolveKey(key, values)))).filter(Boolean),
+        ]),
+      ],
     };
   }
 
@@ -131,6 +138,8 @@ export class IntegrationsConfigService {
    */
   async notifyChanged(defs: SettingDefinition[]): Promise<void> {
     // Las credenciales de pci de las que sale el LLM de voz [C53] también avisan al voicebot.
+    // Los textos del fallback [C64] van en `voiceLiterals`: avisan como un flujo de voz.
+    if (defs.some((d) => VOICE_LITERAL_SOURCE_KEYS.has(d.key))) await this.notifyVoiceFlowsChanged('textos del fallback');
     const changed = defs.filter((d) => isIntegrationConfigKey(d) || VOICE_LLM_SOURCE_KEYS.has(d.key));
     if (changed.length === 0) return;
 

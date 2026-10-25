@@ -9,6 +9,7 @@ import { CurrentTenant } from '../../common/decorators/current-tenant.decorator'
 import { TenantGuard } from '../../common/guards/tenant.guard';
 import { SystemTenantGuard } from '../../common/guards/system-tenant.guard';
 import { VoicebotEnabledGuard } from '../../common/guards/voicebot-enabled.guard';
+import { voiceFlowWarnings } from '../voice/voice-literals';
 
 /**
  * Flujos de voz (*Flujos de voz* del menú, contrato de integración C52): las mismas operaciones
@@ -28,7 +29,9 @@ export class VoiceFlowController {
   @Post()
   @RequirePermission('voice_flows', 'create')
   async create(@Body() dto: CreateFlowDto, @CurrentTenant() tenantId: string, @Req() req: any) {
-    return this.flowService.create(dto, req.user.userId, tenantId, req.userTenant, 'voice');
+    const flow = await this.flowService.create(dto, req.user.userId, tenantId, req.userTenant, 'voice');
+    // Avisos sin bloquear de nodos sin salida [C64].
+    return { ...flow, warnings: voiceFlowWarnings(flow) };
   }
 
   @Get()
@@ -58,7 +61,8 @@ export class VoiceFlowController {
   @Patch(':id')
   @RequirePermission('voice_flows', 'update')
   async update(@Param('id') id: string, @Body() dto: UpdateFlowDto, @CurrentTenant() tenantId: string, @Req() req: any) {
-    return this.flowService.update(id, dto, tenantId, req.userTenant, 'voice');
+    const flow = await this.flowService.update(id, dto, tenantId, req.userTenant, 'voice');
+    return { ...flow, warnings: voiceFlowWarnings(flow) };
   }
 
   @Delete(':id')

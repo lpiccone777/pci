@@ -40,6 +40,31 @@ const allWords = (text: string) =>
     .split(/[^a-z0-9ñ]+/)
     .filter(Boolean);
 
+/** Respuestas que cierran la charla después de "¿Algo más…?" [C64]. */
+const SHORT_NEGATIVES = new Set([
+  'no',
+  'nada',
+  'eso es todo',
+  'gracias',
+  'chau',
+  'no gracias',
+  'nada gracias',
+  'nada mas',
+  'no nada',
+  'eso es todo gracias',
+  'no eso es todo',
+  'chau gracias',
+  'gracias chau',
+  'no gracias chau',
+  'listo gracias',
+  'nada mas gracias',
+]);
+
+/** "No", "nada", "eso es todo", "gracias", "chau" (y combinaciones cortas), sin tildes ni signos. */
+export function isShortNegative(spoken: string): boolean {
+  return SHORT_NEGATIVES.has(allWords(spoken).join(' '));
+}
+
 export function matchMenuOption(spoken: string, labels: string[]): number | null {
   const said = nameTokens(spoken);
   if (!said.length && !/\d/.test(spoken)) return null;

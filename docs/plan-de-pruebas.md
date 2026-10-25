@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **730 casos** · Backend 426 · Chatbot 156 · Frontend 148 · de los cuales **405 son `P0`**
-(377 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **734 casos** · Backend 430 · Chatbot 156 · Frontend 148 · de los cuales **409 son `P0`**
+(381 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **426** |
+| **Backend (§1)** | | **430** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -149,8 +149,8 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.23 Skills | 🟠 P1 | 10 |
 | 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 34 |
 | 1.26 Integración voicebot: internos | 🔴 P0 | 10 |
-| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 34 |
-| 1.28 Integración voicebot: flujos de voz | 🔴 P0 | 6 |
+| 1.27 Integración voicebot: canal de voz | 🔴 P0 | 37 |
+| 1.28 Integración voicebot: flujos de voz | 🔴 P0 | 7 |
 | 1.29 Integración voicebot: salientes | 🔴 P0 | 9 |
 | **Chatbot (§2)** | | **156** |
 | 2.1 Pipeline | 🔴 P0 | 8 |
@@ -926,6 +926,9 @@ caminos. Vía: broker real (vhost efímero), el test hace de voicebot. Spec:
 | BE-VOZ-32 | `start` repetido de la misma llamada [C59] | No se toma como entrada del usuario: responde las mismas acciones que el primer `start` (con su turnId), sin mover la posición del flujo, y se loguea |
 | BE-VOZ-33 | Tecla que no corresponde a ninguna opción del menú | Literal "La opción N no existe." (o "Esa tecla no corresponde a ninguna opción." para `*`/`#`) y repite el menú, nunca guided ni delegate; esos avisos viajan en `voiceLiterals` |
 | BE-VOZ-34 | Charla libre por voz con una fuente MCP con tools (C61) | El LLM de voz (`VOICEBOT_LLM_*`, no el del chat), con la charla, encadena `geocoding` → `weather_forecast` contra el MCP falso y los resultados van como `context` del `delegate` (la acción no cambia de forma); pci inyecta los fijos de la configuración. Si vence `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS`, va sin `context` y el turno no espera más |
+| BE-VOZ-35 | Flujo de voz sin paso siguiente [C64] | Un `input` sin salida deja la respuesta vacía → `say literal` "¿Algo más en lo que te pueda ayudar?" con `noInputMs` 8000; el turno `no_input` → despedida + `hangup`, `committed: true`; los dos textos van en `voiceLiterals` |
+| BE-VOZ-36 | Respuesta al "¿Algo más…?" [C64] | Se toma como respuesta al último menú mostrado (elige la opción); una negativa corta ("No, gracias.") despide y corta |
+| BE-VOZ-37 | Sin menú previo [C64] | La respuesta rearranca el flujo desde `start` sin el saludo; `VOICEBOT_END_FALLBACK_NO_INPUT_MS` fuera de rango se lleva al borde (30000) |
 | BE-VOZ-24 | Nodo en modo `guided` | `say guided` con el texto interpolado como `instruction` y sus `{{variables}}` como `facts`; los demás siguen literales |
 | BE-VOZ-25 | Menú por voz | Elige por etiqueta aproximada ("bentas" → Ventas) sin LLM; si no entiende, un `guided` repite las opciones y pregunta si prefiere hacer una consulta; a la segunda, `delegate` |
 | BE-VOZ-26 | `llm_query` en extracción por voz | La pregunta por el dato faltante va `guided` (con sus valores posibles), sin `generateLlmQueryQuestion`: el LLM de pci solo extrae |
@@ -947,6 +950,7 @@ menú si mostrarla. Spec: `apps/api/test/voice-flows.e2e-spec.ts`.
 | BE-VFLW-04 | Nodos y subflujos por canal | Un flujo de voz con `delay` (o `notification`, `ticket_query`, `device_validation`) → 400; uno de texto con `voice_identify` → 400; un subflujo de otro canal → 400 en los dos sentidos |
 | BE-VFLW-05 | Asignar empresas a un flujo de voz | No guarda roles; el flujo de voz de inicio es uno por empresa |
 | BE-VFLW-06 | Variantes de un flujo de voz | Heredan `channel: voice`; un origen de otro canal → 404 |
+| BE-VFLW-07 | Nodos sin salida [C64] | Al guardar (POST/PATCH) vuelven `warnings: [{nodeId, message}]` por cada `input`/`message` sin arista y cada opción de menú sin destino, sin bloquear; corregido, `warnings: []` |
 
 ## 1.29 Integración voicebot: salientes (`VoiceOutboundService`, H5, C63)
 
