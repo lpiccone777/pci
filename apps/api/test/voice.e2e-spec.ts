@@ -597,12 +597,36 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(await t.prisma.user.count({ where: { email: 'solo.externo@e2e.test' } })).toBe(0);
     });
 
-    it('BE-VOZ-23: InvGate sin configurar → no reconocido de una, sin preguntar nada', async () => {
+    it('BE-VOZ-23: InvGate sin configurar (C55): no pide documento; nombre y apellido contra los usuarios de la empresa → reconocido', async () => {
       await setSetting(t.prisma, 'INVGATE_API_URL', '');
+      // Otra "Ana Pérez" en otra empresa no cuenta: se busca solo en la empresa de la llamada.
+      const otherTenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-ident-otra') });
+      const otherRole = await createRole(t.prisma, { tenantId: otherTenant.id, name: 'Otro' });
+      await createUser(t.prisma, {
+        email: uniqueEmail('ana-otra'),
+        firstName: 'Ana',
+        lastName: 'Pérez',
+        memberships: [{ tenantId: otherTenant.id, roleId: otherRole.id }],
+      });
       const before = fetchMock.requests.length;
-      const r = await start(uid(), identExt);
-      expect(literals(r)).toEqual(['No te pude identificar.', '¿Te ayudo igual?']);
+      const callId = uid();
+      expect(literals(await start(callId, identExt))).toEqual(['Para identificarte, decime tu nombre y apellido.']);
+      const r = await sayTo(callId, 'ana peres');
+      expect(literals(r)).toEqual(['Hola Ana, sos Empleado.', '¿En qué te ayudo?']);
+      const user = await t.prisma.user.findFirstOrThrow({ where: { email: { equals: people['32456789'].email, mode: 'insensitive' } } });
+      expect((await callOf(callId))!.conversation.userId).toBe(user.id);
       expect(fetchMock.requests.length).toBe(before);
+    });
+
+    it('BE-VOZ-29: InvGate sin configurar (C55): un nombre que no coincide pide de nuevo; a la segunda, no reconocido', async () => {
+      await setSetting(t.prisma, 'INVGATE_API_URL', '');
+      const callId = uid();
+      await start(callId, identExt);
+      expect(literals(await sayTo(callId, 'Juan Gómez'))).toEqual([
+        'No te encontré con ese nombre. Decime de nuevo tu nombre y apellido, por favor.',
+      ]);
+      expect(literals(await sayTo(callId, 'Pedro Ruiz'))).toEqual(['No te pude identificar.', '¿Te ayudo igual?']);
+      expect((await callOf(callId))!.conversation.userId).toBeNull();
     });
   });
 

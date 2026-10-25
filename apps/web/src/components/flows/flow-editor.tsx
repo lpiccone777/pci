@@ -1852,8 +1852,9 @@ function NodeProperties({
         <>
           {!invgateConfigured && (
             <p role="alert" className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-              InvGate no está configurado (URL, usuario y key en Configuración → Integraciones): este nodo
-              va a salir siempre por <strong>no reconocido</strong>.
+              InvGate no está configurado (URL, usuario y key en Configuración → Integraciones): el nodo no
+              pide documento ni legajo y valida solo <strong>nombre y apellido</strong> contra los usuarios de
+              la empresa (modo de desarrollo).
             </p>
           )}
           <div>

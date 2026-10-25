@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.14**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.15**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -395,6 +395,11 @@ imprimiendo solo campos y tipos:
 - [ ] Fuente de verdad (MCP/n8n) como origen alternativo: el contrato `context-source.identify`
   queda para cuando haga falta.
 - [ ] Prueba en vivo contra InvGate: la coordina el coordinador.
+- [x] **C55 (contrato 1.15, usuario):** con InvGate sin configurar (desarrollo) el nodo no pide
+  documento ni legajo: valida nombre y apellido, con la misma tolerancia, contra los usuarios de pci
+  de la empresa de la llamada. Una coincidencia → reconocido con su rol; ninguna o más de una → un
+  intento más y después no reconocido. Con InvGate configurado sigue como arriba. Tests BE-VOZ-23 y
+  BE-VOZ-29.
 
 ### H4d — LLM de voz por proveedor [DA10, C53] ✅
 

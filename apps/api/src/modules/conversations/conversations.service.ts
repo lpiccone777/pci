@@ -3274,9 +3274,14 @@ export class ConversationsService implements OnModuleInit {
    * 2. pide nombre y apellido y los compara de forma aproximada con los de InvGate;
    * 3. cruza con el `User` de pci por email, con membresía en la empresa del interno.
    * Sale por `recognized` (completa `Conversation.userId` y la identidad del turno) o por
-   * `unrecognized`: datos que no coinciden tras los intentos, InvGate sin configurar, o una
-   * persona que está en InvGate pero no en pci (queda en `flowState.identifiedExternal`; no se
-   * crea un `User`: "no hablamos con desconocidos").
+   * `unrecognized`: datos que no coinciden tras los intentos, o una persona que está en InvGate
+   * pero no en pci (queda en `flowState.identifiedExternal`; no se crea un `User`: "no hablamos
+   * con desconocidos").
+   *
+   * Sin InvGate configurado (`INVGATE_API_URL` vacía, el caso de desarrollo) rige C55: no se pide
+   * documento ni legajo; se valida solo nombre y apellido, con la misma tolerancia, contra los
+   * usuarios de pci de la empresa de la llamada. Una sola coincidencia reconoce; ninguna o más de
+   * una gastan el intento.
    */
   private async executeVoiceIdentifyNode(
     node: any,
@@ -3299,15 +3304,19 @@ export class ConversationsService implements OnModuleInit {
       return { sourceHandle: recognized ? 'recognized' : 'unrecognized', flowState };
     };
 
-    // Primera llegada: pedir el documento.
+    const askNameOnly = data.namePrompt?.trim() || 'Para identificarte, decime tu nombre y apellido.';
+    const retryNameOnly = 'No te encontré con ese nombre. Decime de nuevo tu nombre y apellido, por favor.';
+
+    // Primera llegada: pedir el documento (con InvGate) o directamente el nombre (C55).
     if (flowState.__awaiting !== node.id) {
-      if (!(await this.invgateService.isConfigured())) {
-        this.logger.warn(
-          `[${tenantId}] voice_identify '${node.id}': InvGate no está configurado (INVGATE_API_URL/USER/KEY): sale por "no reconocido".`,
-        );
-        return exit(false);
-      }
       flowState.__awaiting = node.id;
+      if (!(await this.invgateService.isConfigured())) {
+        this.logger.log(
+          `[${tenantId}] voice_identify '${node.id}': InvGate sin configurar → valida nombre y apellido contra los usuarios de la empresa (C55).`,
+        );
+        flowState.__identify = { step: 'name_only', attempts: 0 };
+        return { responseText: askNameOnly, waitForInput: true, flowState };
+      }
       flowState.__identify = { step: 'document', attempts: 0 };
       return { responseText: askDocument, waitForInput: true, flowState };
     }
@@ -3316,9 +3325,21 @@ export class ConversationsService implements OnModuleInit {
     const fail = (): NodeExecutionResult => {
       state.attempts += 1;
       if (state.attempts >= maxAttempts) return exit(false);
-      flowState.__identify = { step: 'document', attempts: state.attempts };
-      return { responseText: retry, waitForInput: true, flowState };
+      const nameOnly = state.step === 'name_only';
+      flowState.__identify = { step: nameOnly ? 'name_only' : 'document', attempts: state.attempts };
+      return { responseText: nameOnly ? retryNameOnly : retry, waitForInput: true, flowState };
     };
+
+    if (state.step === 'name_only') {
+      const memberships = await this.prisma.userTenant.findMany({
+        where: { tenantId, user: { deletedAt: null } },
+        include: { user: true, role: true },
+      });
+      const matches = memberships.filter((m) => nameMatches(body, m.user.firstName, m.user.lastName));
+      // Dos personas que matchean el mismo nombre no identifican a nadie.
+      if (matches.length !== 1) return fail();
+      return this.recognizeVoiceCaller(matches[0].user, matches[0].role, conversation, flowState, exit);
+    }
 
     if (state.step === 'document') {
       const document = normalizeDocument(body);
@@ -3368,7 +3389,17 @@ export class ConversationsService implements OnModuleInit {
       return exit(false);
     }
 
-    const role = user.tenants[0].role;
+    return this.recognizeVoiceCaller(user, user.tenants[0].role, conversation, flowState, exit);
+  }
+
+  /** `voice_identify` reconoció a la persona: la conversación queda a su nombre, con su rol. */
+  private async recognizeVoiceCaller(
+    user: { id: string; firstName: string | null; lastName: string | null; email: string },
+    role: { id: string; name: string },
+    conversation: any,
+    flowState: Record<string, any>,
+    exit: (recognized: boolean) => NodeExecutionResult,
+  ): Promise<NodeExecutionResult> {
     await this.prisma.conversation.update({ where: { id: conversation.id }, data: { userId: user.id } });
     flowState.isKnownUser = true;
     flowState.userName = [user.firstName, user.lastName].filter(Boolean).join(' ') || null;
