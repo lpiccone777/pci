@@ -616,13 +616,124 @@ con estos ajustes:
 - **Grabación (DA12):** solo texto, sin audio.
 - **Salientes y "Probar conexión":** H5.
 
-## H5 — Salientes
+## H5 — Salientes (PLAN, contrato 1.23; sin código hasta que se apruebe)
 
-- [ ] Disparar llamadas salientes desde pci con `call.outbound` (contrato §6) y consumir
-  `call.outbound.result`. Definir con el usuario desde dónde se disparan (¿un nodo? ¿una pantalla?)
-  antes de implementar.
+Alcance (usuario, 2026-10-25): salientes desde pci (§6) + sink HTTP multi-llamada (§4). DA9 (sacar
+las páginas de prueba) es del voicebot. Lo marcado **[decide el usuario]** son opciones, no
+decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros").
+
+### 1. Cómo dispara pci una saliente
+
+- **Desde dónde:** **[decide el usuario]**. Mi recomendación para H5 es (a) + (b). (c) y (d)
+  quedan para después.
+  - (a) **Pantalla** `/dashboard/voice-calls`, en el menú de voz:
+    - formulario: números (uno o varios, para la rotación), flujo de voz de la empresa activa y
+      reintentos;
+    - debajo, la lista de salientes con su estado.
+  - (b) **API** `POST /voice/outbound-calls` (JWT + `TenantGuard` + permiso). Es lo que usa la
+    pantalla, y sirve para n8n y otras integraciones.
+  - (c) **Nodo de flujo** "Llamar": p. ej. un flujo de chat que dispara una llamada al cerrar un
+    ticket.
+  - (d) **Campañas:** lista de números, horario permitido, concurrencia y reporte. Es un hito propio.
+- **Permiso:** `voice_outbound` (RBAC por datos en el seed, como `voice_flows` DA6). Se le asigna
+  a SuperAdmin; los demás roles, desde la administración.
+- **Modo:**
+  - **con `flowId`:** la llamada entra al circuito de turnos de §5. Es el modo de la UI.
+  - **audio + dígito:** sin `flowId`; `audioUrl`, `digits` y `maxRounds`, como hoy n8n. Solo por
+    la API, para paridad. **[decide el usuario]** si también va en la pantalla.
+  - El flujo tiene que ser de voz y estar asignado a la empresa activa (`TenantFlow`). Nunca uno de
+    otra empresa.
+- **Modelo nuevo** (una migración):
+  - `VoiceOutbound`, la saliente lógica: `tenantId`, `createdById`, `flowId?`, `to[]`, `mode`,
+    `audioUrl?`, `digits?`, `maxRounds`, `retryDelayMs`, `status`
+    (`pending|calling|done|failed|cancelled`), `outcome?`, `nextAttemptAt?`.
+  - `VoiceOutboundAttempt`, cada `call.outbound`: `callId`, `to`, `round`, `outcome`, `answered`,
+    `digit`, `lastAttempt`, `startedAt`, `endedAt`.
+- **Publicar:** `call.outbound` en `voicebot.commands` con
+  `{v, to, flowId?, audioUrl?, digits?, maxRounds?, rotationKey: <VoiceOutbound.id>, resetRotation}`.
+  `resetRotation` va en `true` solo en el primer intento. Por el broker, nunca HTTP directo (regla
+  de desacople).
+- **Resultado:** consumidor de `call.outbound.result` en `voice.events`:
+  - actualiza el intento;
+  - decide si sigue.
+- **Rotación y reintentos [C34], del lado de pci:**
+  - se reintenta con `no-answer`, `no-digit` o `hangup` sin atender, mientras no sea `lastAttempt`;
+  - se corta con `digit`, con `answered` en modo flujo, con `lastAttempt` o con `exhausted`.
+  - La espera entre intentos es una clave nueva de pci, `VOICE_OUTBOUND_RETRY_DELAY_MS` (default
+    60000), y se persiste en `nextAttemptAt`. Un barrido cada 10 s publica los vencidos, así un
+    reinicio de pci no pierde reintentos.
+  - Cancelar desde la UI: `call.hangup` con `resetRotation` y `status: cancelled`.
+- **Tope de simultáneas:** C46 ya limita en el voicebot. pci no publica más de N intentos
+  `calling` a la vez (clave `VOICE_OUTBOUND_MAX_CONCURRENT`, default 2), así no choca con las
+  entrantes. **[decide el usuario]** el valor.
+
+### 2. `sip.provision` y `health.check` en la UI
+
+- **Dónde:** subpestaña Voicebot de `/settings` (doble candado: `SystemTenantGuard` + permiso
+  `settings`).
+  - **"Probar conexión"** → `health.check` por RPC (timeout ~5 s). Muestra `ok`, LiveKit, RabbitMQ,
+    MiniMax, `configVersion` contra la versión de pci (avisa si el voicebot está desfasado) y
+    llamadas activas.
+  - **"Re-provisionar SIP"** (grupo SIP) → `sip.provision` por RPC (timeout ~20 s). Muestra trunks
+    y rules. Es para reparar a mano: los cambios de SIP ya se aplican en caliente con
+    `config.changed`.
+- Los dos pasan por `BrokerService.request` a `voicebot.commands`, como el resto del I/O externo.
+
+### 3. Conversación de una saliente con flujo
+
+- Pci crea el intento antes de publicar.
+- En el `start` (`callId` `out-*`, `call.direction: "outbound"`, `extension: null`),
+  `VoiceTurnsService` no busca interno: busca el `VoiceOutboundAttempt` por `callId`.
+  - **Con intento:** abre `VoiceCall` + `Conversation` (`channel voice`, `userId null`) con:
+    - la empresa de la saliente, que es la empresa activa de quien la lanzó;
+    - `direction outbound`, `extensionId null`;
+    - `calledNumber` = el número marcado.
+  - **Sin intento:** error `unknown_call`, y el voicebot corta.
+- **Flujo:** el de la saliente, que va primero en `resolveCallFlow`. Si se borró o se desasignó,
+  la llamada sigue con la charla libre de esa empresa, igual que DA8 (3).
+- **Identidad:** como en las entrantes (DA5), arranca sin usuario y el flujo puede identificar con
+  `voice_identify`. **[decide el usuario]** si, cuando la saliente se lanza a un usuario de pci
+  elegido de la lista, la conversación arranca ya con ese usuario.
+- **Migración:** `VoiceCall.extensionNumber` pasa a nullable y se suma `VoiceCall.outboundAttemptId`.
+- Cada intento atendido es una conversación propia. Los no atendidos no abren conversación.
+
+### 4. Sink HTTP multi-llamada
+
+- Lo implementan stt y voicebot (`?room=<callKey>` en cada job, §4). En pci no hace falta clave
+  nueva: `VOICEBOT_SOURCE=http` ya deriva `STT_SINK=http` [C39], y `STT_HTTP_URL` sigue siendo la
+  base.
+- **De mi lado:**
+  - actualizar la descripción de `STT_HTTP_URL` y `VOICEBOT_SOURCE` (http deja de ser de una sola
+    llamada);
+  - test de que la config del stt sigue igual.
+  - Si voicebot o stt piden una clave nueva, va por contrato.
+
+### 5. Riesgos y esfuerzo
+
+- **Riesgos:**
+  - la carrera `start` contra respuesta RPC, si pci no genera el `callId` (pregunta 1 a
+    voicebot-73);
+  - reintentos duplicados con dos instancias de pci: el barrido toma cada saliente con un UPDATE
+    condicionado, como el lease de turnos;
+  - discar a números reales en pruebas: en desarrollo solo a MicroSIP o a internos de prueba, con
+    una lista permitida opcional (`VOICE_OUTBOUND_ALLOWED_PREFIXES`) **[decide el usuario]**;
+  - costo y abuso: permiso propio, tope de simultáneas y log de quién lanzó cada una.
+- **Esfuerzo de pci:** ~2–3 días.
+  - modelo y migración, API y barrido de reintentos: 1 día;
+  - pantalla: 0,5 día;
+  - salientes en `VoiceTurnsService`: 0,5 día;
+  - health y provision en `/settings`: 0,5 día;
+  - tests e2e con broker real (el test hace de voicebot, como BE-VOZ): 0,5 día.
 
 ## Necesito de otros
+
+- **voicebot-73 (H5, pedido 2026-10-25):**
+  - si acepta `callId?` generado por pci en `call.outbound`;
+  - `outcome` y momento de `call.outbound.result` en modo flujo;
+  - campos de `call` en el `start` de una saliente (cuál es el número remoto);
+  - espera mínima entre intentos;
+  - RPC y timeouts de `health.check` y `sip.provision`;
+  - `call.hangup` sobre una saliente con flujo.
 
 | De | Qué | Para | Estado |
 |---|---|---|---|
