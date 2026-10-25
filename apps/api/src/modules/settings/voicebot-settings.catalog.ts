@@ -372,6 +372,22 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     max: 5,
     description: '1 = menor latencia, 5 = más preciso.',
   }),
+  // C56: temperaturas de decodificación de faster-whisper, en orden: si la primera no da un
+  // resultado confiable, reintenta con la siguiente.
+  stt({
+    key: 'STT_TEMPERATURES',
+    type: 'string',
+    label: 'Temperaturas',
+    defaultValue: '0,0.2,0.4,0.6,0.8,1.0',
+    placeholder: '0,0.4',
+    pattern: {
+      regex: /^\s*(0(\.\d+)?|1(\.0+)?)(\s*,\s*(0(\.\d+)?|1(\.0+)?))*\s*$/,
+      message: 'tiene que ser una lista de números entre 0 y 1 separados por coma (ej. 0,0.4)',
+    },
+    description:
+      'Lista separada por coma, en orden: la primera es la de siempre y las siguientes son reintentos cuando ' +
+      'la transcripción no sale confiable. Menos valores = menos reintentos (más rápido).',
+  }),
   stt({
     key: 'STT_HOTWORDS',
     type: 'string',

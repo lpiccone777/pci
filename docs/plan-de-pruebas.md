@@ -115,15 +115,15 @@ resto del plan.
 
 Foto de cobertura. Los números son la **cantidad de casos** por bloque y la columna **P**
 es la prioridad del bloque.
-Total del plan: **709 casos** · Backend 409 · Chatbot 152 · Frontend 148 · de los cuales **387 son `P0`**
-(359 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
+Total del plan: **710 casos** · Backend 410 · Chatbot 152 · Frontend 148 · de los cuales **388 son `P0`**
+(360 por la prioridad del bloque + los 28 casos invertidos que caen en bloques `P1`: BE-FLW-14, BE-FLW-16,
 BE-FLW-21, BE-WHK-08, BE-TWA-10, BE-TWA-14, BE-GUP-06, BE-SMS-07, BE-SMS-09, BE-SMS-10, BE-IG-11, BE-SKL-08,
 BE-SKL-09, BE-SKL-10, CHAT-LLMF-03, CHAT-LLMF-11, CHAT-LLMF-12, FE-USR-15, FE-USR-16, FE-TEN-06, FE-TEN-07,
 FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 
 | Bloque | P (prioridad) | Casos |
 |--------|:-:|------:|
-| **Backend (§1)** | | **409** |
+| **Backend (§1)** | | **410** |
 | 1.1 Autenticación | 🔴 P0 | 28 |
 | 1.2 RBAC | 🔴 P0 | 24 |
 | 1.3 Multitenant | 🔴 P0 | 13 |
@@ -147,7 +147,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 1.21 Canal SMS (Twilio y Gupshup) | 🟠 P1 | 12 |
 | 1.22 Integración InvGate | 🟠 P1 | 17 |
 | 1.23 Skills | 🟠 P1 | 10 |
-| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 31 |
+| 1.25 Integración voicebot/stt: configuración | 🔴 P0 | 32 |
 | 1.26 Integración voicebot: internos | 🔴 P0 | 10 |
 | 1.27 Integración voicebot: canal de voz | 🔴 P0 | 29 |
 | 1.28 Integración voicebot: flujos de voz | 🔴 P0 | 6 |
@@ -178,7 +178,7 @@ FE-CS-11, FE-CS-12, FE-FLW-22, FE-FLW-23, FE-FLW-24, FE-FLW-25 y FE-FLW-29).
 | 3.10 Flujos (editor) | 🟠 P1 | 33 |
 | 3.11 Responsive | 🟢 P2 | 4 |
 | 3.12 Seguridad de UI | 🔴 P0 | 6 |
-| **TOTAL** | | **709** |
+| **TOTAL** | | **710** |
 
 > **Nota:** 45 casos arrancan en `❌` **por diseño** (describen el comportamiento seguro o correcto
 > deseado, hoy no implementado) y pasan a `✅` al corregir el hallazgo — no son regresión. 25 están
@@ -843,6 +843,7 @@ devolver secrets en claro" (DA2). Spec: `apps/api/test/integrations.e2e-spec.ts`
 | BE-INT-24 | `VOICEBOT_MAX_CALLS` inválido (`0`, `-1`, `2.5`, `tres`) | 400 en cada uno; un entero ≥ 1 se guarda y viaja en la config |
 | BE-INT-25 | Cambiar `VOICEBOT_MAX_CALLS` | `config.changed` con `sections: ["capacidad"]` y `restart.stt: false` (aplica en caliente) |
 | BE-INT-31 | Cambiar `OPENAI_API_KEY` (credencial de la que sale el LLM de voz) | Sube la versión y publica `config.changed` con `sections: ["llm"]`, sin reiniciar el stt |
+| BE-INT-32 | `STT_TEMPERATURES` [C56] | Default `0,0.2,0.4,0.6,0.8,1.0` en la config del stt (no en la del voicebot); una lista mal formada o con valores fuera de 0–1 → 400; `0, 0.4` se guarda; pide reiniciar el stt |
 | BE-INT-26 | pci no disponible [C47] sin nada guardado | `VOICEBOT_PCI_DOWN_TEXT` y `VOICEBOT_MAX_TURN_FAILURES=2` por defecto; `VOICEBOT_FALLBACK_TEXT` = el del voicebot; `0` y `1.5` en las fallas → 400 |
 | BE-INT-27 | Prompts de voz vacíos | `GET /settings` expone `fallbackText` (el prompt por defecto del voicebot; el de la charla por voz) y la ayuda dice que un valor propio lo REEMPLAZA; `VOICEBOT_SYSTEM_PROMPT` sigue con default vacío y viaja vacío |
 | BE-INT-28 | LLM de voz por defecto [C53] | `minimax`, `MiniMax-M3`, `anthropic`, 150 tokens; `VOICEBOT_LLM_API_KEY`/`_BASE_URL` = las de voz (`VOICEBOT_MINIMAX_*`), no las del chat [DA13] |

@@ -72,6 +72,8 @@ export interface SettingDefinition {
   max?: number;
   /** Solo para type 'number': rechaza decimales. */
   integer?: boolean;
+  /** Solo para type 'string': formato que tiene que cumplir el valor, y cómo explicarlo si no. */
+  pattern?: { regex: RegExp; message: string };
   /** Render como textarea en la UI. */
   multiline?: boolean;
   /**
@@ -923,6 +925,8 @@ export function validateSettingValue(
         : `${def.key} debe ser uno de: ${def.allowedValues?.join(', ')}`;
     }
     case 'string':
+      if (def.pattern && !def.pattern.regex.test(value)) return `${def.key}: ${def.pattern.message}`;
+      return null;
     default:
       return null;
   }

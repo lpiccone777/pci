@@ -48,6 +48,7 @@ const TOUCHED_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'ANTHROPIC_API_KEY',
+  'STT_TEMPERATURES',
 ];
 
 describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)', () => {
@@ -275,6 +276,16 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect(env.OMP_NUM_THREADS).toBeUndefined();
       expect(env.VOICEBOT_QUEUE).toBeUndefined();
       expect(env.STT_SINK_CONSOLE).toBeUndefined();
+    });
+
+    it('BE-INT-32: STT_TEMPERATURES [C56]: default de faster-whisper, valida la lista y pide reiniciar el stt', async () => {
+      expect((await sttConfig(STT_TOKEN).expect(200)).body.env.STT_TEMPERATURES).toBe('0,0.2,0.4,0.6,0.8,1.0');
+      for (const bad of ['', 'cero', '0;0.4', '0,1.5', '0,']) await patchSetting('STT_TEMPERATURES', bad).expect(400);
+      await patchSetting('STT_TEMPERATURES', '0, 0.4').expect(200);
+      expect((await sttConfig(STT_TOKEN).expect(200)).body.env.STT_TEMPERATURES).toBe('0, 0.4');
+      const def = SETTINGS_CATALOG.find((d) => d.key === 'STT_TEMPERATURES');
+      expect(def).toMatchObject({ restartsStt: true, group: 'Mensajería: Voicebot (STT)', envNames: { stt: 'STT_TEMPERATURES' } });
+      expect((await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings.STT_TEMPERATURES).toBeUndefined();
     });
 
     it('BE-INT-11: STT_SINK se deriva de VOICEBOT_SOURCE (+ console opcional) [C39]', async () => {
