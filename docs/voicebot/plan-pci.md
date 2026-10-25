@@ -473,6 +473,75 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   Una tecla sin opción dice en literal "La opción N no existe." y repite el menú; ese aviso entra en
   `voiceLiterals`. Tests unitarios del menú y BE-VOZ-33.
 
+### Tool calling en el LLM de voz — posición de pci (PROPUESTA, sin código hasta que se apruebe)
+
+Pedido del usuario (2026-10-25, opción B): el LLM de voz recibe como tools las fuentes de verdad
+del flujo y las pide cuando le hacen falta. La forma la propone el voicebot en su
+`plan-voicebot.md`, "Tool calling en el LLM de voz", punto 3. pci está de acuerdo con esa forma,
+con estos ajustes:
+
+**Cómo arma pci las `tools` de cada `say delegate` (y `guided`).**
+- **Fuentes:** la MCP del flujo (`Flow.contextSourceId`, hoy una por flujo). Sumar las demás de la
+  empresa lo decide el usuario.
+- **Tools:**
+  - solo las que están configuradas en la fuente;
+  - `description` y `parameters` salen de `listMcpTools`, con caché de 5 min por fuente para no
+    pagarla en cada turno.
+- **`name`:**
+  - lo arma pci como `<fuente>__<tool>`, normalizado a `^[a-zA-Z0-9_-]{1,64}$`;
+  - si no entra, se recorta y se agrega un hash corto;
+  - es único dentro de la llamada.
+- **Argumentos fijos de la configuración** (lat/long, `celsius`, `daily`):
+  - pci los saca de `parameters` y los inyecta al ejecutar, así el LLM no los ve ni los pisa;
+  - lo que tiene `{{pregunta}}` o está vacío queda en el esquema para que lo complete el LLM.
+- **Pre-consulta:** con tools expuestas, pci deja de pre-consultar esa fuente para `context`. Hoy
+  esa pre-consulta es justamente el 1,1–1,6 s de cada delegate; ver "Latencia" abajo. `context`
+  sigue para lo que sí se arma antes.
+- **Skills:** siguen en `systemPrompt`, como texto fijo. No son tools.
+
+**RPC `voice.tool`.** Va con la forma propuesta y estos ajustes:
+- **Validación:** pci no confía en `sourceId` ni en `name`. Solo acepta un par (`name`, `sourceId`)
+  que ofreció en un `delegate` de esa misma llamada (lo guarda en `VoiceTurn`) y que pertenece a la
+  empresa del interno. Si no, `unknown_tool`.
+- **Errores:** a los cuatro propuestos (`unknown_tool`, `invalid_arguments`, `source_unavailable`,
+  `timeout`) pci suma dos:
+  - `unknown_call`, si la llamada no existe en pci;
+  - `internal`.
+  - En `invalid_arguments` va el mensaje de validación del MCP (p. ej. "expected one of
+    celsius|fahrenheit at temperature_unit"), para que el LLM corrija en la vuelta siguiente.
+- **Timeout:** pci corta en `VOICEBOT_TOOL_TIMEOUT_MS` − 500 ms (3500 si el voicebot usa 4000) y
+  responde `timeout`, así la respuesta llega antes de que el voicebot se rinda.
+- **`result`:** texto recortado a `VOICEBOT_TOOL_RESULT_MAX_CHARS`, una clave de pci con default
+  8000. Si se recorta, se loguea.
+- **Identidad:**
+  - pci ejecuta con el tenant de la llamada;
+  - las fuentes MCP de hoy no reciben usuario: usan las credenciales de la fuente, que son por
+    empresa;
+  - si hace falta el usuario identificado, eso es otra decisión.
+- **Lease por llamada:** el RPC de tools no lo toma, porque no toca la conversación ni el flujo.
+  Así no se traba contra un `voice.turn` de la misma llamada.
+- **Log:** nombre de la tool, duración, tamaño del resultado y error. Nunca el contenido.
+
+**Alcance.**
+- MCP: sí.
+- Fuente tipo `broker` (`{text}` → `{answer}`): sí, como una tool `consultar_<fuente>` con un solo
+  parámetro `pregunta`.
+- RAG y n8n: cuando tengan contrato de consulta, del mismo modo.
+
+**Latencia, medida el 2026-10-25 contra la fuente "clima" en solo lectura.**
+- **Hoy:** el delegate tarda 1,1–1,6 s. Es la pre-consulta: 9 tools en paralelo, 8 fallan por
+  argumentos mal configurados y `geocoding` tarda ~1 s sin encontrar nada.
+- **Una tool bien configurada:** `weather_forecast` con lat/long, `daily` y `forecast_days` tarda
+  ~0,26 s y trae el pronóstico real. Con sesión MCP nueva por RPC (~50 ms), el RPC típico queda en
+  0,3–1 s.
+
+**Esfuerzo de pci:** mediano, ~1,5–2 días.
+- armado de tools con caché y fusión de argumentos fijos;
+- `tools` en `say`;
+- consumidor `voice.tool` con validación;
+- dos claves (timeout y tope del resultado);
+- e2e con el MCP falso (`test/support/fake-mcp-server.ts`).
+
 ### Fuera de H4 (anotado)
 
 - **Grabación (DA12):** solo texto, sin audio.
