@@ -1593,6 +1593,13 @@ function NodeProperties({
               {type === 'start' && ' En el inicio, el voicebot le avisa al LLM que acaba de atender la llamada.'}
             </p>
           )}
+          {data.speechMode === 'guided' && type === 'ticket_create' && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mt-1">
+              Cuando se dice este texto el ticket <strong>ya se creó</strong>. Escribilo como un hecho, por ejemplo
+              “Se creó el ticket {'{{lastTicketId}}'}: confirmáselo con el número”. El LLM de voz no confirma una
+              acción si la indicación no dice que ya se hizo.
+            </p>
+          )}
         </div>
       )}
 
