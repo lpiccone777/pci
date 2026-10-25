@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.17**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-24): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 (salvo la prueba en vivo) · ⏳ H5. Contrato vigente: **1.18**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 

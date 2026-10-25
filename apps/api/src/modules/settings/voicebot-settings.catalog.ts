@@ -731,7 +731,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
         'Tras speech_ended, cuánto espera la transcripción antes de retomar.'],
       ['VOICEBOT_RESUME_REWIND_MS', 'Retroceso al retomar (ms)', '1000', 0, 10000,
         'Al retomar una respuesta cortada por ruido, cuánto retrocede.'],
-      ['VOICEBOT_MAX_RESUMES', 'Máximo de retomas por respuesta', '2', 0, 10, ''],
+      ['VOICEBOT_MAX_RESUMES', 'Máximo de retomas por respuesta', '5', 0, 10, ''],
       ['VOICEBOT_SPEECH_HOLD_MAX_MS', 'Tope de "el usuario está hablando" (ms)', '15000', 1000, 120000,
         'Por si se pierde el speech_ended.'],
       ['VOICEBOT_HISTORY_TURNS', 'Turnos de historial', '10', 0, 100,
@@ -772,6 +772,16 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     label: 'Texto de fallback',
     defaultValue: 'Perdón, no te entendí bien. ¿Me lo repetís?',
     description: 'Lo dice el voicebot (literal) si pci no responde a tiempo o responde con error.',
+  }),
+  // C58: lo dice el voicebot cuando el ruido no deja seguir la charla (en caliente).
+  voicebot('VOICEBOT_NOISE_TEXT', {
+    key: 'VOICEBOT_NOISE_TEXT',
+    type: 'string',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Texto de mucho ruido',
+    defaultValue:
+      'Hay mucho ruido en la línea y así no puedo seguir la conversación. ¿Podés ir a un lugar más silencioso?',
+    description: 'Lo dice el voicebot (literal) cuando el ruido de la línea no le deja seguir la conversación.',
   }),
   voicebot('VOICEBOT_FILLER_TEXT', {
     key: 'VOICEBOT_FILLER_TEXT',

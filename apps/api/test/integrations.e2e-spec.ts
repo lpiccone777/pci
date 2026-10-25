@@ -191,6 +191,18 @@ describe('Integración voicebot/stt: configuración servida por pci (BE-INT-*)',
       expect(free.fallbackText).toContain('{{empresa}}');
     });
 
+    it('BE-INT-33: C58: VOICEBOT_MAX_RESUMES por defecto 5 y VOICEBOT_NOISE_TEXT con su default, al voicebot y en caliente', async () => {
+      const settings = (await voicebotConfig(VOICEBOT_TOKEN).expect(200)).body.settings;
+      expect(settings.VOICEBOT_MAX_RESUMES).toBe('5');
+      expect(settings.VOICEBOT_NOISE_TEXT).toBe(
+        'Hay mucho ruido en la línea y así no puedo seguir la conversación. ¿Podés ir a un lugar más silencioso?',
+      );
+      const def = SETTINGS_CATALOG.find((d) => d.key === 'VOICEBOT_NOISE_TEXT');
+      expect(def).toMatchObject({ group: 'Mensajería: Voicebot (Conversación)', envNames: { voicebot: 'VOICEBOT_NOISE_TEXT' } });
+      expect(def?.restartsStt).toBeFalsy();
+      expect(def?.reconnects).toBeFalsy();
+    });
+
     it('BE-INT-08: los secrets viajan en claro acá (y solo acá: /settings sigue enmascarando)', async () => {
       await patchSetting('VOICEBOT_LIVEKIT_API_SECRET', 'livekit-secret-e2e-abcdef').expect(200);
       const res = await voicebotConfig(VOICEBOT_TOKEN).expect(200);
