@@ -5,6 +5,9 @@ import type { LlmMessage, LlmCompletionOptions, LlmToolDefinition } from './llm-
 import { LlmToolChatResult, LlmToolExecutor, LlmToolLoopOptions, runToolLoop, stripThinking } from './tool-loop';
 
 export { LLM_TOOL_MAX_ROUNDS } from './tool-loop';
+
+/** Tope de tokens por paso al elegir tools por voz: alcanza para un tool_use con varios argumentos. */
+const VOICE_TOOL_MAX_TOKENS = 400;
 export type { LlmToolChatResult, LlmToolTrace } from './tool-loop';
 
 @Injectable()
@@ -46,6 +49,27 @@ export class LlmService {
   async supportsTools(): Promise<boolean> {
     const provider = await this.factory.createProvider();
     return typeof provider.generateWithTools === 'function';
+  }
+
+  /**
+   * Tools por voz (C61): el loop con el LLM de voz (`VOICEBOT_LLM_*`), no con el del chat.
+   * Temperature 0 y un tope de tokens corto: solo elige tools; una respuesta en prosa que no se
+   * va a usar no tiene que comerse el tiempo del turno.
+   */
+  async voiceChatWithTools(
+    messages: LlmMessage[],
+    tools: LlmToolDefinition[],
+    execute: LlmToolExecutor,
+    opts: LlmToolLoopOptions = {},
+  ): Promise<LlmToolChatResult> {
+    const provider = await this.factory.createVoiceToolProvider();
+    if (!provider) return { supported: false, text: '', rounds: 0, calls: [], llmMs: [] };
+    return runToolLoop(provider, messages, tools, execute, { temperature: 0, maxTokens: VOICE_TOOL_MAX_TOKENS }, opts);
+  }
+
+  /** Si el LLM de voz puede elegir tools (tiene key configurada). */
+  async supportsVoiceTools(): Promise<boolean> {
+    return (await this.factory.createVoiceToolProvider()) !== null;
   }
 
   /**

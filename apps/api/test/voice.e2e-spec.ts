@@ -880,6 +880,7 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
         expect(r.actions[0].context).toContain('### geocoding');
         expect(r.actions[0].context).toContain('Pronóstico en -34.66536,-58.72744 (celsius, 2 días)');
         expect(llm.calls).toHaveLength(0);
+        expect(llm.toolChats.map((c) => c.voice)).toEqual([true]); // el LLM de voz, no el del chat
         // El LLM de pci vio la charla (el pedido de la persona) y no contestó: solo trajo datos.
         expect(script.steps).toHaveLength(3);
         expect(script.steps[0].messages.map((m) => m.content)).toContain('¿qué tiempo hace mañana en Merlo?');

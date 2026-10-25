@@ -91,7 +91,7 @@ export class FakeLlmService {
    * corre el loop REAL (`runToolLoop`) contra él: lo único falso es el modelo.
    */
   private toolProvider: Required<Pick<LlmProvider, 'generateWithTools'>> | null = null;
-  public readonly toolChats: { messages: LlmMessage[]; tools: LlmToolDefinition[] }[] = [];
+  public readonly toolChats: { messages: LlmMessage[]; tools: LlmToolDefinition[]; voice?: boolean }[] = [];
 
   setToolProvider(provider: Required<Pick<LlmProvider, 'generateWithTools'>> | null): this {
     this.toolProvider = provider;
@@ -100,6 +100,22 @@ export class FakeLlmService {
 
   async supportsTools(): Promise<boolean> {
     return !!this.toolProvider;
+  }
+
+  /** Por voz (C61) el motor usa el LLM de voz: mismo guion, marcado `voice` en `toolChats`. */
+  async supportsVoiceTools(): Promise<boolean> {
+    return !!this.toolProvider;
+  }
+
+  async voiceChatWithTools(
+    messages: LlmMessage[],
+    tools: LlmToolDefinition[],
+    execute: LlmToolExecutor,
+    opts: LlmToolLoopOptions = {},
+  ): Promise<LlmToolChatResult> {
+    if (!this.toolProvider) return { supported: false, text: '', rounds: 0, calls: [], llmMs: [] };
+    this.toolChats.push({ messages, tools, voice: true });
+    return runToolLoop(this.toolProvider, messages, tools, execute, { temperature: 0, maxTokens: 400 }, opts);
   }
 
   async chatWithTools(

@@ -521,6 +521,20 @@ lista del proveedor guardado. Tests BE-INT-28..31 y FE-SET-24.
   de 7 s: con MiniMax-M3.1-Flash razonando, cada paso del LLM tarda ~2,5–3 s y la cadena geocoding
   → forecast no entra.
 
+- [x] **Por voz, las tools las elige el LLM de voz (nota de C61, usuario 2026-10-25):** el
+  `delegate` por voz usa la config `VOICEBOT_LLM_*` (C53) y no el LLM del chat. Mismas credenciales
+  que pci le sirve al voicebot, sin clave nueva (`LlmProviderFactory.createVoiceToolProvider`).
+  MiniMax por la interfaz anthropic va a `<host>/anthropic` con `thinking: disabled`, temperature 0,
+  400 tokens por paso y sin reintentos. El chat sigue con su LLM.
+  - **Prueba real (2026-10-25, 9 llamadas, de a una cada 3 s, sin 429):** la interfaz anthropic de
+    MiniMax-M3 acepta tools con `thinking: disabled`: devuelve `tool_use` sin bloques de
+    razonamiento, y la cadena eligió `geocoding("Merlo, Buenos Aires, Argentina")` →
+    `weather_forecast(-34.66536, -58.72744, forecast_days 2, daily […], timezone)` → pronóstico
+    real. Las tools del MCP tardaron ~1 s (geocoding) y ~0,7–1 s (forecast).
+  - **Latencia de MiniMax ese día, muy variable:** 2,9 a 5,4 s por paso con tools, y 10,4 s una
+    respuesta de 32 tokens sin tools. Con esos tiempos la cadena no entra en los 7 s: el límite lo
+    pone el servidor de MiniMax, no las tools. El log por turno muestra la duración de cada paso.
+
 ### Tool calling en el LLM de voz — DESCARTADO por el usuario (2026-10-25)
 
 Queda como registro de lo que se propuso; no se implementa.

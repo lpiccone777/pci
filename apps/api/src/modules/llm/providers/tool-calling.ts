@@ -90,6 +90,7 @@ export async function anthropicWithTools(
   turns: LlmToolTurn[],
   tools: LlmToolDefinition[],
   options?: LlmCompletionOptions,
+  extra: Record<string, unknown> = {},
 ): Promise<LlmToolStep> {
   const system = messages
     .filter((m) => m.role === 'system')
@@ -127,6 +128,7 @@ export async function anthropicWithTools(
     ...(tools.length
       ? { tools: tools.map((t) => ({ name: t.name, description: t.description ?? '', input_schema: t.parameters })) }
       : {}),
+    ...extra,
   } as any);
   const blocks: any[] = response.content ?? [];
   return {

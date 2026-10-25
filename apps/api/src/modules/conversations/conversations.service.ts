@@ -3475,7 +3475,7 @@ export class ConversationsService implements OnModuleInit {
       this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 7000),
     ]);
     const started = Date.now();
-    const toolset = await this.sourceToolset(tenantId, contextSourceId);
+    const toolset = await this.sourceToolset(tenantId, contextSourceId, true);
     if (toolset) {
       const context = await this.voiceToolContext(toolset, systemPrompt, tenantId, body, conversation, started + timeoutMs);
       if (!context) return { systemPrompt };
@@ -3516,9 +3516,15 @@ export class ConversationsService implements OnModuleInit {
    * Tools de la fuente vinculada si es MCP y el proveedor tiene tool calling (C61); si no,
    * `null` y el llamador sigue con la pre-consulta de siempre (`queryKnowledge`).
    */
-  private async sourceToolset(tenantId: string, contextSourceId: string | null): Promise<McpLlmToolset | null> {
+  private async sourceToolset(
+    tenantId: string,
+    contextSourceId: string | null,
+    voice = false,
+  ): Promise<McpLlmToolset | null> {
     if (!contextSourceId) return null;
-    if (!(await this.llmService.supportsTools().catch(() => false))) return null;
+    // Por voz las elige el LLM de voz (`VOICEBOT_LLM_*`), no el del chat (usuario, 2026-10-25).
+    const supported = voice ? this.llmService.supportsVoiceTools() : this.llmService.supportsTools();
+    if (!(await supported.catch(() => false))) return null;
     return this.contextSourcesService.mcpToolsetForLlm(tenantId, contextSourceId);
   }
 
@@ -3566,7 +3572,7 @@ export class ConversationsService implements OnModuleInit {
     let timer: NodeJS.Timeout | undefined;
     const timedOut = await Promise.race([
       this.llmService
-        .chatWithTools(
+        .voiceChatWithTools(
           [{ role: 'system', content: [systemPrompt, voiceToolsInstruction(toolset.sourceName)].filter(Boolean).join('\n\n') }, ...history],
           toolset.tools,
           execute,
