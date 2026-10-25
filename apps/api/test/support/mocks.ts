@@ -108,7 +108,7 @@ export class FakeLlmService {
     execute: LlmToolExecutor,
     opts: LlmToolLoopOptions & { tenantConfig?: Partial<LlmCompletionOptions> } = {},
   ): Promise<LlmToolChatResult> {
-    if (!this.toolProvider) return { supported: false, text: '', rounds: 0, calls: [] };
+    if (!this.toolProvider) return { supported: false, text: '', rounds: 0, calls: [], llmMs: [] };
     const options: LlmCompletionOptions = { temperature: 0.7, maxTokens: 1024, ...opts.tenantConfig };
     if (options.systemPrompt && messages[0]?.role !== 'system') {
       messages = [{ role: 'system', content: options.systemPrompt }, ...messages];

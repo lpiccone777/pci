@@ -28,6 +28,8 @@ export interface LlmToolChatResult {
   text: string;
   rounds: number;
   calls: LlmToolTrace[];
+  /** Duración de cada llamada al LLM, en orden (para el log). */
+  llmMs: number[];
 }
 
 export interface LlmToolLoopOptions {
@@ -36,6 +38,8 @@ export interface LlmToolLoopOptions {
   stopAfterTools?: boolean;
   /** Corta antes de la vuelta siguiente (p. ej. venció el tiempo del turno de voz). */
   cancelled?: () => boolean;
+  /** Después de cada llamada al LLM: cuánto tardó y cuántas tools pidió. */
+  onStep?: (step: { ms: number; toolCalls: number }) => void;
 }
 
 export type LlmToolExecutor = (call: LlmToolCall) => Promise<{ ok: boolean; content: string }>;
@@ -76,11 +80,19 @@ export async function runToolLoop(
   const maxRounds = opts.maxRounds ?? LLM_TOOL_MAX_ROUNDS;
   const turns: LlmToolTurn[] = [];
   const calls: LlmToolTrace[] = [];
+  const llmMs: number[] = [];
+  const generate = async (withTools: LlmToolDefinition[]) => {
+    const started = Date.now();
+    const step = await provider.generateWithTools(messages, turns, withTools, options);
+    llmMs.push(Date.now() - started);
+    opts.onStep?.({ ms: llmMs[llmMs.length - 1], toolCalls: step.toolCalls.length });
+    return step;
+  };
   for (let round = 1; round <= maxRounds; round++) {
-    if (opts.cancelled?.()) return { supported: true, text: '', rounds: round - 1, calls };
-    const step = await provider.generateWithTools(messages, turns, tools, options);
+    if (opts.cancelled?.()) return { supported: true, text: '', rounds: round - 1, calls, llmMs };
+    const step = await generate(tools);
     if (!step.toolCalls.length) {
-      return { supported: true, text: stripThinking(step.text), rounds: round - 1, calls };
+      return { supported: true, text: stripThinking(step.text), rounds: round - 1, calls, llmMs };
     }
     const asked = step.toolCalls.slice(0, LLM_TOOL_MAX_PARALLEL);
     turns.push({ kind: 'calls', text: step.text || undefined, calls: asked });
@@ -97,7 +109,7 @@ export async function runToolLoop(
     );
     for (const { call, content } of results) turns.push({ kind: 'result', callId: call.id, name: call.name, content });
   }
-  if (opts.stopAfterTools || opts.cancelled?.()) return { supported: true, text: '', rounds: maxRounds, calls };
-  const final = await provider.generateWithTools(messages, turns, [], options);
-  return { supported: true, text: stripThinking(final.text), rounds: maxRounds, calls };
+  if (opts.stopAfterTools || opts.cancelled?.()) return { supported: true, text: '', rounds: maxRounds, calls, llmMs };
+  const final = await generate([]);
+  return { supported: true, text: stripThinking(final.text), rounds: maxRounds, calls, llmMs };
 }

@@ -2860,7 +2860,7 @@ export class ConversationsService implements OnModuleInit {
               ...(data.temperature !== undefined ? { temperature: data.temperature } : {}),
             },
           });
-          this.logSourceTools(tenantId, `llm_query ${node.id}`, result.rounds, result.calls, Date.now() - started);
+          this.logSourceTools(tenantId, `llm_query ${node.id}`, result.rounds, result.calls, Date.now() - started, result.llmMs);
           return { responseText: result.text };
         }
 
@@ -3560,7 +3560,9 @@ export class ConversationsService implements OnModuleInit {
       done.push({ round: 0, name: call.name, arguments: call.arguments, ok: r.ok, content: r.content, ms: Date.now() - callStarted });
       return r;
     };
+    // Vueltas y tiempos del LLM por paso, aunque venza el tiempo a mitad de la cadena.
     let rounds = 0;
+    const llmMs: number[] = [];
     let timer: NodeJS.Timeout | undefined;
     const timedOut = await Promise.race([
       this.llmService
@@ -3568,12 +3570,16 @@ export class ConversationsService implements OnModuleInit {
           [{ role: 'system', content: [systemPrompt, voiceToolsInstruction(toolset.sourceName)].filter(Boolean).join('\n\n') }, ...history],
           toolset.tools,
           execute,
-          { stopAfterTools: true, cancelled: () => Date.now() >= deadline },
+          {
+            stopAfterTools: true,
+            cancelled: () => Date.now() >= deadline,
+            onStep: ({ ms, toolCalls }) => {
+              llmMs.push(ms);
+              if (toolCalls) rounds++;
+            },
+          },
         )
-        .then((r) => {
-          rounds = r.rounds;
-          return false;
-        })
+        .then(() => false)
         .catch((err) => {
           this.logger.warn(`[${tenantId}] tools de la fuente por voz: el LLM falló — ${err instanceof Error ? err.message : err}`);
           return false;
@@ -3588,7 +3594,7 @@ export class ConversationsService implements OnModuleInit {
     const context = ok.length
       ? [`Resultados de la fuente de verdad "${toolset.sourceName}":`, ...ok.map((c) => `### ${c.name} ${JSON.stringify(c.arguments)}\n${c.content}`)].join('\n\n')
       : '';
-    this.logSourceTools(tenantId, timedOut ? 'delegate por voz (venció el tiempo)' : 'delegate por voz', rounds, done, Date.now() - started, context.length);
+    this.logSourceTools(tenantId, timedOut ? 'delegate por voz (venció el tiempo)' : 'delegate por voz', rounds, done, Date.now() - started, llmMs, context.length);
     return context;
   }
 
@@ -3599,11 +3605,17 @@ export class ConversationsService implements OnModuleInit {
     rounds: number,
     calls: LlmToolTrace[],
     elapsedMs: number,
+    llmMs: number[] = [],
     contextChars?: number,
   ): void {
-    const detail = calls.length ? calls.map((c) => `${c.name} ${c.ms} ms ${c.ok ? 'ok' : 'error'}`).join(', ') : 'ninguna';
+    // Un error de la tool es el mensaje del servidor (validación de argumentos): sirve para
+    // diagnosticar y no trae datos de la persona. Los resultados buenos no se loguean.
+    const detail = calls.length
+      ? calls.map((c) => `${c.name} ${c.ms} ms ${c.ok ? 'ok' : `error (${c.content.slice(0, 160)})`}`).join(', ')
+      : 'ninguna';
+    const llm = llmMs.length ? `; LLM ${llmMs.join(' + ')} ms` : '';
     const size = contextChars !== undefined ? `; context ${contextChars} caracteres` : '';
-    this.logger.log(`[${tenantId}] tools de la fuente (${where}): ${rounds} vueltas, tools: ${detail}${size}; ${elapsedMs} ms en total.`);
+    this.logger.log(`[${tenantId}] tools de la fuente (${where}): ${rounds} vueltas, tools: ${detail}${llm}${size}; ${elapsedMs} ms en total.`);
   }
 
   /**
@@ -3770,7 +3782,7 @@ export class ConversationsService implements OnModuleInit {
       if (toolset) {
         const started = Date.now();
         const result = await this.llmService.chatWithTools(llmMessages, toolset.tools, (call) => toolset.execute(call));
-        this.logSourceTools(tenantId, 'orquestador', result.rounds, result.calls, Date.now() - started);
+        this.logSourceTools(tenantId, 'orquestador', result.rounds, result.calls, Date.now() - started, result.llmMs);
         if (result.text.trim()) return result.text;
         this.logger.warn(`[${tenantId}] orchestratorLlm: el LLM terminó las tools sin texto.`);
         return 'Perdón, tuve un problema para responderte. ¿Podés reformular tu consulta o intentar de nuevo en un momento?';

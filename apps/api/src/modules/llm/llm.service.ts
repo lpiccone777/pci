@@ -62,7 +62,7 @@ export class LlmService {
     opts: LlmToolLoopOptions & { tenantConfig?: Partial<LlmCompletionOptions> } = {},
   ): Promise<LlmToolChatResult> {
     const provider = await this.factory.createProvider();
-    if (!provider.generateWithTools) return { supported: false, text: '', rounds: 0, calls: [] };
+    if (!provider.generateWithTools) return { supported: false, text: '', rounds: 0, calls: [], llmMs: [] };
 
     const merged: LlmCompletionOptions = {
       temperature: await this.appConfig.getNumber('LLM_TEMPERATURE', 0.7),
