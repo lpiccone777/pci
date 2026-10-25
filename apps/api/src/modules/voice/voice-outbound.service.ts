@@ -67,7 +67,7 @@ export class VoiceOutboundService {
     }
 
     const [retryDelayMs, defaultRounds] = await Promise.all([
-      this.appConfig.getNumber('VOICE_OUTBOUND_RETRY_DELAY_MS', 60_000),
+      this.appConfig.getNumber('VOICEBOT_OUTBOUND_RETRY_DELAY_MS', 60_000),
       this.appConfig.getNumber('VOICEBOT_CALL_MAX_ROUNDS', 3),
     ]);
     const outbound = await this.prisma.voiceOutbound.create({
@@ -312,17 +312,17 @@ export class VoiceOutboundService {
   }
 
   /**
-   * Números limpios y permitidos por `VOICE_OUTBOUND_ALLOWED_PREFIXES` (C63): vacía = cerrado.
+   * Números limpios y permitidos por `VOICEBOT_OUTBOUND_ALLOWED_PREFIXES` (C63): vacía = cerrado.
    * Un número se acepta si empieza con alguno de los prefijos.
    */
   private async allowedNumbers(raw: string[]): Promise<string[]> {
-    const prefixes = ((await this.appConfig.get('VOICE_OUTBOUND_ALLOWED_PREFIXES', '')) ?? '')
+    const prefixes = ((await this.appConfig.get('VOICEBOT_OUTBOUND_ALLOWED_PREFIXES', '')) ?? '')
       .split(',')
       .map((p) => p.trim())
       .filter(Boolean);
     if (!prefixes.length) {
       throw new ForbiddenException(
-        'Las llamadas salientes están cerradas: no hay números permitidos (VOICE_OUTBOUND_ALLOWED_PREFIXES).',
+        'Las llamadas salientes están cerradas: no hay números permitidos (VOICEBOT_OUTBOUND_ALLOWED_PREFIXES).',
       );
     }
     const numbers = raw.map((n) => String(n).replace(/[\s\-().]/g, ''));

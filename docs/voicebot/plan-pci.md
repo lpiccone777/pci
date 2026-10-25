@@ -674,7 +674,7 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
       atendió y cortó sin marcar.
     - Siempre hasta `lastAttempt` o `exhausted`.
   - El voicebot no impone una espera mínima entre intentos: la pone pci.
-  - La espera entre intentos es una clave nueva de pci, `VOICE_OUTBOUND_RETRY_DELAY_MS` (default
+  - La espera entre intentos es una clave nueva de pci, `VOICEBOT_OUTBOUND_RETRY_DELAY_MS` (default
     60000), y se persiste en `nextAttemptAt`. Un barrido cada 10 s publica los vencidos, así un
     reinicio de pci no pierde reintentos.
   - Cancelar desde la UI: `call.hangup` con `resetRotation` y `status: cancelled`. Con una llamada
@@ -741,7 +741,7 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
   - reintentos duplicados con dos instancias de pci: el barrido toma cada saliente con un UPDATE
     condicionado, como el lease de turnos;
   - discar a números reales en pruebas: en desarrollo solo a MicroSIP o a internos de prueba, con
-    una lista permitida opcional (`VOICE_OUTBOUND_ALLOWED_PREFIXES`) **[decide el usuario]**;
+    una lista permitida opcional (`VOICEBOT_OUTBOUND_ALLOWED_PREFIXES`) **[decide el usuario]**;
   - costo y abuso: permiso propio, tope de simultáneas y log de quién lanzó cada una.
 - **Esfuerzo de pci:** ~2–3 días.
   - modelo y migración, API y barrido de reintentos: 1 día;

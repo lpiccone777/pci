@@ -978,7 +978,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
   // --- Llamadas salientes ---
   // Sin `envNames` [C63]: son de pci, para las salientes que dispara pci (pantalla y API).
   gated({
-    key: 'VOICE_OUTBOUND_ALLOWED_PREFIXES',
+    key: 'VOICEBOT_OUTBOUND_ALLOWED_PREFIXES',
     type: 'string',
     group: 'Mensajería: Voicebot (Llamadas salientes)',
     label: 'Números permitidos (salientes de pci)',
@@ -992,7 +992,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       'acepta si empieza con alguno. Vacío = no se puede llamar a ningún número.',
   }),
   gated({
-    key: 'VOICE_OUTBOUND_RETRY_DELAY_MS',
+    key: 'VOICEBOT_OUTBOUND_RETRY_DELAY_MS',
     type: 'number',
     group: 'Mensajería: Voicebot (Llamadas salientes)',
     label: 'Espera entre intentos (ms, salientes de pci)',

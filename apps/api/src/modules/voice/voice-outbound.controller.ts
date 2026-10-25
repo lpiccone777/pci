@@ -12,7 +12,7 @@ import { CreateVoiceOutboundDto } from './dto/voice-outbound.dto';
  * Llamadas salientes desde pci (H5, C63): la pantalla `/dashboard/voice-calls` y cualquier
  * integración (n8n) usan esta API. Siempre en la empresa activa (`X-Tenant-Id`), con el permiso
  * `voice_outbound`, y 404 con el voicebot apagado. Los números tienen que estar en
- * `VOICE_OUTBOUND_ALLOWED_PREFIXES` (vacía = no se puede llamar a nada).
+ * `VOICEBOT_OUTBOUND_ALLOWED_PREFIXES` (vacía = no se puede llamar a nada).
  */
 @Controller('voice/outbound-calls')
 @UseGuards(JwtAuthGuard, VoicebotEnabledGuard, TenantGuard, RolesGuard)

@@ -3,7 +3,7 @@
  *
  * Contrato de integración §6, C34 y C63: pci publica `call.outbound` en `voicebot.commands` (RPC,
  * con el `callId` que genera pci), consume `call.outbound.result` de `voice.events` y maneja la
- * rotación y los reintentos. Números solo de `VOICE_OUTBOUND_ALLOWED_PREFIXES` (vacía = cerrado).
+ * rotación y los reintentos. Números solo de `VOICEBOT_OUTBOUND_ALLOWED_PREFIXES` (vacía = cerrado).
  *
  * Vía: el broker real de la app (vhost efímero). El test hace de voicebot: consume
  * `voicebot.commands`, responde por el `replyTo` y publica los resultados en `voice.events`.
@@ -92,23 +92,23 @@ describe('Salientes desde pci: call.outbound y call.outbound.result (BE-OUT-*)',
   });
   afterAll(async () => {
     await deleteSetting(t.prisma, 'VOICEBOT_ENABLED');
-    await deleteSetting(t.prisma, 'VOICE_OUTBOUND_ALLOWED_PREFIXES');
+    await deleteSetting(t.prisma, 'VOICEBOT_OUTBOUND_ALLOWED_PREFIXES');
     await t.close();
   });
   beforeEach(async () => {
     commands.length = 0;
     reply = (cmd) => ({ v: 1, callId: cmd.data.callId, ok: true });
     await setSetting(t.prisma, 'VOICEBOT_ENABLED', 'true');
-    await setSetting(t.prisma, 'VOICE_OUTBOUND_ALLOWED_PREFIXES', '20, +54911');
+    await setSetting(t.prisma, 'VOICEBOT_OUTBOUND_ALLOWED_PREFIXES', '20, +54911');
   });
 
   it('BE-OUT-01: cerrado por defecto y por prefijo; con permiso propio; 404 con el voicebot apagado', async () => {
     const s = await scenario();
-    await deleteSetting(t.prisma, 'VOICE_OUTBOUND_ALLOWED_PREFIXES');
+    await deleteSetting(t.prisma, 'VOICEBOT_OUTBOUND_ALLOWED_PREFIXES');
     const closed = await post(s, { to: ['201'], flowId: s.flow.id }).expect(403);
     expect(closed.body.message).toMatch(/cerradas/);
 
-    await setSetting(t.prisma, 'VOICE_OUTBOUND_ALLOWED_PREFIXES', '20, +54911');
+    await setSetting(t.prisma, 'VOICEBOT_OUTBOUND_ALLOWED_PREFIXES', '20, +54911');
     const blocked = await post(s, { to: ['201', '+5491155550000', '0800-333'] , flowId: s.flow.id }).expect(403);
     expect(blocked.body.message).toContain('0800333');
     await post(s, { to: ['20x'], flowId: s.flow.id }).expect(400);
