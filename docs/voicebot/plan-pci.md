@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · 🔄 H5 (código de pci listo, falta la prueba en vivo). Contrato vigente: **1.25**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · ✅ H5 (cerrado 2026-10-26). Contrato vigente: **1.25**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -59,7 +59,7 @@ endpoints con token real, la importación de los `.env` corrió con `--apply`, y
   grupos o de un interno. Lo devuelven los endpoints y va en el evento.
 - [x] **Evento `config.changed`** (exchange `voicebot.events`, DA3; `BrokerService.publishToExchange`) al guardar o restaurar una clave de estos grupos (contrato §3.3).
   El transporte depende de DA3.
-- [ ] ⏭️ Pasa a H5 por indicación del coordinador (no hay consumidor de `health.check` todavía). **"Probar conexión"** del voicebot por `health.check` (contrato §6), por RPC del broker,
+- [x] Hecho en H5 (4ebd77d). Pasó a H5 por indicación del coordinador (no había consumidor de `health.check` todavía). **"Probar conexión"** del voicebot por `health.check` (contrato §6), por RPC del broker,
   mismo patrón que `context-source.test-connection`. Si el voicebot de H5 no está, que la UI lo
   diga en lugar de colgarse.
 - [x] **Tests** (`test/integrations.e2e-spec.ts` BE-INT-01..18, `settings.spec.ts` FE-SET-19, FE-RSP-04 ampliado, plan de pruebas §1.25):
@@ -633,7 +633,12 @@ con estos ajustes:
 - **Grabación (DA12):** solo texto, sin audio.
 - **Salientes y "Probar conexión":** H5.
 
-## H5 — Salientes 🔄 (contrato 1.24, C63)
+## H5 — Salientes ✅ (contrato 1.24, C63; cerrado 2026-10-26)
+
+**Cierre (2026-10-26):** el coordinador cerró H5 (`estado.md` del voicebot, 2e81bbb) después de la
+prueba en vivo de la saliente con flujo, del sink HTTP con dos llamadas a la vez y de C64
+(contrato 1.25). Commits de pci: cea3425, 633c7b8, ab99029, 9d91334, 4ebd77d, 30a62b8, 0467525,
+af30383 (C64) y a897206 (placeholder de `STT_HTTP_URL` al 3002).
 
 **Estado (2026-10-25):** plan aprobado por el usuario e implementado en pci, en seis partes
 (cea3425, 633c7b8 + ab99029, 9d91334, 4ebd77d, 30a62b8 y la de descripciones y docs). La migración
@@ -794,7 +799,7 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
 |---|---|---|---|
 | voicebot | Defaults y validaciones vigentes de cada clave | H1 | disponible en `voicebot/apps/api/src/config/env.validation.ts` y `.env.example` |
 | stt | Lista de variables del stt con defaults y rangos | H1 | ✅ `stt/docs/INTEGRATION.md` §8.1 |
-| voicebot | Consumidor de `health.check` | H1 (probar conexión) | ⏳ (H5 del voicebot) |
+| voicebot | Consumidor de `health.check` | H1 (probar conexión) | ✅ (H5 del voicebot, cerrado 2026-10-26) |
 | voicebot | Publicación de `voice.events` y `voice.turn` | H3 | ⏳ |
 | usuario | DA5, DA6, DA8 (DA1, DA2, DA3, DA13 y DA16 ya decididas) | H3–H4 | ⏳ |
 

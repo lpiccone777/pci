@@ -1506,10 +1506,10 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   InvGate, `employee_number`) ✅. H4b (modo de habla por nodo, menú sin LLM, `context` con tope,
   transferir a interno) ✅. Prueba integrada en vivo aprobada; pendiente que no bloquea: el
   transfer a interno no se probó en vivo con MicroSIP.
-- 🔄 **H5 — Salientes y "probar conexión"** (C63, 2026-10-25): salientes desde pci (pantalla
+- ✅ **H5 — Salientes y "probar conexión"** (C63, 2026-10-25; cerrado 2026-10-26): salientes desde pci (pantalla
   `/dashboard/voice-calls` + API, rotación y reintentos, permiso `voice_outbound`, prefijos
-  permitidos) y "Probar conexión" / "Re-provisionar SIP" en `/settings`. Código de pci listo;
-  falta la prueba en vivo. Ver `docs/voicebot/plan-pci.md`.
+  permitidos) y "Probar conexión" / "Re-provisionar SIP" en `/settings`. Probado en vivo
+  (saliente con flujo, sink HTTP con dos llamadas a la vez, C64). Ver `docs/voicebot/plan-pci.md`.
 
 ---
 
