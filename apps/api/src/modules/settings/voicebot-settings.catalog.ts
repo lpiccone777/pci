@@ -484,7 +484,7 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     type: 'string',
     label: 'URL del POST del stt',
     defaultValue: '',
-    placeholder: 'http://<voicebot>:3001/stt/transcripts',
+    placeholder: 'http://<voicebot>:3002/stt/transcripts',
     description:
       'Solo con entrada http: adónde el stt le hace POST al voicebot. Es la base: el stt agrega ' +
       '?room=<llamada> en cada una, así una sola URL sirve para varias llamadas a la vez (§4).',
