@@ -41,6 +41,8 @@ interface ContextSourceData {
   id: string;
   name: string;
   type: string;
+  /** Cómo la nombra el bot por teléfono en los avisos de espera (C65). */
+  voiceName?: string | null;
   isActive: boolean;
   createdAt: string;
   /** Campos no-secretos con su valor real; los `secret` vienen enmascarados + `<key>IsSet`. */
@@ -133,6 +135,7 @@ export default function ContextSourcesPage() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [voiceName, setVoiceName] = useState('');
   const [type, setType] = useState('');
   const [isActive, setIsActive] = useState(true);
   const [formConfig, setFormConfig] = useState<Record<string, string>>({});
@@ -263,6 +266,7 @@ export default function ContextSourcesPage() {
   function resetForm() {
     setEditingId(null);
     setName('');
+    setVoiceName('');
     setType(types[0]?.type ?? '');
     setIsActive(true);
     setFormConfig({});
@@ -275,6 +279,7 @@ export default function ContextSourcesPage() {
     setNotice('');
     setEditingId(s.id);
     setName(s.name);
+    setVoiceName(s.voiceName ?? '');
     setType(s.type);
     setIsActive(s.isActive);
     const initial: Record<string, string> = {};
@@ -371,13 +376,13 @@ export default function ContextSourcesPage() {
       if (editingId) {
         await apiFetch(`/context-sources/${editingId}`, {
           method: 'PATCH',
-          body: JSON.stringify({ name, isActive, config }),
+          body: JSON.stringify({ name, voiceName: voiceName.trim() || null, isActive, config }),
         });
         setNotice('Fuente de verdad actualizada.');
       } else {
         await apiFetch('/context-sources', {
           method: 'POST',
-          body: JSON.stringify({ name, type, isActive, config }),
+          body: JSON.stringify({ name, voiceName: voiceName.trim() || null, type, isActive, config }),
         });
         setNotice('Fuente de verdad creada.');
       }
@@ -573,6 +578,24 @@ export default function ContextSourcesPage() {
                 />
                 Activa
               </label>
+            </div>
+
+            <div className="md:col-span-3">
+              <label htmlFor="context-source-voice-name" className="block text-xs text-gray-500 mb-1">
+                Nombre para voz
+              </label>
+              <input
+                id="context-source-voice-name"
+                placeholder="el servicio del clima"
+                value={voiceName}
+                onChange={(e) => setVoiceName(e.target.value)}
+                className="border px-3 py-2 rounded w-full md:w-1/2"
+                maxLength={60}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Opcional. Por teléfono, mientras se consulta esta fuente, el bot puede decir &quot;Estoy consultando{' '}
+                {voiceName.trim() || 'el servicio del clima'}…&quot;. Vacío: el aviso no la nombra.
+              </p>
             </div>
           </div>
 

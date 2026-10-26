@@ -39,6 +39,8 @@ export interface VoiceTurnRequest {
   call?: VoiceCallInfo;
   previous?: VoiceHeard | null;
   supersedes?: string | null;
+  /** El voicebot acepta avisos de progreso de este turno [C65]: sin esto, pci no los manda. */
+  progress?: boolean;
 }
 
 export interface VoiceTurnReply {

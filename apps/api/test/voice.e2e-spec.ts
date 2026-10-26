@@ -71,6 +71,8 @@ type Reply = {
   error: string | null;
 };
 
+type Progress = { v: number; kind: 'progress'; turnId: string; reason: string; label?: string; expectedMs: number };
+
 const uid = () => randomUUID();
 let extSeq = 0;
 const extNumber = () => `9${Date.now() % 100000}${++extSeq}`;
@@ -86,9 +88,10 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
   let extension: string;
   let voiceFlowId: string;
 
+  const progressByCorrelation = new Map<string, Progress[]>();
+
   /** Un `voice.turn` como lo manda el voicebot, esperando la respuesta correlacionada. */
-  const turn = (data: Record<string, unknown>, timeoutMs = 10_000): Promise<Reply> => {
-    const correlationId = `c-${uid()}`;
+  const turn = (data: Record<string, unknown>, timeoutMs = 10_000, correlationId = `c-${uid()}`): Promise<Reply> => {
     return new Promise<Reply>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(correlationId);
@@ -107,6 +110,12 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       };
       channel.sendToQueue('voice.turn', Buffer.from(JSON.stringify(msg)), { persistent: true });
     });
+  };
+  /** Un turno con `progress: true` [C65]: la respuesta y los avisos que llegaron antes que ella. */
+  const turnWithProgress = async (data: Record<string, unknown>) => {
+    const correlationId = `c-${uid()}`;
+    const reply = await turn({ progress: true, ...data }, 10_000, correlationId);
+    return { reply, progress: progressByCorrelation.get(correlationId) ?? [] };
   };
   const event = (pattern: string, data: Record<string, unknown>) => {
     const msg: BrokerMessage = { pattern, data: { v: 1, ...data }, timestamp: new Date().toISOString() };
@@ -149,6 +158,13 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       const body = JSON.parse(msg.content.toString()) as BrokerMessage;
       channel.ack(msg);
       expect(body.pattern).toBe('voice.turn.reply');
+      // Avisos de progreso [C65]: van antes de la respuesta, por el mismo replyTo y correlationId.
+      if ((body.data as { kind?: string }).kind === 'progress') {
+        const list = progressByCorrelation.get(body.correlationId!) ?? [];
+        list.push(body.data as Progress);
+        progressByCorrelation.set(body.correlationId!, list);
+        return;
+      }
       pending.get(body.correlationId!)?.(body.data as Reply);
       pending.delete(body.correlationId!);
     });
@@ -587,6 +603,15 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       expect(llm.calls).toHaveLength(0);
     });
 
+    it('BE-VOZ-38: con progress:true avisa "identify" justo al buscar en InvGate, no antes [C65]', async () => {
+      const callId = uid();
+      const first = await turnWithProgress({ callId, turnId: uid(), kind: 'start', call: callInfo(identExt) });
+      expect(first.progress).toEqual([]); // pedir el legajo no consulta nada
+      const { reply, progress } = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: '32456789', call: callInfo(identExt) });
+      expect(literals(reply)).toEqual(['Gracias. Ahora decime tu nombre y apellido.']);
+      expect(progress).toEqual([{ v: 1, kind: 'progress', turnId: expect.any(String), reason: 'identify', expectedMs: 15000 }]);
+    });
+
     it('BE-VOZ-21: dos intentos fallidos (documento inexistente, después nombre que no coincide) → no reconocido', async () => {
       const callId = uid();
       await start(callId, identExt);
@@ -835,6 +860,86 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
       } finally {
         spy.mockRestore();
         await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
+      }
+    });
+
+    it('BE-VOZ-39: progress "source" con el nombre para voz y la espera vigente; sin progress:true no hay avisos; un replay no los repite [C65]', async () => {
+      const contexts = t.moduleRef.get(ContextSourcesService);
+      const tenant = await createTenant(t.prisma, { slug: uniqueSlug('voz-progress') });
+      const source = await createContextSource(t.prisma, { tenantId: tenant.id, name: 'kb', type: 'broker' });
+      await t.prisma.contextSource.update({ where: { id: source.id }, data: { voiceName: 'la base de conocimiento' } });
+      await createFlow(t.prisma, {
+        name: 'voz progress',
+        channel: 'voice',
+        contextSourceId: source.id,
+        nodes: [startNode('start', { noGreeting: true }), inputNode('q', { text: 'Contame.', variableName: 'q' }), llmQueryNode('charla', { systemPrompt: 'Soporte.' })],
+        edges: [edge('start', 'q'), edge('q', 'charla')],
+        assign: [{ tenantId: tenant.id, isStart: true }],
+      });
+      const ext = extNumber();
+      await t.prisma.extension.create({ data: { number: ext, name: 'progress', tenantId: tenant.id } });
+
+      const spy = jest.spyOn(contexts, 'queryKnowledge').mockResolvedValue({ ok: true, answer: 'dato' } as never);
+      try {
+        const callId = uid();
+        await start(callId, ext);
+        const turnId = uid();
+        const data = { callId, turnId, kind: 'user', text: 'se rompió la impresora', call: callInfo(ext) };
+        const { reply, progress } = await turnWithProgress(data);
+        expect(reply.actions[0]).toMatchObject({ mode: 'delegate', context: expect.stringContaining('dato') });
+        expect(progress).toEqual([
+          { v: 1, kind: 'progress', turnId, reason: 'source', label: 'la base de conocimiento', expectedMs: 12000 },
+        ]);
+
+        // Mismo turnId [C27]: la misma respuesta, sin volver a avisar.
+        const again = await turnWithProgress(data);
+        expect(again.reply).toEqual(reply);
+        expect(again.progress).toEqual([]);
+
+        // Sin nombre para voz: avisa sin label. Sin progress:true: nada, y la espera vuelve a 7000.
+        await t.prisma.contextSource.update({ where: { id: source.id }, data: { voiceName: null } });
+        const second = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'otra cosa', call: callInfo(ext) });
+        expect(second.progress.map(({ reason, label }) => ({ reason, label }))).toEqual([{ reason: 'source', label: undefined }]);
+        const correlationId = `c-${uid()}`;
+        await turn({ callId, turnId: uid(), kind: 'user', text: 'y otra', call: callInfo(ext) }, 10_000, correlationId);
+        expect(progressByCorrelation.get(correlationId)).toBeUndefined();
+
+        await setSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', '9000');
+        const custom = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'más', call: callInfo(ext) });
+        expect(custom.progress[0].expectedMs).toBe(9000);
+      } finally {
+        spy.mockRestore();
+        await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
+      }
+    });
+
+    // `delay` y `ticket_query` no existen por voz (VOICE_UNSUPPORTED_NODES): sus avisos no salen hoy.
+    it('BE-VOZ-40: varios pasos lentos en un turno: un progress por paso, en orden y antes de la respuesta [C65]', async () => {
+      const fetchMock = installFetchMock(() => ({ body: { ok: true } }));
+      try {
+        const { ext } = await voiceSetup(
+          'voz-progress-pasos',
+          [
+            startNode('start', { noGreeting: true }),
+            inputNode('q', { text: '¿Qué necesitás?', variableName: 'q' }),
+            node('aviso', 'webhook', { url: 'https://hooks.voz.e2e.test/aviso', method: 'POST', body: '{"q":"{{q}}"}' }),
+            node('registro', 'webhook', { url: 'https://hooks.voz.e2e.test/registro', method: 'POST' }),
+            inputNode('fin', { text: 'Listo, ¿algo más?', variableName: 'mas' }),
+          ],
+          [edge('start', 'q'), edge('q', 'aviso'), edge('aviso', 'registro'), edge('registro', 'fin')],
+        );
+        const callId = uid();
+        await start(callId, ext);
+        const { reply, progress } = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'reset de clave', call: callInfo(ext) });
+        expect(literals(reply)).toEqual(['Listo, ¿algo más?']);
+        expect(reply.committed).toBe(true); // el webhook es un efecto [DA1]
+        expect(progress.map(({ reason, expectedMs }) => ({ reason, expectedMs }))).toEqual([
+          { reason: 'webhook', expectedMs: 10000 },
+          { reason: 'webhook', expectedMs: 10000 },
+        ]);
+        expect(fetchMock.requests.map((r) => r.url)).toEqual(['https://hooks.voz.e2e.test/aviso', 'https://hooks.voz.e2e.test/registro']);
+      } finally {
+        fetchMock.restore();
       }
     });
 

@@ -12,12 +12,15 @@ import { AppConfigService } from '../../config/app-config.service';
 import { EmailService } from '../auth/email.service';
 import { ContextSourcesService, McpLlmToolset } from '../context-sources/context-sources.service';
 import { InboundTenantRoutingService, InboundRoutingResult } from './inbound-tenant-routing.service';
-import { InvgateService, IncidentAttachment } from '../invgate/invgate.service';
+import { INVGATE_TIMEOUT_MS, InvgateService, IncidentAttachment } from '../invgate/invgate.service';
 import { stripArgentinaMobileNine } from '../../common/phone.util';
 import { TwilioMediaService, StoredAttachment } from '../../common/twilio-media.service';
 import { UnknownSenderLogService } from './unknown-sender-log.service';
 import { createHash } from 'crypto';
-import { VOICEBOT_FREE_CHAT_PROMPT_DEFAULT } from '../settings/voicebot-settings.catalog';
+import {
+  DELEGATE_CONTEXT_TIMEOUT_NO_PROGRESS_MS,
+  VOICEBOT_FREE_CHAT_PROMPT_DEFAULT,
+} from '../settings/voicebot-settings.catalog';
 import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
 import { nameMatches, normalizeDocument } from '../voice/voice-identify.util';
 import { matchMenuOption } from '../voice/voice-menu.util';
@@ -202,6 +205,21 @@ export interface VoiceFlowOutput {
   ended: boolean;
 }
 
+/** Aviso de progreso de un turno de voz (contrato §5.3, C65): pci entra a un paso lento. */
+export interface VoiceProgress {
+  reason: 'source' | 'ticket' | 'identify' | 'webhook' | 'delay';
+  /** Solo con `source`: el nombre para voz de la fuente (`ContextSource.voiceName`). */
+  label?: string;
+  /** Cuánto puede tardar el paso: el voicebot estira su timeout hasta ahí. */
+  expectedMs: number;
+}
+
+/**
+ * Lo pasa `VoiceTurnsService` solo si el voicebot pidió avisos (`progress: true`); sin él no
+ * se avisa nada. Se enhebra por parámetro hasta el nodo, como la identidad.
+ */
+export type VoiceProgressFn = (progress: VoiceProgress) => void;
+
 
 /** Nodos con efectos fuera de la conversación: el turno que los ejecuta es `committed`. */
 const COMMITTED_NODES = new Set(['ticket_create', 'sms', 'transfer_agent', 'webhook', 'end', 'transfer_extension']);
@@ -355,7 +373,7 @@ export class ConversationsService implements OnModuleInit {
     callerNumber: string | null,
     startFlow?: { id: string; nodes: unknown },
     dtmf?: string | null,
-    opts: { skipGreeting?: boolean } = {},
+    opts: { skipGreeting?: boolean; progress?: VoiceProgressFn } = {},
   ): Promise<VoiceFlowOutput | null> {
     if (startFlow) {
       // Arranque (o rearranque tras el fin de un flujo a mitad de llamada): desde `start`.
@@ -376,6 +394,7 @@ export class ConversationsService implements OnModuleInit {
       channel: 'voice',
       voice,
       dtmf: dtmf ?? undefined,
+      progress: opts.progress,
     });
     return ran ? voice : null;
   }
@@ -790,7 +809,7 @@ export class ConversationsService implements OnModuleInit {
     tenantId: string,
     from: string,
     identity: { isKnown: boolean; roleId: string | null; roleName: string | null },
-    run: { channel: FlowChannel; voice?: VoiceFlowOutput; dtmf?: string } = { channel: 'text' },
+    run: { channel: FlowChannel; voice?: VoiceFlowOutput; dtmf?: string; progress?: VoiceProgressFn } = { channel: 'text' },
   ): Promise<{ text: string; interactive?: WhatsAppInteractive } | null> {
     // Buscar flujo activo. `null` de acá en adelante significa EXCLUSIVAMENTE "no hay flujo
     // activo para este tenant/rol" — las dos salidas de esta sección son las únicas; una vez
@@ -872,6 +891,7 @@ export class ConversationsService implements OnModuleInit {
           (flow as any).skill?.promptText ?? null,
           run.channel,
           run.dtmf,
+          run.progress,
         );
         if (run.voice && COMMITTED_NODES.has(node.type)) run.voice.committed = true;
       }
@@ -2128,6 +2148,7 @@ export class ConversationsService implements OnModuleInit {
     skillPromptText: string | null,
     channel: FlowChannel = 'text',
     dtmf?: string,
+    progress?: VoiceProgressFn,
   ): Promise<NodeExecutionResult> {
     const type = node.type;
     const data = node.data || {};
@@ -2189,7 +2210,7 @@ export class ConversationsService implements OnModuleInit {
       }
 
       case 'voice_identify':
-        return this.executeVoiceIdentifyNode(node, data, body, conversation, tenantId, flowState);
+        return this.executeVoiceIdentifyNode(node, data, body, conversation, tenantId, flowState, progress);
 
       case 'transfer_extension':
         return this.executeTransferExtensionNode(node, data, tenantId, flowState);
@@ -2242,7 +2263,7 @@ export class ConversationsService implements OnModuleInit {
           } else {
             if (channel === 'voice') {
               return {
-                delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body, conversation),
+                delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body, conversation, progress),
                 waitForInput: true,
                 flowState,
               };
@@ -2349,7 +2370,7 @@ export class ConversationsService implements OnModuleInit {
           delete retries[node.id];
           flowState.__llmFallback = node.id;
           return {
-            delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body, conversation),
+            delegate: await this.voiceDelegate(await this.buildBasePrompt(skillPromptText, tenantId), tenantId, contextSourceId, body, conversation, progress),
             waitForInput: true,
             flowState,
           };
@@ -2587,6 +2608,7 @@ export class ConversationsService implements OnModuleInit {
           : [];
         flowState.pendingAttachments = [];
 
+        if (progress && (await this.invgateService.isConfigured())) progress({ reason: 'ticket', expectedMs: INVGATE_TIMEOUT_MS });
         const invgateTicketId = await this.syncTicketToInvgate(
           ticket,
           from,
@@ -2626,6 +2648,7 @@ export class ConversationsService implements OnModuleInit {
 
         const resolveCustomerId = async (): Promise<number | null> => {
           if (!(await this.invgateService.isConfigured())) return null;
+          progress?.({ reason: 'ticket', expectedMs: INVGATE_TIMEOUT_MS });
           return this.resolveInvgateCustomerId(user.id, from);
         };
 
@@ -2746,6 +2769,7 @@ export class ConversationsService implements OnModuleInit {
               contextSourceId,
               body,
               conversation,
+              progress,
             ),
           };
         }
@@ -2885,6 +2909,7 @@ export class ConversationsService implements OnModuleInit {
         // Acotado: ahora los nodos se encadenan dentro de una sola request HTTP,
         // así que un delay largo la dejaría colgada.
         const seconds = Math.min(data.seconds || 1, MAX_DELAY_SECONDS);
+        progress?.({ reason: 'delay', expectedMs: seconds * 1000 });
         await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
         return {};
       }
@@ -2905,6 +2930,7 @@ export class ConversationsService implements OnModuleInit {
           this.logger.warn(`Nodo webhook (${node.id}) sin URL configurada.`);
           return {};
         }
+        progress?.({ reason: 'webhook', expectedMs: WEBHOOK_TIMEOUT_MS });
         const method = (data.method || 'POST').toUpperCase();
         const requestBody = method !== 'GET' && data.body ? this.interpolate(data.body, flowState) : undefined;
         try {
@@ -3338,6 +3364,7 @@ export class ConversationsService implements OnModuleInit {
     conversation: any,
     tenantId: string,
     flowState: Record<string, any>,
+    progress?: VoiceProgressFn,
   ): Promise<NodeExecutionResult> {
     const label = data.idLabel === 'legajo' ? 'legajo' : 'documento';
     const field = VOICE_IDENTIFY_FIELDS.includes(data.idField) ? data.idField : 'employee_number';
@@ -3394,6 +3421,7 @@ export class ConversationsService implements OnModuleInit {
       if (!document) return fail();
       const started = Date.now();
       let found: Awaited<ReturnType<InvgateService['findActiveUsersBy']>> = [];
+      progress?.({ reason: 'identify', expectedMs: INVGATE_TIMEOUT_MS });
       try {
         found = await this.invgateService.findActiveUsersBy(field, document);
       } catch (err) {
@@ -3477,12 +3505,18 @@ export class ConversationsService implements OnModuleInit {
     contextSourceId: string | null,
     body: string,
     conversation?: { id: string; sessionStartedAt?: Date | null; createdAt: Date },
+    progress?: VoiceProgressFn,
   ): Promise<{ systemPrompt: string; context?: string }> {
     if (!contextSourceId || !body.trim()) return { systemPrompt };
-    const [maxChars, timeoutMs] = await Promise.all([
+    const [maxChars, configuredTimeoutMs, source] = await Promise.all([
       this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS', 16000),
-      this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 7000),
+      this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 12000),
+      this.prisma.contextSource.findFirst({ where: { id: contextSourceId, tenantId }, select: { voiceName: true } }),
     ]);
+    // Un voicebot que no pide avisos [C65] no estira su timeout: la fuente no puede pasarse de él.
+    const timeoutMs = progress ? configuredTimeoutMs : Math.min(configuredTimeoutMs, DELEGATE_CONTEXT_TIMEOUT_NO_PROGRESS_MS);
+    const voiceName = source?.voiceName?.trim();
+    progress?.({ reason: 'source', ...(voiceName ? { label: voiceName } : {}), expectedMs: timeoutMs });
     const started = Date.now();
     const toolset = await this.sourceToolset(tenantId, contextSourceId, true);
     if (toolset) {

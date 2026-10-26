@@ -23,6 +23,15 @@ export class CreateContextSourceDto {
   @IsOptional()
   config?: Record<string, unknown>;
 
+  /**
+   * Cómo la nombra el bot por teléfono en los avisos de espera ("Estoy consultando {label}…",
+   * contrato C65). Opcional; vacío o `null` lo borra.
+   */
+  @IsString()
+  @MaxLength(60)
+  @IsOptional()
+  voiceName?: string | null;
+
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
@@ -38,6 +47,15 @@ export class UpdateContextSourceDto {
   @IsObject()
   @IsOptional()
   config?: Record<string, unknown>;
+
+  /**
+   * Cómo la nombra el bot por teléfono en los avisos de espera ("Estoy consultando {label}…",
+   * contrato C65). Opcional; vacío o `null` lo borra.
+   */
+  @IsString()
+  @MaxLength(60)
+  @IsOptional()
+  voiceName?: string | null;
 
   @IsBoolean()
   @IsOptional()

@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
+import { IntegrationsModule } from '../integrations/integrations.module';
 import { ContextSourcesService } from './context-sources.service';
 import { ContextSourcesController } from './context-sources.controller';
 import { ContextSourceConnectorService } from './broker/context-source-connector.service';
 import { BrokerModule } from '../broker/broker.module';
 
 @Module({
-  imports: [BrokerModule],
+  imports: [BrokerModule, IntegrationsModule],
   providers: [ContextSourcesService, ContextSourceConnectorService],
   controllers: [ContextSourcesController],
   exports: [ContextSourcesService],

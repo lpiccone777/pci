@@ -11,6 +11,13 @@ export class UpsertSettingDto {
   value: string;
 }
 
+/** "Proponer variantes" de una lista de avisos de espera [C65]: lo que hay en el formulario, sin guardar. */
+export class ProposeWaitTextsDto {
+  @IsString()
+  @MaxLength(4000)
+  current: string;
+}
+
 export class UpdateSettingDto {
   @IsString()
   @MaxLength(4000)

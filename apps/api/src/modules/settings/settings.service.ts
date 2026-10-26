@@ -26,6 +26,7 @@ export interface ResolvedSetting {
   min?: number;
   max?: number;
   multiline?: boolean;
+  lines?: SettingDefinition['lines'];
   secret?: boolean;
   provider?: string;
   placeholder?: string;
@@ -204,6 +205,7 @@ export class SettingsService {
       min: def.min,
       max: def.max,
       multiline: def.multiline,
+      lines: def.lines,
       secret: def.secret,
       provider: def.provider,
       placeholder: def.placeholder,

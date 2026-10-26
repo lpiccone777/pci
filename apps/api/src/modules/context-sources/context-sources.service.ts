@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { IntegrationsConfigService } from '../integrations/integrations-config.service';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveReadableTenantIds } from '../../common/rbac/readable-tenant-ids';
@@ -98,6 +99,12 @@ function schemaWithoutFixed(inputSchema: Record<string, unknown> | undefined, fi
  * claro por esta clase, salvo `getResolvedConfig`, pensado únicamente para uso
  * interno del connector (test-connection, y más adelante el motor de flujos).
  */
+/** Nombre para voz (C65): recortado; vacío es `null`. */
+function normalizeVoiceName(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 @Injectable()
 export class ContextSourcesService {
   private readonly logger = new Logger(ContextSourcesService.name);
@@ -108,6 +115,7 @@ export class ContextSourcesService {
     private readonly prisma: PrismaService,
     private readonly cipher: SecretsCipher,
     private readonly broker: BrokerService,
+    private readonly integrations: IntegrationsConfigService,
   ) {}
 
   /** Catálogo de tipos disponibles, para que el frontend arme el formulario dinámico. */
@@ -182,17 +190,19 @@ export class ContextSourcesService {
         name,
         type: dto.type,
         config: config as Prisma.InputJsonValue,
+        voiceName: normalizeVoiceName(dto.voiceName),
         isActive: dto.isActive ?? true,
       },
     });
     this.logger.log(`Fuente de verdad creada: ${source.name} (${source.type}) en tenant ${tenantId}`);
+    if (source.voiceName) await this.notifyVoiceNameChanged(source.name);
     return this.toSafeDto(source);
   }
 
   async update(tenantId: string, id: string, dto: UpdateContextSourceDto) {
     const existing = await this.getOwned(tenantId, id);
 
-    const data: { name?: string; isActive?: boolean; config?: Prisma.InputJsonValue } = {};
+    const data: { name?: string; isActive?: boolean; config?: Prisma.InputJsonValue; voiceName?: string | null } = {};
 
     if (dto.name !== undefined) {
       const name = dto.name.trim();
@@ -200,6 +210,7 @@ export class ContextSourcesService {
       data.name = name;
     }
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
+    if (dto.voiceName !== undefined) data.voiceName = normalizeVoiceName(dto.voiceName);
 
     if (dto.config !== undefined) {
       const existingConfig = (existing.config as Record<string, unknown>) ?? {};
@@ -210,6 +221,10 @@ export class ContextSourcesService {
 
     const source = await this.prisma.contextSource.update({ where: { id }, data });
     this.mcpToolsCache.delete(id);
+    // Los avisos de espera con {label} se pregraban con cada nombre para voz (voiceLiterals, C65).
+    if ((source.voiceName ?? null) !== (existing.voiceName ?? null) || (source.voiceName && source.isActive !== existing.isActive)) {
+      await this.notifyVoiceNameChanged(source.name);
+    }
     return this.toSafeDto(source);
   }
 
@@ -449,6 +464,15 @@ export class ContextSourcesService {
    * Mismo criterio que `AreasService.assertNameAvailable`: chequeo previo insensible
    * a mayúsculas para dar el mensaje en castellano antes de que choque el índice único.
    */
+  /** Que falle el aviso no deshace el guardado (mismo criterio que los flujos de voz, C60). */
+  private async notifyVoiceNameChanged(sourceName: string) {
+    try {
+      await this.integrations.notifyVoiceFlowsChanged(`nombre para voz de la fuente ${sourceName}`);
+    } catch (err) {
+      this.logger.warn(`No se avisó al voicebot el nombre para voz de ${sourceName}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   private async assertNameAvailable(tenantId: string, name: string, exceptId?: string) {
     const existing = await this.prisma.contextSource.findFirst({
       where: {

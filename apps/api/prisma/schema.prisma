@@ -563,6 +563,9 @@ model ContextSource {
   // String y no enum de Prisma para poder sumar tipos nuevos sin migración de schema.
   type      String
   config    Json     @default("{}")
+  // Cómo la nombra el bot por teléfono en los avisos de espera ("Estoy consultando {label}…",
+  // contrato C65). Opcional: sin él, el aviso no la nombra.
+  voiceName String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

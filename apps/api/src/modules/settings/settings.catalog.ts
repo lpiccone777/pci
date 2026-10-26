@@ -77,6 +77,12 @@ export interface SettingDefinition {
   /** Render como textarea en la UI. */
   multiline?: boolean;
   /**
+   * Solo para type 'string': lista de textos, uno por línea (avisos de espera, C65). Se valida
+   * cuántas líneas y de qué largo; `label` permite `{label}` en las líneas. La UI ofrece
+   * "Proponer variantes" (las propone el LLM de pci y el admin las revisa antes de guardar).
+   */
+  lines?: { max: number; maxLength: number; label?: boolean };
+  /**
    * Valor sensible (API key). Se guarda cifrado en BD y la API **nunca** lo devuelve:
    * el GET expone solo un enmascarado y el flag `isSet`. Es de solo escritura.
    */
@@ -926,8 +932,26 @@ export function validateSettingValue(
     }
     case 'string':
       if (def.pattern && !def.pattern.regex.test(value)) return `${def.key}: ${def.pattern.message}`;
+      if (def.lines) return validateLines(def.key, def.lines, value);
       return null;
     default:
       return null;
   }
+}
+
+/** Las líneas no vacías de una clave `lines`, recortadas (así las lee también el voicebot). */
+export function settingLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+function validateLines(key: string, rule: NonNullable<SettingDefinition['lines']>, value: string): string | null {
+  const lines = settingLines(value);
+  if (lines.length > rule.max) return `${key}: hasta ${rule.max} textos, uno por línea (hay ${lines.length})`;
+  const long = lines.find((l) => l.length > rule.maxLength);
+  if (long) return `${key}: cada texto puede tener hasta ${rule.maxLength} caracteres ("${long.slice(0, 40)}…")`;
+  if (!rule.label && lines.some((l) => l.includes('{label}'))) return `${key}: {label} solo vale en los avisos de fuente`;
+  return null;
 }

@@ -12,7 +12,8 @@ import {
 import { SettingsService } from './settings.service';
 import { LlmModelsService } from '../llm/llm-models.service';
 import { InvgateService } from '../invgate/invgate.service';
-import { UpsertSettingDto, UpdateSettingDto } from './dto/setting.dto';
+import { ProposeWaitTextsDto, UpsertSettingDto, UpdateSettingDto } from './dto/setting.dto';
+import { WaitTextsService } from './wait-texts.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../rbac/guards/roles.guard';
 import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
@@ -34,6 +35,7 @@ export class SettingsController {
     private readonly settingsService: SettingsService,
     private readonly llmModels: LlmModelsService,
     private readonly invgate: InvgateService,
+    private readonly waitTexts: WaitTextsService,
   ) {}
 
   @Get()
@@ -81,6 +83,17 @@ export class SettingsController {
   @RequirePermission('settings', 'update')
   async refreshInvgateCategories() {
     return this.invgate.refreshTicketCategories();
+  }
+
+  /**
+   * "Proponer variantes" de una lista de avisos de espera (contrato C65): el LLM propone textos y
+   * los devuelve **sin guardar**. Quedan cuando el admin los revisa y guarda la clave (PATCH).
+   * Pide `settings:update` porque es parte de editar la clave.
+   */
+  @Post(':key/propose-variants')
+  @RequirePermission('settings', 'update')
+  async proposeVariants(@Param('key') key: string, @Body() dto: ProposeWaitTextsDto) {
+    return this.waitTexts.propose(key, dto.current);
   }
 
   @Get(':key')

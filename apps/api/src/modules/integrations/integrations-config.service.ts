@@ -10,12 +10,14 @@ import {
   SettingDefinition,
   findSettingDefinition,
   isIntegrationConfigKey,
+  settingLines,
 } from '../settings/settings.catalog';
 import {
   VOICEBOT_SECTION_IDS,
   VOICE_LLM_CREDENTIALS,
   VOICE_LLM_SOURCE_KEYS,
   VOICE_LITERAL_SOURCE_KEYS,
+  WAIT_TEXT_LISTS,
   VoiceLlmProvider,
   VoicebotSettingGroup,
   deriveSttSink,
@@ -57,6 +59,19 @@ const INTEGRATION_DEFS = SETTINGS_CATALOG.filter(isIntegrationConfigKey);
  * secrets **en claro** — es la única excepción a "nunca devolver secrets" [DA2]. Nada de lo que
  * arma este servicio se loguea.
  */
+/**
+ * Los textos de los avisos de espera que el voicebot pregraba [C65]: cada línea de cada lista, y
+ * las que llevan `{label}`, una vez por nombre para voz (sin nombres no queda ninguna con `{label}`).
+ */
+export function expandWaitTexts(lists: string[], voiceNames: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lists.flatMap((v) => settingLines(v ?? ''))) {
+    if (!line.includes('{label}')) out.push(line);
+    else for (const name of voiceNames) out.push(line.split('{label}').join(name));
+  }
+  return out;
+}
+
 @Injectable()
 export class IntegrationsConfigService {
   private readonly logger = new Logger(IntegrationsConfigService.name);
@@ -70,7 +85,7 @@ export class IntegrationsConfigService {
 
   /** Contrato §3.1, con los internos de §3.5 en `extensions`. */
   async voicebotConfig() {
-    const [values, version, extensions, voiceFlows] = await Promise.all([
+    const [values, version, extensions, voiceFlows, voiceNames] = await Promise.all([
       this.resolveValues(),
       this.currentVersion(),
       this.prisma.extension.findMany({
@@ -81,6 +96,11 @@ export class IntegrationsConfigService {
         where: { channel: 'voice', isActive: true },
         orderBy: { createdAt: 'asc' },
         select: { nodes: true, edges: true },
+      }),
+      // Nombres para voz de las fuentes [C65]: con ellos se expanden los avisos con {label}.
+      this.prisma.contextSource.findMany({
+        where: { voiceName: { not: null }, isActive: true, tenant: { deletedAt: null } },
+        select: { voiceName: true },
       }),
     ]);
     const settings = this.mapFor('voicebot', values);
@@ -106,6 +126,11 @@ export class IntegrationsConfigService {
           ...collectVoiceLiterals(voiceFlows),
           // Fallback del flujo sin paso siguiente [C64].
           ...(await Promise.all([...VOICE_LITERAL_SOURCE_KEYS].map((key) => this.resolveKey(key, values)))).filter(Boolean),
+          // Avisos durante esperas largas [C65], con {label} ya expandido.
+          ...expandWaitTexts(
+            await Promise.all(WAIT_TEXT_LISTS.map(({ key }) => this.resolveKey(key, values))),
+            voiceNames.map((s) => s.voiceName?.trim() ?? '').filter(Boolean),
+          ),
         ]),
       ],
     };

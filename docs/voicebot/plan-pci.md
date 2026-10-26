@@ -20,7 +20,7 @@ y de los flujos de voz. **Ejecuta los flujos de voz** (D1): el voicebot solo los
 Al empezar, sumar una sección *Voicebot* a `docs/plan-de-trabajo.md` que apunte a este plan, con el
 mismo formato de hitos (✅ / 🔄 / ⏳ y fecha del pedido: 2026-10-23).
 
-Estado (2026-10-25): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · ✅ H5 (cerrado 2026-10-26). Contrato vigente: **1.25**. Rama: `feat/integracion-voicebot`.
+Estado (2026-10-26): ✅ H0 · ✅ H1 · ✅ H2 · ✅ H3 · ✅ H4 · ✅ H5 (cerrado 2026-10-26) · 🔄 C65 (código de pci listo, falta la prueba en vivo). Contrato vigente: **1.26**. Rama: `feat/integracion-voicebot`.
 
 ## H0 — Contrato ✅
 
@@ -789,6 +789,39 @@ decisiones. Preguntas de forma abiertas con voicebot-73 (ver "Necesito de otros"
   - salientes en `VoiceTurnsService`: 0,5 día;
   - health y provision en `/settings`: 0,5 día;
   - tests e2e con broker real (el test hace de voicebot, como BE-VOZ): 0,5 día.
+
+## C65 — Avisos durante esperas largas 🔄 (contrato 1.26, pedido 2026-10-26)
+
+Decisión del usuario (2026-10-26): mientras se espera algo largo, el bot va diciendo avisos
+variados ("sigo acá, estoy buscando"). Propuesta conjunta con voicebot-3e, aprobada con (c) avisos
+también en la espera del LLM de voz (lado voicebot), (d) los textos los propone el LLM de pci y el
+admin los revisa, y (e) `VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS` 12000, limitado a 7000 sin
+`progress: true`.
+
+Hecho en pci:
+- [x] **Aviso de progreso** (§5.3): con `progress: true` en el `voice.turn`, pci manda al `replyTo`
+  (mismo `correlationId`, pattern `voice.turn.reply`, `data.kind: "progress"`) un aviso al entrar a
+  cada paso lento: `source` (con `label` = `voiceName` y `expectedMs` = la espera de la fuente),
+  `webhook` (10000), `identify` y `ticket` (15000, InvGate), `delay` (lo del nodo). El emisor
+  (`VoiceProgressFn`) se enhebra por parámetro desde `VoiceTurnsService` hasta `executeNode`. Un
+  replay de un `turnId` ya procesado no los reemite.
+  - Hoy por voz no salen `delay` ni el `ticket` de `ticket_query`: esos nodos están en
+    `VOICE_UNSUPPORTED_NODES`. `ticket` sale de `ticket_create` (con la persona identificada).
+- [x] **`ContextSource.voiceName`** (migración `20261026120000_context_source_voice_name`, aplicada
+  por el usuario el 2026-10-26): campo "Nombre para voz" en `/dashboard/context-sources`. Cambiarlo
+  sube la versión y manda `config.changed` `["flujos-voz"]`.
+- [x] **Claves** (grupo Conversación, del voicebot): `VOICEBOT_WAIT_TEXTS`, `_SOURCE`, `_TICKET`,
+  `_IDENTIFY`, `_WEBHOOK`, `_DELAY` (un texto por línea, hasta 10 de 200 caracteres; `{label}` solo
+  en `_SOURCE`, validado en `settingLines`/`lines` del catálogo), `VOICEBOT_WAIT_INTERVAL_MS` (4500),
+  `VOICEBOT_WAIT_MAX` (3), `VOICEBOT_TURN_TIMEOUT_MAX_MS` (20000).
+- [x] **Expansión de `{label}`**: `voiceLiterals` suma cada texto de las listas y los de `{label}`
+  una vez por `voiceName` de fuente activa (`expandWaitTexts`).
+- [x] **"Proponer variantes"** en `/settings`: `POST /settings/:key/propose-variants` (el LLM de pci
+  vía `LlmService`, `settings:update`) devuelve textos **sin guardar**; la UI los suma al borrador
+  con un aviso de "sin guardar" y el admin los revisa y guarda.
+- [x] Tests: `test/wait-texts.e2e-spec.ts` BE-WAIT-01..05; `test/voice.e2e-spec.ts` BE-VOZ-38..40.
+- [ ] Prueba en vivo con el voicebot (la coordina el coordinador).
+- [ ] Playwright del campo "Nombre para voz" y del botón "Proponer variantes".
 
 ## Necesito de otros
 

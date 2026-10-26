@@ -3,6 +3,8 @@ import { AppConfigService } from '../../config/app-config.service';
 
 const API_PREFIX = '/api/v1';
 const TIMEOUT_MS = 15_000;
+/** Lo que puede tardar una llamada a InvGate: lo anuncia el `progress` de voz [C65]. */
+export const INVGATE_TIMEOUT_MS = TIMEOUT_MS;
 /** Adjuntar una imagen tarda más que un POST de JSON/form chico — mismo endpoint, timeout aparte. */
 const UPLOAD_TIMEOUT_MS = 30_000;
 const MAX_ERROR_LEN = 500;

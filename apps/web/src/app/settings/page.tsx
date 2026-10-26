@@ -17,6 +17,8 @@ interface Setting {
   min?: number;
   max?: number;
   multiline?: boolean;
+  /** Lista de textos, uno por línea (avisos de espera, C65): habilita "Proponer variantes". */
+  lines?: { max: number; maxLength: number; label?: boolean };
   secret?: boolean;
   provider?: string;
   placeholder?: string;
@@ -268,6 +270,9 @@ export default function SettingsPage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [models, setModels] = useState<Record<string, ModelList>>({});
   const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
+  // "Proponer variantes" [C65]: qué clave está pidiendo y cuáles tienen propuestas sin guardar.
+  const [proposingKey, setProposingKey] = useState<string | null>(null);
+  const [proposed, setProposed] = useState<Record<string, boolean>>({});
   const [catRefresh, setCatRefresh] = useState<{
     loading: boolean;
     result?: InvgateCategoryRefresh;
@@ -380,6 +385,29 @@ export default function SettingsPage() {
   function applyUpdatedSetting(updated: Setting) {
     setSettings((prev) => prev.map((x) => (x.key === updated.key ? updated : x)));
     setDrafts((prev) => ({ ...prev, [updated.key]: updated.secret ? '' : updated.value }));
+  }
+
+  /**
+   * El LLM de pci propone avisos nuevos y se suman al borrador de la lista. No se guarda nada:
+   * el admin los revisa (edita o borra los que no sirven) y recién quedan al guardar [C65].
+   */
+  async function proposeVariants(s: Setting) {
+    setProposingKey(s.key);
+    setNotice('');
+    try {
+      const current = drafts[s.key] ?? '';
+      const { lines } = (await apiFetch(`/settings/${s.key}/propose-variants`, {
+        method: 'POST',
+        body: JSON.stringify({ current }),
+      })) as { lines: string[] };
+      setDrafts((prev) => ({ ...prev, [s.key]: [current.trim(), ...lines].filter(Boolean).join('\n') }));
+      setProposed((prev) => ({ ...prev, [s.key]: true }));
+      setError('');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setProposingKey(null);
+    }
   }
 
   async function save(s: Setting) {
@@ -960,7 +988,7 @@ export default function SettingsPage() {
                           <textarea
                             id={s.key}
                             value={draft}
-                            rows={3}
+                            rows={s.lines ? 6 : 3}
                             placeholder={s.fallbackText}
                             disabled={!canUpdate || busy}
                             onChange={(e) => setDrafts({ ...drafts, [s.key]: e.target.value })}
@@ -975,6 +1003,16 @@ export default function SettingsPage() {
                               <p className="font-medium text-gray-700 mb-1">Vacío: se usa este por defecto</p>
                               <p className="whitespace-pre-wrap">{s.fallbackText}</p>
                             </div>
+                          )}
+                          {s.lines && (
+                            <WaitTextsTools
+                              setting={s}
+                              draft={draft}
+                              proposing={proposingKey === s.key}
+                              pendingReview={!!proposed[s.key] && draft !== s.value}
+                              disabled={!canUpdate || busy || proposingKey !== null}
+                              onPropose={() => proposeVariants(s)}
+                            />
                           )}
                         </div>
                       ) : isModelKey(s, settings) && modelList?.models.length && !customModel[s.key] ? (
@@ -1163,6 +1201,60 @@ export default function SettingsPage() {
               })}
           </div>
         </section>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Debajo de una lista de avisos de espera [C65]: cuántos textos hay contra el tope, el botón
+ * "Proponer variantes" y el aviso de que lo propuesto todavía no está guardado.
+ */
+function WaitTextsTools({
+  setting,
+  draft,
+  proposing,
+  pendingReview,
+  disabled,
+  onPropose,
+}: {
+  setting: Setting;
+  draft: string;
+  proposing: boolean;
+  pendingReview: boolean;
+  disabled: boolean;
+  onPropose: () => void;
+}) {
+  const rule = setting.lines!;
+  const lines = draft.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const tooMany = lines.length > rule.max;
+  const tooLong = lines.filter((l) => l.length > rule.maxLength).length;
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onPropose}
+          disabled={disabled}
+          className="text-xs px-3 py-1 rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+        >
+          {proposing ? 'Proponiendo…' : 'Proponer variantes'}
+        </button>
+        <span className={`text-xs ${tooMany ? 'text-red-600' : 'text-gray-500'}`}>
+          {lines.length}/{rule.max} textos
+        </span>
+        {tooLong > 0 && (
+          <span className="text-xs text-red-600">
+            {tooLong} con más de {rule.maxLength} caracteres
+          </span>
+        )}
+        {rule.label && <span className="text-xs text-gray-500">{'{label}'} = nombre para voz de la fuente</span>}
+      </div>
+      {pendingReview && (
+        <p role="status" className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          Hay variantes propuestas sin guardar. Revisalas, editá o borrá las que no sirvan
+          {tooMany ? ` (quedan como máximo ${rule.max})` : ''} y guardá.
+        </p>
       )}
     </div>
   );

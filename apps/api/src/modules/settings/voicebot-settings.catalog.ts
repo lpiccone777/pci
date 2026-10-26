@@ -63,6 +63,73 @@ export const VOICEBOT_SECTION_IDS: Record<VoicebotSettingGroup, string> = {
 
 const ENABLED_BY = 'VOICEBOT_ENABLED';
 
+/** Espera de la fuente de verdad cuando el voicebot no pide avisos de progreso [C65]. */
+export const DELEGATE_CONTEXT_TIMEOUT_NO_PROGRESS_MS = 7000;
+
+/** Avisos durante esperas largas [C65]: una lista de textos por motivo. */
+export const WAIT_TEXTS_MAX_LINES = 10;
+export const WAIT_TEXTS_MAX_LENGTH = 200;
+export const WAIT_TEXTS_SOURCE_KEY = 'VOICEBOT_WAIT_TEXTS_SOURCE';
+export const WAIT_TEXT_LISTS: ReadonlyArray<{
+  key: string;
+  /** Motivo del `progress` (contrato §5.3); `null` = los genéricos. */
+  reason: 'source' | 'ticket' | 'identify' | 'webhook' | 'delay' | null;
+  label: string;
+  description: string;
+  defaultValue: string;
+}> = [
+  {
+    key: 'VOICEBOT_WAIT_TEXTS',
+    reason: null,
+    label: 'Avisos de espera genéricos',
+    description:
+      'Cuando pci no dijo por qué tarda, o mientras el LLM de voz arma la respuesta. Vacío = el texto de relleno.',
+    defaultValue: ['Un momento…', 'Sigo acá, ya te respondo.', 'Dame un segundo.', 'Ya casi lo tengo.'].join('\n'),
+  },
+  {
+    key: WAIT_TEXTS_SOURCE_KEY,
+    reason: 'source',
+    label: 'Avisos de espera: consulta a una fuente',
+    description:
+      'Mientras pci consulta la fuente de verdad. {label} es el nombre para voz de la fuente: los textos con ' +
+      '{label} solo se usan si la fuente lo tiene cargado.',
+    defaultValue: [
+      'Estoy consultando {label}, un momento.',
+      'Sigo buscando en {label}.',
+      'Estoy buscando la información, ya te digo.',
+      'Sigo acá, estoy buscando.',
+    ].join('\n'),
+  },
+  {
+    key: 'VOICEBOT_WAIT_TEXTS_TICKET',
+    reason: 'ticket',
+    label: 'Avisos de espera: tickets',
+    description: 'Mientras pci crea o consulta un ticket en InvGate.',
+    defaultValue: ['Estoy cargando el pedido, un momento.', 'Sigo acá, estoy revisando los tickets.', 'Ya casi está.'].join('\n'),
+  },
+  {
+    key: 'VOICEBOT_WAIT_TEXTS_IDENTIFY',
+    reason: 'identify',
+    label: 'Avisos de espera: identificación',
+    description: 'Mientras pci busca a la persona en InvGate por su documento o legajo.',
+    defaultValue: ['Estoy buscando tus datos, un momento.', 'Sigo acá, estoy verificando.', 'Ya casi te encuentro.'].join('\n'),
+  },
+  {
+    key: 'VOICEBOT_WAIT_TEXTS_WEBHOOK',
+    reason: 'webhook',
+    label: 'Avisos de espera: webhook',
+    description: 'Mientras pci llama a un servicio externo desde un nodo webhook.',
+    defaultValue: ['Un momento, estoy procesando.', 'Sigo acá, ya termino.'].join('\n'),
+  },
+  {
+    key: 'VOICEBOT_WAIT_TEXTS_DELAY',
+    reason: 'delay',
+    label: 'Avisos de espera: pausa del flujo',
+    description: 'Durante un nodo de espera del flujo.',
+    defaultValue: ['Un momento, por favor.', 'Sigo acá.'].join('\n'),
+  },
+];
+
 /**
  * Proveedores del LLM de voz [DA10, C53]: los de pci con streaming. `opencodego` no entra:
  * trabaja por sesiones, sin streaming.
@@ -701,14 +768,16 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     type: 'number',
     group: 'Mensajería: Voicebot (LLM de voz)',
     label: 'Espera de la fuente de verdad (ms)',
-    defaultValue: '7000',
+    defaultValue: '12000',
     min: 100,
-    max: 10000,
+    max: 18000,
     integer: true,
     description:
       'Si la fuente no responde en este tiempo, la charla sigue sin contexto: el turno no espera más. Con una ' +
       'fuente MCP incluye las vueltas del LLM eligiendo tools (p. ej. geocoding y después el pronóstico). ' +
-      'Tiene que quedar por debajo del timeout de respuesta de pci.',
+      'Mientras tanto el bot va diciendo avisos de espera (C65). Con un voicebot que no pide avisos se ' +
+      `limita a ${DELEGATE_CONTEXT_TIMEOUT_NO_PROGRESS_MS} ms, por debajo de su timeout de respuesta. Tiene que ` +
+      'quedar por debajo del tope del timeout de respuesta con avisos.',
   }),
 
   // Sin `envNames`: no es config del voicebot, viaja dentro de cada `say delegate` [C50].
@@ -823,6 +892,20 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
       'Hay mucho ruido en la línea y así no puedo seguir la conversación. ¿Podés ir a un lugar más silencioso?',
     description: 'Lo dice el voicebot (literal) cuando el ruido de la línea no le deja seguir la conversación.',
   }),
+  // Tope del timeout estirado por los `progress` de pci [C65].
+  voicebot('VOICEBOT_TURN_TIMEOUT_MAX_MS', {
+    key: 'VOICEBOT_TURN_TIMEOUT_MAX_MS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Tope del timeout de respuesta con avisos de pci (ms)',
+    defaultValue: '20000',
+    min: 1000,
+    max: 60000,
+    integer: true,
+    description:
+      'Cuando pci avisa que está en un paso lento (fuente, InvGate, webhook, espera), el voicebot estira su ' +
+      'timeout hasta lo que dura ese paso, pero nunca más allá de esto, contado desde que mandó el turno.',
+  }),
   voicebot('VOICEBOT_FILLER_TEXT', {
     key: 'VOICEBOT_FILLER_TEXT',
     type: 'string',
@@ -831,6 +914,46 @@ export const VOICEBOT_SETTINGS: SettingDefinition[] = [
     defaultValue: 'Un momento…',
     description: 'Vacío vuelve al texto por defecto. Para no decir relleno, poné 0 en "Relleno a los (ms)".',
   }),
+
+  // --- Avisos durante esperas largas [C65] --- (en caliente; pregrabados por voiceLiterals)
+  voicebot('VOICEBOT_WAIT_INTERVAL_MS', {
+    key: 'VOICEBOT_WAIT_INTERVAL_MS',
+    type: 'number',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Avisos de espera: cada (ms)',
+    defaultValue: '4500',
+    min: 1000,
+    max: 60000,
+    integer: true,
+    description:
+      'El primero sale a "Relleno a los (ms)"; los siguientes, cada este tiempo desde que terminó de sonar el anterior.',
+  }),
+  voicebot('VOICEBOT_WAIT_MAX', {
+    key: 'VOICEBOT_WAIT_MAX',
+    type: 'number',
+    group: 'Mensajería: Voicebot (Conversación)',
+    label: 'Avisos de espera: máximo por turno',
+    defaultValue: '3',
+    min: 0,
+    max: 10,
+    integer: true,
+    description: 'Cuántos avisos puede decir el bot mientras espera una misma respuesta.',
+  }),
+  ...WAIT_TEXT_LISTS.map(({ key, label, description, defaultValue }) =>
+    voicebot(key, {
+      key,
+      type: 'string',
+      group: 'Mensajería: Voicebot (Conversación)',
+      label,
+      defaultValue,
+      multiline: true,
+      lines: { max: WAIT_TEXTS_MAX_LINES, maxLength: WAIT_TEXTS_MAX_LENGTH, label: key === WAIT_TEXTS_SOURCE_KEY },
+      description:
+        `${description} Uno por línea, hasta ${WAIT_TEXTS_MAX_LINES} de ${WAIT_TEXTS_MAX_LENGTH} caracteres. Se ` +
+        'eligen al azar sin repetir uno en la llamada mientras queden otros. "Proponer variantes" le pide al LLM ' +
+        'textos nuevos: revisalos antes de guardar.',
+    }),
+  ),
 
   // --- Capacidad [C46] --- (caliente: aplica a las llamadas que entran después)
   voicebot('VOICEBOT_MAX_CALLS', {

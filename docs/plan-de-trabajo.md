@@ -1472,7 +1472,7 @@ Integración con el voicebot (llamadas por voz) y el stt. pci es la fuente de ve
 configuración, de los internos y de los flujos de voz, y **ejecuta** los flujos de voz: el
 voicebot solo los verbaliza. El detalle por hito, con sus tareas, está en
 [`docs/voicebot/plan-pci.md`](voicebot/plan-pci.md). La interfaz entre los tres repos es el
-**contrato de integración** (vigente: 1.25, 2026-10-25) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
+**contrato de integración** (vigente: 1.26, 2026-10-26) (repo voicebot, `docs/integracion-pci/contrato.md`), que no se
 edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
 
 - ✅ **H0 — Contrato** (2026-10-23): revisión desde pci (C1–C8, C27–C30), contrato congelado en 1.0.
@@ -1510,6 +1510,9 @@ edita desde acá. Todo el trabajo va en la rama `feat/integracion-voicebot`.
   `/dashboard/voice-calls` + API, rotación y reintentos, permiso `voice_outbound`, prefijos
   permitidos) y "Probar conexión" / "Re-provisionar SIP" en `/settings`. Probado en vivo
   (saliente con flujo, sink HTTP con dos llamadas a la vez, C64). Ver `docs/voicebot/plan-pci.md`.
+- 🔄 **C65 — Avisos durante esperas largas** (contrato 1.26, 2026-10-26): `progress` de pci por
+  paso lento, `voiceName` en las fuentes, listas `VOICEBOT_WAIT_TEXTS*` con "Proponer variantes" y
+  `{label}` expandido en `voiceLiterals`. Código de pci listo; falta la prueba en vivo.
 
 ---
 

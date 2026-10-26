@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { WaitTextsService } from './wait-texts.service';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { SystemTenantGuard } from '../../common/guards/system-tenant.guard';
@@ -16,7 +17,7 @@ import { IntegrationsModule } from '../integrations/integrations.module';
 @Module({
   imports: [LlmModule, InvgateModule, IntegrationsModule],
   controllers: [SettingsController],
-  providers: [SettingsService, SystemTenantGuard],
+  providers: [SettingsService, WaitTextsService, SystemTenantGuard],
   exports: [SettingsService],
 })
 export class SettingsModule {}

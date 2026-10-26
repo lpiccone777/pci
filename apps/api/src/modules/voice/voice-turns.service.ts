@@ -22,7 +22,7 @@ import { VoiceOutboundService } from './voice-outbound.service';
 import { CallOutboundResult, OUTBOUND_CALL_ID_PREFIX } from './voice-outbound.types';
 import { isShortNegative } from './voice-menu.util';
 import { AppConfigService } from '../../config/app-config.service';
-import type { VoiceAction } from '../conversations/conversations.service';
+import type { VoiceAction, VoiceProgress, VoiceProgressFn } from '../conversations/conversations.service';
 
 /** Vencimiento del lease del turno: si el proceso que lo tomó se cae, otro lo retoma. */
 const TURN_LEASE_MS = 15_000;
@@ -84,7 +84,7 @@ export class VoiceTurnsService implements OnModuleInit {
     let reply: VoiceTurnReply;
     try {
       this.assertValidTurn(req);
-      reply = await this.serialize(req.callId, () => this.processTurn(req, startedAt));
+      reply = await this.serialize(req.callId, () => this.processTurn(req, startedAt, this.progressEmitter(msg, req)));
     } catch (err) {
       const code = err instanceof VoiceTurnError ? err.code : 'internal';
       const level = err instanceof VoiceTurnError ? 'warn' : 'error';
@@ -115,6 +115,32 @@ export class VoiceTurnsService implements OnModuleInit {
     );
   }
 
+  /**
+   * Avisos de progreso [C65]: solo si el voicebot los pidió (`progress: true`) y hay a dónde
+   * mandarlos. Van al mismo `replyTo` y `correlationId` que la respuesta, antes que ella (mismo
+   * canal, en orden). Que falle uno no frena el turno.
+   */
+  private progressEmitter(msg: BrokerMessage, req: VoiceTurnRequest): VoiceProgressFn | undefined {
+    if (req.progress !== true || !msg.replyTo || typeof req.turnId !== 'string') return undefined;
+    const replyTo = msg.replyTo;
+    return (progress: VoiceProgress) => {
+      this.broker
+        .publish(
+          replyTo,
+          {
+            pattern: VOICE_TURN_REPLY_PATTERN,
+            data: { v: 1, kind: 'progress', turnId: req.turnId, ...progress },
+            correlationId: msg.correlationId,
+            timestamp: new Date().toISOString(),
+          },
+          { assert: false },
+        )
+        .catch((err) =>
+          this.logger.warn(`[voz] progress ${progress.reason} del turno ${req.turnId} no salió: ${err instanceof Error ? err.message : err}`),
+        );
+    };
+  }
+
   private assertValidTurn(req: VoiceTurnRequest) {
     const ok =
       typeof req.callId === 'string' &&
@@ -132,7 +158,7 @@ export class VoiceTurnsService implements OnModuleInit {
     }
   }
 
-  private async processTurn(req: VoiceTurnRequest, startedAt: number): Promise<VoiceTurnReply> {
+  private async processTurn(req: VoiceTurnRequest, startedAt: number, progress?: VoiceProgressFn): Promise<VoiceTurnReply> {
     const call = await this.ensureCall(req.callId, req.call);
     return this.withLease(call.id, async () => {
       // Idempotencia [C27]: mismo turnId → misma respuesta, sin volver a correr el flujo.
@@ -242,7 +268,7 @@ export class VoiceTurnsService implements OnModuleInit {
         call.direction === 'outbound' ? call.calledNumber : call.callerNumber,
         startFlow ?? undefined,
         dtmf,
-        { skipGreeting: !!resumeFlow },
+        { skipGreeting: !!resumeFlow, progress },
       );
       let flowOutput: { actions: VoiceAction[]; committed: boolean; ended: boolean } = output ?? {
         actions: [{ type: 'say' as const, mode: 'delegate' as const, systemPrompt: await this.conversations.voiceFreeChatPrompt(call.tenantId) }],
