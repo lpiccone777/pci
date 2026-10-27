@@ -823,8 +823,10 @@ Hecho en pci:
 - [x] **Ajuste tras la prueba en vivo** (usuario, 2026-10-26; un "gracias" sonó "Sigo acá, estoy
   buscando" y pagó 3,5 s del LLM de tools): con una fuente MCP con tools, el `progress` `source` sale
   recién cuando el LLM pide la primera tool, con el `expectedMs` que queda; sin tools pedidas no hay
-  aviso. Un turno que es solo cortesía o cierre (`isVoiceCourtesy`: los de C64 más variantes con
-  "gracias", nunca un afirmativo suelto) va al `delegate` sin consultar la fuente.
+  aviso. Un turno que es solo cortesía o cierre va al `delegate` sin consultar la fuente
+  (`isVoiceCourtesy`, regla de vocabulario aprobada el 2026-10-27 tras "Perfecto, muchas gracias."
+  en vivo: los cierres de C64, o hasta 6 palabras todas de cortesía con al menos un ancla —gracias,
+  chau, adiós, nada o "eso es todo"—; un afirmativo suelto no entra).
 - [ ] Prueba en vivo con el voicebot (la coordina el coordinador).
 - [ ] Playwright del campo "Nombre para voz" y del botón "Proponer variantes".
 

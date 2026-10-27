@@ -914,7 +914,7 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
 
         // Un cierre no consulta la fuente ni avisa (C65).
         spy.mockClear();
-        const thanks = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: '¡Muchas gracias!', call: callInfo(ext) });
+        const thanks = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'Perfecto, muchas gracias.', call: callInfo(ext) });
         expect(thanks.reply.actions[0]).toEqual({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
         expect(thanks.progress).toEqual([]);
         expect(spy).not.toHaveBeenCalled();

@@ -40,7 +40,11 @@ describe('voice-menu.util', () => {
   });
 
   it('cortesía o cierre (C65): cierres y variantes con gracias, nunca un afirmativo suelto', () => {
-    for (const t of ['¡Muchas gracias!', 'ok, gracias', 'Perfecto, gracias.', 'chau', 'no', 'eso es todo']) expect(isVoiceCourtesy(t)).toBe(true);
-    for (const t of ['ok', 'dale', 'sí', 'listo', 'perfecto', 'gracias, ¿y para mañana?', '']) expect(isVoiceCourtesy(t)).toBe(false);
+    for (const t of ['¡Muchas gracias!', 'ok, gracias', 'Perfecto, gracias.', 'Perfecto, muchas gracias.', 'Bueno, mil gracias', 'dale, chau', 'Ok, nada más, gracias', 'bárbaro, eso es todo', 'adiós', 'chau', 'no', 'eso es todo']) {
+      expect(isVoiceCourtesy(t)).toBe(true);
+    }
+    for (const t of ['ok', 'dale', 'sí', 'listo', 'perfecto', 'bueno, dale', 'es todo', 'gracias, ¿y para mañana?', 'gracias, ¿y en Luján?', 'Nos entendió el saludo final.', 'muchas gracias muchas gracias muchas gracias genio', '']) {
+      expect(isVoiceCourtesy(t)).toBe(false);
+    }
   });
 });

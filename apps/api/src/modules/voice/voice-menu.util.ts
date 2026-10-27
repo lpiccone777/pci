@@ -65,27 +65,32 @@ export function isShortNegative(spoken: string): boolean {
   return SHORT_NEGATIVES.has(allWords(spoken).join(' '));
 }
 
-/**
- * Cortesías de cierre con "gracias" (C65). Sin afirmativos sueltos ("ok", "dale", "sí", "listo",
- * "perfecto"): pueden ser el sí a "¿querés que te busque…?", y ahí sí hace falta la fuente.
- */
-const COURTESIES = new Set([
-  'muchas gracias',
-  'muchisimas gracias',
-  'ok gracias',
-  'dale gracias',
-  'perfecto gracias',
-  'genial gracias',
-  'buenisimo gracias',
-  'joya gracias',
-  'listo muchas gracias',
-  'gracias genio',
+/** Tope de palabras de una cortesía de cierre (C65). */
+const COURTESY_MAX_WORDS = 6;
+/** Palabras que puede tener una cortesía de cierre (sin tildes): ninguna aporta contenido. */
+const COURTESY_WORDS = new Set([
+  'gracias', 'muchas', 'muchisimas', 'mil', 'perfecto', 'genial', 'buenisimo', 'barbaro', 'joya',
+  'ok', 'dale', 'listo', 'bueno', 'chau', 'adios', 'nada', 'mas', 'eso', 'es', 'todo', 'no',
+  'genio', 'de', 'diez',
 ]);
+/**
+ * Lo que la vuelve un cierre. Sin ancla, "ok", "dale", "listo" o "perfecto" sueltos pueden ser el sí
+ * a "¿querés que te busque…?", y ahí sí hace falta la fuente.
+ */
+const COURTESY_ANCHORS = new Set(['gracias', 'chau', 'adios', 'nada']);
 
-/** Un cierre o una cortesía (el turno entero): la charla no necesita consultar la fuente (C65). */
+/**
+ * Un cierre o una cortesía (el turno entero): la charla no necesita consultar la fuente (C65).
+ * Los cierres de C64, o hasta `COURTESY_MAX_WORDS` palabras, todas de cortesía, con al menos un
+ * ancla ("gracias", "chau", "adiós", "nada" o "eso es todo").
+ */
 export function isVoiceCourtesy(spoken: string): boolean {
-  const said = allWords(spoken).join(' ');
-  return SHORT_NEGATIVES.has(said) || COURTESIES.has(said);
+  const words = allWords(spoken);
+  const said = words.join(' ');
+  if (SHORT_NEGATIVES.has(said)) return true;
+  if (!words.length || words.length > COURTESY_MAX_WORDS) return false;
+  if (!words.every((w) => COURTESY_WORDS.has(w))) return false;
+  return words.some((w) => COURTESY_ANCHORS.has(w)) || ` ${said} `.includes(' eso es todo ');
 }
 
 export function matchMenuOption(spoken: string, labels: string[]): number | null {
