@@ -888,8 +888,11 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
         const { reply, progress } = await turnWithProgress(data);
         expect(reply.actions[0]).toMatchObject({ mode: 'delegate', context: expect.stringContaining('dato') });
         expect(progress).toEqual([
-          { v: 1, kind: 'progress', turnId, reason: 'source', label: 'la base de conocimiento', expectedMs: 12000 },
+          { v: 1, kind: 'progress', turnId, reason: 'source', label: 'la base de conocimiento', expectedMs: expect.any(Number) },
         ]);
+        // Lo que queda de la espera (12000 por default), no más.
+        expect(progress[0].expectedMs).toBeLessThanOrEqual(12000);
+        expect(progress[0].expectedMs).toBeGreaterThan(11000);
 
         // Mismo turnId [C27]: la misma respuesta, sin volver a avisar.
         const again = await turnWithProgress(data);
@@ -906,7 +909,15 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
 
         await setSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', '9000');
         const custom = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'más', call: callInfo(ext) });
-        expect(custom.progress[0].expectedMs).toBe(9000);
+        expect(custom.progress[0].expectedMs).toBeLessThanOrEqual(9000);
+        expect(custom.progress[0].expectedMs).toBeGreaterThan(8000);
+
+        // Un cierre no consulta la fuente ni avisa (C65).
+        spy.mockClear();
+        const thanks = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: '¡Muchas gracias!', call: callInfo(ext) });
+        expect(thanks.reply.actions[0]).toEqual({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
+        expect(thanks.progress).toEqual([]);
+        expect(spy).not.toHaveBeenCalled();
       } finally {
         spy.mockRestore();
         await deleteSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS');
@@ -991,6 +1002,25 @@ describe('Canal de voz: voice.events y voice.turn (BE-VOZ-*)', () => {
         expect(script.steps).toHaveLength(3);
         expect(script.steps[0].messages.map((m) => m.content)).toContain('¿qué tiempo hace mañana en Merlo?');
         expect(script.steps[0].messages[0].content).toContain('Otro asistente le va a contestar');
+
+        // C65: con progress, el aviso de fuente sale recién con la primera tool, una sola vez.
+        const withTools = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: '¿y en Luján?', call: callInfo(ext) });
+        expect(withTools.reply.actions[0].context).toContain('### geocoding');
+        expect(withTools.progress.map((p) => p.reason)).toEqual(['source']);
+        expect(withTools.progress[0].expectedMs).toBeLessThan(12000);
+
+        // Si el LLM no pide ninguna tool no hubo consulta: no avisa.
+        llm.setToolProvider({ generateWithTools: async () => ({ text: 'nada que buscar', toolCalls: [] }) });
+        const noTools = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'te cuento que hoy llovió', call: callInfo(ext) });
+        expect(noTools.progress).toEqual([]);
+        expect(noTools.reply.actions[0]).toEqual({ type: 'say', mode: 'delegate', systemPrompt: 'Soporte.' });
+
+        // Un "gracias" no pasa por el LLM de tools.
+        const chatsBefore = llm.toolChats.length;
+        const thanks = await turnWithProgress({ callId, turnId: uid(), kind: 'user', text: 'gracias', call: callInfo(ext) });
+        expect(thanks.progress).toEqual([]);
+        expect(llm.toolChats.length).toBe(chatsBefore);
+        llm.setToolProvider(script.provider);
 
         await setSetting(t.prisma, 'VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', '150');
         llm.setToolProvider({

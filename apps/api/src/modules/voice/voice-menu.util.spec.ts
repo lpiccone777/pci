@@ -1,4 +1,4 @@
-import { isShortNegative, matchMenuOption } from './voice-menu.util';
+import { isShortNegative, isVoiceCourtesy, matchMenuOption } from './voice-menu.util';
 
 describe('voice-menu.util', () => {
   const labels = ['Soporte técnico', 'Ventas', 'Hablar con una persona'];
@@ -37,5 +37,10 @@ describe('voice-menu.util', () => {
   it('negativa corta después del "¿Algo más…?" [C64]', () => {
     for (const t of ['No', 'no, gracias.', 'Nada', 'Eso es todo', '¡Gracias!', 'Chau', 'nada más']) expect(isShortNegative(t)).toBe(true);
     for (const t of ['no anda la impresora', 'quiero hacer un reclamo', 'sí', '']) expect(isShortNegative(t)).toBe(false);
+  });
+
+  it('cortesía o cierre (C65): cierres y variantes con gracias, nunca un afirmativo suelto', () => {
+    for (const t of ['¡Muchas gracias!', 'ok, gracias', 'Perfecto, gracias.', 'chau', 'no', 'eso es todo']) expect(isVoiceCourtesy(t)).toBe(true);
+    for (const t of ['ok', 'dale', 'sí', 'listo', 'perfecto', 'gracias, ¿y para mañana?', '']) expect(isVoiceCourtesy(t)).toBe(false);
   });
 });

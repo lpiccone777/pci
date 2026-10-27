@@ -23,7 +23,7 @@ import {
 } from '../settings/voicebot-settings.catalog';
 import { FlowChannel, VOICE_UNSUPPORTED_NODES } from '../flow/flow-channel';
 import { nameMatches, normalizeDocument } from '../voice/voice-identify.util';
-import { matchMenuOption } from '../voice/voice-menu.util';
+import { isVoiceCourtesy, matchMenuOption } from '../voice/voice-menu.util';
 import {
   DELEGATED_PLACEHOLDER,
   VOICE_TEXTS,
@@ -3508,6 +3508,11 @@ export class ConversationsService implements OnModuleInit {
     progress?: VoiceProgressFn,
   ): Promise<{ systemPrompt: string; context?: string }> {
     if (!contextSourceId || !body.trim()) return { systemPrompt };
+    // Un "gracias" o un "chau" no necesitan la fuente: sin LLM de tools ni aviso de espera (C65).
+    if (isVoiceCourtesy(body)) {
+      this.logger.log(`[${tenantId}] delegate por voz sin consultar la fuente: "${body}" es cortesía o cierre.`);
+      return { systemPrompt };
+    }
     const [maxChars, configuredTimeoutMs, source] = await Promise.all([
       this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_MAX_CHARS', 16000),
       this.appConfig.getNumber('VOICEBOT_DELEGATE_CONTEXT_TIMEOUT_MS', 12000),
@@ -3516,11 +3521,19 @@ export class ConversationsService implements OnModuleInit {
     // Un voicebot que no pide avisos [C65] no estira su timeout: la fuente no puede pasarse de él.
     const timeoutMs = progress ? configuredTimeoutMs : Math.min(configuredTimeoutMs, DELEGATE_CONTEXT_TIMEOUT_NO_PROGRESS_MS);
     const voiceName = source?.voiceName?.trim();
-    progress?.({ reason: 'source', ...(voiceName ? { label: voiceName } : {}), expectedMs: timeoutMs });
     const started = Date.now();
+    // Avisa "consultando la fuente" con lo que queda de la espera, no con la espera entera.
+    const announce = () =>
+      progress?.({
+        reason: 'source',
+        ...(voiceName ? { label: voiceName } : {}),
+        expectedMs: Math.max(0, started + timeoutMs - Date.now()),
+      });
     const toolset = await this.sourceToolset(tenantId, contextSourceId, true);
     if (toolset) {
-      const context = await this.voiceToolContext(toolset, systemPrompt, tenantId, body, conversation, started + timeoutMs);
+      // Con tools, la consulta es de verdad recién cuando el LLM pide la primera: si no pide
+      // ninguna, no hubo consulta y no se avisa (C65).
+      const context = await this.voiceToolContext(toolset, systemPrompt, tenantId, body, conversation, started + timeoutMs, announce);
       if (!context) return { systemPrompt };
       const capped = context.length > maxChars ? context.slice(0, maxChars) : context;
       if (capped.length < context.length) {
@@ -3532,6 +3545,7 @@ export class ConversationsService implements OnModuleInit {
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), timeoutMs);
     });
+    announce(); // sin tools la consulta es siempre de verdad
     const knowledge = await Promise.race([
       this.contextSourcesService.queryKnowledge(tenantId, contextSourceId, body).catch(() => null),
       timeout,
@@ -3583,6 +3597,7 @@ export class ConversationsService implements OnModuleInit {
     body: string,
     conversation: { id: string; sessionStartedAt?: Date | null; createdAt: Date } | undefined,
     deadline: number,
+    onFirstTool?: () => void,
   ): Promise<string> {
     const started = Date.now();
     const history = conversation
@@ -3604,6 +3619,10 @@ export class ConversationsService implements OnModuleInit {
 
     const done: LlmToolTrace[] = [];
     const execute = async (call: { id: string; name: string; arguments: Record<string, unknown> }) => {
+      if (!done.length && onFirstTool) {
+        onFirstTool();
+        onFirstTool = undefined;
+      }
       const callStarted = Date.now();
       const r = await toolset.execute(call, Math.max(500, deadline - Date.now()));
       done.push({ round: 0, name: call.name, arguments: call.arguments, ok: r.ok, content: r.content, ms: Date.now() - callStarted });

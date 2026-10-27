@@ -65,6 +65,29 @@ export function isShortNegative(spoken: string): boolean {
   return SHORT_NEGATIVES.has(allWords(spoken).join(' '));
 }
 
+/**
+ * Cortesías de cierre con "gracias" (C65). Sin afirmativos sueltos ("ok", "dale", "sí", "listo",
+ * "perfecto"): pueden ser el sí a "¿querés que te busque…?", y ahí sí hace falta la fuente.
+ */
+const COURTESIES = new Set([
+  'muchas gracias',
+  'muchisimas gracias',
+  'ok gracias',
+  'dale gracias',
+  'perfecto gracias',
+  'genial gracias',
+  'buenisimo gracias',
+  'joya gracias',
+  'listo muchas gracias',
+  'gracias genio',
+]);
+
+/** Un cierre o una cortesía (el turno entero): la charla no necesita consultar la fuente (C65). */
+export function isVoiceCourtesy(spoken: string): boolean {
+  const said = allWords(spoken).join(' ');
+  return SHORT_NEGATIVES.has(said) || COURTESIES.has(said);
+}
+
 export function matchMenuOption(spoken: string, labels: string[]): number | null {
   const said = nameTokens(spoken);
   if (!said.length && !/\d/.test(spoken)) return null;
