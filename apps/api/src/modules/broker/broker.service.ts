@@ -60,22 +60,80 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.shuttingDown = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     await this.disconnect();
   }
 
-  private async connect() {
-    const url = this.config.getOrThrow<string>('RABBITMQ_URL');
-    try {
-      this.connection = await amqp.connect(url);
-      this.channel = await this.connection.createChannel();
+  // Apagado ordenado: sin este flag, cerrar la conexión en `onModuleDestroy` dispara el
+  // handler de 'close' y agenda una reconexión sobre un proceso que se está yendo.
+  private shuttingDown = false;
+  // Única reconexión pendiente. Antes la agendaban tanto el `catch` de `connect()` como
+  // el handler de 'close', y una falla a mitad de camino (conectó pero falló al
+  // re-declarar colas) dejaba dos `connect()` en paralelo → conexiones duplicadas.
+  private reconnectTimer: NodeJS.Timeout | null = null;
 
-      this.connection.on('error', (err) => {
+  private scheduleReconnect() {
+    if (this.shuttingDown || this.reconnectTimer) return;
+    this.logger.warn('RabbitMQ: reintentando conexión en 5s...');
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, 5000);
+  }
+
+  /**
+   * Conexión caída (o canal muerto): se suelta todo para que `publish()`/`request()`
+   * respondan "no conectado" en vez de operar sobre un canal cerrado — que tira
+   * `IllegalOperationError: Channel closed` — durante los segundos hasta reconectar.
+   */
+  private handleConnectionLost(connection: amqp.ChannelModel) {
+    if (this.connection !== connection) return; // evento de una conexión vieja ya reemplazada
+    this.connection = null;
+    this.channel = null;
+    this.replyQueueName = null;
+    this.replyConsumerReady = null;
+    this.fixedReplyConsumers.clear();
+    this.scheduleReconnect();
+  }
+
+  private async connect() {
+    if (this.shuttingDown) return;
+    const url = this.config.getOrThrow<string>('RABBITMQ_URL');
+    let connection: amqp.ChannelModel | null = null;
+    try {
+      connection = await amqp.connect(url);
+      // Listeners ANTES de cualquier otra operación: un 'error' emitido sin listener
+      // en un EventEmitter tira una excepción que mata el proceso Node.
+      const conn = connection;
+      conn.on('error', (err) => {
         this.logger.error('RabbitMQ connection error', err);
       });
-      this.connection.on('close', () => {
-        this.logger.warn('RabbitMQ connection closed. Reconnecting in 5s...');
-        setTimeout(() => this.connect(), 5000);
+      conn.on('close', () => {
+        this.logger.warn('RabbitMQ connection closed');
+        this.handleConnectionLost(conn);
       });
+
+      const channel = await conn.createChannel();
+      // Mismo motivo: el canal emite 'error' cuando RabbitMQ lo cierra por una
+      // operación inválida (405/406). Sin listener, eso también tumba el proceso.
+      channel.on('error', (err) => {
+        this.logger.error('RabbitMQ channel error', err);
+      });
+      // Un canal cerrado con la conexión todavía viva (error a nivel canal) quedaba
+      // muerto para siempre. Se cierra la conexión entera para pasar por la
+      // reconexión normal, que rearma canal, colas y consumers.
+      channel.on('close', () => {
+        if (this.channel !== channel || this.shuttingDown) return;
+        this.logger.warn('RabbitMQ channel closed; se recicla la conexión');
+        // Primero se suelta (deja `this.channel` en null → no reentra), después se
+        // cierra. Si la conexión ya se estaba cerrando, el close falla y da igual.
+        this.handleConnectionLost(conn);
+        conn.close().catch(() => undefined);
+      });
+
+      this.connection = conn;
+      this.channel = channel;
 
       this.logger.log('RabbitMQ connected');
 
@@ -91,21 +149,34 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
 
       // Re-suscribe handlers si hay reconnection
       for (const [queue, queueHandlers] of this.handlers) {
-        await this.channel.assertQueue(queue, { durable: true });
+        await channel.assertQueue(queue, { durable: true });
         for (const handler of queueHandlers) {
-          this.setupConsumer(queue, handler);
+          await this.setupConsumer(queue, handler);
         }
       }
     } catch (err) {
       this.logger.error('Failed to connect to RabbitMQ', err);
-      setTimeout(() => this.connect(), 5000);
+      if (connection) {
+        // Conectó pero falló después (crear canal, re-declarar colas): se cierra esta
+        // conexión a medias en vez de dejarla colgada. Su 'close' (si llega) cae en
+        // `handleConnectionLost`, que no reagenda dos veces.
+        const failed = connection;
+        if (this.connection === failed) {
+          this.connection = null;
+          this.channel = null;
+        }
+        failed.close().catch(() => undefined);
+      }
+      this.scheduleReconnect();
     }
   }
 
   private async disconnect() {
+    const connection = this.connection;
+    this.connection = null;
+    this.channel = null;
     try {
-      await this.channel?.close();
-      await this.connection?.close();
+      await connection?.close();
     } catch {
       // ignore
     }
@@ -126,19 +197,23 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
     message: BrokerMessage,
     opts: { assert?: boolean } = {},
   ): Promise<boolean> {
-    if (!this.channel) {
+    const channel = this.channel;
+    if (!channel) {
       this.logger.warn('Cannot publish: channel not ready');
       return false;
     }
-    if (opts.assert !== false) {
-      await this.channel.assertQueue(queue, { durable: true });
+    // El canal se puede cerrar entre el chequeo de arriba y el envío (RabbitMQ
+    // reiniciando): `sendToQueue` tira sincrónico y `assertQueue` rechaza. Se trata
+    // igual que "no conectado" — los llamadores ya manejan el `false`.
+    try {
+      if (opts.assert !== false) {
+        await channel.assertQueue(queue, { durable: true });
+      }
+      return channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), { persistent: true });
+    } catch (err) {
+      this.logger.error(`No se pudo publicar en '${queue}'`, err);
+      return false;
     }
-    const sent = this.channel.sendToQueue(
-      queue,
-      Buffer.from(JSON.stringify(message)),
-      { persistent: true },
-    );
-    return sent;
   }
 
   /**
@@ -149,14 +224,20 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
    * configuración al arrancar.
    */
   async publishToExchange(exchange: string, routingKey: string, message: BrokerMessage): Promise<boolean> {
-    if (!this.channel) {
+    const channel = this.channel;
+    if (!channel) {
       this.logger.warn(`Cannot publish to '${exchange}': channel not ready`);
       return false;
     }
-    await this.channel.assertExchange(exchange, 'topic', { durable: true });
-    return this.channel.publish(exchange, routingKey, Buffer.from(JSON.stringify(message)), {
-      persistent: true,
-    });
+    try {
+      await channel.assertExchange(exchange, 'topic', { durable: true });
+      return channel.publish(exchange, routingKey, Buffer.from(JSON.stringify(message)), {
+        persistent: true,
+      });
+    } catch (err) {
+      this.logger.error(`No se pudo publicar en el exchange '${exchange}'`, err);
+      return false;
+    }
   }
 
   async subscribe(queue: string, handler: MessageHandler) {
@@ -165,20 +246,31 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
     }
     this.handlers.get(queue)!.push(handler);
 
-    if (this.channel) {
-      await this.channel.assertQueue(queue, { durable: true });
-      this.setupConsumer(queue, handler);
+    const channel = this.channel;
+    if (!channel) return; // se suscribe en la próxima (re)conexión
+    try {
+      await channel.assertQueue(queue, { durable: true });
+      await this.setupConsumer(queue, handler);
+    } catch (err) {
+      // El handler ya quedó registrado: la reconexión lo vuelve a suscribir. No se
+      // propaga para no tumbar el arranque (onModuleInit) si RabbitMQ justo cortó.
+      this.logger.error(`No se pudo suscribir a '${queue}'; se reintenta al reconectar`, err);
     }
   }
 
-  private setupConsumer(queue: string, handler: MessageHandler) {
+  /**
+   * Devuelve la promesa de `consume()` para que el llamador la espere. Antes quedaba
+   * suelta: si el canal se cerraba mientras RabbitMQ registraba el consumer, el
+   * rechazo quedaba sin manejar y Node (≥15) mata el proceso por unhandled rejection.
+   */
+  private async setupConsumer(queue: string, handler: MessageHandler): Promise<void> {
     if (!this.channel) return;
     // Capturado en una constante: si RabbitMQ cierra la conexión mientras este
     // consumer está procesando un mensaje, `this.channel` puede haber cambiado (o
     // quedar null) para cuando el callback termina. Operar sobre el canal con el
     // que se registró el consumer, no sobre el que sea `this.channel` en ese momento.
     const channel = this.channel;
-    channel.consume(queue, async (msg) => {
+    await channel.consume(queue, async (msg) => {
       if (!msg) return;
       try {
         const content = JSON.parse(msg.content.toString()) as BrokerMessage;
@@ -295,9 +387,10 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
         // entera con 406 (PRECONDITION_FAILED) — así se armó una tormenta de
         // reconexiones la primera vez que probé esto.
         await channel.assertQueue(queueName, { exclusive: true, durable: true, autoDelete: true });
-        this.replyQueueName = queueName;
 
-        channel.consume(
+        // Esperado (no suelto): ver `setupConsumer`. Y `replyQueueName` se fija recién
+        // cuando el consumer está registrado, para no publicar con un replyTo que nadie lee.
+        await channel.consume(
           queueName,
           (msg) => {
             if (!msg) return;
@@ -322,10 +415,19 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
           },
           { noAck: false },
         );
+        this.replyQueueName = queueName;
       })();
     }
 
-    await this.replyConsumerReady;
+    const ready = this.replyConsumerReady;
+    try {
+      await ready;
+    } catch (err) {
+      // Si falló (canal cerrado a mitad de camino) no se cachea el rechazo: el
+      // próximo request() vuelve a intentar armar la cola de respuesta.
+      if (this.replyConsumerReady === ready) this.replyConsumerReady = null;
+      throw err;
+    }
     return this.replyQueueName!;
   }
 
@@ -445,7 +547,7 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
       const channel = this.channel;
 
       await channel.assertQueue(queueName, { durable: true });
-      channel.consume(
+      await channel.consume(
         queueName,
         (msg) => {
           if (!msg) return;
@@ -472,6 +574,12 @@ export class BrokerService implements OnModuleInit, OnModuleDestroy {
     })();
 
     this.fixedReplyConsumers.set(queueName, setup);
-    await setup;
+    try {
+      await setup;
+    } catch (err) {
+      // Mismo criterio que `ensureReplyConsumer`: no cachear un setup fallido.
+      if (this.fixedReplyConsumers.get(queueName) === setup) this.fixedReplyConsumers.delete(queueName);
+      throw err;
+    }
   }
 }
